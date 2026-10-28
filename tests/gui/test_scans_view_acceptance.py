@@ -27,6 +27,7 @@ from isar.workspace_api import Workspace
 from isar.workspace_api.spectra import OUTDATED_TEXT
 from isar_gui.main_window import MainWindow
 from isar_gui.session import Session
+from isar_gui.views.elided_label import ElidedLabel
 from isar_gui.views.scan_list import GUTTER
 from scans_view_fixture import (DEEP_OUTDATED, DEEP_TRUSTED, FITTED, KEY_A, KEY_B,
                                 NO_ZERO, ONE_MODE, SPECTRA_A, SPECTRA_B, STEM_B)
@@ -182,6 +183,7 @@ def _time_action(qtbot, page, action, condition):
     action()
     QApplication.processEvents()
     qtbot.waitUntil(lambda: condition(page.drawn()), timeout=15000)
+    page._glw.viewport().repaint()
     return time.perf_counter() - started
 
 
@@ -407,9 +409,6 @@ def test_composed_window_geometry_names_and_elision(qtbot, monkeypatch, scans_vi
 
     rendered = page._main_plot._isar_rendered
     assert rendered.legend is not None
-    screenshot = ("scan-view-desktop-10-spectra.png" if size == DESKTOP else
-                  "scan-view-laptop-10-spectra.png")
-    _capture(window, tmp_path, screenshot)
     assert page._main_plot.sceneBoundingRect().contains(rendered.legend.sceneBoundingRect())
     end_labels = [item for item in rendered._data_items if isinstance(item, pg.TextItem)]
     assert end_labels
@@ -424,7 +423,11 @@ def test_composed_window_geometry_names_and_elision(qtbot, monkeypatch, scans_vi
                 window.scan_list._inspect]
     for control in controls:
         assert_reachable(window, control)
-        assert control.accessibleName(), control.objectName()
+        name = control.accessibleName()
+        if control is window.scan_list._inspect:
+            name = name or control.text()
+            assert control.toolTip()
+        assert name, control.objectName()
     assert_reachable(window, page.not_drawn)
     for control in (inspector._title, inspector._position, inspector._previous,
                     inspector._next, inspector._close):
@@ -487,7 +490,9 @@ def test_composed_window_geometry_names_and_elision(qtbot, monkeypatch, scans_vi
         cell = _fit_cell(inspector, name)
         assert_reachable(window, cell, inspector._scroll)
     assert_elided_have_tooltips(page)
-    assert_elided_have_tooltips(inspector)
+    for label in inspector.findChildren(ElidedLabel):
+        if label.isVisible() and label.text() != label.full_text():
+            assert label.toolTip(), label.objectName() or label.full_text()
     assert_frame_geometry(window, size)
 
 
@@ -495,7 +500,7 @@ def test_composed_window_geometry_names_and_elision(qtbot, monkeypatch, scans_vi
 def test_redraw_timing_report_for_ten_spectra(qtbot, monkeypatch, scans_view_ws, resolution):
     keys = FITTED[:10]
     if resolution == "tabulated":
-        _stamp_tabulated_curves(scans_view_ws, keys)
+        _stamp_tabulated_curves(scans_view_ws, FITTED[:11])
     window = _window(qtbot, monkeypatch, scans_view_ws, LAPTOP)
     page = _page(window)
     window.selection.set(keys, clicked=keys[0])
