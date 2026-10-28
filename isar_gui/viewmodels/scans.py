@@ -679,10 +679,10 @@ class ScansViewModel(ViewModel):
         return [g for g in self._auto if g.dim == dim]
 
     def manual_groups(self):
-        """Manual groups from the store, ordered by ``group_order`` (unlisted appended in store order)."""
+        """Ordinary manual groups ordered by ``group_order``; Scan(s) slots belong to its chips."""
         if self._store is None:
             return []
-        groups = self._store.groups()
+        groups = [group for group in self._store.groups() if group.slot is None]
         by_id = {g.id: g for g in groups}
         order = self._store.group_order()
         ordered = [by_id[gid] for gid in order if gid in by_id]
@@ -753,7 +753,7 @@ class ScansViewModel(ViewModel):
         return [u.key for u in self._all_rows if any(member_matches(m, u.key) for m in members)]
 
     def can_target(self, target: str, keys) -> tuple[bool, str]:
-        """``(ok, reason)`` for sending ``keys`` to a plot ``target`` (waterfall/dispersion/heatmap).
+        """``(ok, reason)`` for sending ``keys`` to a plot ``target`` (dispersion/heatmap).
 
         Same pure validation the destination dock uses, so the "Send to" menu can grey a verb the
         group can't satisfy (plan R-route). Reads the read-only results off the facade; writes nothing."""

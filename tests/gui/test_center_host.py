@@ -232,21 +232,21 @@ def test_rebind_disposes_host_and_drops_view_changed_receiver(qtbot, make_ws):
     old_host.view_changed.emit("plane")                    # would set center_view if still connected
     assert w._session.view_state.get("center_view") != "plane"
     # The new host still routes normally.
-    new_host.show_view("waterfall")
-    assert w._session.view_state["center_view"] == "waterfall"
+    new_host.show_view("plane")
+    assert w._session.view_state["center_view"] == "plane"
 
 
 def test_center_view_state_persists_and_restores(qtbot, make_ws):
     session = Session()
     w = MainWindow(_ws_2t(make_ws), session=session, watch=False)
     qtbot.addWidget(w)
-    w._center_host.show_view("waterfall", user=True)       # clears auto-follow, switches view
+    w._center_host.show_view("plane", user=True)            # clears auto-follow, switches view
     w._snapshot_session()
-    assert session.view_state["center_view"] == "waterfall"
+    assert session.view_state["center_view"] == "plane"
     assert session.view_state["center_auto_follow"] is False
 
     # A fresh window on the same session restores the persisted view + auto-follow.
     w2 = MainWindow(_ws_2t(make_ws), session=session, watch=False)
     qtbot.addWidget(w2)
-    assert w2._center_host.current_key == "waterfall"
+    assert w2._center_host.current_key == "plane"
     assert w2._center_host.auto_follow is False

@@ -11,8 +11,6 @@ compiles to a restriction over the same "on the plane" population the views alre
 and rendering can never disagree about which scans a group actually covers.
 
 Targets:
-  * ``"waterfall"`` — the waterfall/comparison dock. Accepts any fitted group (both modes handle
-    multiple temperatures); the dock reports a hidden-q count on the status bar, never refuses on T.
   * ``"dispersion"`` / ``"heatmap"`` — one displayed temperature. A group spanning >1 T is refused
     with the temperatures named, so the plane never silently omits the other Ts.
 """
@@ -50,5 +48,5 @@ def accepts(target: str, results, scan_ids) -> tuple[bool, str]:
         if len(temps) > 1:
             tlist = ", ".join(f"{t:g}" for t in temps)
             return False, (f"these {len(fits)} scan(s) span T = {tlist} K; the plane shows one "
-                           "temperature — drop on Waterfall/Comparison, or narrow to one T.")
+                           "temperature — narrow to one T.")
     return True, ""

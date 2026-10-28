@@ -62,7 +62,7 @@ def test_empty_start_window(qtbot):
     assert w._center_stack.isAncestorOf(w._center_host) and w._center_host is not None
     assert w._center_stack.currentWidget() is w._center_host
     assert "Select an analyzer in the scan list." == w._empty_hint.text()
-    assert "Select an analyzer in the scan list." == w.inspector._empty_label.text()
+    assert "No spectra selected. Select them in the scan list." == w.scans_page.empty_label.text()
     assert w.windowTitle() == "ISAR — no experiment"
     assert "No experiment open" in w.statusBar().currentMessage()
     # Workspace-specific docks are withheld until data has a workspace.  The old Files dock stays
@@ -82,8 +82,8 @@ def test_empty_start_window(qtbot):
 
 
 def test_open_workspace_from_empty_binds(qtbot, make_ws):
-    """Open Workspace… from the empty state does a full bind from None: the inspector becomes the
-    central widget, the title/status update, and the workspace's data reaches the browser."""
+    """Open Workspace… from the empty state rebuilds Scan(s), the title/status update, and the
+    workspace's data reaches the browser."""
     root = make_ws(rows=[{"scan": 1, "detector": "det", "sample": "s", "T": 100.0,
                           "h": 2.0, "k": 0.0, "l": 0.0, "status": "fitted", "omega0": 4.0}])
     w = MainWindow(None, session=Session(), watch=False)
@@ -92,18 +92,18 @@ def test_open_workspace_from_empty_binds(qtbot, make_ws):
 
     assert w.load_workspace(str(root)) is True
     assert not w.is_empty
-    # The inspector is now the CenterHost's "scan" page (the stack shows the host, not the inspector).
+    # Scan(s) is now the CenterHost's "scan" page.
     assert w._center_host is not None
     assert w._center_stack.currentWidget() is w._center_host
-    assert w._center_host.pane("scan") is w.inspector
-    assert w.inspector is not None
+    assert w._center_host.pane("scan") is w.scans_page
+    assert w.scans_page is not None
     assert w.windowTitle() == f"ISAR — {root.name}"
     assert len(w.browser_vm.group_rows) == 1
     # A ready workspace restores the full normal view; the sparse welcome scaffold is not sticky. The
     # scan-centric docks remain docks; the four plot surfaces are CenterHost pages.
     for name in ("Browser", "Card", "Scans"):
         assert name in w._docks
-    for key in ("scan", "waterfall", "plane", "dispersion", "sandbox"):
+    for key in ("scan", "plane", "dispersion", "sandbox"):
         assert w._center_host.pane(key) is not None
 
 
@@ -236,20 +236,18 @@ def test_watch_grows_browser_and_heatmap(qtbot, make_ws):
         write_data_file(root, 2, x, counts1)
 
     # The two file writes above may debounce into separate ticks rather than one — wait until both
-    # have actually landed across all four views instead of asserting right after a single signal.
+    # have actually landed across all three views instead of asserting right after a single signal.
     qtbot.waitUntil(
         lambda: len(w.browser_vm.group_rows) == 2
         and len(w.heatmap_vm.spec.strips) == 2
-        and len(w.dispersion_vm.spec.meta["omega_hat_entropy_all"]) == 2
-        and len(w.waterfall_vm.q_values) == 2,
+        and len(w.dispersion_vm.spec.meta["omega_hat_entropy_all"]) == 2,
         timeout=6000,
     )
 
     assert len(w.browser_vm.group_rows) == 2
     assert len(w.heatmap_vm.spec.strips) == 2
-    # The dispersion + waterfall views read the same refreshed facade.
+    # The dispersion view reads the same refreshed facade.
     assert len(w.dispersion_vm.spec.meta["omega_hat_entropy_all"]) == 2
-    assert len(w.waterfall_vm.q_values) == 2
 
 
 def test_inspector_refreshes_selection_still_present(qtbot, make_ws):

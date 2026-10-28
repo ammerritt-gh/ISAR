@@ -410,7 +410,8 @@ def _reachable(w, control, scroll=None, *, enabled=True) -> None:
     """``control`` is shown, enabled (or, for ``enabled=False``, shown and meant to be disabled) and wholly
     inside the window, scrolling its own scroll area if need be; ``visibleRegion`` also drops what a
     sibling or a clipping parent hides."""
-    if scroll is not None:      # ensureWidgetVisible leaves the last pixels of a control under the edge
+    if scroll is not None:      # settle pending layout before computing the control's content position
+        QApplication.processEvents()
         scroll.verticalScrollBar().setValue(max(0, control.mapTo(scroll.widget(), QPoint(0, 0)).y() - 20))
         QApplication.processEvents()
     rect = rect_in(w, control)
@@ -573,14 +574,13 @@ def test_run_analysis_is_a_visible_button_in_the_setup_area_at_every_size(
 
 @pytest.mark.parametrize("size", [LAPTOP, (1920, 1040)])
 def test_the_empty_display_hint_is_centred_in_the_plot_area(qtbot, monkeypatch, built_no_curves, tmp_path, size):
-    """Audit I9, a real layout effect: the hint sat in the inspector's side column, to the right of the empty
-    plots. It now takes the plots' place and is centred in that area."""
+    """The empty selection hint is centered in the Scan(s) body at laptop and desktop sizes."""
     w = _window(qtbot, monkeypatch, _copy(built_no_curves, tmp_path), size=size)
-    insp = w.inspector
-    label = insp._empty_label
-    assert label.isVisible() and label.text() == "Select an analyzer in the scan list."
-    area = rect_in(w, insp._splitter.widget(0))             # the plots' column
+    page = w.scans_page
+    page.flush_redraw()
+    label = page.empty_label
+    assert label.isVisible() and label.text() == "No spectra selected. Select them in the scan list."
+    area = rect_in(w, page.body)
     box = rect_in(w, label)
     assert area.contains(box), (box, area)
     assert abs(box.center().x() - area.center().x()) <= 2 and abs(box.center().y() - area.center().y()) <= 2
-    assert not insp._side.isVisible()                       # no empty side column beside it

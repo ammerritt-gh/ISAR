@@ -815,9 +815,8 @@ class _GroupBox(QFrame):
         chosen = menu.exec(event.globalPos())
         self._apply_header_action(chosen.data() if chosen is not None else None)
 
-    #: "Send to <plot>" targets: (label, dock target kind). Waterfall covers comparison via its toggle.
-    _SEND_TARGETS = (("Waterfall / Comparison", "waterfall"),
-                     ("Dispersion ω(q)", "dispersion"),
+    #: "Send to <plot>" targets: (label, dock target kind).
+    _SEND_TARGETS = (("Dispersion ω(q)", "dispersion"),
                      ("Plane (q, E)", "heatmap"))
 
     def _add_send_to_menu(self, menu: QMenu) -> None:

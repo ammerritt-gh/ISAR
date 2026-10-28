@@ -13,8 +13,7 @@ from isar_gui.viewmodels.files import FilesViewModel
 from isar_gui.viewmodels.heatmap import HeatmapViewModel
 from isar_gui.viewmodels.inspector import InspectorViewModel
 from isar_gui.viewmodels.scans import ScansViewModel
-from isar_gui.viewmodels.waterfall import WaterfallViewModel
 
 __all__ = ["ViewModel", "BrowserViewModel", "GroupRow", "InspectorViewModel",
-           "HeatmapViewModel", "DispersionViewModel", "WaterfallViewModel", "FilesViewModel",
+           "HeatmapViewModel", "DispersionViewModel", "FilesViewModel",
            "ScansViewModel"]

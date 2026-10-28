@@ -28,7 +28,6 @@ from isar.workspace_api import Workspace
 from isar_gui.viewmodels.dispersion import DispersionViewModel
 from isar_gui.viewmodels.heatmap import HeatmapViewModel
 from isar_gui.viewmodels.inspector import InspectorViewModel
-from isar_gui.viewmodels.waterfall import WaterfallViewModel
 
 _X = np.linspace(-2.0, 8.0, 21)
 
@@ -128,7 +127,7 @@ def test_no_strip_spans_a_gap(make_ws):
 # ---- property sweep over EVERY spec from EVERY view -----------------------
 def _all_specs(ws):
     """Collect (name, PlotSpec) from every read-side VM: inspector overlay+residuals for a member
-    and for the pooled master, the heatmap, the dispersion, and the waterfall in both modes."""
+    and for the pooled master, the heatmap and the dispersion."""
     out = []
 
     insp = InspectorViewModel(ws)
@@ -145,13 +144,10 @@ def _all_specs(ws):
         out.append(("inspector.pooled.overlay", insp2.state.main_spec))
 
     out.append(("heatmap", HeatmapViewModel(ws).spec))
-    out.append(("dispersion", DispersionViewModel(ws).spec))
+    dispersion = DispersionViewModel(ws)
+    dispersion.set_color_by_entropy(True)
+    out.append(("dispersion", dispersion.spec))
 
-    wf = WaterfallViewModel(ws)
-    wf.set_mode("waterfall")
-    out.append(("waterfall.waterfall", wf.spec))
-    wf.set_mode("comparison")
-    out.append(("waterfall.comparison", wf.spec))
     return out
 
 

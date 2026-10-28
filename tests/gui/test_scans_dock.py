@@ -172,6 +172,21 @@ def test_drop_on_manual_box_writes_unit_keys(qtbot, tmp_path):
     assert {c.key for c in _box(dock, gid).chips} == {"s30:12:ana1", "s30:12:ana2"}
 
 
+def test_manual_tab_hides_scan_page_slot_groups(qtbot, tmp_path):
+    store = GuiStore.load(tmp_path)
+    vm = ScansViewModel(_ws(_nine()), store=store)
+    ordinary_id = vm.create_group("Manual")
+    store.save_slot(3, ["s30:12:ana1"])
+    dock = ScansDock(vm)
+    qtbot.addWidget(dock)
+
+    _show_tab(dock, "Manual")
+
+    assert [box.box_id for box in dock._boxes] == [ordinary_id]
+    assert len(store.groups()) == 2
+    assert store.slot_group(3).members == ["s30:12:ana1"]
+
+
 def test_auto_box_rejects_the_same_drop(qtbot, tmp_path):
     store = GuiStore.load(tmp_path)
     vm = ScansViewModel(_ws(_nine()), store=store)

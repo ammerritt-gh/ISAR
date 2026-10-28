@@ -31,7 +31,7 @@ from typing import NamedTuple
 from weakref import WeakSet
 
 from PySide6.QtCore import QByteArray, QEvent, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication
+from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -90,7 +90,6 @@ from isar_gui.viewmodels import (
     InspectorViewModel,
     ScansViewModel,
     ViewModel,
-    WaterfallViewModel,
 )
 from isar_gui.viewmodels.campaign import CampaignViewModel
 from isar_gui.viewmodels.intake import IntakeState
@@ -110,23 +109,23 @@ from isar_gui.views.experiment_strip import ExperimentStrip
 from isar_gui.views.files_dock import FilesDock
 from isar_gui.views.files_strip import FilesStrip
 from isar_gui.views.heatmap_pane import HeatmapPane
-from isar_gui.views.inspector_widget import InspectorWidget
 from isar_gui.views.output_bar import OutputBar
 from isar_gui.views.processing_panel import ProcessingPanel, ProcessingRail
 from isar_gui.views.readiness_line import ReadinessLine
 from isar_gui.views.rename_dialog import RenameDialog
+from isar_gui.views.scans_page import ScansPage
 from isar_gui.views.scan_inspector import ScanInspectorPanel
 from isar_gui.views.scan_list import ScanListPanel
 from isar_gui.views.scan_table_dock import ScanTableDock
 from isar_gui.views.setup_section import RUN_TEXT, RUN_TIP, SetupSection, locate_resolution_folder
 from isar_gui.views.scans_dock import ScansDock
-from isar_gui.views.waterfall_pane import WaterfallPane
+from isar_gui.selection import ORIGIN_GROUP, ORIGIN_LIST, ORIGIN_OTHER
 from isar_gui.watch_bridge import WatchBridge
 
 log = logging.getLogger(__name__)
 
 
-# The display's words before any scan is picked (the inspector page's empty text says the same).
+# The display's words before any scan is picked.
 _EMPTY_HINT = "Select an analyzer in the scan list."
 
 # Bump when the dock inventory/geometry contract changes: restoreState of any OTHER version fails
@@ -174,14 +173,13 @@ def initial_arrangement(width: int, height: int) -> str:
 _HEALTH_WORDS = {"tavi": "TAVI (instrument control) is not running. Only needed for campaigns.",
                  "llm": "The LLM service is not running. Only needed for the optional LLM review."}
 
-# The five central display surfaces, in switcher order: (host key, button label).
-_CENTER_PAGES = (("scan", "Scan"), ("waterfall", "Waterfall"), ("plane", "Plane (q, E)"),
+# The four central display surfaces, in switcher order: (host key, button label).
+_CENTER_PAGES = (("scan", "Scan(s)"), ("plane", "Plane (q, E)"),
                  ("dispersion", "Dispersion ω(q)"), ("sandbox", "Sandbox"))
 _CENTER_KEYS = tuple(key for key, _label in _CENTER_PAGES)
-# The File ▸ Export menu keeps its historical display keys; map them to the host page keys so PNG
-# export is unchanged for the operator. "Inspector" is the C2 fit inspector, now the "scan" page.
+# Map the export menu labels to the host page keys.
 _EXPORT_KEY_TO_CENTER = {"Plane (q, E)": "plane", "Dispersion ω(q)": "dispersion",
-                         "Waterfall / Comparison": "waterfall", "Inspector": "scan"}
+                         "Scan(s)": "scan"}
 
 
 class _EmptyWorkspace:
@@ -308,13 +306,18 @@ class _WindowQueue(QueueController):
     caller) first settles an unsaved Card draft, as ``start_analysis`` does: an item fits the saved card, never a
     draft still on screen (hard rule 7). Cancel adds nothing; the automatic switch's adds do not ask."""
 
-    def __init__(self, *args, resolve_draft, **kwargs) -> None:
+    def __init__(self, *args, resolve_draft, show_scan, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._resolve_draft = resolve_draft
+        self._show_scan = show_scan
 
     def add_selection(self, pass_kind: str) -> None:
         if self._resolve_draft(f"add a {pass_kind} pass"):
             super().add_selection(pass_kind)
+
+    def show(self, unit_key: str) -> None:
+        super().show(unit_key)
+        self._show_scan()
 
 
 class MainWindow(QMainWindow):
@@ -337,8 +340,8 @@ class MainWindow(QMainWindow):
         self._warn_generation = 0     # per-bridge-tick counter passed to LogDock.sync_warnings
         self._help_window = None      # the one Help window, made on first use
         self._empty = False           # True while showing the empty-start (no workspace) state
-        self.inspector = None         # the C2 fit inspector (a CenterHost page); None in the empty state
-        self._center_host: CenterHost | None = None   # hosts the five display surfaces once bound
+        self.scans_page = None        # the Scan(s) page is rebuilt for each workspace binding
+        self._center_host: CenterHost | None = None   # hosts the four display surfaces once bound
         self.setAcceptDrops(True)      # drop a data folder/numor onto the window -> ingest (D2/D5)
 
         # One permanent QStackedWidget holds the display. Page 0 is a parking page (persists across
@@ -485,7 +488,6 @@ class MainWindow(QMainWindow):
         self.inspector_vm = InspectorViewModel(ws, parent=self)
         self.heatmap_vm = HeatmapViewModel(ws, parent=self)
         self.dispersion_vm = DispersionViewModel(ws, parent=self)
-        self.waterfall_vm = WaterfallViewModel(ws, parent=self)
         # The G7 sandbox preview-fit worker; keyed on the workspace ROOT (it re-parses in-process).
         self.sandbox_vm = SandboxViewModel(None if self._empty else self._ws.root, parent=self)
         # The Files viewmodel is bound with no store yet; a ready bind loads the per-workspace
@@ -505,7 +507,6 @@ class MainWindow(QMainWindow):
         # the coordinator outlives bindings, so per-bind lambdas would accumulate and dangle).
         self.campaign_vm = CampaignViewModel(ws, parent=self)
         self.campaign_vm.set_process_alive(self._operations.is_running_campaign())
-        self.waterfall_vm.load_view_state(self._session)
         self.heatmap_vm.load_view_state(self._session)
         self.dispersion_vm.load_view_state(self._session)
         self._entropy_action = QAction("Colour by entropy", self)
@@ -514,24 +515,18 @@ class MainWindow(QMainWindow):
         self._entropy_action.toggled.connect(self.heatmap_vm.set_color_by_entropy)
         self._entropy_action.toggled.connect(self.dispersion_vm.set_color_by_entropy)
 
-        # The five display surfaces (the C2 fit inspector + the four plot panes) live as switchable
-        # pages of the central CenterHost; a scan-list selection drives the inspector. They are built
+        # The four display surfaces live as switchable pages of the central CenterHost. They are built
         # in EVERY state, over the null workspace when none is open, so the first screen already shows
         # the display tabs and each pane its own "nothing yet" view (never a hint page that vanishes
         # when data arrives).
-        self.inspector = InspectorWidget(self.inspector_vm, parent=self)
         self._build_center_host()
-        # Every route that changes what is being inspected passes through the active-unit controller.
+        # Every route that changes the active spectrum passes through the selection bridge.
         # This keeps the Results tree, physical chips, and table honest about the one detector in the
-        # central inspector, without treating a multi-selection as an inspection request.
+        # scan inspector, without treating a multi-selection as an inspection request.
         self.browser_vm.selection_changed.connect(self._inspect_fit)
-        # The C3 plane, the C5 dispersion view, and the C4 waterfall/comparison view all route a
-        # picked ω̂ point (or waterfall trace) to the same inspector.
+        # Plane and dispersion picks route through the same active-spectrum bridge.
         self.heatmap_vm.point_activated.connect(self._inspect_fit)
         self.dispersion_vm.point_activated.connect(self._inspect_fit)
-        self.waterfall_vm.point_activated.connect(self._inspect_fit)
-        # A browser selection also nominates its q as the waterfall/comparison view's default q.
-        self.browser_vm.selection_changed.connect(self.waterfall_vm.default_q_from_selection)
 
         self._docks = {}
         self._init_docks()
@@ -566,6 +561,9 @@ class MainWindow(QMainWindow):
                 self.campaign_dock.set_store(self._gui_store)
         else:
             self._gui_store = None
+        self.scans_page.set_store(self._gui_store)
+        self.scans_page.store_dirty.connect(self._on_groups_changed)
+        self.scans_page.load_view_state(self._session)
         self._seed_folder_watcher()
 
         # Watch bridge: refresh + fan out on the Qt thread. Optional (tests may disable it). Never
@@ -575,7 +573,6 @@ class MainWindow(QMainWindow):
 
         # The persistent mounts learn of the binding.
         self.scan_list_vm.set_workspace(self._ws)
-        self.scan_list_vm.set_active_key(self.active_units.key)
         self.experiment_strip.set_experiment(root)
         self.intake.bind(root)
         self._queue.bind(root, auto_fast=True if self._gui_store is None else self._gui_store.auto_fast_pass(),
@@ -637,11 +634,11 @@ class MainWindow(QMainWindow):
             self.log(f"Source data folder not found: {f} ({k} files) — {tail}")
 
     def _build_center_host(self) -> None:
-        """Build the CenterHost with the five display surfaces, register it as the stack's ready page,
+        """Build the CenterHost with its four display surfaces, register it as the stack's ready page,
         restore the persisted view + auto-follow, and make it the visible central page."""
         host = CenterHost(self)
-        host.add_page("scan", "Scan", self.inspector)
-        host.add_page("waterfall", "Waterfall", WaterfallPane(self.waterfall_vm))
+        self.scans_page = ScansPage(self.scan_list_vm, self._ws, parent=self)
+        host.add_page("scan", "Scan(s)", self.scans_page)
         host.add_page(
             "plane", "Plane (q, E)",
             HeatmapPane(self.heatmap_vm, entropy_action=self._entropy_action))
@@ -649,7 +646,7 @@ class MainWindow(QMainWindow):
             "dispersion", "Dispersion ω(q)",
             DispersionPane(self.dispersion_vm, entropy_action=self._entropy_action))
         host.add_page("sandbox", "Sandbox", SandboxPane(self.sandbox_vm))
-        # Restore the persisted view state (default: the Scan/inspector page, auto-follow on). Set
+        # Restore the persisted view state (default: Scan(s), auto-follow on). Set
         # auto BEFORE show_view so the programmatic (non-user) restore does not clear it.
         host.auto_follow = bool(self._session.view_state.get("center_auto_follow", True))
         want = self._session.view_state.get("center_view", "scan")
@@ -671,6 +668,30 @@ class MainWindow(QMainWindow):
         if self._center_host is not None:
             self._center_host.show_view(key, user=user)
 
+    def _on_selection_active(self, key: str | None) -> None:
+        """Forward the one active spectrum to the legacy single-spectrum surfaces."""
+        self.active_units.set_active(key)
+        if key is None:
+            self.inspector_vm.set_fit(None)
+            return
+        row = self.scan_list_vm.snapshot.spectrum(key)
+        if row is not None and row.fit is not None:
+            self.inspector_vm.set_fit(row.fit)
+        else:
+            self.inspector_vm.set_unit(key)
+
+    def _on_selection_changed(self, change) -> None:
+        """Follow list gestures and group recall while automatic page following is on."""
+        if (change.origin in (ORIGIN_LIST, ORIGIN_GROUP) and self._center_host is not None
+                and self._center_host.auto_follow):
+            self._center_host.show_view("scan")
+
+    def _on_group_key(self, slot: int, save: bool) -> None:
+        if self._center_host is None:
+            return
+        page = self._center_host.pane("scan")
+        page.groups.key_pressed(slot, save)
+
     def _update_title(self) -> None:
         """``ISAR — <folder name>`` for a pending or ready experiment, ``ISAR — no experiment``
         otherwise."""
@@ -691,6 +712,9 @@ class MainWindow(QMainWindow):
         # The scan list re-reads (S2U4) on both intake signals; it is wired before the panels that take their
         # scan-set labels from it, so those read a fresh list (Qt runs slots in connection order).
         self.scan_list_vm = ScanListViewModel(_EmptyWorkspace(), self)
+        self.selection = self.scan_list_vm.selection
+        self.selection.active_changed.connect(self._on_selection_active)
+        self.selection.changed.connect(self._on_selection_changed)
         self.scan_list_vm.set_intake(self.intake)
         self.intake.changed.connect(lambda: self.scan_list_vm.on_workspace_changed(None))
         self.intake.worker_changed.connect(lambda: self.scan_list_vm.on_workspace_changed(None))
@@ -717,7 +741,7 @@ class MainWindow(QMainWindow):
             sys.executable, self.intake, self.scan_list_vm, cores=self._cores_setting(),
             blocked=lambda: ("a campaign is running in this experiment"
                              if self._operations.has_campaign() else None),
-            resolve_draft=self._resolve_dirty_card, parent=self)
+            resolve_draft=self._resolve_dirty_card, show_scan=self._raise_inspector_if_auto, parent=self)
         self.processing_panel.set_controller(self._queue)
         self.processing_rail.set_controller(self._queue)
         self.scan_list_vm.set_queue(self._queue)
@@ -726,6 +750,15 @@ class MainWindow(QMainWindow):
         self._queue.changed.connect(self._push_run_row)
         self._queue.results_saved.connect(self._on_results_saved)
         self._operations.set_writer_guard(self._campaign_refusal)
+
+        self._group_shortcuts = []
+        for slot in range(1, 10):
+            for save, sequence in ((True, f"Ctrl+{slot}"), (False, str(slot))):
+                shortcut = QShortcut(QKeySequence(sequence), self)
+                shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+                shortcut.activated.connect(
+                    lambda n=slot, saving=save: self._on_group_key(n, saving))
+                self._group_shortcuts.append(shortcut)
 
         # ---- the left column: experiment strip, setup section, needs-attention list, files strip, then
         # the scan list (all the rest) ----
@@ -808,7 +841,6 @@ class MainWindow(QMainWindow):
         self._folder_watcher.status_changed.connect(self.files_strip.set_watch_status)
         self.scan_list_vm.inspect_requested.connect(self._inspect_from_list)
         self.scan_inspector.close_requested.connect(self._close_scan_inspector)
-        self.active_units.active_changed.connect(self.scan_list_vm.set_active_key)
         self.output_bar.save_copy_requested.connect(self.save_copy_as)
         self.output_bar.export_requested.connect(self._on_export_requested)
         self.output_bar.open_copy_requested.connect(lambda path: self.load_workspace(str(path)))
@@ -936,9 +968,8 @@ class MainWindow(QMainWindow):
             self.scans_vm.model.set_active_key(self.active_units.key)
             self._register_dock("Scan Table", self.scan_table_dock)
 
-        # The four plot panes (plane / dispersion / waterfall / sandbox) are no longer docks: the C2
-        # inspector and those four surfaces are switchable pages of the central CenterHost, built in
-        # _bind_workspace (see _build_center_host).
+        # Scan(s), Plane, Dispersion and Sandbox are switchable pages of the central CenterHost,
+        # built in _bind_workspace (see _build_center_host).
         self._place_docks()
 
     def _old_panels(self) -> list:
@@ -1216,8 +1247,8 @@ class MainWindow(QMainWindow):
         report_action.triggered.connect(self._open_report)
         export_menu = file_menu.addMenu("Save view as image")
         export_menu.setToolTip("Save the chosen display as a PNG picture.")
-        for label, key in (("Plane (q, E)", "Plane (q, E)"), ("Dispersion", "Dispersion ω(q)"),
-                           ("Waterfall", "Waterfall / Comparison"), ("Inspector", "Inspector")):
+        for label, key in (("Scan(s)", "Scan(s)"), ("Plane (q, E)", "Plane (q, E)"),
+                           ("Dispersion", "Dispersion ω(q)")):
             act = export_menu.addAction(label)
             act.triggered.connect(lambda _checked=False, k=key: self._export_view(k))
 
@@ -1680,8 +1711,7 @@ class MainWindow(QMainWindow):
         The engine is never handed a "group" — only the unit ids in ``keys`` reach the view VM. A
         refusal (e.g. a multi-T group on a single-T plane) is surfaced loudly on the status bar."""
         # target keys are the "Send to" verbs; the "heatmap" plot is the CenterHost "plane" page.
-        mapping = {"waterfall": ("waterfall", getattr(self, "waterfall_vm", None)),
-                   "dispersion": ("dispersion", getattr(self, "dispersion_vm", None)),
+        mapping = {"dispersion": ("dispersion", getattr(self, "dispersion_vm", None)),
                    "heatmap": ("plane", getattr(self, "heatmap_vm", None))}
         center_key, vm = mapping.get(target, (None, None))
         keys = list(keys or [])
@@ -1803,6 +1833,7 @@ class MainWindow(QMainWindow):
                 self.toggle_compact_mode()      # leave compact first: its stash is not the layout
             # Unit keys are workspace-local.  Clear before the old dock QObject instances disappear
             # so every visible surface is reset rather than carrying an old workspace's inspection.
+            self.selection.clear()
             self.active_units.set_active(None)
             self._close_scan_inspector()
             state = self.saveState(_LAYOUT_VERSION)
@@ -2102,8 +2133,7 @@ class MainWindow(QMainWindow):
     def _glw_for(self, dock_key: str):
         """The pyqtgraph graphics widget backing a named export view, or ``None``.
 
-        The File ▸ Export menu keeps its historical display keys (``Plane (q, E)`` / ``Dispersion
-        ω(q)`` / ``Waterfall / Comparison`` / ``Inspector``); they map to CenterHost page keys."""
+        The File ▸ Export menu labels map to CenterHost page keys."""
         if self._center_host is None:
             return None
         center_key = _EXPORT_KEY_TO_CENTER.get(dock_key)
@@ -2536,17 +2566,16 @@ class MainWindow(QMainWindow):
         self.heatmap_vm.deleteLater()
         self.dispersion_vm.save_view_state(self._session)
         self.dispersion_vm.deleteLater()
-        self.waterfall_vm.save_view_state(self._session)
-        self.waterfall_vm.deleteLater()
         # The compact monitor projects the outgoing binding's VMs; leave compact and drop it
         # before those VMs are torn down.
         self._dispose_campaign_monitor()
-        # The five display surfaces live inside the CenterHost (stack page 1). Dispose it — detaching
-        # and deleting every page (incl. the inspector) — drop its view_changed connection, remove it
+        # The four display surfaces live inside the CenterHost (stack page 1). Dispose it — detaching
+        # and deleting every page — drop its view_changed connection, remove it
         # from the stack, and delete it, so the fresh bind rebuilds a clean host. The permanent stack
         # and its hint page (index 0) are left in place. The panes' VM connections drop when both the
         # panes (deleteLater'd here) and the VMs (deleteLater'd just above) are torn down.
         if self._center_host is not None:
+            self.scans_page.save_view_state(self._session)
             self._center_host.view_changed.disconnect(self._on_center_view_changed)
             # Park the stack on the persistent hint page BEFORE removing the host: removeWidget on
             # the current page leaves the stack at index -1 (a grey flash) until the rebind adds
@@ -2556,7 +2585,7 @@ class MainWindow(QMainWindow):
             self._center_host.dispose()
             self._center_host.deleteLater()
             self._center_host = None
-        self.inspector = None
+        self.scans_page = None
 
     # ---- watch -----------------------------------------------------------
     def _on_results_saved(self, keys) -> None:
@@ -2598,7 +2627,6 @@ class MainWindow(QMainWindow):
             self.browser_vm.refresh()
             self.heatmap_vm.refresh()
             self.dispersion_vm.refresh()
-            self.waterfall_vm.refresh()
             if refresh_shown:
                 self._refresh_inspector_selection()
             # The scan rows' q/HKL cells and the auto-q-groups derive from the lattice epochs carried
@@ -2626,6 +2654,8 @@ class MainWindow(QMainWindow):
         shows the raw parsed unit (metadata + counts); anything else (a ``FitView`` or ``None``)
         drives the fit inspector as before."""
         if isinstance(payload, str):
+            if self.scan_list_vm.snapshot.spectrum(payload) is not None:
+                self.selection.set([payload], clicked=payload, origin=ORIGIN_OTHER)
             self.active_units.set_active(payload)
             self.inspector_vm.set_unit(payload)
             self._raise_inspector_if_auto()
@@ -2634,12 +2664,17 @@ class MainWindow(QMainWindow):
 
     def _inspect_fit(self, fit) -> None:
         """Inspect a fit selected by Results or one of the plot views, retaining its unit identity."""
-        self.active_units.set_active(self._unit_key_for_fit(fit))
+        key = self._unit_key_for_fit(fit)
+        if fit is None:
+            self.selection.clear()
+        elif key is not None and self.scan_list_vm.snapshot.spectrum(key) is not None:
+            self.selection.set([key], clicked=key, origin=ORIGIN_OTHER)
+        self.active_units.set_active(key)
         self.inspector_vm.set_fit(fit)
         self._raise_inspector_if_auto()
 
     def _raise_inspector_if_auto(self) -> None:
-        """Switch the central view to the Scan/inspector page when an inspect request is routed AND
+        """Switch the central view to Scan(s) when an inspect request is routed AND
         auto-follow is on. (Full campaign-event auto-follow rules land in a later task; this is the
         selection hook only.) With auto off, the operator's chosen view is left untouched."""
         if self._center_host is not None and self._center_host.auto_follow:
@@ -2721,7 +2756,8 @@ class MainWindow(QMainWindow):
             self._session.note_workspace(self._wsm.root())
         self.heatmap_vm.save_view_state(self._session)
         self.dispersion_vm.save_view_state(self._session)
-        self.waterfall_vm.save_view_state(self._session)
+        if self.scans_page is not None:
+            self.scans_page.save_view_state(self._session)
         self.scan_list_vm.save_view_state(self._session)
         self._session.view_state["attention_list"] = {"expanded": self.attention_list.is_expanded()}
         # Persist the central view switcher (current page + auto-follow) alongside the other

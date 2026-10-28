@@ -27,7 +27,6 @@ from isar_gui.viewmodels import projection
 from isar_gui.viewmodels.dispersion import DispersionViewModel
 from isar_gui.viewmodels.heatmap import HeatmapViewModel
 from isar_gui.viewmodels.scans import ScansViewModel
-from isar_gui.viewmodels.waterfall import WaterfallViewModel
 from isar_gui.views.dispersion_pane import DispersionPane
 from isar_gui.views.scans_dock import ScansDock
 
@@ -80,14 +79,12 @@ def test_restrict_bare_member_matches_selected_scan_number():
 
 # --------------------------------------------------------------------------- group_targets.accepts
 def test_accepts_refuses_when_nothing_fitted():
-    ok, reason = group_targets.accepts("waterfall", [_fv("a")], ["zzz"])
+    ok, reason = group_targets.accepts("dispersion", [_fv("a")], ["zzz"])
     assert not ok and "fitted" in reason
 
 
 def test_accepts_single_t_ok_multi_t_refused_on_planes():
     results = [_fv("a", T=200.0), _fv("b", T=400.0)]
-    ok_w, _ = group_targets.accepts("waterfall", results, ["a", "b"])
-    assert ok_w                                   # waterfall accepts multi-T
     for target in ("dispersion", "heatmap"):
         ok, reason = group_targets.accepts(target, results, ["a", "b"])
         assert not ok and "span" in reason and "200" in reason and "400" in reason
@@ -140,13 +137,6 @@ def test_heatmap_vm_restriction_narrows_temperatures(make_ws):
     assert vm.temperatures == [200.0, 400.0]
     vm.set_scan_restriction(_COLD)
     assert vm.temperatures == [200.0]
-
-
-def test_waterfall_vm_accepts_multi_t_and_restricts(make_ws):
-    vm = WaterfallViewModel(_ws_2t(make_ws))
-    assert vm.can_accept(_MIXED)[0]           # waterfall accepts multi-T
-    vm.set_scan_restriction(_COLD)
-    assert vm.restriction_active
 
 
 # --------------------------------------------------------------------------- dock drop (mixin)
@@ -213,8 +203,8 @@ def test_send_to_signal_carries_full_members_and_target(qtbot, make_ws, tmp_path
     box = next(b for b in dock._boxes if b.box_id == gid)
     got = []
     dock.send_group_requested.connect(lambda keys, target, label: got.append((set(keys), target, label)))
-    box._apply_header_action("send:waterfall")
-    assert got == [(set(_COLD), "waterfall", "Cold")]
+    box._apply_header_action("send:dispersion")
+    assert got == [(set(_COLD), "dispersion", "Cold")]
 
 
 def test_restriction_self_heals_when_all_ids_go_stale(make_ws):
@@ -257,6 +247,5 @@ def test_plot_view_does_not_accept_drops(qtbot, make_ws):
 
 def test_scans_vm_can_target_greys_multi_t(make_ws, tmp_path):
     vm = ScansViewModel(_ws_2t(make_ws), store=GuiStore.load(tmp_path))
-    assert vm.can_target("waterfall", _MIXED)[0]           # waterfall ok
     assert not vm.can_target("dispersion", _MIXED)[0]      # multi-T plane refused
     assert vm.can_target("dispersion", list(_COLD))[0]     # single-T plane ok

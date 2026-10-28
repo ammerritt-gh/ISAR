@@ -1,6 +1,6 @@
 """CenterHost — the central view switcher (GUI Pass 3, M1-2).
 
-Hosts the five display surfaces (the C2 fit inspector plus the four plot panes) as switchable pages
+Hosts the four display surfaces as switchable pages
 of one permanent central widget, replacing the four temporary ``_PaneDock`` shims. A slim top bar of
 checkable, auto-exclusive :class:`~PySide6.QtWidgets.QToolButton`\\s selects the visible page; a
 right-aligned "Auto" toggle records whether the view should follow selection/campaign events (the
