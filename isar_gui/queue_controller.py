@@ -214,6 +214,7 @@ class QueueController(QObject):
         self._hold_confirmed = False
         self._hold_waiters: list[Callable[[], None]] = []
         self._shutdown_waiters: list[Callable[[], None]] = []
+        self._keep_on_shutdown = False      # the shutdown under way keeps the waiting items (a rename)
         self._silence = QTimer(self)
         self._silence.setSingleShot(True)
         self._silence.timeout.connect(self._on_silence)
@@ -856,9 +857,11 @@ class QueueController(QObject):
             self._hold_waiters.clear()      # released before the hold came: the copy must not start
         self.changed.emit()
 
-    def shutdown(self, then: Callable[[], None]) -> None:
+    def shutdown(self, then: Callable[[], None], *, keep_waiting: bool = False) -> None:
         """Orderly end for leaving the experiment: running items are stopped, handed-over results are saved,
-        waiting items are forgotten; ``then()`` once the process is gone."""
+        waiting items are forgotten; ``then()`` once the process is gone. With ``keep_waiting`` (rename only) the
+        waiting items and the finished list stay for the :meth:`bind` that follows."""
+        self._keep_on_shutdown = keep_waiting
         if self._runner is None:
             self._finish_shutdown(then)
             return
@@ -883,10 +886,11 @@ class QueueController(QObject):
             self._runner.kill_tree()
 
     def _finish_shutdown(self, then: Callable[[], None] | None = None) -> None:
-        """The queue is forgotten with the process: the next experiment starts empty."""
+        """The queue is forgotten with the process: the next experiment starts empty (but not after a rename)."""
         if then is not None:
             self._shutdown_waiters.append(then)
-        if self._root is not None and self._queue is not None:
+        keep, self._keep_on_shutdown = self._keep_on_shutdown, False
+        if not keep and self._root is not None and self._queue is not None:
             root = self._root
             self._forget()
             self._queue = AnalysisQueue(self._cores, id_prefix=f"q{self._bind_no}-")

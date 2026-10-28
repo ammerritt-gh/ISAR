@@ -1400,7 +1400,8 @@ class MainWindow(QMainWindow):
             return
         if self._queue.view().service not in ("off", "failed"):
             # The idle analysis process keeps its log open in report/gui-runs/, which blocks the folder rename.
-            self._queue.shutdown(lambda: QTimer.singleShot(0, self, lambda: self._rename_to(old, name)))
+            self._queue.shutdown(lambda: QTimer.singleShot(0, self, lambda: self._rename_to(old, name)),
+                                 keep_waiting=True)
             self._say("Rename: stopping the idle analysis process first…")
             return
         self._rename_to(old, name)

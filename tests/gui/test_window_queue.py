@@ -386,6 +386,27 @@ def test_a_rename_keeps_the_waiting_items(qtbot, monkeypatch, bl43_ws):
         _forget_queue(w)
 
 
+def test_a_rename_with_the_analysis_process_alive_keeps_the_waiting_items(qtbot, monkeypatch, bl43_ws, tmp_path):
+    record = _fake_service(monkeypatch, tmp_path)
+    w = _win(qtbot, bl43_ws)
+    monkeypatch.setattr(RenameDialog, "ask", lambda root, ws=None, parent=None: "renamed")
+    try:
+        start = _one_running(qtbot, w, record)
+        w._queue.pause()
+        _finish(qtbot, w, start)                                           # idle process, items still waiting
+        waiting = sum(w._queue.view().n_waiting.values())
+        assert waiting >= 1 and w._queue.view().service not in ("off", "failed")
+        w.rename_experiment()
+        new = bl43_ws.parent / "renamed"
+        qtbot.waitUntil(lambda: w._wsm.root() == new, timeout=WAIT_MS)
+        assert _commands(record, "shutdown") and not bl43_ws.exists()
+        assert sum(w._queue.view().n_waiting.values()) == waiting          # kept, not forgotten with the process
+        w._queue.resume()                                                  # they run at the new root
+        qtbot.waitUntil(lambda: len(_commands(record, "start")) == 2, timeout=WAIT_MS)
+    finally:
+        _forget_queue(w)
+
+
 def test_a_campaign_is_refused_while_the_queue_runs_or_holds_waiting_items(qtbot, monkeypatch, bl43_ws, tmp_path):
     record = _fake_service(monkeypatch, tmp_path)
     w = _win(qtbot, bl43_ws)
