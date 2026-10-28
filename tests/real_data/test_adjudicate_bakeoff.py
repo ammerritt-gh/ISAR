@@ -1,13 +1,16 @@
 """Gated live bake-off: local 9B vs the NanoGPT comparator on QC-flagged synthetic scans (§7.3).
 
-This is the design's adequacy gate — run only when a real LLMM is reachable. It builds synthetic
+This is the design's adequacy gate — opt in with ISAR_LIVE_LLMM=1 and run LLMM. It builds synthetic
 scans with injected, deterministically-flagged defects (stale head → mask, dead detector → drop,
 divergent sensor → hold), adjudicates them with each real model, and scores recall + the
 destructive-error rate (the metric that decides "adequate"). It prints the table for the human and
 hard-asserts the load-bearing bar: a serviceable local 9B must destroy no genuine data.
 
-Skipped automatically when LLMM is not up (CI / offline). Marked slow; deselect with -m "not slow".
+Without the opt-in, collection does not contact LLMM. Also skipped when LLMM is not up.
+Marked live and slow; deselect with -m "not live" or -m "not slow".
 """
+import logging
+import os
 import urllib.request
 
 import pytest
@@ -18,6 +21,8 @@ from isar.reduce.adjudicate import DEFAULT_CLOUD_FALLBACK_MODEL
 from isar.reduce.llm_client import LLMMClient
 from isar.synth_format import quirks, run_builder
 
+log = logging.getLogger(__name__)
+
 ENDPOINT = "http://127.0.0.1:8766"
 LOCAL = "local_desktop/qwen3p5-9b"
 CLOUD = DEFAULT_CLOUD_FALLBACK_MODEL   # the comparator is whatever the adjudicator would fall back to
@@ -27,13 +32,16 @@ def _llmm_up() -> bool:
     try:
         with urllib.request.urlopen(ENDPOINT + "/health", timeout=2) as r:
             return r.status == 200
-    except Exception:
+    except Exception as error:
+        log.warning("LLMM health check failed at %s: %s", ENDPOINT, error)
         return False
 
 
 pytestmark = [
     pytest.mark.slow,
-    pytest.mark.skipif(not _llmm_up(), reason=f"LLMM not reachable at {ENDPOINT}"),
+    pytest.mark.live,
+    pytest.mark.skipif(os.environ.get("ISAR_LIVE_LLMM") != "1" or not _llmm_up(),
+                       reason=f"set ISAR_LIVE_LLMM=1 and run LLMM at {ENDPOINT} to enable"),
 ]
 
 
