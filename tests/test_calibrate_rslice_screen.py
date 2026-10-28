@@ -356,7 +356,8 @@ def test_refresh_uses_saved_inputs_and_refuses_saved_conditions(harness, monkeyp
     assert (tmp_path / store.ENTRIES).read_bytes() == before
 
 
-def test_retry_worker_uses_production_ladder_and_streams_attempts(harness, monkeypatch):
+@pytest.mark.parametrize("setup_failure", [False, True])
+def test_retry_worker_uses_production_ladder_and_streams_attempts(harness, monkeypatch, setup_failure):
     from isar.analyze import deep_pass
 
     messages = []
@@ -365,6 +366,10 @@ def test_retry_worker_uses_production_ladder_and_streams_attempts(harness, monke
                production_retry=True, settings=vars(deep_pass.ACCEPTED))
 
     def nested(label, problem, *, settings, seed, reference_lnl):
+        if setup_failure and seed == 123:
+            return deep_pass.RunRecord(label, seed, settings, 0, float("nan"), float("nan"), float("nan"),
+                                       0, 0, float("nan"), .1, reference_lnl,
+                                       failure="run failed: ValueError: synthetic problem setup failure")
         return deep_pass.RunRecord(label, seed, settings, model.ndim, -5.0, .2, 10.0,
                                    30, 20, -1.0, .1, reference_lnl,
                                    suspect=("synthetic missed mode",) if seed == 123 else (),
@@ -379,7 +384,24 @@ def test_retry_worker_uses_production_ladder_and_streams_attempts(harness, monke
     assert [m["settings"]["step_factor"] for m in attempts] == [4, 8]
     assert [m["usable"] for m in attempts] == [False, True]
     assert row["seed"] == 123 and row["final_seed"] == 123 + 7919
-    assert row["retry_count"] == 1 and row["usable"] and row["total_like_calls"] == 60
+    assert row["retry_count"] == 1 and row["usable"] and row["total_like_calls"] == (30 if setup_failure else 60)
+    if setup_failure:
+        assert attempts[0]["status"] == "failed" and "setup failure" in attempts[0]["error"]
+        assert attempts[0]["ndim"] == 0 and attempts[0]["n_like_calls"] == 0
+
+
+@pytest.mark.parametrize("dimension", [0, 1])
+def test_retry_worker_still_refuses_wrong_usable_dimensions(harness, monkeypatch, dimension):
+    from isar.analyze import deep_pass
+
+    model = entries()[0]
+    job = dict(model=model, stage="accepted", seed=123, engine="dynesty",
+               production_retry=True, settings=vars(deep_pass.ACCEPTED))
+    monkeypatch.setattr(deep_pass, "run_nested", lambda label, problem, *, settings, seed, reference_lnl:
+                        deep_pass.RunRecord(label, seed, settings, dimension, -5.0, .2, 10.0,
+                                            30, 20, -1.0, .1, reference_lnl, evidence_converged=True))
+    with pytest.raises(ValueError, match="identity"):
+        harness._retry_worker(job, SimpleNamespace(send=lambda row: None))
 
 
 def test_retry_calibration_plans_54_jobs_and_uses_only_final_usable_values(harness, monkeypatch, tmp_path):

@@ -306,7 +306,7 @@ def _worker(job, connection):
 
 def _record_row(job, rec):
     row = _base_row(job)
-    for key in ("seed", "log_z", "log_z_err", "information_h", "n_like_calls", "n_iter",
+    for key in ("seed", "ndim", "log_z", "log_z_err", "information_h", "n_like_calls", "n_iter",
                 "lnl_max", "wall_s", "evidence_converged"):
         row[key] = getattr(rec, key)
     row.update(settings=dataclasses.asdict(rec.settings), suspect=list(rec.suspect),
@@ -328,7 +328,11 @@ def _retry_worker(job, connection):
                         seed=seed, settings=dataclasses.asdict(settings))
         connection.send(dict(event="attempt_started", **identity, started_monotonic=time.monotonic()))
         rec = original(label, problem, settings=settings, seed=seed, reference_lnl=reference_lnl)
-        if rec.label != model.label or rec.ndim != model.ndim or rec.seed != seed or rec.settings != settings:
+        # run_nested has no dimension yet when problem() fails; production retains that failed
+        # zero-call attempt and retries it. All established dimensions must still match the model.
+        setup_failure = rec.ndim == 0 and rec.failure is not None and rec.n_like_calls == 0 and rec.n_iter == 0
+        if (rec.label != model.label or rec.seed != seed or rec.settings != settings
+                or rec.ndim != model.ndim and not setup_failure):
             raise ValueError("RunRecord identity does not match production retry attempt")
         completed.append(rec)
         connection.send(dict(event="attempt_completed", **_record_row(job, rec),
