@@ -107,7 +107,7 @@ def test_a_fit_one_crash_still_leaves_the_trusted_record_behind(monkeypatch):
     assert record["energy_bands"]
 
 
-def test_a_successful_fit_carries_the_same_trusted_record(monkeypatch):
+def test_a_successful_fit_carries_the_same_trusted_record(monkeypatch, fixed_fit):
     """Not only the crash path: an ordinary delivered fit carries the identical record too, so a
     campaign's measurements.jsonl covers every trusted arena, converged or not."""
     ctx = _elastic_ctx()
@@ -201,7 +201,7 @@ _PROVENANCE = {"job_id": "j1", "acquisition_id": "acq:1",
                "program_step": "step-1", "path_fingerprint": "pathfp"}
 
 
-def test_the_request_provenance_block_is_stamped_verbatim_on_the_record(monkeypatch):
+def test_the_request_provenance_block_is_stamped_verbatim_on_the_record(monkeypatch, fixed_fit):
     """SCENE-4 PR 4.3 (D2): the driver owns the campaign facts, the delivery pipeline owns the
     record — the four fields travel on the persisted request artifact and are copied, never
     re-derived here."""
@@ -221,7 +221,7 @@ def test_the_request_provenance_block_is_stamped_verbatim_on_the_record(monkeypa
     assert record["path_fingerprint"] == "pathfp"
 
 
-def test_a_scan_with_no_request_provenance_stays_all_none(monkeypatch):
+def test_a_scan_with_no_request_provenance_stays_all_none(monkeypatch, fixed_fit):
     """The manual/legacy lane: no acquisition record for this scan, so nothing invents a campaign
     identity for it (the scene layer's geometric fallback governs those arenas)."""
     ctx = _elastic_ctx()
@@ -254,7 +254,7 @@ def test_a_gated_arena_still_carries_its_request_provenance(monkeypatch):
     assert entry.measurement_record["program_step"] == "step-1"
 
 
-def test_lattice_epoch_is_the_current_one_at_write_time(monkeypatch):
+def test_lattice_epoch_is_the_current_one_at_write_time(monkeypatch, fixed_fit):
     ctx = _elastic_ctx()
     monkeypatch.setattr(scan_delivery, "_gate_scan", lambda *a, **k: (None, _CalRes()))
     _stub_context(monkeypatch, ctx)

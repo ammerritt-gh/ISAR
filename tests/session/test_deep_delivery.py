@@ -241,9 +241,9 @@ def test_deliver_end_to_end_at_tiny_settings(monkeypatch):
     assert deep_delivery.is_current({"deep_pass": record}, REQ)
 
 
-@pytest.mark.slow
-def test_a_deep_run_is_carried_under_the_same_settings_and_redone_under_others(tmp_path, monkeypatch):
-    """Through the real driver, with ``deliver`` stubbed: the record reaches the ledger, results.csv
+def test_a_deep_run_is_carried_under_the_same_settings_and_redone_under_others(
+        tmp_path, monkeypatch, fixed_fit):
+    """Through the real driver, with numerical fitting and ``deliver`` stubbed: the record reaches the ledger, results.csv
     and the timer; an identical request carries it; a changed budget refits and delivers again."""
     from isar.parsers import ill_in8
     from .test_driver_smoke import IN8_MAIN_NUMOR, _find, _init_workspace, write_in8_pair
@@ -257,7 +257,7 @@ def test_a_deep_run_is_carried_under_the_same_settings_and_redone_under_others(t
     data = write_in8_pair(tmp_path / "in8")
     ws = _init_workspace(tmp_path, ill_in8)
     timer = StageTimer()
-    s1 = driver.run_batch(ws, [data], M=10, deep_pass=REQ, timer=timer)
+    s1 = driver.run_batch(ws, [data], M=10, workers=1, deep_pass=REQ, timer=timer)
     assert calls == [600.0] and s1.n_fitted_this_run >= 1
     _card, session = ws.load()
     entry = _find(session, IN8_MAIN_NUMOR)
@@ -268,9 +268,9 @@ def test_a_deep_run_is_carried_under_the_same_settings_and_redone_under_others(t
     assert fit["deep_workers"] == 1 and fit["deep_budget_s"] == 600.0
     assert any(t.get("deep_pass") for t in fit["per_task"])
 
-    s2 = driver.run_batch(ws, [data], M=10, deep_pass=REQ)
+    s2 = driver.run_batch(ws, [data], M=10, workers=1, deep_pass=REQ)
     assert calls == [600.0] and s2.n_fitted_this_run == 0                    # carried
-    s3 = driver.run_batch(ws, [data], M=10, deep_pass=dataclasses.replace(REQ, budget_s=60.0))
+    s3 = driver.run_batch(ws, [data], M=10, workers=1, deep_pass=dataclasses.replace(REQ, budget_s=60.0))
     assert calls == [600.0, 60.0] and s3.n_fitted_this_run >= 1              # stale: refit + deliver
-    s4 = driver.run_batch(ws, [data], M=10)                                  # no deep request
+    s4 = driver.run_batch(ws, [data], M=10, workers=1)                                  # no deep request
     assert calls == [600.0, 60.0] and s4.n_fitted_this_run == 0

@@ -11,7 +11,6 @@ import numpy as np
 import pytest
 
 from isar.analyze.context import ScanContext
-from isar.analyze.errors.bayes import BayesResult
 from isar.report import run_report
 from isar.schema import card as card_mod
 
@@ -359,13 +358,6 @@ def test_a_delivery_hint_never_shortcuts_the_ladder(monkeypatch):
 
 
 # --------------------------------------------------------------------------- results.csv bayes columns
-def _canned_bayes_for_csv():
-    return BayesResult(omega0_interval=(4.9, 5.0, 5.1), gamma_interval=(0.30, 0.40, 0.50),
-                       omega0_samples=np.array([4.9, 5.0, 5.1]), gamma_samples=np.array([0.4]),
-                       log_evidence=-85.0, log_evidence_err=0.5, ess=500.0, bimodal=False,
-                       converged=True, n_live=250, seed=777, prior_used=False, fail_reason=None)
-
-
 def _single_peak_ctx_for_csv():
     x = np.linspace(-8.0, 16.0, 81)
     counts = convolute_voigt_dho(x, 5.0, 0.0, 1.0, 0.0, 0.4, 500.0, 0.0, 0.0, 50.0,
@@ -375,32 +367,18 @@ def _single_peak_ctx_for_csv():
                        energy_status="needs_zero")
 
 
-def _outcome_from_fit(fit, scan_number, det="ana7"):
+def _csv_outcome(**bayes_fields):
+    # Tier attachment is covered by test_bayes_tier; these tests own CSV typing/persistence.
     return outcome_mod.FitOutcome(
-        detector_id=det, verdict=fit["verdict"], disposition="resolved",
-        confidence=fit["confidence"], omega0=fit["omega0"], omega0_err=fit["omega0_err"],
-        interval=fit["interval"], modality=fit["modality"], gamma=fit["gamma"],
-        gamma_provisional=False, best_label=fit["best_label"], cost_per_dof=fit["cost_per_dof"],
-        q=[3.0, 0.2, 0.0], T=50.0, sample="S", prior_used=None, calib={},
-        reasons=fit["reasons"], n_modes=fit["n_modes"], modes=fit["modes"],
-        hesse_interval=fit.get("hesse_interval"), hesse_trusted=fit.get("hesse_trusted", False),
-        bayes_interval=fit.get("bayes_interval"), bayes_ok=fit.get("bayes_ok"),
-        bayes_ess=fit.get("bayes_ess"), bayes_fail_reason=fit.get("bayes_fail_reason"),
-        log_evidence=fit.get("log_evidence"), log_evidence_err=fit.get("log_evidence_err"),
-        bayes_freq_ratio=fit.get("bayes_freq_ratio"), hesse_freq_ratio=fit.get("hesse_freq_ratio"),
-        bayes_prior_driven=fit.get("bayes_prior_driven", False),
-        bayes_fork_suspected=fit.get("bayes_fork_suspected", False),
-        bayes_unconstrained=fit.get("bayes_unconstrained", False))
+        detector_id="ana7", verdict="resolved", disposition="resolved", confidence=0.8,
+        omega0=5.0, omega0_err=0.05, interval=(4.9, 5.0, 5.1), modality="fold", gamma=0.4,
+        gamma_provisional=False, best_label="stokes+bg", cost_per_dof=1.1,
+        q=[3.0, 0.2, 0.0], T=50.0, sample="S", prior_used=None, calib={}, **bayes_fields)
 
 
-@pytest.mark.slow
-def test_bayes_tier_populates_csv_bayes_columns(tmp_path, monkeypatch):
-    monkeypatch.setattr("isar.analyze.errors.bayes.bayesian_posterior",
-                        lambda *a, **k: _canned_bayes_for_csv())
-    fit = scan_delivery.fit_one(_single_peak_ctx_for_csv(), _card_with_fitting({}), prior=None, M=20,
-                         seed=1, errors_tier="bayes",
-                         bayes_opts={"n_live": 250, "dlogz": 0.5, "max_iter": 30_000})
-    outcome = _outcome_from_fit(fit, 10)
+def test_results_csv_round_trips_bayes_columns(tmp_path):
+    outcome = _csv_outcome(bayes_interval=(4.9, 5.0, 5.1), bayes_ok=True,
+                           bayes_ess=500.0, log_evidence=-85.0, log_evidence_err=0.5)
     st = SessionState()
     st.put(ScanEntry(scan_id="E:10:ana7", scan_number=10, scan_type="measurement",
                      status="fitted", detectors={"ana7": outcome.to_dict()}))
@@ -417,11 +395,8 @@ def test_bayes_tier_populates_csv_bayes_columns(tmp_path, monkeypatch):
     assert row["log_evidence_err"] == pytest.approx(0.5)
 
 
-@pytest.mark.slow
-def test_full_tier_leaves_csv_bayes_columns_empty(tmp_path):
-    fit = scan_delivery.fit_one(_single_peak_ctx_for_csv(), _card_with_fitting({}), prior=None, M=20,
-                         seed=1, errors_tier="full")
-    outcome = _outcome_from_fit(fit, 11)
+def test_results_csv_keeps_absent_bayes_columns_empty(tmp_path):
+    outcome = _csv_outcome()
     st = SessionState()
     st.put(ScanEntry(scan_id="E:11:ana7", scan_number=11, scan_type="measurement",
                      status="fitted", detectors={"ana7": outcome.to_dict()}))
