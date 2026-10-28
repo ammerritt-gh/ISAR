@@ -1868,6 +1868,9 @@ class MainWindow(QMainWindow):
         label = RUN_TEXT if count is None else f"{RUN_TEXT} ({count})"
         self.setup_section.set_run_state(enabled, note, curves_only=curves_only, label=label)
         self.processing_panel.set_run_state(enabled, label, note)
+        tip = RUN_TIP if enabled else (note or RUN_TIP)
+        self.attention_list.set_run_state(enabled, label, tip)
+        self.readiness_line.set_run_state(enabled, count, tip)
         self._run_action.setEnabled(enabled)
         # a greyed menu entry says why in its own text
         self._run_action.setText(label if enabled or not note else f"{label} — {note.rstrip('.')}")

@@ -215,6 +215,7 @@ class ReadinessLine(QWidget):
         self._blockers = ""                       # "9 need resolution curves · ..." (the blocked counts)
         self._blocked_keys: tuple[str, ...] = ()  # the classify() keys behind them, in the same order
         self._checking = False                    # the first read has not answered yet
+        self._run: tuple[bool, int | None, str] = (True, None, "")   # the window's run state: on, count, why off
         self._label = _Wrapped(self)
         self._label.setObjectName("readiness_text")
         self._label.setTextFormat(Qt.TextFormat.RichText)
@@ -348,9 +349,26 @@ class ReadinessLine(QWidget):
         title = f"{len(rows)} {_phrase(key, len(rows))}"
         shown = [(f"{self._label_of(r.scan)} / {r.analyzer}", plain_hold(r.reason) or "ready") for r in rows]
         self._popup.fill(title, shown, self._buttons(rows, att), [r.reason or "ready" for r in rows])
+        self._apply_run()
         self._popup.show()
         if raise_:
             self._popup.raise_()
+
+    def set_run_state(self, enabled: bool, count: int | None, reason: str) -> None:
+        """*Add to the fast queue* follows the window's entry point: the count it would add, on or off, and why."""
+        state = (bool(enabled), count, reason)
+        if state != self._run:
+            self._run = state
+            self._apply_run()
+
+    def _apply_run(self) -> None:
+        button = self._popup.findChild(QPushButton, "readiness_start_analysis")
+        if button is None:
+            return
+        enabled, count, reason = self._run
+        button.setText(_BUTTONS["start_analysis"] + ("" if count is None else f" ({count})"))
+        button.setEnabled(enabled)
+        button.setToolTip(_BUTTON_TIPS["start_analysis"] if enabled else (reason or _BUTTON_TIPS["start_analysis"]))
 
     def _buttons(self, rows: list[Row], att) -> list[tuple[str, str, object]]:
         actions = []

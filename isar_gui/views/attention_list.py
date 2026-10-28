@@ -279,10 +279,7 @@ class _Group(QWidget):
         self.title.setToolTip(spec.title_tip or spec.title)
         self.quiet.setText(spec.quiet)
         self.quiet.setVisible(bool(spec.quiet))
-        if spec.fix is not None:
-            text, tip, _signal = _FIX_BUTTONS[spec.fix]
-            self.fix.set_full_text(text)
-            self.fix.setToolTip(tip)
+        self.apply_fix()
         self.fix.setVisible(spec.fix is not None)
         self.mark.setText(spec.mark)
         self.mark.setToolTip(spec.mark_tip)
@@ -300,6 +297,17 @@ class _Group(QWidget):
             self._fill(open_scans)
         elif self.foot is not None:
             self.foot.hide()
+
+    def apply_fix(self) -> None:
+        """The remedy button's words; *Fast-pass all ready* follows the window's run state (count, on or off, why)."""
+        if self.spec.fix is None:
+            return
+        text, tip, _signal = _FIX_BUTTONS[self.spec.fix]
+        if self.spec.fix == "start_analysis":
+            enabled, text, tip = self._owner.run_state
+            self.fix.setEnabled(enabled)
+        self.fix.set_full_text(text)
+        self.fix.setToolTip(tip)
 
     def _check(self, text: str, tip: str = "", *, tristate: bool = False) -> QCheckBox:
         box = QCheckBox(self)
@@ -421,6 +429,7 @@ class AttentionList(QWidget):
         self._open_scans: dict[str, set[str]] = {}  # group key -> scan keys opened
         self._ticks: dict[str, set[str]] = {}
         self._pending_reveal: str | None = None
+        self.run_state = (True, RUN_TEXT, RUN_TIP)  # (enabled, label, hover) of "Fast-pass all ready"; the window sets it
 
         self._header = QToolButton(self)
         self._header.setObjectName("attention_header")
@@ -453,6 +462,15 @@ class AttentionList(QWidget):
         intake.changed.connect(self._on_changed)
         intake.worker_changed.connect(self._on_worker)
         self._rebuild()
+
+    def set_run_state(self, enabled: bool, label: str, tip: str) -> None:
+        """*Fast-pass all ready* as the window's entry point has it: ``label`` carries the count, ``tip`` says why
+        it is greyed."""
+        state = (bool(enabled), label, tip)
+        if state != self.run_state:
+            self.run_state = state
+            for group in self._groups.values():
+                group.apply_fix()
 
     # ---- expansion ---------------------------------------------------------------------------
     def is_expanded(self) -> bool:

@@ -15,8 +15,11 @@ import pytest
 pytest.importorskip("PySide6")
 
 from isar_gui import queue_controller as qc
+from PySide6.QtWidgets import QPushButton
+
 from isar_gui.main_window import MainWindow
 from isar_gui.session import Session
+from isar_gui.views import attention_list as al
 
 FAKE = Path(__file__).with_name("fake_analysis_service.py")
 WAIT_MS = 15000
@@ -89,6 +92,18 @@ def test_start_analysis_queues_the_ready_analyzers_once(qtbot, bl43_ws, monkeypa
         w._queue.bind(None, auto_fast=True)     # forgotten: closing the window then asks nothing
 
 
+def _the_other_two_buttons(w):
+    """The attention list's remedy button and the readiness popup's button, built the way their widgets build them."""
+    spec = al._Spec(key="ready", title="t", quiet="", mode="plain", foot=None, fix="start_analysis")
+    group = al._Group(w.attention_list, spec)
+    w.attention_list._groups["ready"] = group
+    group.refresh(spec, open_=False, open_scans=frozenset())
+    popup = w.readiness_line._popup
+    popup.fill("ready", [("97 K / a06", "ready")], [("readiness_start_analysis", "Add to the fast queue", lambda: None)])
+    w.readiness_line._apply_run()
+    return group.fix, popup.findChild(QPushButton, "readiness_start_analysis")
+
+
 def test_the_run_button_is_off_with_its_reason_in_text_until_something_can_run(qtbot, bl43_ws, monkeypatch):
     w = _win(qtbot)                                          # no experiment
     run, note = w.setup_section._run, w.setup_section._run_note
@@ -98,6 +113,10 @@ def test_the_run_button_is_off_with_its_reason_in_text_until_something_can_run(q
     _has_a_count(qtbot, w)
     run, note = w.setup_section._run, w.setup_section._run_note
     assert run.isEnabled() and run.toolTip()
+    attention, popup = _the_other_two_buttons(w)             # all five controls follow one state
+    count = w._queue.fast_all()[0]
+    for button in (w.processing_panel._run, attention, popup):
+        assert button.isEnabled() and f"({count})" in (button.full_text() if hasattr(button, "full_text") else button.text())
     w._operations.is_busy = lambda: True                     # an ingest or export holds the writer gate: adding needs none
     w._sync_run_actions()
     assert run.isEnabled() and w._run_action.isEnabled()
@@ -106,6 +125,9 @@ def test_the_run_button_is_off_with_its_reason_in_text_until_something_can_run(q
     done = "Every ready analyzer already has a current fast pass or is queued."
     assert not run.isEnabled() and note.full_text() == done
     assert run.toolTip() == note.full_text()                 # the same words on hover
+    for button in (attention, popup):                        # the other two: off, with the same count and the same why
+        assert not button.isEnabled() and button.toolTip() == done
+        assert "(0)" in (button.full_text() if hasattr(button, "full_text") else button.text())
     assert w._run_action.text() == f"Fast-pass all ready (0) — {done.rstrip('.')}"
     # visible beside the button, unless the amber curves line (which then says what is wrong) already shows
     assert note.isVisible() or w.setup_section._problem.isVisible()
