@@ -648,6 +648,15 @@ unresolved. Wall time per spectrum has a median of 84 s and a maximum of 215 s a
 processes sharing the machine), still above it. The table is reported, not a gate, and is not rerun to chase
 the aim.
 
+**Boundary-repair baseline (2026-10-28, synthetic).** After the support-stencil and same-tail
+mass repairs, the same acceptance table reports 9/10 draws passing, 0/12 rows unresolved and
+both narrow cases passing with the production twin rule. One of 84 admitted count instances
+has no finite priced basin (one row, count zero). With the twin rule disabled, 0/10 draws pass,
+12/12 rows are unresolved and 27/84 count instances are wholly unpriced. This is the baseline
+before the proposed completeness-rule change, not a measurement of that change. The harness
+now prints this coverage and saves the combined rows. Full output and command metadata are in
+`out/fitting_audit/acceptance-before.log` and `acceptance-before.run.json` (local, gitignored).
+
 ### 2.3 The peak-count benchmark **[Built; figures reached, 2026-10-26]**
 
 `isar/synth/count_bench.py` tests the fast pass on truths the fitter never sees. Its method is

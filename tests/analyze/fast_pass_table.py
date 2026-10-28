@@ -71,6 +71,14 @@ def narrow_height(gamma):
     return 0.5 * (lo + hi)
 
 
+def unpriced_counts(models):
+    """Admitted counts with no finite priced basin, independent of the contention policy."""
+    counts = {m.n_peaks for m in models}
+    priced = {m.n_peaks for m in models if m.evidence_status in ("ok", "ok_boundary")
+              and m.ln_z is not None and math.isfinite(m.ln_z)}
+    return sorted(counts - priced)
+
+
 def run_one(seed, narrow_gamma, twin_rule, out_json):
     """One row: the fast pass at production defaults on one draw; the row is written as JSON."""
     from isar.analyze import fast_pass
@@ -103,6 +111,8 @@ def run_one(seed, narrow_gamma, twin_rule, out_json):
         "boundary_methods": sorted({m.boundary_method or "none" for m in priced}),
         "selected_boundary": result.selected.boundary_method if result.selected else None,
         "ln_z_best": {str(k): v for k, v in sorted(best.items())},
+        "counts_considered": sorted({m.n_peaks for m in result.models}),
+        "unpriced_counts": unpriced_counts(result.models),
         "n_fits": result.n_fits, "timing": {k: v for k, v in result.timing.items() if k != "families"},
         "wall": wall,
     }
@@ -190,6 +200,9 @@ def format_table(rows, title):
             "/".join(r["boundary_methods"]) or "-", r["wall"], "pass" if ok else "FAIL: " + why))
         if r["tentative"]:
             lines.append("{:>7}   tentative: {}".format("", " ".join("{:.2f}/{:.2f}/{:.0f}".format(*p) for p in r["tentative"])))
+        if "unpriced_counts" in r:
+            lines.append("{:>7}   wholly unpriced counts: {}".format(
+                "", ", ".join(map(str, r["unpriced_counts"])) or "none"))
     return "\n".join(lines)
 
 
@@ -200,6 +213,22 @@ def summary(rows):
     walls = [r["wall"] for r in rows]
     return (sum(judge(r)[0] for r in draws), sum(r["state"] == "unresolved" for r in rows),
             sum(judge(r)[0] for r in narrow), statistics.median(walls), max(walls))
+
+
+def coverage_summary(rows):
+    """Count-instance frequency; failed/killed rows carry no evidence-coverage observation."""
+    measured = [r for r in rows if "unpriced_counts" in r]
+    by_count = {}
+    for row in measured:
+        for k in row["unpriced_counts"]:
+            by_count[k] = by_count.get(k, 0) + 1
+    return {
+        "rows_measured": len(measured),
+        "rows_with_unpriced_count": sum(bool(r["unpriced_counts"]) for r in measured),
+        "unpriced_count_instances": sum(by_count.values()),
+        "count_instances": sum(len(r["counts_considered"]) for r in measured),
+        "unpriced_by_count": dict(sorted(by_count.items())),
+    }
 
 
 if __name__ == "__main__":
