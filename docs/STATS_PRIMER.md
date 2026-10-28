@@ -418,9 +418,10 @@ minus (ln L + ln prior) in the fit coordinates by central differences of the sca
 it did not spread beyond the prior's support, so the integral is taken over the support box. With
 C = H^-1 and g the one-sided inward gradient on the coordinates railed at a bound, the quadratic's
 centre is mu = theta - C g, and `ln Z = -f(theta) + (1/2) g'Cg + (d/2) ln 2 pi - (1/2) ln det H +
-ln P_box`, P_box the mass of N(mu, C) inside the box. It is computed over the coordinates whose
-bound lies within 6 sd of mu (the rest contribute 1): one coordinate in closed form (`log_ndtr`),
-several by Genz's multivariate normal CDF (relative error about 1e-4, accepted). One railed
+ln P_box`, P_box the mass of N(mu, C) inside the box. A limit beyond 6 sd may be omitted
+only when the interval crosses the Gaussian centre; both finite limits of a same-tail interval
+are retained. One coordinate uses a stable log-CDF difference (mirrored in the upper tail);
+several use Genz's multivariate normal CDF (relative error about 1e-4, accepted). One railed
 coordinate reproduces the single-boundary correction `(g s)^2/2 + ln Phi(-g s)` exactly, so the
 older treatment is a special case. A wide coordinate that is not railed is still cut by the box:
 f = x^2/5000 on `[-10, 10]` has an unboxed Laplace value of 125.3 against an exact 19.87, and the

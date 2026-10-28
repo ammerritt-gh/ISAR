@@ -399,19 +399,23 @@ def _ln_interval_mass(a, b):
         return float(log_ndtr(b))
     if np.isposinf(b):
         return float(log_ndtr(-a))
+    # In the upper tail both CDFs round to one. Mirror before subtracting, and use
+    # expm1 to retain the difference for a narrow interval in either tail.
+    if a >= 0.0:
+        a, b = -b, -a
     lb = float(log_ndtr(b))
-    return lb + math.log1p(-math.exp(float(log_ndtr(a)) - lb))
+    return lb + math.log(-math.expm1(float(log_ndtr(a)) - lb))
 
 
 def _ln_box_mass(mu, cov, lo, hi, sd):
-    """ln of the mass of N(mu, cov) inside [lo, hi], over the coordinates whose bound lies within
-    6 sd of mu (the rest contribute 1)."""
-    # shortcut: 6-sd cut leaves under 1e-9 of mass, far below Genz's own ~1e-4 relative error,
-    # which is accepted; upgrade only if a model's evidence ever contends at that precision.
+    """ln of the mass of N(mu, cov) inside [lo, hi], keeping both limits of same-tail intervals.
+    Limits beyond 6 sd may be omitted only when the interval crosses mu."""
+    # The 6-sd cut drops under 1e-9 of absolute mass. It must not enlarge a same-tail
+    # interval: there the omitted tail can be most of the interval's mass.
     a = (lo - mu) / sd
     b = (hi - mu) / sd
-    a = np.where(a > -6.0, a, -np.inf)
-    b = np.where(b < 6.0, b, np.inf)
+    a = np.where((a <= -6.0) & (b > 0.0), -np.inf, a)
+    b = np.where((b >= 6.0) & (a < 0.0), np.inf, b)
     near = np.flatnonzero(np.isfinite(a) | np.isfinite(b))
     if near.size == 0:
         return 0.0
