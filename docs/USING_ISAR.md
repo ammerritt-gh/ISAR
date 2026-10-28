@@ -308,8 +308,9 @@ With no experiment open, the window says *No experiment open*, with *New experim
 desktop: the experiment's setup, what needs attention and the scan list down the left, the display in the centre, *Processing* and *Campaign* on the
 right, and the Log and Output along the bottom. On a laptop the right panel starts collapsed to a
 *Processing ‹* rail. The centre has four pages: *Scan(s)*, *Plane (q, E)*, *Dispersion ω(q)* and
-*Sandbox*. Selecting a spectrum takes you to *Scan(s)*; selecting campaign results can take you to
-*Plane*. *View ▸ Reset layout* returns to the default for the current screen.
+*Sandbox*. With the *Auto* switch on (the default), selecting a spectrum or recalling a group switches to *Scan(s)*;
+starting a campaign switches to *Plane*. Manually choosing a centre page turns *Auto* off, so later
+selection changes leave that page in place. *View ▸ Reset layout* returns to the default for the current screen.
 
 ### Dropping data
 
@@ -449,9 +450,11 @@ work. Double-click an analyzer, or press *Inspect*, to open the scan inspector.
 
 ### The Scan(s) display
 
-Selecting one or more spectra opens the Scan(s) page. It draws at most ten selected spectra; with more than
-ten it shows a read-only list grouped by scan set and reads no spectra. Change the selection in the scan list
-or recall a saved group. Up to ten selected spectra are drawn in selection/list order.
+On Scan(s), ISAR draws at most ten selected spectra; with more than ten it shows a read-only list
+grouped by scan set and reads no spectra. Change the set in the scan list or recall a saved group. Up to
+ten spectra are drawn in selection/list order. With the *Auto* switch on (the default), list selection and group
+recall switch to Scan(s). Manually choosing another centre page turns *Auto* off, so later selection
+changes leave that page open.
 
 *Fit* is *None* by default. Choose *Fast* or *Deep* to show that stored pass; no fit runs from this page.
 Fast total/component curves are solid, Deep curves dashed, and background curves dotted. The active
@@ -556,7 +559,9 @@ running analyzer shows the stage or step it is on and how long that step has run
 has completed, so there is no percentage. A step that runs far longer than the earlier ones may mean a stuck fit;
 *■ Stop* ends it. *Finished* lists what has finished since you opened the experiment: one line per scan set and
 pass with its counts, then each analyzer that needs a look (held, failed, or done with a warning, each with its
-reason), then each finished deep pass with *Show*. *Clear list* tidies that list only. The strip beside *Processing*
+reason), then each finished deep pass with *Show*, which replaces the shared selection with that analyzer. With
+*Auto* on, it switches to Scan(s); with *Auto* off, the centre page stays put. *Clear list* tidies
+that list only. The strip beside *Processing*
 says what is running and what needs a look when the panel is collapsed.
 
 - **Held** means ISAR will not fit the file without something it needs: a missing energy zero, a missing resolution
