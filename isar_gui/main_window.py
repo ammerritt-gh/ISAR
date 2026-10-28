@@ -1712,6 +1712,8 @@ class MainWindow(QMainWindow):
     def start_analysis(self) -> None:
         """The one window-level entry point for analysis: add a fast pass for every ready analyzer file that has no
         current one (the queue's duplicate rules apply). Every start button, menu entry and remedy goes through here."""
+        if not self._resolve_dirty_card("start analysis"):    # queued items fit the saved card, not the draft
+            return
         self._queue.fast_pass_all_ready()
 
     # ---- Config menu: machine-level settings (TAVI's form) --------------------

@@ -173,3 +173,15 @@ def test_the_run_menu_has_the_entry_point_and_cancel_and_nothing_else(qtbot):
     assert texts[0].startswith("Fast-pass all ready") and texts[1:] == ["Cancel active operation"]
     assert all(a.toolTip() for a in run_menu.actions())
     assert mw_mod._CORES_TIP
+
+
+# ---- an unsaved Card draft is resolved before work is queued (hard rule 7) -----------------------
+@pytest.mark.parametrize("answer, queued", [(False, 0), (True, 1)])
+def test_start_analysis_asks_about_an_unsaved_card_draft_first_and_cancel_queues_nothing(
+        qtbot, monkeypatch, bl43_ws, answer, queued):
+    w = _win(qtbot, bl43_ws)
+    asked, added = [], []
+    monkeypatch.setattr(w.card_dock, "resolve_dirty", lambda action: asked.append(action) or answer)
+    monkeypatch.setattr(w._queue, "fast_pass_all_ready", lambda: added.append(1))
+    w.start_analysis()
+    assert asked == ["start analysis"] and len(added) == queued
