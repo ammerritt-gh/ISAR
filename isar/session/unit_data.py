@@ -108,6 +108,9 @@ def write_unit_data(rec, det, data_dir) -> Path:
         if monitor_array is not None and monitor_array.shape == counts.shape:
             monitor_values = [float(v) if math.isfinite(float(v)) else None
                               for v in monitor_array]
+        elif monitor_array is not None:
+            log.warning("unit data: monitor length mismatch for %s:%s:%s; omitted",
+                        rec.experiment_id, rec.scan_number, det)
     from isar.analyze.context import select_exposure
     selected = select_exposure(normalization, np.asarray(x).shape, sp.mask)
     exposure = {
@@ -144,6 +147,7 @@ def write_unit_data(rec, det, data_dir) -> Path:
     try:
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", dir=path.parent,
+            newline="",
             prefix=f".{path.name}.", suffix=".tmp", delete=False,
         ) as handle:
             tmp_name = handle.name
@@ -221,7 +225,8 @@ def read_unit_data(path, *, expected_identity: tuple | None = None) -> dict | No
     """
     p = Path(path)
     try:
-        d = json.loads(p.read_text(encoding="utf-8"))
+        with p.open("r", encoding="utf-8", newline="") as source:
+            d = json.load(source)
     except (OSError, ValueError):
         return None
     return d if _valid_payload(d, expected_identity) else None

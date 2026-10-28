@@ -8,7 +8,9 @@ and repeatable (the parsing/caching lives in :mod:`isar.workspace_api.workspace`
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -137,6 +139,19 @@ class FitView:
     @property
     def status(self) -> str | None:
         return self._row.get("status") or None
+
+    @property
+    def energy_zero(self) -> float | None:
+        """The recorded zero used by the resolution context, when finite."""
+        value = _f(self._row.get("zero"))
+        if value is None:
+            value = _f((self.calib or {}).get("center"))
+        return value if value is not None and math.isfinite(value) else None
+
+    def stored_revision(self) -> str:
+        """Stable identity of the exact persisted row and outcome this view wraps."""
+        payload = json.dumps([self._row, self._outcome], sort_keys=True, default=repr)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     @property
     def content_hash(self) -> str | None:
@@ -559,9 +574,7 @@ class FitView:
         ``FitOutcome.calib``. ``None`` when neither is available.
         """
         calib = self.calib or {}
-        center = _f(self._row.get("zero"))
-        if center is None:
-            center = _f(calib.get("center"))
+        center = self.energy_zero
         gauss = _f(self._row.get("gauss_fwhm"))
         if gauss is None:
             gauss = _f(calib.get("gauss_fwhm"))

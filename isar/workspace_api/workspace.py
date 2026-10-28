@@ -820,19 +820,13 @@ class Workspace:
         return energy, counts, yerr
 
     def unit_data(self, scan_id, detector_id=None):
-        """The measured spectrum for one atomic *scan × detector* unit, or ``None``.
+        """The measured spectrum and fit exposure for one atomic scan x detector, or None.
 
-        Reads the per-unit ingest file (``data/ingest/ingest-*.json``, ``isar.unit_data/1``) written
-        at ingest, returning ``SimpleNamespace(x, counts, yerr, mask, axis)`` — ``x`` the RAW scanned
-        abscissa (never energy-zero-shifted; the ``axis`` block carries the 3-state calibration so a
-        caller labels honestly), ``yerr`` the Poisson ``sqrt(clip(variance, 0, None))`` whisker (σ=0
-        stays 0, D3). ``scan_id`` may be a full ``exp:scan:det`` ledger id (``detector_id`` then
-        redundant) or an ``exp:scan``/bare scan with ``detector_id`` supplied.
-
-        Falls back to the drive loop's legacy single-detector ``data/j-*.json`` (axis defaults to
-        absolute — correct for TAVI) when no per-unit file exists. ``None`` when neither is present.
-        Read-only; never raises.
+        Per-unit files carry raw x, counts, variance, mask, axis, and optional monitor/exposure
+        arrays. The legacy drive-file fallback is absolute energy with Poisson variance and no
+        per-point exposure. Read-only; never raises.
         """
+        import math
         import numpy as np
         from types import SimpleNamespace
 
@@ -840,38 +834,98 @@ class Workspace:
 
         exp, scan_number, det = self._split_unit_id(scan_id, detector_id)
         if exp is not None and scan_number is not None and det is not None:
-            # This validates schema, aligned arrays, and payload identity.  A corrupt or legacy
-            # collision file is therefore treated as missing rather than plotted as a plausible
-            # neighbour; the helper still reads a valid legacy filename for migration continuity.
             rec = read_unit_data_for_unit(self._data_dir, exp, scan_number, det)
             if rec is not None:
                 counts = np.asarray(rec.get("counts") or [], dtype=float)
-                var = np.asarray(rec.get("variance") or [], dtype=float)
-                yerr = np.sqrt(np.clip(var, 0.0, None)) if var.size else np.zeros(counts.shape)
+                variance = np.asarray(rec.get("variance") or [], dtype=float)
+                if not variance.size:
+                    variance = np.zeros(counts.shape, dtype=float)
+                yerr = np.sqrt(np.clip(variance, 0.0, None))
                 mask = rec.get("mask")
                 mask = (np.asarray(mask, dtype=bool) if mask is not None
                         else np.ones(counts.shape, dtype=bool))
+
+                def optional_vector(value, name, *, null_is_nan=False, nonnegative=False):
+                    if value is None:
+                        return None
+                    if not isinstance(value, list) or len(value) != counts.size:
+                        self.warnings.append(
+                            f"unit_data {scan_id!r}: malformed {name} length; ignored")
+                        return None
+                    if any(isinstance(item, bool) for item in value if item is not None):
+                        self.warnings.append(
+                            f"unit_data {scan_id!r}: malformed {name} values; ignored")
+                        return None
+                    try:
+                        vector = np.asarray(
+                            [np.nan if item is None and null_is_nan else item for item in value],
+                            dtype=float)
+                    except (TypeError, ValueError, OverflowError) as exc:
+                        self.warnings.append(
+                            f"unit_data {scan_id!r}: malformed {name} values "
+                            f"({type(exc).__name__}: {exc}); ignored")
+                        return None
+                    if vector.shape != counts.shape or (nonnegative and (
+                            not np.all(np.isfinite(vector)) or np.any(vector < 0))):
+                        self.warnings.append(
+                            f"unit_data {scan_id!r}: malformed {name} values; ignored")
+                        return None
+                    return vector
+
+                monitor = None
+                if "monitor" in rec and rec["monitor"] is not None:
+                    monitor = optional_vector(rec["monitor"], "monitor", null_is_nan=True)
+
+                exposure_stored = "exposure" in rec
+                exposure = None
+                if exposure_stored:
+                    raw = rec.get("exposure")
+                    valid = isinstance(raw, dict)
+                    source = raw.get("source") if valid else None
+                    reference = raw.get("reference") if valid else None
+                    scale = raw.get("scale") if valid else None
+                    if valid and source not in (None, "monitor", "time"):
+                        valid = False
+                    if valid and source is None:
+                        valid = reference is None and scale is None
+                        ref_value = None
+                        scale_value = None
+                    elif valid:
+                        try:
+                            ref_value = float(reference)
+                            valid = math.isfinite(ref_value) and ref_value > 0
+                        except (TypeError, ValueError, OverflowError):
+                            valid = False
+                            ref_value = None
+                        scale_value = optional_vector(
+                            scale, "exposure scale", nonnegative=True) if valid else None
+                        valid = valid and scale_value is not None
+                    if valid:
+                        exposure = SimpleNamespace(
+                            source=source, reference=ref_value, scale=scale_value)
+                    else:
+                        self.warnings.append(
+                            f"unit_data {scan_id!r}: malformed exposure; ignored")
                 return SimpleNamespace(
                     x=np.asarray(rec.get("x") or [], dtype=float), counts=counts,
-                    yerr=yerr, mask=mask, axis=dict(rec.get("axis") or {}))
-            # A present but invalid/mismatched atomic artifact needs repair.  Do not conceal it by
-            # falling through to the scan-level drive file: that file has no detector identity and
-            # can silently display a neighbouring analyzer's counts.
+                    variance=variance, yerr=yerr, mask=mask, axis=dict(rec.get("axis") or {}),
+                    monitor=monitor, exposure=exposure, exposure_stored=exposure_stored)
             if unit_data_artifact_exists(self._data_dir, exp, scan_number, det):
                 return None
 
-        # Fallback: legacy single-detector drive file; axis defaults absolute (TAVI is calibrated).
         from .evaluate import _load_scan_arrays
         energy, counts = _load_scan_arrays(self._data_dir, scan_number)
         if energy is None or counts is None:
             return None
         counts = np.asarray(counts, dtype=float)
+        variance = counts.copy()
         return SimpleNamespace(
             x=np.asarray(energy, dtype=float), counts=counts,
-            yerr=np.sqrt(np.clip(counts, 0.0, None)),
+            variance=variance, yerr=np.sqrt(np.clip(variance, 0.0, None)),
             mask=np.ones(counts.shape, dtype=bool),
             axis={"name": "energy", "kind": "energy", "units": "meV",
-                  "raw_abscissa_kind": "energy", "calibration_status": "absolute"})
+                  "raw_abscissa_kind": "energy", "calibration_status": "absolute"},
+            monitor=None, exposure=None, exposure_stored=False)
 
     def _split_unit_id(self, scan_id, detector_id=None):
         """``(experiment_id, scan_number, detector_id)`` from a unit id in any accepted form.

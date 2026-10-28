@@ -526,10 +526,12 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
         try:
             if det_state in ("added", "updated"):
                 unit_data.write_unit_data(rec, det, data_dir)
-            else:  # unchanged: repair absent/torn/mismatched/legacy-only canonical data
-                if not unit_data.canonical_unit_data_is_valid(
-                    data_dir, rec.experiment_id, rec.scan_number, det,
-                ):
+            else:  # unchanged: repair invalid, legacy-only or pre-exposure unit data
+                canonical = unit_data.read_unit_data(
+                    unit_data.unit_data_path(data_dir, rec.experiment_id, rec.scan_number, det),
+                    expected_identity=(str(rec.experiment_id), int(rec.scan_number), str(det)),
+                )
+                if canonical is None or "exposure" not in canonical:
                     unit_data.write_unit_data(rec, det, data_dir)
         except Exception as exc:  # noqa: BLE001 — one bad unit must never abort the batch
             log.warning("ingest: failed to write unit data for %s:%s:%s (%s); continuing",

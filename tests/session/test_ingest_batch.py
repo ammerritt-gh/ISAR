@@ -329,6 +329,33 @@ def test_unchanged_reingest_repairs_corrupt_and_legacy_only_unit_files(tmp_path)
     assert canonical.exists() and legacy.exists()       # old scientific artifacts are never deleted
 
 
+def test_unchanged_reingest_backfills_fit_exposure_selection(tmp_path):
+    """Pre-U2 canonical files gain their monitor exposure without changing the ledger."""
+    import json
+
+    from isar.session import unit_data
+
+    p = tmp_path / "run.spec_supplementary.dat"
+    card = _emit_s30(p, n_scans=1)
+    data_dir = tmp_path / "ws" / "data"
+    session = SessionState()
+    ingest.ingest_batch(card, session, [p], data_dir=data_dir)
+    entry = next(iter(session.scans.values()))
+    exp, scan, det = entry.scan_id.rsplit(":", 2)
+    canonical = unit_data.unit_data_path(data_dir, exp, int(scan), det)
+    old = unit_data.read_unit_data(canonical, expected_identity=(exp, int(scan), det))
+    assert old is not None and "exposure" in old
+    old.pop("exposure")
+    with canonical.open("w", encoding="utf-8", newline="") as target:
+        json.dump(old, target, separators=(",", ":"))
+
+    report = ingest.ingest_batch(card, session, [p], data_dir=data_dir)
+
+    rewritten = unit_data.read_unit_data(canonical, expected_identity=(exp, int(scan), det))
+    assert report.dirty is False and report.unchanged
+    assert rewritten is not None and "monitor" in rewritten and "exposure" in rewritten
+
+
 def test_no_data_dir_writes_no_unit_files_and_still_stamps_provenance(tmp_path):
     """``data_dir`` is optional: omitting it writes no unit files but still enriches provenance."""
     p = tmp_path / "run.spec_supplementary.dat"

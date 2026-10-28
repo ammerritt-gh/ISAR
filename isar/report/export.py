@@ -108,8 +108,8 @@ Spectrum files
 --------------
 Lines starting with # are header lines; skip them when reading (for example pandas comment="#").
 They name the spectrum, its fast-pass state and deep-pass state, its exposure, its energy zero and
-the data revisions. The exposure is the one value the stored fit used for the whole spectrum: ISAR
-keeps no per-point exposure, so there is no exposure column. "exposure: not stored" gives the reason.
+the data revisions. The exposure is the one value the stored fit used for the whole spectrum; the
+spectrum files carry no per-point exposure column. "exposure: not stored" gives the reason.
 Columns:
 - x_raw       the stored raw abscissa (for a pooled master, its pooled grid)
 - energy_meV  x_raw minus the fit's energy zero; x_raw itself when the axis is already absolute;

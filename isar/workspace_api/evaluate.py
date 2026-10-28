@@ -169,6 +169,71 @@ def _compose_manifest(manifest: dict, quasielastic_fwhm):
         raise UnsupportedFitView(str(exc)) from exc
 
 
+def evaluate_manifest(manifest, resolution, x, quasielastic_fwhm=None):
+    """Evaluate a stored rate manifest at x, returning total and prefix components."""
+    if not isinstance(resolution, Mapping):
+        raise UnsupportedFitView("resolution context is unavailable")
+    effective_qe = (quasielastic_fwhm if quasielastic_fwhm is not None
+                    else resolution.get("quasielastic_fwhm"))
+    composite, theta = _compose_manifest(manifest, effective_qe)
+    context_values = {key: value for key, value in resolution.items()
+                      if key != "quasielastic_fwhm"}
+    ctx = SimpleNamespace(quasielastic_fwhm=effective_qe, **context_values)
+    x = np.asarray(x, dtype=float)
+    return composite.evaluate(x, theta, ctx), composite.evaluate_components(x, theta, ctx)
+
+
+def deep_manifest(fit):
+    """Return the deep pass chosen manifest; refuse legacy peak guesses."""
+    deep = fit.deep_pass or {}
+    chosen = deep.get("chosen")
+    if not isinstance(chosen, Mapping):
+        raise UnsupportedFitView("the deep pass has no chosen model")
+    params = chosen.get("params")
+    if not isinstance(params, Mapping):
+        raise UnsupportedFitView("the deep pass stored no chosen parameters")
+
+    stored = chosen.get("model_manifest")
+    if stored is not None:
+        if not isinstance(stored, Mapping):
+            raise UnsupportedFitView("the chosen deep model manifest is not an object")
+        manifest_params = stored.get("parameters")
+        if not isinstance(manifest_params, Mapping) or set(manifest_params) != set(params):
+            raise UnsupportedFitView("the chosen deep model manifest disagrees with its parameters")
+        same = all(_finite_float(manifest_params[name], name) == _finite_float(value, name)
+                   for name, value in params.items())
+        if not same:
+            raise UnsupportedFitView("the chosen deep model manifest disagrees with its parameters")
+        return dict(stored)
+
+    prefixes = {str(name).split(".", 1)[0] for name in params}
+    phonons = sorted((prefix for prefix in prefixes if re.fullmatch(r"phonon\d*", prefix)),
+                     key=lambda prefix: (prefix != "phonon", int(prefix[6:] or 1)))
+    if phonons:
+        raise UnsupportedFitView("the chosen deep model did not store its peak choice")
+    unknown = prefixes - {"elastic", "qe", "bg"}
+    if unknown or not prefixes:
+        raise UnsupportedFitView(f"unknown deep component prefixes {sorted(unknown)}")
+
+    label = chosen.get("label")
+    models = (fit.fast_pass or {}).get("models") or ()
+    entry = next((model for model in models
+                  if isinstance(model, Mapping) and model.get("label") == label), None)
+    if entry is None:
+        raise UnsupportedFitView("the chosen label is not among the stored fast-pass models")
+    if (entry.get("n_peaks") != 0
+            or bool(entry.get("elastic")) != ("elastic" in prefixes)
+            or bool(entry.get("background")) != ("bg" in prefixes)):
+        raise UnsupportedFitView("the stored deep parameters disagree with the model structure")
+
+    components = [{"type": kind, "prefix": prefix} for prefix, kind in (
+        ("elastic", "elastic"), ("qe", "quasielastic"),
+        ("bg", "constant_background")) if prefix in prefixes]
+    from isar.analyze.model_manifest import MANIFEST_SCHEMA
+    return {"schema": MANIFEST_SCHEMA, "components": components,
+            "parameters": dict(params)}
+
+
 def evaluate_model(fit, data_dir, *, quasielastic_fwhm=None, x_eval=None):
     """Evaluate the delivered model curve for one :class:`~isar.workspace_api.views.FitView`.
 
@@ -186,17 +251,8 @@ def evaluate_model(fit, data_dir, *, quasielastic_fwhm=None, x_eval=None):
     # --- pure path ---------------------------------------------------------
     manifest = _component_manifest(fit, quasielastic_fwhm)
     if manifest is not None and res is not None and x is not None:
-        # An explicit override wins; otherwise fall back to a width the resolution context itself
-        # carries, so a stored quasielastic_fwhm is not lost (which would make _compose refuse a qe
-        # component present in the amplitudes).
-        effective_qe = quasielastic_fwhm if quasielastic_fwhm is not None \
-            else res.get("quasielastic_fwhm")
-        comp, theta = _compose_manifest(manifest, effective_qe)
-        res = {k: v for k, v in res.items() if k != "quasielastic_fwhm"}
-        ctx = SimpleNamespace(quasielastic_fwhm=effective_qe, **res)
-        total = comp.evaluate(x, theta, ctx)
-        return SimpleNamespace(x=x, total=total,
-                               components=comp.evaluate_components(x, theta, ctx), pure=True)
+        total, components = evaluate_manifest(manifest, res, x, quasielastic_fwhm)
+        return SimpleNamespace(x=x, total=total, components=components, pure=True)
 
     # --- fallback path -----------------------------------------------------
     if (energy is None or counts is None or energy.size == 0
