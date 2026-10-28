@@ -6,7 +6,12 @@ content at the hardest laptop combination.
 """
 from __future__ import annotations
 
+import itertools
+
 from PySide6.QtCore import QPoint, QRect
+from PySide6.QtWidgets import QApplication
+
+from isar_gui.views.elided_label import ElidedButton, ElidedLabel
 
 _DISPLAY_MIN = (300, 250)
 
@@ -43,3 +48,35 @@ def assert_frame_geometry(window, available: tuple[int, int]) -> None:
     assert output.left() >= log.right(), "the Output must sit right of the Log"
     assert window.width() <= available[0] and window.height() <= available[1], (
         f"the window {window.width()}x{window.height()} outgrew the screen {available}")
+
+
+def assert_apart(window, widgets, what: str) -> None:
+    """No two visible widgets share a pixel of the window (mapped rectangles)."""
+    rects = [(widget, rect_in(window, widget)) for widget in widgets if widget.isVisible()]
+    for (a, ra), (b, rb) in itertools.combinations(rects, 2):
+        assert not ra.intersects(rb), (
+            f"{what}: {a.objectName() or a} {ra} overlaps {b.objectName() or b} {rb}")
+
+
+def assert_reachable(window, control, scroll=None, *, enabled=True) -> None:
+    """A whole, enabled control inside the window, after scrolling its own content if needed."""
+    if scroll is not None:
+        QApplication.processEvents()
+        scroll.verticalScrollBar().setValue(
+            max(0, control.mapTo(scroll.widget(), QPoint(0, 0)).y() - 20))
+        QApplication.processEvents()
+    rect = rect_in(window, control)
+    name = control.objectName() or type(control).__name__
+    assert control.isVisible() and control.isEnabled() == enabled and rect.width() > 0, name
+    assert window.rect().contains(rect), (name, rect)
+    assert control.visibleRegion().boundingRect().size() == control.size(), (
+        name, "is clipped or covered", control.visibleRegion().boundingRect(), control.size())
+
+
+def assert_elided_have_tooltips(root) -> None:
+    """Visible shortened labels and buttons expose their complete text on hover."""
+    for control_type in (ElidedLabel, ElidedButton):
+        for control in root.findChildren(control_type):
+            if control.isVisible() and control.text() != control.full_text():
+                assert control.full_text() and control.full_text() in control.toolTip(), (
+                    control.objectName() or type(control).__name__, control.full_text(), control.toolTip())

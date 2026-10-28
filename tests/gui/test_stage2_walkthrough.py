@@ -17,7 +17,6 @@ or a widget's text compared with it, never a hand-computed count.
 from __future__ import annotations
 
 import hashlib
-import itertools
 import json
 import shutil
 import time
@@ -32,7 +31,8 @@ from PySide6.QtWidgets import QApplication, QCheckBox, QFileDialog, QLabel, QPus
 
 import bl43_fixture
 import bl43_intake_fixture
-from gui.window_frame_checks import assert_frame_geometry, rect_in
+from gui.window_frame_checks import (assert_apart, assert_frame_geometry, assert_reachable,
+                                    rect_in)
 from isar.intake import store
 from isar.report.export import export_workspace
 from isar.workspace_api import Workspace, import_summary, needs_attention
@@ -399,29 +399,6 @@ def _hardest(qtbot, monkeypatch, root, *, processing_collapsed: bool) -> MainWin
     return w
 
 
-def _apart(w, widgets, what: str) -> None:
-    """No two of ``widgets`` share a pixel of the window (mapped rectangles)."""
-    rects = [(x, rect_in(w, x)) for x in widgets if x.isVisible()]
-    for (a, ra), (b, rb) in itertools.combinations(rects, 2):
-        assert not ra.intersects(rb), f"{what}: {a.objectName() or a} {ra} overlaps {b.objectName() or b} {rb}"
-
-
-def _reachable(w, control, scroll=None, *, enabled=True) -> None:
-    """``control`` is shown, enabled (or, for ``enabled=False``, shown and meant to be disabled) and wholly
-    inside the window, scrolling its own scroll area if need be; ``visibleRegion`` also drops what a
-    sibling or a clipping parent hides."""
-    if scroll is not None:      # settle pending layout before computing the control's content position
-        QApplication.processEvents()
-        scroll.verticalScrollBar().setValue(max(0, control.mapTo(scroll.widget(), QPoint(0, 0)).y() - 20))
-        QApplication.processEvents()
-    rect = rect_in(w, control)
-    name = control.objectName() or type(control).__name__
-    assert control.isVisible() and control.isEnabled() == enabled and rect.width() > 0, name
-    assert w.rect().contains(rect), (name, rect)
-    assert control.visibleRegion().boundingRect().size() == control.size(), (
-        name, "is clipped or covered", control.visibleRegion().boundingRect(), control.size())
-
-
 def _text_fits(label) -> None:
     """A wrapped label's rectangle is as tall as its text needs at its width (offscreen Qt has no real
     fonts, but the same font serves the hint and the layout, so a squeezed label still shows here)."""
@@ -436,23 +413,23 @@ def _assert_s2_controls_usable(w) -> None:
     setup = tuple(c for c in (section._summary, section._resolution, section._locate, section._problem)
                   if c.isVisible())         # the "not found" row folds into the sentence under it
     assert section._locate in setup and section._problem in setup
-    _apart(w, setup, "setup section")
+    assert_apart(w, setup, "setup section")
     for control in setup:
-        _reachable(w, control)
+        assert_reachable(w, control)
         _text_fits(control)
     # readiness line (in the Processing panel when that is open)
     if w.processing_panel.isVisible():
-        _reachable(w, w.readiness_line._label)
+        assert_reachable(w, w.readiness_line._label)
         _text_fits(w.readiness_line._label)
         assert w.readiness_line.geometry().bottom() < w.processing_panel._run.geometry().top()
     # attention list: header, the open group's entry and Save (scrolled into view inside the list)
-    _reachable(w, lst._header)
+    assert_reachable(w, lst._header)
     foot = _group(w, "temperature").foot
     assert foot.buttons["save"].isEnabled()                         # a value is typed on a ticked scan set
     parts = [foot.entry._fields[0], foot.entry._reason, foot.buttons["save"]]
     for control in parts:
-        _reachable(w, control, lst._scroll)
-    _apart(w, parts, "attention foot")
+        assert_reachable(w, control, lst._scroll)
+    assert_apart(w, parts, "attention foot")
     assert lst.width() <= w.left_column_dock.width() and lst._scroll.height() <= _BODY_MAX
     # inspector: the fact table's actions (scrolled into view inside the inspector), no cell on another
     table = inspector._fact_table
@@ -460,9 +437,10 @@ def _assert_s2_controls_usable(w) -> None:
     assert {b.objectName() for b in buttons} >= {"fact_action_set_temperature", "fact_action_set_slit",
                                                  "fact_action_mark_dead"}
     for button in buttons:      # no slit of yours: only that withdrawal is meant to be disabled
-        _reachable(w, button, inspector._scroll, enabled=button.objectName() != "fact_action_use_file_slit")
+        assert_reachable(w, button, inspector._scroll,
+                         enabled=button.objectName() != "fact_action_use_file_slit")
     leaves = [x for x in table.findChildren(QLabel) if x.isVisible()] + [b for b in buttons if b.isVisible()]
-    _apart(w, leaves, "fact table")
+    assert_apart(w, leaves, "fact table")
     for label in leaves:
         if isinstance(label, QLabel):
             _text_fits(label)
@@ -484,7 +462,7 @@ def test_each_attention_group_carries_its_remedy_button_inside_it_at_1108x851(qt
     for key, (text, signal) in expected.items():
         group = lst._groups[key]
         button = group.fix
-        _reachable(w, button, lst._scroll)                      # shown, enabled, whole inside the window, not clipped
+        assert_reachable(w, button, lst._scroll)                 # shown, enabled, whole inside the window
         assert button.full_text() == text and button.toolTip(), key
         assert group.rect().contains(button.geometry()), (key, group.rect(), button.geometry())   # inside its group
         assert group.isAncestorOf(button)
@@ -562,7 +540,7 @@ def test_run_analysis_is_a_visible_button_in_the_setup_area_at_every_size(
     section, button = w.setup_section, w.setup_section._run
     assert button.full_text().startswith("Fast-pass all ready (") and button.full_text().endswith(")")
     assert button.toolTip() and button.text().startswith("Fast-pass all ready")     # the words whole; the count may give way
-    _reachable(w, button)                                           # shown, enabled, whole, not covered
+    assert_reachable(w, button)                                    # shown, enabled, whole, not covered
     assert section.rect().contains(button.geometry()) and section.isAncestorOf(button)
     assert w.left_column_dock.isAncestorOf(button)
     assert rect_in(w, button).bottom() < rect_in(w, w.scan_list).top()          # at the top, above the scan list
