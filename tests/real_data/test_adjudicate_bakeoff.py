@@ -6,7 +6,7 @@ divergent sensor → hold), adjudicates them with each real model, and scores re
 destructive-error rate (the metric that decides "adequate"). It prints the table for the human and
 hard-asserts the load-bearing bar: a serviceable local 9B must destroy no genuine data.
 
-Without the opt-in, collection does not contact LLMM. Also skipped when LLMM is not up.
+Without the opt-in, collection does not contact LLMM. An opted-in run fails if LLMM is not up.
 Marked live and slow; deselect with -m "not live" or -m "not slow".
 """
 import logging
@@ -40,7 +40,7 @@ def _llmm_up() -> bool:
 pytestmark = [
     pytest.mark.slow,
     pytest.mark.live,
-    pytest.mark.skipif(os.environ.get("ISAR_LIVE_LLMM") != "1" or not _llmm_up(),
+    pytest.mark.skipif(os.environ.get("ISAR_LIVE_LLMM") != "1",
                        reason=f"set ISAR_LIVE_LLMM=1 and run LLMM at {ENDPOINT} to enable"),
 ]
 
@@ -63,6 +63,7 @@ def _scenario(tmp_path, name, seed):
 
 
 def test_local_vs_nanogpt_bakeoff(tmp_path):
+    assert _llmm_up(), f"LLMM not reachable at {ENDPOINT}; opted-in live check cannot run"
     results = {}
     for pin in (LOCAL, CLOUD):
         sub = tmp_path / pin.replace("/", "_")
