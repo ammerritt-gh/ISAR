@@ -769,6 +769,13 @@ the fast pass, the context is constrained (a campaign rescue), the prior recipe 
 model does not rebuild as the record fitted it, the deep pass is **refused** with that reason and writes no
 count decision.
 
+**Coverage qualification.** A completed deep schedule covers the models present in the fast
+record, not every mathematically possible delta/finite-width mask. The fast search still
+uses its local width shortcut and only sends considered masks. That shortcut is not a
+Bayes-factor bound: width-prior density and posterior volume also matter. Retaining failed
+variants repairs missing declared inputs without silently enumerating additional masks.
+Numerical reliability and family coverage remain distinct from scheduled completion.
+
 **Sampling starts from the prior.** The fast-pass result orders the work (which models run first) and feeds
 the suspect-run check below. It never seeds or restricts a run. Seeding the sampler from the fast-pass
 optimum is a later job (Planned, out of scope here).

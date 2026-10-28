@@ -199,7 +199,6 @@ standing check that we are building a usable instrument, not a self-certifying l
 | External design review of the centre Scan(s) plot design (2026-10-27) | [ChatGPT_Handoff_CentralPlot.md](ChatGPT_Handoff_CentralPlot.md) |
 | External design review of the BL43 data-intake GUI design (2026-10-27) | [ChatGPT_Handoff_DataIntakeGUI.md](ChatGPT_Handoff_DataIntakeGUI.md) |
 | External design review of the fitting design (fast and deep pass) (2026-10-27) | [ChatGPT_Handoff_Fitting.md](ChatGPT_Handoff_Fitting.md) |
-| Fitting quality and performance audit: deep-pass CPU use and measured easy wins (2026-10-28) | [research/FITTING_AUDIT_2026-10-28.md](research/FITTING_AUDIT_2026-10-28.md) |
 | Committed resolution curves (the one exception to hard rule 10) | [../resolution_curves/README.md](../resolution_curves/README.md) |
 | The 2026-07-06 IN8 calibration record | [../calibration/README.md](../calibration/README.md) — terminal; fate on the closeout list |
 | Pre-rebuild design rationale (phases 1–3, unification) | git history (`git log --all -- docs/archive/ docs/UNIFICATION_DESIGN.md`); load-bearing rationale absorbed into ARCHITECTURE, STATS_PRIMER, design/steering |

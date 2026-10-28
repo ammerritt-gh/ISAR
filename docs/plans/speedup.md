@@ -30,6 +30,67 @@ the run were cheap 59 / fast 22 / full 16.
 
 ---
 
+## Deep-fitting workstream (2026-10-28)
+
+**Owner:** @ammerritt-gh. **Exit criteria:** numerical repairs and scheduling/evaluator changes
+validated; before/after count-completeness comparison reported; the one authorized sampler
+screen reported, including unfinished runs; durable behavior absorbed into STATS_PRIMER §2.4.
+These are separate from the older campaign-speed targets below.
+
+The stopped GUI pass establishes scheduling waste: the contender stage used only 30% of its
+reserved workers, the exploratory queue waited at chunk boundaries, and nearly half the models
+had no fast-pass evidence and therefore could not avoid promotion. No per-model durations or
+restart costs can be recovered from that log: it reported ordered submissions and persisted
+timings only after completion. Its elapsed time is not an evaluator profile. The detailed local
+attribution is retained under `out/fitting_audit/`; real-data values stay outside committed files.
+
+Implemented repairs keep finite-difference stencils inside prior support, preserve finite
+same-tail Gaussian interval masses (including the multivariate path), retain failed structural
+variants, qualify a deep winner at the count ceiling, and flush completed-attempt timings before
+retries. Error-method timing and worker/threadpool information are retained. See
+[STATS_PRIMER](../STATS_PRIMER.md) for scientific semantics and remaining qualifications.
+
+The initial contender/direct-accepted/exploratory jobs now share a continuously refilled pool;
+the promotion queue refills likewise. Missing-price models go directly to their former accepted
+seed/settings. A failed accepted sequence retains the exploratory fallback and remains partial.
+Submission is category first, then descending dimension. Seeds and output order stay stable.
+Budget admission is per submission; the merged-stage leader can change promotion decisions.
+No end-to-end wall-time reduction has yet been measured on the stopped spectrum.
+
+The conditional evaluator gate was met on one generated ACCEPTED model: about 87% of profiled
+sampler time was likelihood work. Five-repeat paired microbenchmarks measured the following
+reductions in evaluator time (single thread, alternating reference/changed order):
+
+| Change | Narrow-width cases | Broad-width cases | Likelihood comparison |
+|---|---|---|---|
+| Skip unused areas | 4–5% | 14–15% | Bit-identical |
+| Shared complex-log stencil | 35–37% | No material change | Maximum difference 2.5e-7 nat |
+| Prepared grid squares and Bose factors | 9–10% | 27% | Bit-identical |
+| Combined | 48–50% | 41–42% | Same stencil rounding difference |
+
+The timing reference already cached output-grid geometry, so these percentages do not price
+that additional cache. Prior-group preparation separately reduced transform time by about 64%,
+bit-identically on the measured plain and fixed-width synthetic problems. These are evaluator
+and transform measurements, not whole-pass speedup claims; different widths, CPU load and
+changed floating-point search paths limit extrapolation.
+
+Reliability remains alongside speed work: today's deep settings are provisional and untrusted.
+The operator authorized one bounded rslice screen, retaining today's production settings; its
+protocol is in STATS_PRIMER §2.4. Raw seeds and fit values belong only in the ignored local report.
+The count-completeness change requires distinguishing an attained local optimum from a genuine
+likelihood upper bound. A wholly unpriced count must not be dismissed by comparing its fit
+quality with the selected model's fit quality alone; count priors and within-count model weights
+are different quantities. The boundary-repair acceptance baseline is in STATS_PRIMER §2.2.
+
+Deferred: parallel MINOS/profile until error-stage timings justify it; GUI core lending;
+amplitude profiling; regrouping width masks; UltraNest. Regrouping reduces integrations but
+increases multimodality, the sampler's existing weakness. The 4.5-sigma delta-mask shortcut
+also omits a width-prior Occam factor and remains an approximation, though smaller than the
+unpriced-count and sampler-reliability problems. Tiny correlated Gaussian box masses still
+have the existing independent-marginal fallback; the tail repair does not calibrate it.
+
+---
+
 ## 1. The measured baseline
 
 Profiled on the archived campaign `out/svp_recert1` (78 iterations, 81 scans, deterministic
