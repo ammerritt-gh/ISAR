@@ -328,6 +328,24 @@ def test_S4_a_write_hold_waits_for_the_save_in_progress_and_holds_the_lock(works
     assert svc.shutdown() == 0
 
 
+def test_a_release_before_the_hold_was_taken_is_answered_and_no_hold_follows(workspace, service):
+    svc = service(workspace({"E:1:q5": {"save_sleep": 1.0}}))
+    svc.wait("ready")
+    svc.start("q5", "E:1:q5")
+    svc.wait("result", "q5")
+    time.sleep(0.3)                                                    # the save is under way
+    svc.send(op="hold_writes")
+    svc.send(op="release_writes")                                      # before the writer took the hold
+    svc.wait("writes_released", timeout_s=10)
+    svc.wait("saved", "q5")
+    time.sleep(0.5)
+    assert "writes_held" not in [e["ev"] for e in svc.events]
+    assert [e["ev"] for e in svc.events].count("writes_released") == 1
+    with workspace_write_lock(svc.root, timeout_s=5):                  # no stale hold
+        pass
+    assert svc.shutdown() == 0
+
+
 def test_a_failed_save_is_reported_and_the_next_save_succeeds(workspace, service):
     svc = service(workspace({"E:1:a": {"save_fail": "the disk said no"}, "E:1:b": {}}))
     svc.start("a", "E:1:a")

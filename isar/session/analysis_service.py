@@ -43,6 +43,8 @@ The rules the consumer may rely on:
 * Every ``result`` with ``saving`` true gets exactly one ``saved`` or ``save_failed`` (before or after the
   item's ``finished``); saves follow arrival order across all items, and none is reported between
   ``writes_held`` and the next ``writes_released``.
+* Every ``release_writes`` gets one ``writes_released``; released before its ``writes_held`` came, the
+  hold is never taken.
 * ``shutdown`` and stdin EOF: no new starts; every running item is drained (a result it already sent is
   saved), killed with its tree and reported ``finished stopped``; a write hold is released; every
   handed-over result is saved; then ``bye``.
@@ -292,6 +294,7 @@ class _Writer(threading.Thread):
         self._cv = threading.Condition()
         self._jobs: deque[_Job] = deque()
         self._hold = self._held = self._closing = False
+        self._holding = False                       # the writer thread took up the hold: it answers the release
         self._may_report = threading.Event()        # cleared by shutdown while it reports items finished
         self._may_report.set()
 
@@ -310,11 +313,11 @@ class _Writer(threading.Thread):
 
     def release(self) -> None:
         with self._cv:
-            requested, self._hold = self._hold, False
+            self._hold = False
+            writer_answers = self._holding
             self._cv.notify_all()
-        if not requested:
+        if not writer_answers:          # never held, or still waiting behind a save: no hold is taken now
             self._emit({"ev": "writes_released"})
-        # else the writer thread emits it when it lets go of the lock
 
     def end_hold(self) -> bool:
         """Shutdown: drop a hold; True when one was requested."""
@@ -340,6 +343,7 @@ class _Writer(threading.Thread):
                     self._cv.wait()
                 if self._hold:
                     batch = None
+                    self._holding = True
                 elif self._jobs:
                     batch = list(self._jobs)
                     self._jobs.clear()
@@ -354,6 +358,7 @@ class _Writer(threading.Thread):
         while True:
             with self._cv:
                 if not self._hold:              # released before the lock was ever taken
+                    self._holding = False
                     self._emit({"ev": "writes_released"})
                     return
             try:
@@ -364,7 +369,7 @@ class _Writer(threading.Thread):
                     with self._cv:
                         while self._hold:
                             self._cv.wait()
-                        self._held = False
+                        self._held = self._holding = False
                 self._emit({"ev": "writes_released"})
                 return
             except self._busy as exc:           # another writer holds it longer than its timeout: keep trying
