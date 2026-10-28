@@ -20,15 +20,16 @@ from isar.session.state import canonical_hash
 log = logging.getLogger(__name__)
 
 SCHEMA = "isar.deep-pass/1"
+ALGORITHM_REVISION = 2  # ceiling qualification and continuously refilled, two-stage coverage
 UNTRUSTED = "provisional sampler settings: untrusted until calibration"
 
 
 @dataclass(frozen=True)
 class DeepRequest:
-    """What one ``isar run --deep-pass`` asks for. ``workers`` and nothing about scheduling enters
-    the signature: a complete deep pass is the same on any worker count, but a search-limited one
-    depends on the worker count and the wall clock. A carried result is not redone for a new worker
-    count; a changed budget or ``--force`` redoes it. ``budget_s`` None (the default) is no clock."""
+    """What one ``isar run --deep-pass`` asks for. The worker count is excluded from the signature:
+    a complete deep pass is the same on any worker count, but a search-limited one depends on the
+    worker count and wall clock. A carried result is not redone for a new worker count; a changed
+    algorithm revision, budget or ``--force`` redoes it. ``budget_s`` None (the default) is no clock."""
     budget_s: float | None = None   # per spectrum, sampling stages only; typed on the CLI only
     workers: int = 1
     M: int = 200                    # bootstrap draws of the errors step
@@ -36,9 +37,10 @@ class DeepRequest:
 
     def signature(self) -> str:
         """Everything that decides the result, read at call time so an installed calibration
-        (new constants) or a changed budget makes an earlier deep pass stale."""
+        (new constants), algorithm revision or changed budget makes an earlier deep pass stale."""
         return canonical_hash({
-            "schema": SCHEMA, "accepted": asdict(deep_pass.ACCEPTED),
+            "schema": SCHEMA, "algorithm_revision": ALGORITHM_REVISION,
+            "accepted": asdict(deep_pass.ACCEPTED),
             "exploratory": asdict(deep_pass.EXPLORATORY),
             "calibration": deep_pass.CALIBRATION_STATUS,
             "contender_min_p": deep_pass.CONTENDER_MIN_P, "relevance_gap": deep_pass.RELEVANCE_GAP,
@@ -175,8 +177,8 @@ def deliver(fit: dict, ctx, request: DeepRequest, *, executor=None, refuse=None,
         res = deep_pass.deep_pass(
             entries, accepted=deep_pass.ACCEPTED, exploratory=deep_pass.EXPLORATORY,
             budget_s=request.budget_s, seed=request.seed,
-            map_fn=executor.map if executor is not None else map, close_call_p=close_call_p,
-            chunk=request.workers, fast_limit=record.get("search_limit_reason") or "",
+            executor=executor, close_call_p=close_call_p,
+            workers=request.workers, fast_limit=record.get("search_limit_reason") or "",
             progress=relay(send))
         send("errors")
         t_errors = time.perf_counter()
@@ -221,7 +223,8 @@ def deliver(fit: dict, ctx, request: DeepRequest, *, executor=None, refuse=None,
     timing = {"total_seconds": time.perf_counter() - t0, "sampling_seconds": res.wall_s,
               "errors_seconds": errors_s, "budget_s": _budget(request.budget_s),
               "errors_method_seconds": error_methods,
-              "workers": int(request.workers), "stages": dict(res.stage_seconds),
+              "workers": max(1, int(request.workers)) if executor is not None else 1,
+              "stages": dict(res.stage_seconds),
               "models": [{"label": x.label, "status": x.status,
                           "runs": [_run_timing(r) for r in x.runs]} for x in res.models]}
     return out, timing

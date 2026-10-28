@@ -56,10 +56,10 @@ def test_worker_threadpools_are_logged_once_and_failures_keep_their_reason(monke
     monkeypatch.setattr(dp, "run_nested", run)
     entries = [dp.ModelEntry(label, i, 2, -float(i), None, None)
                for i, label in enumerate(("one", "two"))]
-    result = dp.deep_pass(entries, chunk=2)
+    result = dp.deep_pass(entries, workers=8)
     inventory = [r for r in _timings(caplog) if r["event"] == "worker"]
     assert len(inventory) == 1
-    assert inventory[0]["pid"] > 0 and inventory[0]["workers"] == 2
+    assert inventory[0]["pid"] > 0 and inventory[0]["workers"] == 1
     assert "threadpools" in inventory[0]
     runs = [r for r in _timings(caplog) if r["event"] == "run_completed"]
     assert len(runs) == 2 and all(r["status"] == "failed" for r in runs)

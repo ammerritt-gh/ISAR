@@ -780,20 +780,37 @@ exp(ln Z + ln prior), normalised over the models that have a sampled evidence. T
 evidences enter on the sampler's own scale (ln Z minus the saturated log-likelihood, the -cost/2 scale) and
 only to order the work and to decide promotion.
 
-**Staged coverage.** (Constants in the table below.)
+**Staged coverage (scheduling amendment, 2026-10-28).** Constants remain those in the table below.
 
-1. *Contenders.* The models whose fast-pass probability is at least 0.01, and always the two highest, run at
-   the *accepted* settings.
-2. *Exploratory.* Every other model runs once at cheaper settings. It stays in the comparison at a wider
-   sigma, and it can order the work but can never exclude a model on its own.
-3. *Promotion.* An exploratory model whose exploratory ln Z + 3 sigma, or whose fast-pass ln Z, lies within 10
-   nats of the leading model (model prior included) is rerun at the accepted settings with an independent
-   seed. The second criterion exists because a 128-point run can sit tens of nats low while its best
-   log-likelihood looks fine.
+1. *Combined initial stage.* Contenders (fast-pass probability at least 0.01, always including the
+   highest two) run at accepted settings. Other models with no finite fast-pass evidence run
+   directly at accepted settings, using the seed their former promotion would have used. The
+   remaining models run at exploratory settings. Submission order is contenders, direct accepted,
+   then exploratory; within each category larger parameter dimension runs first. A worker takes
+   another model as soon as it finishes. There is no barrier between these three categories.
+2. *Promotion.* After the initial stage finishes, an exploratory model whose exploratory ln Z +
+   3 sigma, or whose fast-pass ln Z, lies within 10 nats of the leading model (model prior included)
+   is rerun at accepted settings with its independent promotion seed. This queue also refills
+   immediately. The leader now includes direct accepted results; that can change which other
+   models need promotion. Exploratory values remain in the comparison at their wider sigma.
 
-The sampling budget (`--deep-budget-minutes`) is per spectrum and off by default; when typed, it is checked before each chunk of
-models; a chunk is as many models as there are workers, run in separate processes, each sampler
-single-threaded. A started chunk is never cut. The errors step below runs afterwards and is outside the budget.
+Seeds and persisted model order still follow the original fast-weight ordering, independently
+of completion order and worker count. A direct accepted run equals its former promotion run
+for the same evaluator, settings and seed. If all accepted attempts fail, the original
+exploratory sequence is retained as a fallback; the failed accepted attempts remain recorded,
+the model makes the comparison search limited even if fallback succeeds, and it is not
+promoted a second time. No local-optimizer likelihood screen prunes deep models.
+
+The sampling budget (`--deep-budget-minutes`) is per spectrum and off by default. When supplied,
+it is checked before each model submission, rather than before each worker-sized chunk.
+Admitted jobs, including their retries, finish even beyond the budget; an unadmitted fallback
+or promotion remains explicitly incomplete. Each sampler process uses one numerical thread.
+The errors step runs afterwards, outside the sampling budget. GUI queue priority and core
+sharing retain their existing rules. Progress reports completed models in two stages.
+
+The deep request signature includes an algorithm revision. A newly requested pass therefore
+recomputes stale results after these scheduling and qualification repairs; changing only the
+worker count does not invalidate a carried result. Existing records remain available.
 
 **Suspect runs and restarts.** A run is *suspect* when its ln Z is not finite, it stopped at an iteration cap,
 or its best log-likelihood lies more than `SUSPECT_GAP_BASE + SUSPECT_GAP_PER_DIM x ndim` (5 + 0.5 x ndim

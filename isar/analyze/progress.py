@@ -1,5 +1,5 @@
 """Progress events from the fast and deep pass (C-progress): one plain dict per step, sent as the step
-starts, so a caller can show how far a fit has got. The events never change a result.
+starts (fast) or completes (deep), so a caller can show how far a fit has got. The events never change a result.
 
 Qt-free (ISAR hard rule 6); no session import.
 """
@@ -14,7 +14,7 @@ ProgressFn = Callable[[dict], None]
 
 FAST_PHASES = ("seed", "ladder", "evidence", "audits", "classify", "errors")
 DEEP_PHASES = ("sampling", "errors")
-DEEP_STAGES = 3          # 1 contenders, 2 exploratory, 3 promoted
+DEEP_STAGES = 2          # 1 combined initial models, 2 promoted models
 
 
 def emitter(progress: ProgressFn | None, pass_kind: str):

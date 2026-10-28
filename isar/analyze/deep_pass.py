@@ -22,7 +22,7 @@ import sys
 import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
-from functools import partial
+from concurrent.futures import FIRST_COMPLETED, wait
 
 import numpy as np
 
@@ -259,7 +259,7 @@ class DeepPassResult:
     close_call: dict
     wall_s: float
     exploratory_only: tuple = ()    # models in the comparison at exploratory precision only
-    stage_seconds: dict = field(default_factory=dict)   # contenders, exploratory, promoted
+    stage_seconds: dict = field(default_factory=dict)   # initial (combined), promoted
 
 
 def _weights(models):
@@ -343,104 +343,159 @@ def _record_ln_z(basins, saturated) -> float | None:
     return float(np.logaddexp.reduce(priced)) - float(saturated) if priced and saturated is not None else None
 
 
+@dataclass(frozen=True)
+class _StageJob:
+    entry: ModelEntry
+    settings: SamplerSettings
+    status: str
+    category: str
+    seed: int
+
+
 def stage_width(record: dict) -> int:
-    """The most models one :func:`deep_pass` stage runs at once on this fast-pass record: its contenders
-    (stage 1) or the rest (stage 2; stage 3 reruns a subset of stage 2). Reads only the record's prices."""
-    saturated = record.get("ln_like_saturated")
-    weights = [_weight(_record_ln_z(basins, saturated), float(basins[0]["ln_model_prior"]))
-               for basins in _label_groups(record.get("models") or ()).values()]
-    n = _contender_count(weights)
-    return max(1, n, len(weights) - n)
+    """Distinct models available together in the initial stage; promotion cannot be wider."""
+    return max(1, len(_label_groups(record.get("models") or ())))
 
 
 def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
               exploratory: SamplerSettings = EXPLORATORY, budget_s: float | None = None,
-              seed: int = 20261025, map_fn=map, close_call_p: float = CLOSE_CALL_P,
-              chunk: int = 1, fast_limit: str = "", progress: ProgressFn | None = None) -> DeepPassResult:
-    """Staged coverage over EVERY model the fast pass admitted (all counts/variants to the ceiling).
+              seed: int = 20261025, executor=None, close_call_p: float = CLOSE_CALL_P,
+              workers: int = 1, fast_limit: str = "", progress: ProgressFn | None = None) -> DeepPassResult:
+    """Cover every admitted model with two continuously refilled stages.
 
-    Stage 1: contenders (fast-pass P >= CONTENDER_MIN_P, and always the top two) at ``accepted``.
-    Stage 2: every other model at ``exploratory``; it orders work and stays in the comparison at its
-             calibrated (wider) sigma, never excluded on its own.
-    Stage 3: an exploratory model whose exploratory lnZ + 3 sigma, or its fast-pass lnZ, sits within
-             RELEVANCE_GAP of the leader (weights include the model prior) is rerun at ``accepted``.
-    Each stage runs in chunks of ``chunk`` models. ``budget_s`` (None: no clock, the default) is
-    checked before each chunk; a started chunk is never cut. A model left without a usable lnZ, or
-    promoted but not yet rerun, makes the result "search limited": its probabilities are then labelled
-    partial. So does a non-empty ``fast_limit`` (the record's ``search_limit_reason``): the fast pass
-    stopped before pricing every count, so the models here are not all the competing ones.
-    ``map_fn`` lets the caller run a chunk's models in a process pool (each run single-threaded).
-    ``progress`` gets C-progress ``sampling`` steps as each chunk the budget admits starts and as each
-    model returns."""
+    The initial queue admits contenders at accepted settings, then noncontenders without a finite
+    fast-pass price directly at accepted settings, then the remaining exploratory models. Within
+    each category, the largest dimension runs first. Seeds and output order remain keyed to the
+    original fast-weight order. A direct accepted run uses its old promotion seed (+1); only if
+    it exhausts its retries does its original exploratory sequence run as fallback. Such a model
+    stays search limited even if fallback succeeds, and is not promoted again.
+
+    Promotion is decided after all admitted initial jobs finish, including fallback. Its leader
+    therefore includes the new direct-reference values. Relevant exploratory models then run at
+    accepted settings, again longest first with immediate refill. With no executor, work is serial.
+    The budget is checked before each submission; admitted jobs finish even beyond the budget.
+    Missing models, pending promotions, failed accepted attempts and fast-pass limits qualify the
+    comparison as partial. Progress reports a zero on first admission and completed-model counts;
+    a fallback model completes only when its fallback has returned.
+    """
     t0 = time.perf_counter()
-    chunk = max(1, int(chunk))
+    workers = max(1, int(workers)) if executor is not None else 1
     send = emitter(progress, "deep")
     order = sorted(entries, key=lambda e: -_fast_weight(e))
+    ranks = {e.label: i for i, e in enumerate(order)}
     contenders = {e.label for e in order[:_contender_count([_fast_weight(e) for e in order])]}
     out = {e.label: ModelEvidence(e.label, e.count, "not_run", log_model_prior=e.log_model_prior)
            for e in order}
     by_label = {e.label: e for e in order}
     seeds = {e.label: seed + 104729 * i for i, e in enumerate(order)}
-    stage_seconds = {"contenders": 0.0, "exploratory": 0.0, "promoted": 0.0}
+    stage_seconds = {"initial": 0.0, "promoted": 0.0}
     attempted_promotion: set = set()
+    failed_direct: set = set()
+    fallback_waiting: set = set()
 
     def over_budget():
         return budget_s is not None and time.perf_counter() - t0 >= budget_s
 
-    def run_stage(name, labels, settings, status, stage, seed_offset=0):
+    def job_key(job):
+        rank = {"contenders": 0, "direct_reference": 1}.get(job.category, 2)
+        return rank, -job.entry.ndim, ranks[job.entry.label]
+
+    def plan(models, settings, status, category, offset=0):
+        return [_StageJob(e, settings, status, category, seeds[e.label] + offset) for e in models]
+
+    def run_stage(name, jobs, stage):
         started = time.perf_counter()
-        done = 0
-        for i in range(0, len(labels), chunk):
-            if over_budget():
-                break
-            send("sampling", step=i + 1, of=len(labels), stage=stage, stages=DEEP_STAGES)
-            jobs = [(lb, by_label[lb], settings, seeds[lb] + seed_offset)
-                    for lb in labels[i:i + chunk]]
-            task = partial(_stage_task, stage=name, workers=chunk)
-            for lb, runs in map_fn(task, jobs):
-                done += 1
-                m = out[lb]
-                m.runs.extend(runs)
-                good = [r for r in runs if r.usable]
-                if good:
-                    r = good[-1]
-                    m.status, m.log_z = status, r.log_z
-                    err = r.log_z_err if math.isfinite(r.log_z_err) else 0.0
-                    m.sigma = max(r.settings.calibrated_sigma, err)
-                elif m.status == "not_run":
-                    m.status = "unresolved"     # suspect after restarts: kept, never rejected
-                if name == "promoted":
-                    attempted_promotion.add(lb)
-                if done < min(i + chunk, len(labels)):   # the rest of this chunk is already admitted
-                    send("sampling", step=done + 1, of=len(labels), stage=stage, stages=DEEP_STAGES)
+        queue = sorted(jobs, key=job_key)
+        total, done, announced = len(queue), 0, False
+
+        def announce():
+            nonlocal announced
+            if not announced:
+                send("sampling", step=0, of=total, stage=stage, stages=DEEP_STAGES)
+                announced = True
+
+        def accept(job, result):
+            nonlocal done
+            lb, runs = result
+            m = out[lb]
+            m.runs.extend(runs)
+            good = [r for r in runs if r.usable]
+            if good:
+                r = good[-1]
+                m.status, m.log_z = job.status, r.log_z
+                err = r.log_z_err if math.isfinite(r.log_z_err) else 0.0
+                m.sigma = max(r.settings.calibrated_sigma, err)
+            elif m.status == "not_run":
+                m.status = "unresolved"
+            if job.category == "promoted":
+                attempted_promotion.add(lb)
+            if job.category == "direct_reference" and not good:
+                failed_direct.add(lb)
+                fallback_waiting.add(lb)
+                queue.append(_StageJob(job.entry, exploratory, "exploratory",
+                                       "exploratory_fallback", seeds[lb]))
+                queue.sort(key=job_key)
+                return
+            if job.category == "exploratory_fallback":
+                fallback_waiting.remove(lb)
+            done += 1
+            send("sampling", step=done, of=total, stage=stage, stages=DEEP_STAGES)
+
+        if executor is None:
+            while queue and not over_budget():
+                job = queue.pop(0)
+                announce()
+                args = (job.entry.label, job.entry, job.settings, job.seed)
+                accept(job, _stage_task(args, stage=job.category, workers=1))
+        else:
+            pending = {}
+            while queue or pending:
+                while queue and len(pending) < workers and not over_budget():
+                    job = queue.pop(0)
+                    announce()
+                    args = (job.entry.label, job.entry, job.settings, job.seed)
+                    pending[executor.submit(_stage_task, args, stage=job.category, workers=workers)] = job
+                if not pending:
+                    break
+                completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+                # Several futures may be ready together; scientific records never follow set order.
+                for future in sorted(completed, key=lambda f: ranks[pending[f].entry.label]):
+                    job = pending.pop(future)
+                    accept(job, future.result())
         stage_seconds[name] = time.perf_counter() - started
 
-    run_stage("contenders", [e.label for e in order if e.label in contenders], accepted, "reference", 1)
-    run_stage("exploratory", [e.label for e in order if e.label not in contenders], exploratory,
-              "exploratory", 2)
+    initial = plan([e for e in order if e.label in contenders], accepted, "reference", "contenders")
+    direct = [e for e in order if e.label not in contenders and
+              (e.fastpass_ln_z is None or not math.isfinite(e.fastpass_ln_z))]
+    direct_labels = {e.label for e in direct}
+    initial += plan(direct, accepted, "reference", "direct_reference", offset=1)
+    initial += plan([e for e in order if e.label not in contenders and e.label not in direct_labels],
+                    exploratory, "exploratory", "exploratory")
+    run_stage("initial", initial, 1)
     have, w = _weights(out.values())
     lead = float(w.max()) if have else -math.inf
-    # An exploratory run alone may not settle a model as irrelevant: low-n_live runs underestimate
-    # lnZ by tens of nats with a best lnL at the optimum (measured, opus/check_problem.py). It stays
-    # unrefined only when its fast-pass Laplace lnZ also sits beyond the gap.
-    promote = sorted((lb for lb, m in out.items() if m.status == "exploratory"
-                      and max(m.log_z + 3.0 * m.sigma, _finite(by_label[lb].fastpass_ln_z))
-                      + m.log_model_prior >= lead - RELEVANCE_GAP),
-                     key=lambda lb: -(out[lb].log_z + out[lb].log_model_prior))
-    run_stage("promoted", promote, accepted, "reference", 3, seed_offset=1)  # independent of the exploratory run
+    # Low-live runs may underestimate lnZ; both their upper uncertainty and the finite fast-pass
+    # price must lie below the relevance window before a model remains exploratory.
+    promote = [lb for lb, m in out.items() if m.status == "exploratory" and lb not in failed_direct
+               and max(m.log_z + 3.0 * m.sigma, by_label[lb].fastpass_ln_z)
+               + m.log_model_prior >= lead - RELEVANCE_GAP]
+    run_stage("promoted", plan([by_label[lb] for lb in promote], accepted, "reference", "promoted", 1), 2)
 
     models = [out[e.label] for e in order]
     pending = [lb for lb in promote if out[lb].status != "reference"]
     waiting = [lb for lb in pending if lb not in attempted_promotion]
-    suspect = [m.label for m in models if m.status == "unresolved"] + \
-        [lb for lb in pending if lb in attempted_promotion]
+    suspect = [m.label for m in models if m.status == "unresolved" or m.label in failed_direct or
+               (m.label in pending and m.label in attempted_promotion)]
     unrun = [m.label for m in models if m.status == "not_run"]
-    complete = not (unrun or waiting or suspect or fast_limit)
+    complete = not (unrun or waiting or suspect or fallback_waiting or fast_limit)
     reasons = [f"fast pass search limited: {fast_limit}"] if fast_limit else []
     if unrun:
         reasons.append("budget ended before " + ", ".join(unrun))
     if waiting:
         reasons.append("budget ended before promotion of " + ", ".join(waiting))
+    if fallback_waiting:
+        reasons.append("budget ended before exploratory fallback of " +
+                       ", ".join(e.label for e in order if e.label in fallback_waiting))
     if suspect:
         reasons.append("suspect after restarts: " + ", ".join(suspect))
     _, counts = _probabilities(models)
@@ -451,14 +506,8 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
                           comparison_scope="full" if complete else "partial (search limited)",
                           best_count=cc.get("best_count"), close_call=cc,
                           wall_s=time.perf_counter() - t0,
-                          exploratory_only=tuple(m.label for m in models
-                                                 if m.status == "exploratory"),
+                          exploratory_only=tuple(m.label for m in models if m.status == "exploratory"),
                           stage_seconds=stage_seconds)
-
-
-def _finite(v) -> float:
-    """None or NaN -> +inf: a missing fast-pass value cannot rule a model out, so it promotes."""
-    return float(v) if v is not None and math.isfinite(v) else math.inf
 
 
 def _stage_task(job, *, stage=None, workers=1):

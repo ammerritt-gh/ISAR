@@ -8,7 +8,7 @@ dispersion prior is empty. Nothing is written here; every result leaves through 
 the writer (:func:`isar.session.writer.save_results`) applies.
 
 A deep item builds on the stored fast pass when it is current, and otherwise runs the fast stage first and
-emits it before any deep work. Its sampling pool is sized to the widest stage it can run
+emits it before any deep work. Its sampling pool is sized to the distinct models in the combined initial stage
 (:func:`isar.analyze.deep_pass.stage_width`); when that is fewer cores than it was given it says so first
 (status ``"cores"``).
 """

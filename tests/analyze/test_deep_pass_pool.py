@@ -1,4 +1,4 @@
-"""deep_pass with a process pool as map_fn gives the same result as serial (picklability and
+"""deep_pass with a process pool as executor gives the same result as serial (picklability and
 determinism, plan S2U1). ``Gauss`` stays at module level so spawned workers unpickle it."""
 import math
 import json
@@ -32,9 +32,9 @@ def test_pooled_deep_pass_equals_serial(capfd):
     fast = dp.SamplerSettings(n_live=100, dlogz=0.1, calibrated_sigma=0.5)
     expl = dp.SamplerSettings(n_live=50, dlogz=0.5, calibrated_sigma=2.0)
     es = [entry("c1", 1, 4, 0.0), entry("c2", 2, 5, -1.0), entry("c3", 3, 6, -30.0)]
-    serial = dp.deep_pass(es, accepted=fast, exploratory=expl, seed=9, chunk=2)
+    serial = dp.deep_pass(es, accepted=fast, exploratory=expl, seed=9, workers=2)
     with ProcessPoolExecutor(2) as ex:
-        pooled = dp.deep_pass(es, accepted=fast, exploratory=expl, seed=9, map_fn=ex.map, chunk=2)
+        pooled = dp.deep_pass(es, accepted=fast, exploratory=expl, seed=9, executor=ex, workers=2)
     a = [(m.label, m.status, m.log_z) for m in serial.models]
     b = [(m.label, m.status, m.log_z) for m in pooled.models]
     assert a == b

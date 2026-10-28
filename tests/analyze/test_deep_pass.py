@@ -5,7 +5,7 @@ normalised Gaussian likelihood in the unit cube under a uniform prior, times exp
 lnZ = offset and H = -d ln(s sqrt(2 pi e)) exactly. A wrong call counter, a wrong H, an
 offset-dropping assembly, equal weight per model instead of the model prior, or contender-only
 probabilities shown as the full comparison each fail one of these. The budget cases drive
-``deep_pass`` with a fake clock and a fake ``map_fn`` (no sampling).
+``deep_pass`` with a fake clock and a fake ``_stage_task`` (no sampling).
 """
 import json
 import math
@@ -90,7 +90,7 @@ def test_staged_pass_complete():
     p1_true = 1 / (1 + math.exp(-1.0) + math.exp(-30.0))
     assert abs(res.count_probabilities[1] - p1_true) < 0.25, res.count_probabilities
     assert res.close_call["statistical"] is True and res.best_count == 1    # P(1) ~ 0.73 < 0.80
-    assert set(res.stage_seconds) == {"contenders", "exploratory", "promoted"}
+    assert set(res.stage_seconds) == {"initial", "promoted"}
 
 
 def test_a_laplace_relevant_model_is_promoted_to_a_reference_run():
@@ -147,7 +147,7 @@ def test_example1_the_model_prior_weights_the_count_probabilities():
 
 # --------------------------------------------------------------------------- budget and promotion
 class _Clock:
-    """A fake ``time`` module for deep_pass: the fake map_fn advances it 100 s per job."""
+    """A fake ``time`` module for deep_pass: the fake serial worker advances it 100 s per job."""
     def __init__(self):
         self.t = 0.0
 
@@ -162,59 +162,58 @@ def _fake_run(label, settings, log_z):
 
 
 def _fake_pool(monkeypatch, values):
-    """``(map_fn, clock)``; ``values[label] = (accepted lnZ, exploratory lnZ)``, jobs logged."""
+    """``(executor, clock, log)``; ``values[label] = (accepted lnZ, exploratory lnZ)``, jobs logged."""
     clock = _Clock()
     monkeypatch.setattr(dp, "time", clock)
     log = []
 
-    def map_fn(fn, jobs):
-        out = []
-        for label, _entry, settings, _seed in jobs:
-            clock.t += 100.0
-            log.append((label, settings is dp.EXPLORATORY))
-            out.append((label, [_fake_run(label, settings, values[label][1 if settings is dp.EXPLORATORY else 0])]))
-        return out
+    def run(job, **kwargs):
+        label, _entry, settings, _seed = job
+        clock.t += 100.0
+        log.append((label, settings is dp.EXPLORATORY))
+        return label, [_fake_run(label, settings, values[label][1 if settings is dp.EXPLORATORY else 0])]
 
-    return map_fn, clock, log
+    monkeypatch.setattr(dp, "_stage_task", run)
+    return None, clock, log
 
 
 def _fake_entry(label, count, fast, prior_=0.0):
     return dp.ModelEntry(label, count, 2, fast, None, None, log_model_prior=prior_)
 
 
-def test_the_budget_is_checked_before_each_chunk_and_a_started_chunk_is_never_cut(monkeypatch):
+def test_serial_checks_the_budget_before_each_model_even_if_more_workers_are_requested(monkeypatch):
     entries = [_fake_entry(f"c{i}", i, -0.5 * i) for i in range(1, 5)]       # all contenders
     values = {e.label: (-0.1 * i, None) for i, e in enumerate(entries)}
-    map_fn, clock, log = _fake_pool(monkeypatch, values)
-    res = dp.deep_pass(entries, budget_s=150.0, map_fn=map_fn, chunk=2)
-    assert [lb for lb, _ in log] == ["c1", "c2"] and clock.t == 200.0        # overrun: one chunk
+    executor, clock, log = _fake_pool(monkeypatch, values)
+    res = dp.deep_pass(entries, budget_s=150.0, executor=executor, workers=2)
+    assert [lb for lb, _ in log] == ["c1", "c2"] and clock.t == 200.0        # the admitted run finishes
     assert [m.status for m in res.models] == ["reference", "reference", "not_run", "not_run"]
     assert not res.complete and res.search_limited == "budget ended before c3, c4"
     assert set(res.count_probabilities) == {1, 2}
-    map_fn, clock, log = _fake_pool(monkeypatch, values)
-    res = dp.deep_pass(entries, budget_s=150.0, map_fn=map_fn, chunk=4)     # one chunk, never cut
-    assert len(log) == 4 and res.complete
+    executor, clock, log = _fake_pool(monkeypatch, values)
+    res = dp.deep_pass(entries, budget_s=150.0, executor=executor, workers=4)
+    assert len(log) == 2 and not res.complete  # no executor: still one actual worker
 
 
 def test_a_promotion_the_budget_leaves_pending_is_not_a_full_comparison(monkeypatch):
     entries = [_fake_entry("c1", 1, 0.0), _fake_entry("c2", 2, -1.0), _fake_entry("c3", 3, -6.0)]
     # c3's cheap value sits far enough below that +3 sigma stays under the promotion window (holds while the exploratory sigma is below 30)
     values = {"c1": (0.0, None), "c2": (-1.0, None), "c3": (-7.0, -100.0)}
-    map_fn, clock, log = _fake_pool(monkeypatch, values)
-    res = dp.deep_pass(entries, budget_s=250.0, map_fn=map_fn)
-    assert log == [("c1", False), ("c2", False), ("c3", True)]              # stage 3 never starts
+    executor, clock, log = _fake_pool(monkeypatch, values)
+    res = dp.deep_pass(entries, budget_s=250.0, executor=executor)
+    assert log == [("c1", False), ("c2", False), ("c3", True)]              # the promotion stage never starts
     assert res.exploratory_only == ("c3",) and not res.complete
     assert res.search_limited == "budget ended before promotion of c3"
     assert res.comparison_scope == "partial (search limited)"
     # the same models with time to spare: c3's reference run replaces the exploratory value
-    map_fn, clock, log = _fake_pool(monkeypatch, values)
-    res = dp.deep_pass(entries, map_fn=map_fn)
+    executor, clock, log = _fake_pool(monkeypatch, values)
+    res = dp.deep_pass(entries, executor=executor)
     c3 = [m for m in res.models if m.label == "c3"][0]
     assert log[-1] == ("c3", False) and c3.status == "reference" and c3.log_z == -7.0 and res.complete
     # and when the fast pass also prices it far below, the cheap run stands and nothing is pending
     entries[2] = _fake_entry("c3", 3, -40.0)
-    map_fn, clock, log = _fake_pool(monkeypatch, values)
-    res = dp.deep_pass(entries, map_fn=map_fn)
+    executor, clock, log = _fake_pool(monkeypatch, values)
+    res = dp.deep_pass(entries, executor=executor)
     assert len(log) == 3 and res.exploratory_only == ("c3",) and res.complete
 
 
@@ -222,21 +221,21 @@ def test_a_search_limited_fast_pass_makes_the_deep_result_partial(monkeypatch):
     # every sampled model is clean, but the fast pass never priced the higher counts
     entries = [_fake_entry("c1", 1, 0.0), _fake_entry("c2", 2, -1.0)]
     values = {"c1": (0.0, None), "c2": (-1.0, None)}
-    map_fn, _, _ = _fake_pool(monkeypatch, values)
-    res = dp.deep_pass(entries, map_fn=map_fn)
+    executor, _, _ = _fake_pool(monkeypatch, values)
+    res = dp.deep_pass(entries, executor=executor)
     assert res.complete and res.comparison_scope == "full"
-    map_fn, _, _ = _fake_pool(monkeypatch, values)
-    res = dp.deep_pass(entries, map_fn=map_fn, fast_limit="safety_budget")
+    executor, _, _ = _fake_pool(monkeypatch, values)
+    res = dp.deep_pass(entries, executor=executor, fast_limit="safety_budget")
     assert not res.complete and res.comparison_scope == "partial (search limited)"
     assert res.search_limited == "fast pass search limited: safety_budget"
 
 
-def test_a_twin_parent_without_a_fast_pass_value_is_always_promoted(monkeypatch):
+def test_a_twin_parent_without_a_fast_pass_value_goes_directly_to_reference(monkeypatch):
     entries = [_fake_entry("c1", 1, 0.0), _fake_entry("c2", 2, -1.0), _fake_entry("parent", 3, None)]
     values = {"c1": (0.0, None), "c2": (-1.0, None), "parent": (-2.0, -30.0)}
-    map_fn, clock, log = _fake_pool(monkeypatch, values)
-    res = dp.deep_pass(entries, map_fn=map_fn)
-    assert log[-2:] == [("parent", True), ("parent", False)]
+    executor, clock, log = _fake_pool(monkeypatch, values)
+    res = dp.deep_pass(entries, executor=executor)
+    assert [row for row in log if row[0] == "parent"] == [("parent", False)]
     assert res.models[-1].status == "reference" and res.complete
 
 
@@ -244,8 +243,8 @@ def test_the_model_prior_enters_the_contender_order_and_the_entries_pass_it_on(m
     # b has the higher Laplace lnZ but a prior ln 4 lower: a leads the order
     entries = [_fake_entry("b", 2, 1.0, -math.log(4.0)), _fake_entry("a", 1, 0.0, 0.0)]
     values = {"a": (0.0, None), "b": (1.0, None)}
-    map_fn, clock, log = _fake_pool(monkeypatch, values)
-    res = dp.deep_pass(entries, map_fn=map_fn)
+    executor, clock, log = _fake_pool(monkeypatch, values)
+    res = dp.deep_pass(entries, executor=executor)
     assert [m.label for m in res.models] == ["a", "b"]
     assert res.models[1].log_model_prior == pytest.approx(-math.log(4.0))
     assert res.count_probabilities[1] > res.count_probabilities[2]           # weights 0 vs 1 - ln 4

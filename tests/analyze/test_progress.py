@@ -2,7 +2,7 @@
 demonstrations: a deep pass past the old 60-minute budget completes and says so stage by stage.
 
 The fast-pass cases run one small synthetic spectrum (ceiling 2). The deep-pass cases drive
-``deep_pass`` with a fake clock and a fake ``map_fn`` (no sampling), as test_deep_pass does.
+``deep_pass`` with a fake clock and a fake serial worker (no sampling), as test_deep_pass does.
 """
 import logging
 
@@ -97,23 +97,22 @@ EXPL = dp.SamplerSettings(n_live=50, dlogz=0.5, calibrated_sigma=2.0)
 
 
 def _fake_pool(monkeypatch, values, exploratory=dp.EXPLORATORY):
-    """``(map_fn, clock)``: every job costs 100 s of fake clock; ``values[label] = (accepted lnZ,
+    """``(executor, clock)``: every job costs 100 s of fake clock; ``values[label] = (accepted lnZ,
     exploratory lnZ)``."""
     clock = _Clock()
     monkeypatch.setattr(dp, "time", clock)
 
-    def map_fn(fn, jobs):
-        out = []
-        for label, _entry, settings, _seed in jobs:
-            clock.t += 100.0
-            lnz = values[label][1 if settings is exploratory else 0]
-            run = dp.RunRecord(label=label, seed=0, settings=settings, ndim=2, log_z=lnz, log_z_err=0.1,
-                               information_h=1.0, n_like_calls=1, n_iter=1, lnl_max=0.0, wall_s=0.0,
-                               reference_lnl=None, evidence_converged=True)
-            out.append((label, [run]))
-        return out
+    def run(job, **kwargs):
+        label, _entry, settings, _seed = job
+        clock.t += 100.0
+        lnz = values[label][1 if settings is exploratory else 0]
+        record = dp.RunRecord(label=label, seed=0, settings=settings, ndim=2, log_z=lnz, log_z_err=0.1,
+                             information_h=1.0, n_like_calls=1, n_iter=1, lnl_max=0.0, wall_s=0.0,
+                             reference_lnl=None, evidence_converged=True)
+        return label, [record]
 
-    return map_fn, clock
+    monkeypatch.setattr(dp, "_stage_task", run)
+    return None, clock
 
 
 def _entry(label, count, fast):
@@ -135,28 +134,28 @@ def _ex2_entries():
 
 def test_ex2_the_sampling_steps_run_stage_by_stage(monkeypatch):
     entries, values = _ex2_entries()
-    map_fn, _clock = _fake_pool(monkeypatch, values, EXPL)
+    executor, _clock = _fake_pool(monkeypatch, values, EXPL)
     events = []
-    dp.deep_pass(entries, accepted=ACC, exploratory=EXPL, map_fn=map_fn, progress=events.append)
-    assert _sampling(events) == [(1, 1, 2), (1, 2, 2), (2, 1, 3), (2, 2, 3), (2, 3, 3), (3, 1, 1)]
+    dp.deep_pass(entries, accepted=ACC, exploratory=EXPL, executor=executor, progress=events.append)
+    assert _sampling(events) == [(1, 0, 5), (1, 1, 5), (1, 2, 5), (1, 3, 5), (1, 4, 5), (1, 5, 5), (2, 0, 1), (2, 1, 1)]
     assert all(e["pass"] == "deep" for e in events)
 
 
-def test_ex3_chunks_of_two_give_the_same_steps(monkeypatch):
+def test_ex3_serial_worker_requests_give_the_same_steps(monkeypatch):
     entries, values = _ex2_entries()
-    map_fn, _clock = _fake_pool(monkeypatch, values, EXPL)
+    executor, _clock = _fake_pool(monkeypatch, values, EXPL)
     events = []
-    dp.deep_pass(entries, accepted=ACC, exploratory=EXPL, map_fn=map_fn, chunk=2,
+    dp.deep_pass(entries, accepted=ACC, exploratory=EXPL, executor=executor, workers=2,
                  progress=events.append)
-    assert _sampling(events) == [(1, 1, 2), (1, 2, 2), (2, 1, 3), (2, 2, 3), (2, 3, 3), (3, 1, 1)]
+    assert _sampling(events) == [(1, 0, 5), (1, 1, 5), (1, 2, 5), (1, 3, 5), (1, 4, 5), (1, 5, 5), (2, 0, 1), (2, 1, 1)]
 
 
 def test_ex4_a_stage_with_no_models_sends_no_step(monkeypatch):
     entries = [_entry("c1", 1, 0.0), _entry("c2", 2, -1.0)]
-    map_fn, _clock = _fake_pool(monkeypatch, {"c1": (0.0, 0.0), "c2": (-1.0, -1.0)}, EXPL)
+    executor, _clock = _fake_pool(monkeypatch, {"c1": (0.0, 0.0), "c2": (-1.0, -1.0)}, EXPL)
     events = []
-    dp.deep_pass(entries, accepted=ACC, exploratory=EXPL, map_fn=map_fn, progress=events.append)
-    assert _sampling(events) == [(1, 1, 2), (1, 2, 2)]
+    dp.deep_pass(entries, accepted=ACC, exploratory=EXPL, executor=executor, progress=events.append)
+    assert _sampling(events) == [(1, 0, 2), (1, 1, 2), (1, 2, 2)]
 
 
 # --------------------------------------------------------------------------- the no-clock demonstration
@@ -164,31 +163,31 @@ def test_the_default_request_has_no_clock_and_a_deep_pass_past_an_hour_completes
     assert DeepRequest().budget_s is None                     # the old default was 3600 s per spectrum
     entries = [_entry(f"c{i}", i, -0.5 * i) for i in range(1, 41)]
     values = {e.label: (-0.1 * i, -0.1 * i) for i, e in enumerate(entries, 1)}
-    map_fn, clock = _fake_pool(monkeypatch, values)
+    executor, clock = _fake_pool(monkeypatch, values)
     events = []
-    res = dp.deep_pass(entries, budget_s=DeepRequest().budget_s, map_fn=map_fn, progress=events.append)
+    res = dp.deep_pass(entries, budget_s=DeepRequest().budget_s, executor=executor, progress=events.append)
     assert clock.t > 3600.0 and res.complete and res.search_limited is None
     stages = [s for s, _step, _of in _sampling(events)]
-    assert stages == sorted(stages) and set(stages) == {1, 2, 3}  # stage by stage, never back
+    assert stages == sorted(stages) and set(stages) == {1, 2}  # stage by stage, never back
     assert all(step <= of for _s, step, of in _sampling(events))
 
 
-# --------------------------------------------------------------------------- budget: no step for an unrun chunk
+# --------------------------------------------------------------------------- budget: no completion step for an unrun model
 def test_a_zero_budget_announces_no_sampling_step(monkeypatch):
     entries, values = _ex2_entries()
-    map_fn, _clock = _fake_pool(monkeypatch, values, EXPL)
+    executor, _clock = _fake_pool(monkeypatch, values, EXPL)
     events = []
-    dp.deep_pass(entries, accepted=ACC, exploratory=EXPL, map_fn=map_fn, budget_s=0.0,
+    dp.deep_pass(entries, accepted=ACC, exploratory=EXPL, executor=executor, budget_s=0.0,
                  progress=events.append)
     assert _sampling(events) == []
 
 
-def test_a_chunk_the_budget_blocks_announces_no_step(monkeypatch):
-    # each job costs 100 s: the two contenders run (0-200 s); the budget of 150 s then blocks stage 2
+def test_a_model_the_budget_blocks_announces_no_step(monkeypatch):
+    # each job costs 100 s: the two contenders run (0-200 s); the budget of 150 s then blocks the remaining initial models
     entries, values = _ex2_entries()
-    map_fn, _clock = _fake_pool(monkeypatch, values, EXPL)
+    executor, _clock = _fake_pool(monkeypatch, values, EXPL)
     events = []
-    res = dp.deep_pass(entries, accepted=ACC, exploratory=EXPL, map_fn=map_fn, budget_s=150.0,
+    res = dp.deep_pass(entries, accepted=ACC, exploratory=EXPL, executor=executor, budget_s=150.0,
                        progress=events.append)
-    assert _sampling(events) == [(1, 1, 2), (1, 2, 2)]
+    assert _sampling(events) == [(1, 0, 5), (1, 1, 5), (1, 2, 5)]
     assert "budget ended before c5, c3, c4" in res.search_limited

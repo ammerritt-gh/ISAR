@@ -20,12 +20,13 @@ def test_a_deep_winner_at_the_count_ceiling_is_search_limited(monkeypatch, best_
     monkeypatch.setattr(deep_pass, "deep_pass", lambda *args, **kwargs: res)
     monkeypatch.setattr(deep_delivery, "_chosen", lambda *args: {"errors": {"method_seconds": {"bootstrap": 1.0}}})
     fit = {"fast_pass": {"settings": {"mode_ceiling": 2}, "search_limit_reason": ""}}
-    record, timing = deep_delivery.deliver(fit, None, deep_delivery.DeepRequest())
+    record, timing = deep_delivery.deliver(fit, None, deep_delivery.DeepRequest(workers=8))
     assert record["state"] == ("search_limited" if limited else "resolved")
     assert record["complete"] is not limited
     assert record["comparison_scope"] == ("partial (search limited)" if limited else "full")
     assert ("ceiling" in (record["search_limited"] or "")) is limited
     assert timing["errors_method_seconds"] == {"bootstrap": 1.0}
+    assert timing["workers"] == 1  # no executor: one actual worker, regardless of the request
     assert "method_seconds" not in record["chosen"]["errors"]
 
 
@@ -40,3 +41,18 @@ def test_chosen_errors_preserve_the_method_seconds(monkeypatch):
     monkeypatch.setattr(deep_delivery.errors, "attach", lambda *args, **kwargs: None)
     chosen = deep_delivery._chosen(model, entry, record, deep_delivery.DeepRequest(), None)
     assert chosen["errors"]["method_seconds"] == timings
+
+
+def test_pre_revision_deep_records_are_stale_without_changing_sampler_settings(monkeypatch):
+    request = deep_delivery.DeepRequest()
+    canonical_hash = deep_delivery.canonical_hash
+
+    def old_signature(fields):
+        return canonical_hash({key: value for key, value in fields.items() if key != "algorithm_revision"})
+
+    with monkeypatch.context() as patch:
+        patch.setattr(deep_delivery, "canonical_hash", old_signature)
+        old = request.signature()
+    assert not deep_delivery.is_current({"deep_pass": {"state": "resolved", "settings_signature": old}}, request)
+    assert deep_delivery.is_current(
+        {"deep_pass": {"state": "resolved", "settings_signature": request.signature()}}, request)

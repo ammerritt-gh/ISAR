@@ -198,6 +198,12 @@ class _Pool:
         _Pool.opened.append(max_workers)
         self.map = map
 
+    def submit(self, fn, *args, **kwargs):
+        from concurrent.futures import Future
+        future = Future()
+        future.set_result(fn(*args, **kwargs))
+        return future
+
     def shutdown(self, *a, **k):
         pass
 
@@ -246,13 +252,21 @@ def _width_by_deep_pass(record) -> int:
             label=label, count=1, ndim=1, problem=None, fastpass_lnl_opt=None,
             fastpass_ln_z=float(np.logaddexp.reduce(priced)) - record["ln_like_saturated"] if priced else None,
             log_model_prior=basins[0]["ln_model_prior"]))
-    sizes = []
+    from concurrent.futures import Future
 
-    def recording_map(fn, jobs):
-        sizes.append(len(list(jobs)))
-        return iter(())
-    deep_pass.deep_pass(entries, chunk=1000, map_fn=recording_map)
-    return max(sizes)
+    class RecordingPool:
+        def __init__(self):
+            self.labels = []
+
+        def submit(self, fn, job, **kwargs):
+            self.labels.append(job[0])
+            future = Future()
+            future.set_result((job[0], []))
+            return future
+
+    pool = RecordingPool()
+    deep_pass.deep_pass(entries, workers=1000, executor=pool)
+    return len(set(pool.labels))
 
 
 @pytest.mark.parametrize("models", [
