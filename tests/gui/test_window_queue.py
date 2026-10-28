@@ -197,6 +197,23 @@ def test_start_analysis_asks_about_an_unsaved_card_draft_first_and_cancel_queues
     assert asked == ["start analysis"] and len(added) == queued
 
 
+@pytest.mark.parametrize("answer, added", [(False, 0), (True, 1)])
+def test_the_panels_add_buttons_ask_about_an_unsaved_card_draft_and_arrivals_do_not(
+        qtbot, monkeypatch, bl43_ws, answer, added):
+    w = _win(qtbot, bl43_ws)
+    asked, adds = [], []
+    monkeypatch.setattr(w.card_dock, "resolve_dirty", lambda action: asked.append(action) or answer)
+    monkeypatch.setattr(qc.QueueController, "add_selection", lambda self, pass_kind: adds.append(pass_kind))
+    monkeypatch.setattr(qc.QueueController, "_request_add", lambda self, keys, pass_kind, automatic: None)
+    w.scan_list_vm.select(w.scan_list_vm.snapshot.sets[0].spectra[0].key)
+    deep = w.processing_panel._queue._deep
+    qtbot.waitUntil(deep.isEnabled, timeout=WAIT_MS)
+    deep.click()                                                           # the panel's own Deep pass button
+    assert asked == ["add a deep pass"] and adds == ["deep"] * added
+    w._queue.on_arrivals([w.scan_list_vm.snapshot.sets[0].key])            # the automatic switch asks nothing
+    assert asked == ["add a deep pass"]
+
+
 # ---- the folder flows, against the stand-in service -------------------------------------------------------
 def _fake_service(monkeypatch, tmp_path) -> Path:
     """Run the queue's service as the scripted stand-in; returns the file it records the commands in."""

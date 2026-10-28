@@ -303,6 +303,20 @@ def _confirm_leave(parent, title: str, text: str, stay: str, go: str) -> bool:
     return box.clickedButton() is leave
 
 
+class _WindowQueue(QueueController):
+    """The window's queue controller. ``add_selection`` (the Processing panel's *Fast pass* / *Deep pass*, its one
+    caller) first settles an unsaved Card draft, as ``start_analysis`` does: an item fits the saved card, never a
+    draft still on screen (hard rule 7). Cancel adds nothing; the automatic switch's adds do not ask."""
+
+    def __init__(self, *args, resolve_draft, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._resolve_draft = resolve_draft
+
+    def add_selection(self, pass_kind: str) -> None:
+        if self._resolve_draft(f"add a {pass_kind} pass"):
+            super().add_selection(pass_kind)
+
+
 class MainWindow(QMainWindow):
     """The shell window over one :class:`~isar.workspace_api.Workspace`."""
 
@@ -699,10 +713,11 @@ class MainWindow(QMainWindow):
         self.output_bar = OutputBar(self)
         self._export = ExportController(self._operations, self)
         # The analysis queue: the one owner of queue state; the panel, the rail and the scan list read it.
-        self._queue = QueueController(
+        self._queue = _WindowQueue(
             sys.executable, self.intake, self.scan_list_vm, cores=self._cores_setting(),
             blocked=lambda: ("a campaign is running in this experiment"
-                             if self._operations.has_campaign() else None), parent=self)
+                             if self._operations.has_campaign() else None),
+            resolve_draft=self._resolve_dirty_card, parent=self)
         self.processing_panel.set_controller(self._queue)
         self.processing_rail.set_controller(self._queue)
         self.scan_list_vm.set_queue(self._queue)
