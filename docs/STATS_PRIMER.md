@@ -817,12 +817,14 @@ only to order the work and to decide promotion.
    highest two) run at accepted settings. Other models with no finite fast-pass evidence run
    directly at accepted settings, using the seed their former promotion would have used. The
    remaining models run at exploratory settings. Submission order is contenders, direct accepted,
-   then exploratory; within each category larger parameter dimension runs first. A worker takes
+   then exploratory; within each category larger parameter dimension runs first without a budget.
+   With a budget the initial categories retain fast-weight priority. A worker takes
    another model as soon as it finishes. There is no barrier between these three categories.
 2. *Promotion.* After the initial stage finishes, an exploratory model whose exploratory ln Z +
    3 sigma, or whose fast-pass ln Z, lies within 10 nats of the leading model (model prior included)
    is rerun at accepted settings with its independent promotion seed. This queue also refills
-   immediately. The leader now includes direct accepted results; that can change which other
+   immediately, largest dimension first without a budget and highest ln Z + model prior first
+   with a budget. The leader now includes direct accepted results; that can change which other
    models need promotion. Exploratory values remain in the comparison at their wider sigma.
 
 Seeds and persisted model order still follow the original fast-weight ordering, independently
@@ -876,11 +878,14 @@ independent sampler are part of the calibration protocol below.
 `information`). Nested-sampling's own error is about sqrt(H / n_live), which is why H is recorded with every
 run beside the real number of likelihood calls (counted here; dynesty's own count overstates it by about 25%),
 the iterations, the seed, the settings and the best log-likelihood. Wall times go to
-`run_timings.json`, not to the scientific record. Each worker also flushes a `deep_timing` JSON
-line to the existing stderr/run log after every sampling attempt, before a retry or another
-model starts: label, stage, worker allocation, settings, seed, wall seconds, calls, status and
-restart index. A stop therefore retains completed-attempt timings even when no final timing
-block was saved. The worker PID and numerical threadpool inventory are logged once per process.
+`run_timings.json`, not to the scientific record. When a model returns, the item process sends
+every attempt's label, stage, worker allocation, settings, seed, wall seconds, calls, status
+and restart index in the progress protocol retained by the GUI queue log. Worker PID and
+numerical threadpool inventory are included once per worker per item. This works under
+`pythonw`, where spawned items and workers have no Python stderr stream. Console runs also
+flush `deep_timing` diagnostics after each attempt when stderr exists. Stopping a later model
+preserves returned models' timings even without a final timing block; an unfinished retry
+sequence has not yet returned its attempts through the GUI progress channel.
 
 **The errors step.** On the chosen model (the highest-weight model of the preferred count, preferring one sampled
 at accepted precision) the deep pass refits from the nested maximum-likelihood sample and from the fast-pass best
@@ -915,28 +920,44 @@ tool `tools/calibrate_deep_pass.py --rslice-screen` takes exactly three explicit
 labels and runs 400 live points, step factors 1 and 2, three seeds each. A matching saved
 rwalk 400 x 4 baseline may be supplied with `--rwalk-baseline`; if calibration/record rebuilding
 is needed, `--refresh-fast-pass --include-rwalk-baseline` regenerates a record on an in-memory
-card copy and includes nine fresh baseline runs. Workspace files are not written.
+card copy and includes nine fresh baseline runs. Reconstruction applies saved temperature/slit
+values before calibration and context construction, and refuses excluded scans or dead analyzers.
+Workspace files are not written.
 Regeneration precedes the sampling cap. Each sampling run is capped at 3600 seconds and the
 single sampling invocation at 7200 seconds; at most 18 workers are allowed, subject to shared
 machine load. The report records every seed, calls, best likelihood, wall time, sample SD,
 range and unfinished work. Report publication uses the existing bounded atomic-replace
 retry so a transient Windows reader hold does not abort all sampling; persistent failure
-still propagates and every retry is logged. Maximum deciding-model SD at most 2 nats and mean wall time at
+still propagates and every retry is logged; a failure while publishing the final status cannot
+replace the original exception. Maximum deciding-model SD at most 2 nats and mean wall time at
 most 1.5 times rwalk are suggested reading targets, not gates. Three agreeing seeds cannot
 exclude a common missed mode. Any adoption or further sampling requires a later decision.
 
-**Screen outcome (2026-10-28; report only).** The authorized screen completed all planned
-runs, using a fresh rwalk baseline with the same evaluator as rslice. Factor 1 retained a
-low-evidence outlier and did not meet the repeatability target. Factor 2 met both suggested
-reading targets: its maximum model seed SD was about 0.16 times the fresh rwalk value, at
-about 1.47 times the mean per-run wall time. It improved the worst case, not every model:
-the four-peak baseline was more repeatable under rwalk. Seed scatter at factor 2 still exceeded
-dynesty's nominal uncertainty. Three seeds per model and shared-workstation timings make this
-a promising comparison, not calibration or evidence that all posterior modes were found.
-The low-likelihood outliers remain in spread calculations; convergence alone did not detect
-them. No sampler setting or calibration status changed. Exact seeds, likelihoods, calls and
-times remain only in the ignored `out/deep-rslice-20261028/report/calibration.md` and JSON;
-the local synthesis is `out/fitting_audit/REPORT.md`. No follow-up sampling was run.
+**Screen interpretation corrected after review (2026-10-28; report only).** Both large
+single-run outliers, one in rwalk and one in rslice factor 1, were flagged by the production
+best-ln L suspect check. Production retries them. The earlier raw-seed target therefore
+overstated rwalk's production scatter. Excluding flagged runs, factor 2's maximum deciding-model
+SD is about 0.86 times rwalk's, at about 1.47 times its mean per-run wall time. With only two
+or three usable seeds these scatter estimates are indistinguishable: **no advantage is shown
+for rslice under the production retry policy**. The screen did not itself run that policy,
+and neither filtering raw runs nor agreement between seeds establishes accuracy. No sampler
+setting or calibration status changed. A read-only audit verified the screen's frozen inputs
+against its saved workspace and current input hashes; it bypassed the defective refresh path.
+Historical curve identity was checked by path/name/size/mtime, not a historical shape hash.
+Exact seeds, likelihoods, calls and times remain in ignored `out/deep-rslice-20261028/report/`.
+
+**Production-retry uncertainty measurement (operator Q2, 2026-10-28).** The existing tool's
+`--production-retry-calibration` mode runs the same three explicit models at ACCEPTED and
+EXPLORATORY, nine new seeds per model and level: 54 jobs through `run_until_clean`, including
+the production restart ladder. Its seed sequence is disjoint from the earlier calibration
+and screen. Each attempt is capped at 3600 seconds, the invocation at 7200 seconds, with at
+most 18 workers after checking shared-machine load. Every completed or interrupted attempt
+is retained; only a final usable, converged, non-suspect ln Z enters the scatter calculation.
+The proposed sigma for each level is the largest per-model sample SD times
+`sqrt((n-1)/chi2.ppf(0.05,n-1))`, the one-sided 95% upper SD bound under independent normal
+seed errors. EXPLORATORY then adds 0.5 for its stopping tolerance. All nine usable finals
+per model are required for a proposal. This remains a provisional single-spectrum estimate,
+not evidence of absolute accuracy. The tool reports proposals and installs nothing itself.
 
 #### Deep-pass calibration (one pass, 2026-10-26)
 

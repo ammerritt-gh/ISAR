@@ -34,7 +34,8 @@ the run were cheap 59 / fast 22 / full 16.
 
 **Owner:** @ammerritt-gh. **Exit criteria:** numerical repairs and scheduling/evaluator changes
 validated; before/after count-completeness comparison reported; the one authorized sampler
-screen reported, including unfinished runs; durable behavior absorbed into STATS_PRIMER §2.4.
+screen and Q2 production-retry uncertainty measurement reported, including unfinished runs;
+durable behavior absorbed into STATS_PRIMER §2.4.
 These are separate from the older campaign-speed targets below.
 
 The stopped GUI pass establishes scheduling waste: the contender stage used only 30% of its
@@ -46,14 +47,17 @@ attribution is retained under `out/fitting_audit/`; real-data values stay outsid
 
 Implemented repairs keep finite-difference stencils inside prior support, preserve finite
 same-tail Gaussian interval masses (including the multivariate path), retain failed structural
-variants, qualify a deep winner at the count ceiling, and flush completed-attempt timings before
-retries. Error-method timing and worker/threadpool information are retained. See
+variants and qualify a deep winner at the count ceiling. Returned models' attempt timings
+travel through the GUI progress protocol even under pythonw; an unfinished retry sequence
+is not yet available through that channel. Error-method timing and worker/threadpool information are retained. See
 [STATS_PRIMER](../STATS_PRIMER.md) for scientific semantics and remaining qualifications.
 
 The initial contender/direct-accepted/exploratory jobs now share a continuously refilled pool;
 the promotion queue refills likewise. Missing-price models go directly to their former accepted
 seed/settings. A failed accepted sequence retains the exploratory fallback and remains partial.
-Submission is category first, then descending dimension. Seeds and output order stay stable.
+Submission is category first, then descending dimension without a budget. Budgeted initial
+work keeps fast-weight priority; budgeted promotions use sampled ln Z plus model prior.
+Seeds and output order stay stable.
 Budget admission is per submission; the merged-stage leader can change promotion decisions.
 No end-to-end wall-time reduction has yet been measured on the stopped spectrum.
 
@@ -76,11 +80,12 @@ changed floating-point search paths limit extrapolation.
 
 Reliability remains alongside speed work: today's deep settings are provisional and untrusted.
 The one authorized rslice screen completed, retaining today's production settings; its
-protocol and interpretation are in STATS_PRIMER §2.4. Factor 1 retained a low-evidence outlier.
-Factor 2 met the proposed reading targets: maximum model seed SD was about 0.16 times fresh
-rwalk, at about 1.47 times mean wall time. It was not uniformly more repeatable across models,
-and three seeds cannot establish accuracy. Adoption remains an operator decision. Raw seeds
-and fit values belong only in the ignored local report; no follow-up sampling was run.
+protocol and corrected interpretation are in STATS_PRIMER §2.4. Both large raw-run outliers
+were flagged by production's suspect check and would be retried. Among unflagged seeds,
+factor 2's maximum model SD is about 0.86 times rwalk's at about 1.47 times mean wall time:
+no advantage is shown for rslice under production retry, with only two or three usable seeds.
+Q2 authorizes a bounded measurement of final usable production retries at both settings levels,
+with conservative SD upper bounds; status remains provisional. Raw fit values stay local.
 The operator's Q1 ruling replaces the old fit-to-fit completeness comparison with the best
 found ln L plus model-prior weight against the leading count's aggregate ln Z minus the margin.
 Dismissals are recorded as "dismissed on its best found fit". This local-fit heuristic is not
