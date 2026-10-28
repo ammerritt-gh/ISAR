@@ -895,7 +895,9 @@ card copy and includes nine fresh baseline runs. Workspace files are not written
 Regeneration precedes the sampling cap. Each sampling run is capped at 3600 seconds and the
 single sampling invocation at 7200 seconds; at most 18 workers are allowed, subject to shared
 machine load. The report records every seed, calls, best likelihood, wall time, sample SD,
-range and unfinished work. Maximum deciding-model SD at most 2 nats and mean wall time at
+range and unfinished work. Report publication uses the existing bounded atomic-replace
+retry so a transient Windows reader hold does not abort all sampling; persistent failure
+still propagates and every retry is logged. Maximum deciding-model SD at most 2 nats and mean wall time at
 most 1.5 times rwalk are suggested reading targets, not gates. Three agreeing seeds cannot
 exclude a common missed mode. Any adoption or further sampling requires a later decision.
 

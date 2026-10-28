@@ -727,6 +727,8 @@ def render_markdown(report):
 
 
 def write_report(report, output):
+    from isar.session.atomic import replace_retrying
+
     for name, text in (("calibration.json", json.dumps(_json_safe(report), indent=2,
                                                        allow_nan=False) + "\n"),
                        ("calibration.md", render_markdown(report))):
@@ -734,7 +736,7 @@ def write_report(report, output):
         temporary = target.with_suffix(target.suffix + ".tmp")
         with temporary.open("w", encoding="utf-8", newline="\n") as stream:
             stream.write(text)
-        os.replace(temporary, target)
+        replace_retrying(temporary, target)
 
 
 def installed_text(report, analysis):

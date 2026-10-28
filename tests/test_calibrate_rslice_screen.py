@@ -21,6 +21,30 @@ def harness(monkeypatch):
     return module
 
 
+def test_report_write_retries_transient_reader_locks(harness, monkeypatch, tmp_path, caplog):
+    report = {"status": "running", "runs": []}
+    monkeypatch.setattr(harness, "render_markdown", lambda report: "synthetic report\n")
+    real_replace = os.replace
+    calls = {"calibration.json": 0, "calibration.md": 0}
+
+    def temporarily_locked(source, target):
+        calls[target.name] += 1
+        if calls[target.name] == 1:
+            raise PermissionError(5, "synthetic transient reader hold", str(target))
+        real_replace(source, target)
+
+    monkeypatch.setattr(harness.os, "replace", temporarily_locked)
+    with caplog.at_level("WARNING", logger="isar.session.atomic"):
+        harness.write_report(report, tmp_path)
+    assert all(n >= 2 for n in calls.values())
+    assert sum("synthetic transient reader hold" in r.message for r in caplog.records) == 2
+    with (tmp_path / "calibration.json").open(encoding="utf-8", newline="") as stream:
+        assert json.load(stream) == report
+    with (tmp_path / "calibration.md").open(encoding="utf-8", newline="") as stream:
+        assert stream.read() == "synthetic report\n"
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 def entries():
     return [SimpleNamespace(label=f"m{i}", count=i, ndim=i + 2, fastpass_ln_z=-5.0,
                             fastpass_lnl_opt=-1.0, log_model_prior=-2.0, problem=None)
