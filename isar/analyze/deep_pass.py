@@ -370,14 +370,16 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
 
     The initial queue admits contenders at accepted settings, then noncontenders without a finite
     fast-pass price directly at accepted settings, then the remaining exploratory models. Within
-    each category, the largest dimension runs first. Seeds and output order remain keyed to the
-    original fast-weight order. A direct accepted run uses its old promotion seed (+1); only if
+    each category, unlimited runs start the largest dimension first; budgeted runs keep fast-weight
+    priority. Seeds and output order remain keyed to the original fast-weight order. A direct
+    accepted run uses its old promotion seed (+1); only if
     it exhausts its retries does its original exploratory sequence run as fallback. Such a model
     stays search limited even if fallback succeeds, and is not promoted again.
 
     Promotion is decided after all admitted initial jobs finish, including fallback. Its leader
     therefore includes the new direct-reference values. Relevant exploratory models then run at
-    accepted settings, again longest first with immediate refill. With no executor, work is serial.
+    accepted settings, longest first without a budget and highest lnZ plus model prior first with
+    a budget, with immediate refill. With no executor, work is serial.
     The budget is checked before each submission; admitted jobs finish even beyond the budget.
     Missing models, pending promotions, failed accepted attempts and fast-pass limits qualify the
     comparison as partial. Progress reports a zero on first admission and completed-model counts;
@@ -404,7 +406,14 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
 
     def job_key(job):
         rank = {"contenders": 0, "direct_reference": 1}.get(job.category, 2)
-        return rank, -job.entry.ndim, ranks[job.entry.label]
+        if budget_s is None:
+            priority = -job.entry.ndim
+        elif job.category == "promoted":
+            model = out[job.entry.label]
+            priority = -(model.log_z + model.log_model_prior)
+        else:
+            priority = -_fast_weight(job.entry)
+        return rank, priority, ranks[job.entry.label]
 
     def plan(models, settings, status, category, offset=0):
         return [_StageJob(e, settings, status, category, seeds[e.label] + offset) for e in models]

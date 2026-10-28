@@ -1,5 +1,6 @@
 """Deep scheduling uses completed work to refill cores, without changing model seeds."""
 from concurrent.futures import Future
+from dataclasses import replace
 
 import pytest
 
@@ -102,6 +103,25 @@ def test_budget_checks_each_submission_and_finishes_every_admitted_job(monkeypat
     assert pool.clock.now == 240 and not pool.pending
     assert [m.status for m in result.models] == ["reference", "reference", "reference", "not_run"]
     assert result.search_limited == "budget ended before c3"
+
+
+def test_budget_prioritizes_fast_weight_over_dimensions_in_the_initial_queue(monkeypatch):
+    entries = [entry("c_small", 1, 0.0, 2), entry("c_large", 2, -1.0, 10),
+               entry("e_small", 3, -6.0, 3), entry("e_large", 4, -7.0, 9)]
+    pool = ControlledPool(monkeypatch, {}, {"c_small": 0.0, "c_large": -1.0})
+    result = dp.deep_pass(entries, executor=pool, workers=1, budget_s=3)
+    assert [row[1] for row in pool.started] == ["c_small", "c_large", "e_small"]
+    assert result.models[-1].status == "not_run"
+
+
+def test_budget_promotes_by_current_evidence_plus_prior_over_dimensions(monkeypatch):
+    entries = [entry("lead", 1, 0.0), entry("second", 2, -1.0),
+               entry("relevant_small", 3, -6.0, 3),
+               replace(entry("less_relevant_large", 4, -7.0, 9), log_model_prior=-10.0)]
+    pool = ControlledPool(monkeypatch, {}, {"lead": 0.0, "second": -1.0,
+                                          "relevant_small": -2.0, "less_relevant_large": 0.0})
+    dp.deep_pass(entries, executor=pool, workers=1, budget_s=5)
+    assert [label for _, label, stage, *_ in pool.started if stage == "promoted"] == ["relevant_small"]
 
 
 def test_promotions_wait_for_initial_completion_then_refill(monkeypatch):

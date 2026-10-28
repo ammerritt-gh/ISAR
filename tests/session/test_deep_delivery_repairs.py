@@ -43,12 +43,16 @@ def test_chosen_errors_preserve_the_method_seconds(monkeypatch):
     assert chosen["errors"]["method_seconds"] == timings
 
 
-def test_pre_revision_deep_records_are_stale_without_changing_sampler_settings(monkeypatch):
-    request = deep_delivery.DeepRequest()
+@pytest.mark.parametrize("previous_revision", [None, 2])
+def test_pre_revision_deep_records_are_stale_without_changing_sampler_settings(monkeypatch, previous_revision):
+    request = deep_delivery.DeepRequest(budget_s=3600.0)
     canonical_hash = deep_delivery.canonical_hash
 
     def old_signature(fields):
-        return canonical_hash({key: value for key, value in fields.items() if key != "algorithm_revision"})
+        previous = {key: value for key, value in fields.items() if key != "algorithm_revision"}
+        if previous_revision is not None:
+            previous["algorithm_revision"] = previous_revision
+        return canonical_hash(previous)
 
     with monkeypatch.context() as patch:
         patch.setattr(deep_delivery, "canonical_hash", old_signature)

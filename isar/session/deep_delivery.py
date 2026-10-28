@@ -20,7 +20,7 @@ from isar.session.state import canonical_hash
 log = logging.getLogger(__name__)
 
 SCHEMA = "isar.deep-pass/1"
-ALGORITHM_REVISION = 2  # ceiling qualification and continuously refilled, two-stage coverage
+ALGORITHM_REVISION = 3  # budgeted admission retains evidence relevance rather than dimension priority
 UNTRUSTED = "provisional sampler settings: untrusted until calibration"
 
 
