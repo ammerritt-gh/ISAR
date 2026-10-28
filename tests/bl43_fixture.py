@@ -20,6 +20,7 @@ equals it, which ties the consumers' data to the provider.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 import shutil
 import types
 from pathlib import Path
@@ -94,7 +95,7 @@ def _var_file(path: Path, numbers) -> None:
 
 
 def write_bl43_files(folder: Path, n_analyzers: int = 4, *, with_t: bool = True,
-                     off_integer=()) -> Path:
+                     off_integer=(), content: Mapping[str, str] | None = None) -> Path:
     """Write the incoming data files into ``folder`` (created); return it. ``with_t=False`` leaves every
     file without a temperature, in its trailer and in its name (``STEM_A_NO_T``, ``STEM_B_NO_T``,
     ``BA122_FILE_NO_T``, ``BAD_FILE_NO_T``); ``off_integer`` names ``"<stem>_aNN"`` files whose counts are not raw."""
@@ -115,6 +116,10 @@ def write_bl43_files(folder: Path, n_analyzers: int = 4, *, with_t: bool = True,
     _write(folder / f"{stem_b}_a07", "garbage\n")        # a member left out of a read set
     _write(folder / (BAD_FILE if with_t else BAD_FILE_NO_T), "not a data file\n")   # a set that fails whole
     _write(folder / "notes.txt", "beamtime notes\n")     # unrecognised
+    for name, text in (content or {}).items():
+        if Path(name).name != name or not (folder / name).is_file():
+            raise ValueError(f"content override must name an existing file in {folder}: {name!r}")
+        _write(folder / name, text)
     return folder
 
 
@@ -184,7 +189,8 @@ def _temperature_optional_card(dest: Path) -> Path:
 
 
 def build_bl43_workspace(root: Path, n_analyzers: int = 4, *, fits: bool = True, intake: bool = False,
-                         with_t: bool = True, off_integer=()) -> Path:
+                         with_t: bool = True, off_integer=(),
+                         content: Mapping[str, str] | None = None) -> Path:
     """Write the data under ``root/incoming``, ingest it into ``root/ws``, stamp the fits; return ``ws``.
 
     ``with_t=False`` builds the no-temperature variant (``STEM_*_NO_T``; its fits are stamped on
@@ -198,7 +204,8 @@ def build_bl43_workspace(root: Path, n_analyzers: int = 4, *, fits: bool = True,
     from isar.session.state import SessionState
     from isar.session.workspace import Workspace
 
-    incoming = write_bl43_files(Path(root) / "incoming", n_analyzers, with_t=with_t, off_integer=off_integer)
+    incoming = write_bl43_files(Path(root) / "incoming", n_analyzers, with_t=with_t,
+                                off_integer=off_integer, content=content)
     ws_root = Path(root) / "ws"
     ws_root.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(sp8_bl43._CARD_PATH, ws_root / "card.policy.toml")   # the shipped card, verbatim

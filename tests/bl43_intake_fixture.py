@@ -12,7 +12,7 @@ Nothing here hand-writes a backend file: user entries and settings go through th
 """
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from bl43_fixture import ANALYZERS, KEY_A, KEY_A_NO_T, KEY_B_NO_T, build_bl43_workspace
@@ -28,7 +28,8 @@ def analyzer_ids(n_analyzers: int = 4) -> tuple[str, ...]:
 
 
 def build_intake_workspace(root: Path, n_analyzers: int = 4, *, curves: bool = True, fits: bool = True,
-                           with_t: bool = True, off_integer=()) -> Path:
+                           with_t: bool = True, off_integer=(),
+                           content: Mapping[str, str] | None = None) -> Path:
     """The S1 workspace under ``root`` with its import record and curve check; returns ``root/ws``.
     ``curves=False`` writes no library (the resolution curves are then not found). ``with_t=False``: no
     temperature anywhere, in the files or their names; the scan keys are then ``KEYS_NO_T``."""
@@ -36,14 +37,14 @@ def build_intake_workspace(root: Path, n_analyzers: int = 4, *, curves: bool = T
     if curves:
         write_library(root / "incoming" / "rf", analyzers=analyzer_ids(n_analyzers))
     ws_root = build_bl43_workspace(root, n_analyzers, fits=fits, intake=True, with_t=with_t,
-                                   off_integer=off_integer)
+                                   off_integer=off_integer, content=content)
     if fits:
         write_run(ws_root, FITTED if with_t else FITTED_NO_T)
     return ws_root
 
 
 def write_run(ws_root: Path, units: Sequence[str], *, passes: Sequence[str] = ("fast",),
-              end: bool = True) -> str:
+              end: bool = True, stale: Mapping[str, Mapping] | None = None) -> str:
     """One run over ``units`` through C-fit-inputs' writers: start, started, finished and (``end``) the
     end line ``"complete"``. Without ``end`` the run reads as running while this process lives, and as
     ended without completing once it has gone (a killed run). Returns the run id."""
@@ -56,6 +57,8 @@ def write_run(ws_root: Path, units: Sequence[str], *, passes: Sequence[str] = ("
         scan, _, det = unit.rpartition(":")
         row = rows[scan]
         u = inputs.unit_inputs(row, inputs.scan_inputs(row, index), det, None)
+        if stale and unit in stale:
+            u = {**u, **stale[unit]}
         kept = list(inputs.fallbacks(u))
         for p in passes:
             started.append({"unit": unit, "scan": scan, "pass": p, "inputs": u, "hash": inputs.inputs_hash(u),

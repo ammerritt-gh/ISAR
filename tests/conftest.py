@@ -31,3 +31,19 @@ def bl43_ws(bl43_ws_readonly, tmp_path):
     copy = tmp_path / "bl43"
     shutil.copytree(bl43_ws_readonly.parent, copy)
     return copy / bl43_ws_readonly.name
+
+
+@pytest.fixture(scope="session")
+def scans_view_ws_readonly(tmp_path_factory):
+    """The richer spectra/list workspace, generated once per xdist worker."""
+    from scans_view_fixture import build_scans_view_workspace
+
+    return build_scans_view_workspace(tmp_path_factory.mktemp("scans-view"))
+
+
+@pytest.fixture
+def scans_view_ws(scans_view_ws_readonly, tmp_path):
+    """A private copy of the scans-view workspace and its synthetic incoming files."""
+    copy = tmp_path / "scans-view"
+    shutil.copytree(scans_view_ws_readonly.parent, copy)
+    return copy / scans_view_ws_readonly.name
