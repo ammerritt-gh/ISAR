@@ -307,7 +307,9 @@ With no experiment open, the window says *No experiment open*, with *New experim
 *Recent ▾* and a labelled drop zone. The arrangement is the same from then on, on a laptop and on a
 desktop: the experiment's setup, what needs attention and the scan list down the left, the display in the centre, *Processing* and *Campaign* on the
 right, and the Log and Output along the bottom. On a laptop the right panel starts collapsed to a
-*Processing ‹* rail. *View ▸ Reset layout* returns to the default for the current screen.
+*Processing ‹* rail. The centre has four pages: *Scan(s)*, *Plane (q, E)*, *Dispersion ω(q)* and
+*Sandbox*. Selecting a spectrum takes you to *Scan(s)*; selecting campaign results can take you to
+*Plane*. *View ▸ Reset layout* returns to the default for the current screen.
 
 ### Dropping data
 
@@ -437,9 +439,70 @@ The filter box narrows the list: comma-separated terms, all of which must match,
 are visible. *Sort ▾* orders the scan sets by name (the default) or by temperature, or flips the list to
 analyzer first, with every scan set beneath each analyzer.
 
-Click a spectrum to show it in the display. Double-click it, or press *Inspect*, to open the scan
-inspector. A background update does not collapse the list, move the selection or jump the scroll. If the
-selected spectrum falls outside the filter, the list says so and the display keeps it.
+The scan list and the Scan(s) page, inspector, saved groups and Processing queue share one selection.
+Click a spectrum row to select it; Ctrl-click adds or removes it, and Shift-click selects the visible range
+from the anchor. Click the row gutter to expand or collapse a scan set without changing selection; click a
+set row to select its analyzers. The rows show partial-selection counts. Empty space clears the selection.
+A background update keeps membership and scroll position. Filtering can hide a selected spectrum but does
+not remove it; the list says how many selected spectra are outside the filter. Selection alone never queues
+work. Double-click an analyzer, or press *Inspect*, to open the scan inspector.
+
+### The Scan(s) display
+
+Selecting one or more spectra opens the Scan(s) page. It draws at most ten selected spectra; with more than
+ten it shows a read-only list grouped by scan set and reads no spectra. Change the selection in the scan list
+or recall a saved group. Up to ten selected spectra are drawn in selection/list order.
+
+*Fit* is *None* by default. Choose *Fast* or *Deep* to show that stored pass; no fit runs from this page.
+Fast total/component curves are solid, Deep curves dashed, and background curves dotted. The active
+spectrum is marked in the legend. Outdated input values remain visible beside the trace. The Curves header marks displayed Deep curves
+that include an untrusted result, and the Fit tooltip gives its reason. When deep currentness cannot be
+judged, the trace says *currentness not recorded*.
+
+*Layout* is *Offset* or *Overlay*. Offset stacks the spectra using an automatic vertical step or the number
+you enter, in the current intensity unit. Overlay compares measured data with distinct colours and symbols,
+without fit curves; the Fit control is disabled. Selecting one spectrum always uses the single-spectrum
+view. If a stored fit curve is available, that view also shows a residual panel: measured minus the chosen
+total fit on the measured energy grid, with data-error bars. The residual is in the displayed intensity unit,
+not divided by the uncertainty.
+
+*Scale* is *Raw* or *Normalised*. Raw shows counts N and Poisson error √N, including zero counts as
+0 ± 0. Normalised shows N R/M, where M is the point's monitor and R is one reference monitor saved for
+the experiment. R is the nearest power of ten to the median of valid positive monitors across its spectra;
+selection changes do not recalculate it. The propagated uncertainty is
+(R/M) √(V + N²/M), where V is the stored count variance; with V=N and N>0 this is
+y √(1/N + 1/M). At N=0, the display keeps 0 ± 0 and adds no floor. Normalised display omits points
+without positive monitors. If a spectrum has no usable monitor it is counted as not drawn with the reason;
+Raw can still show its counts if its energy axis is calibrated.
+
+No zero or curve is guessed: spectra that need an energy zero stay not drawn until a recorded calibration
+supplies it. Pooled masters are named as not drawn, not replaced by their member spectra. Missing data or monitor exposure is named in the not-drawn summary; an unavailable pass or curve is named on its spectrum trace. An older result whose exposure was not
+stored needs an analysis run before it can be shown in Normalised scale; when the source monitor is absent,
+read the data again with it present.
+
+A new Deep pass stores the actual chosen model manifest beside the chosen parameters, and Scan(s) evaluates
+that model for its curve. It does not use a guessed Fast-pass model to draw a Deep result. For older or
+ambiguous Deep records with no recoverable structure, the curve is named unavailable while the stored
+state and mode table remain. An outdated curve is still shown with its warning; Normalised scale places it
+in the current unit's recorded exposure frame and the experiment's frozen R, without refitting.
+
+The inspector stays beside the scan list. It follows the active spectrum and shows “k of n selected” with
+previous/next controls; stepping changes the active spectrum without changing the selected set. Its Fit
+section reports each stored pass's state, trust/currentness, model label and mode count, then the stored
+energy E₀, linewidth Γ (DHO damping, HWHM) and amplitude h with their symmetric or asymmetric intervals.
+Missing uncertainty stays visible as “± —” or “—”. Interval ladder, Model candidates, Verdict and Provenance
+remain in their existing collapsed sections below. The inspector has no spectrum plot. Pooled masters still
+show their recorded numbers and fit tables there.
+
+The group chips save or recall up to nine selections per experiment. Click a numbered chip or press 1–9 when no text editor has focus to
+recall it; Ctrl+1–Ctrl+9 saves or replaces that slot, while + saves to the lowest free slot. Chip Save/Undo, + and Ctrl+number can replace or add a
+saved group after selection membership changes; ordinary selection does not rewrite
+the saved group. Missing group members are named, and recall drops them with a notice. These groups are
+view controls, not card collation settings.
+
+The Processing queue remains on the right. It consumes the same selection, adds one item for each selected
+eligible analyzer when you press *Fast pass* or *Deep pass*, and excludes pooled masters. Merely selecting
+spectra adds nothing. The Scan(s) page does not change queue order, writer ownership or saved-result rules.
 
 ### The scan inspector
 
@@ -449,7 +512,7 @@ do); the analyzer, temperature and Q, each with where it came from; the slit, or
 number of points and the energy range; the parse status; the scan's QC flags; the target Q, the campaign
 command and the counting mode, each only when the scan has one; each pass's state; a "Scan metadata"
 section with the rest of the unit's recorded values (status, calibration, the file's facts, and so on),
-one row per value the unit has; and a raw-counts plot.
+one row per value the unit has; and a Fit section with the stored pass summaries and mode rows. The inspector has no plot; spectrum plotting is on Scan(s).
 On a laptop, opening the inspector collapses *Processing* to its rail so the plot keeps its width; expand
 *Processing* again from the rail and it stays open while the inspector is open. Closing the inspector
 does not expand it.
@@ -478,8 +541,8 @@ a time per file and several files at once, on the number of cores you give ISAR:
 in the menu bar, which defaults to this machine's cores less two. A lower number takes effect as running analyzers
 finish. Once work is queued, the only thing you do is add more or stop something.
 
-**Adding work.** Select analyzer files in the scan list (one at a time for now), then press *Fast pass* or
-*Deep pass* under *Add to queue:* in *Processing*. Selecting alone queues nothing. *Fast-pass all ready (N)* is the
+**Adding work.** Select one or more analyzer files in the scan list, then press *Fast pass* or
+*Deep pass* under *Add to queue:* in *Processing*. Selecting alone queues nothing; pooled masters are named and excluded. *Fast-pass all ready (N)* is the
 button at the top of the left column; it is also in *Processing*, in the *Run* menu, and in the needs-attention and
 readiness lists. It adds a fast pass for every ready analyzer file that has no current one, and its label says how
 many. With *Fast-pass new scans as they arrive* on (the default for a new experiment), every analyzer file read in
@@ -573,7 +636,7 @@ folder holds:
 - `resolution/`: one CSV per resolution curve a fit used.
 - `README.txt`: units and conventions.
 
-Nothing picks one pass over the other: the display keeps drawing the fast-pass fit, but the export carries
+Nothing picks one pass over the other: Scan(s) draws no fit by default, and its Fit control lets you choose the stored Fast or Deep pass; the export carries
 both passes with their labels. Currentness: for a BL43LXU experiment each pass is judged by the inputs it recorded when it ran (data,
 temperature, slit, Q, exclusions, dead analyzers, counts accepted, the resolution folder and curve, and the
 calibration), as the `inputs` blocks above say. A fit that is out of date keeps its stored result until the

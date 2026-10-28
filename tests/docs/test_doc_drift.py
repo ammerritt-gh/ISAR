@@ -66,6 +66,10 @@ LINK_EXEMPT_PREFIXES = (
 # indeed required, to keep the wording that was accurate on its date.
 STALE_PHRASES = (
     (
+        "keeps drawing the fast-pass fit",
+        "G27 makes Scan(s) default to Fit: None and draw only the stored pass chosen by the user",
+    ),
+    (
         "Planned, not wired in",
         "the Bayesian rung is implemented and running as a diagnostic; only its licence to "
         "certify is Planned (DECISIONS S5)",

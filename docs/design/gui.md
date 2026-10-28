@@ -2,7 +2,7 @@
 
 > **Status:** live
 > **Authority:** canonical GUI + workspace_api presentation design
-> **Verified against code revision:** `df7dac9` (2026-10-28)
+> **Verified against code revision:** `b05b0df` (2026-10-28)
 
 **Status:** Design draft, 2026-07-11, substantially built. This document follows the discipline of
 `../ARCHITECTURE.md`: nothing is described in the implemented voice unless it is. Because roughly the first
@@ -16,13 +16,14 @@ preserved as the design record.
 | Phase / capability | Status | Evidence |
 |---|---|---|
 | **Phase 0** — Qt-free workspace read API + geometry layer | **Implemented** | `isar/workspace_api/` (`workspace.py`, `views.py`, `watch.py`, `evaluate.py`), `isar/geometry/`, Qt-free-core test |
-| **Phase A** — read-only viewer, surfaces C1–C5 | **Implemented** | `views/browser_dock.py`, `inspector_widget.py`, `heatmap_pane.py`, `waterfall_pane.py`, `dispersion_pane.py` |
+| **Phase A** — read-only viewer, surviving surfaces C1–C5; Waterfall page superseded by G27 | **Implemented** | `views/browser_dock.py`, `inspector_widget.py`, `heatmap_pane.py`, `dispersion_pane.py` |
 | **Pass 3** — workflow layout (center view host, versioned dock layout) | **Implemented** (G18); its window arrangement and layout fallback are superseded by G24 | `views/center_host.py`, `main_window.py` |
 | **Pass 3** — campaign workspace: launcher, live feed, cooperative stop | **Implemented** (G19) | `views/campaign_dock.py`, `control/stop-<token>.json` protocol |
 | **Pass 3** — compact campaign monitor | **Implemented** (G20) | `views/campaign_monitor.py` |
-| **Desktop window** — one arrangement in every state: scan list in the left column, Processing and Campaign on the right, Log and Output below (G24) | **Implemented** (2026-10-27); the display at the laptop's narrowest combination is an open item (§0quinquies) | `main_window.py`, `views/experiment_strip.py`, `views/output_bar.py`, `views/processing_panel.py`, `tests/gui/test_window_frame.py` |
+| **Desktop window** — one arrangement in every state: scan list on the left, Scan(s)/Plane/Dispersion/Sandbox in the centre, Processing and Campaign on the right, Log and Output below (G24, G27) | **Implemented** (2026-10-28); laptop human walkthrough remains unrun | `main_window.py`, `views/experiment_strip.py`, `views/output_bar.py`, `views/processing_panel.py`, `tests/gui/test_window_frame.py` |
 | **Experiment as a real folder** — drop-to-create, Rename, Save experiment copy…, Export results… (G25) | **Implemented** (2026-10-27) | `workspace_manager.py`, `views/files_strip.py`, `export_action.py`, `isar/report/export.py` |
-| **Scan list and scan inspector** — BL43 scan-set tree, status words, filter and sort, inspector inside the left panel (G24) | **Implemented** (2026-10-27) | `isar/workspace_api/scan_list.py`, `viewmodels/scan_list.py`, `views/scan_list.py`, `views/scan_inspector.py`, `theme.py` |
+| **Scan list and scan inspector** — BL43 scan-set tree, shared multi-selection, status words, filter and sort, Fit section and stored tables in the left inspector (G24, G27) | **Implemented** (2026-10-28; generated-data widget tests; no person acceptance claimed) | isar/workspace_api/scan_list.py, viewmodels/scan_list.py, views/scan_list.py, views/scan_inspector.py, theme.py, tests/gui/test_scan_list_selection.py, tests/gui/test_inspector_fit_section.py |
+| **Scan(s) spectrum view** — shared selection, up to ten spectra, stored Fast/Deep curves, explicit not-drawn reasons, raw and monitor-normalised scales (G27) | **Implemented** (2026-10-28; generated-data widget coverage; person walkthrough not yet run) | `workspace_api/spectra.py`, `workspace_api/evaluate.py`, `session/deep_delivery.py`, `plotspec/builders.py`, `viewmodels/scans_page.py`, `views/scans_page.py`, `tests/gui/test_scans_page.py` |
 | **Left side, stage two** — setup section, *Choose curves folder…*, *Experiment info…*, needs-attention list, fact table, out-of-date marks, readiness line (G24, G25) | **Implemented** (2026-10-27; job `ja0cd202ecb67`, on the intake backend of job `jfada74237892`); user values for Q and other facts stay pinned, and one layout limit is open (§0quinquies) | `viewmodels/intake.py`, `views/setup_section.py`, `views/details_dialog.py`, `views/attention_list.py`, `views/value_entry.py`, `views/fact_table.py`, `views/readiness_line.py`, `tests/gui/test_stage2_walkthrough.py` |
 | **Analysis queue** — the Processing panel's queue: analyzer files queued by hand or as they arrive, fast before deep, continuous on the cores ISAR is given, one writer per experiment; BL43LXU only (G26, §0sexies) | **Implemented** (2026-10-28), tested offscreen and at the engine. The walk-through at the GUI threshold by a person is **not yet run**. Open: a queued fit does not refresh the curves check the setup section shows (§0sexies) | `isar_gui/queue_controller.py`, `isar_gui/views/queue_panel.py`, `isar/session/analysis_queue.py`, `isar/session/analysis_service.py`, `isar/session/file_fit.py`, `isar/session/writer.py`, `isar/session/currentness.py`; `tests/gui/test_window_queue.py`, `test_queue_panel.py`, `test_queue_controller.py` |
 | **Read-only display grammar** — WISH-1/2/3/9 | **Implemented** (G23) | `isar/workspace_api/display.py`, `isar/plotspec/`, plane/dispersion/inspector viewmodels and panes |
@@ -61,15 +62,16 @@ in the referenced section.
 | G5 | Transport is a **directive inbox**: `workspace/inbox/` of timestamped JSON, drained by the driver at the top of each decide step, moved to the ledger. Atomic write-temp-then-rename. | §5 |
 | G6 | **The driver remains the sole owner of the instrument.** Human directives are queue entries with priority `human` that still pass the driver's validate step (triangle closure, dark angles, limits). Append and nudge; never seize. | §5 |
 | G7 | **Sandbox exception**: for interactive refitting the GUI may import the deterministic fit engine's frozen-config entry point, in-process, for live preview. Sandbox results are ephemeral and visually marked; **commit** writes a directive and the official number comes from the workspace re-run. | §6 |
-| G8 | GUI snapshot rendering and report/diagnostic figure rendering are **the same code** at two zoom levels. One figure module, two consumers. | §7 |
-| G9 | 4D honesty: every 2D view is an **explicit, on-screen-declared projection** (plane + integration window). Measured strips render as strips, gaps as gaps; any interpolated/modeled surface is labeled as a model. | §8 |
-| G10 | Semantic grouping **is the card's collation policy**; changing it is a card edit. Display-side overlays (e.g. waterfall by T) are pure view state and never touch the card. | §9 |
+| G8 | GUI snapshots and report/diagnostic figures share PlotSpec semantics and plot builders, with matplotlib and pyqtgraph renderers. Scan(s), Plane and Dispersion use the same read-only plotting grammar. | §7 |
+| G9 | 4D honesty: every 2D projection in Plane or Dispersion is declared on screen (plane plus integration window). Measured strips render as strips, gaps as gaps; modeled surfaces are labeled. Scan(s) plots individual 1D spectra and does no projection. | §8 |
+| G10 | Semantic grouping is the card's collation policy; changing it is a card edit. Scan(s) Offset/Overlay, pass choice and Raw/Normalised scale are display state only and never alter collation or fit records. | §9 |
 | G11 | Coordinate math: a **metric/UB layer** (lattice + orientation vectors u, v → scattering plane, r.l.u. ↔ Å⁻¹, non-rectilinear axes) lives in **core, Qt-free**, sourced from the TAS_MCP / TAVI math. TAVI stays the sole resolution authority; the GUI grows **no third opinion** on scattering triangles — feasibility is consulted, not reimplemented. | §10 |
-| G12 | Donor repositories: **ACIDD** (cut gesture, coordinate-layer-under-image-view, templates, session persistence), **PUFFIN** (live-parameter fitting grammar, MVVM + worker threads), **ISAR** (everything that thinks). All three are GPL-3; code may be lifted with copyright notices. The GUI is **assembly, not invention**. | §11 |
+| G12 | Donor repositories: ACIDD (cut gesture, coordinate-layer-under-image-view, templates, session persistence), PUFFIN (live-parameter fitting grammar, MVVM + worker threads), ISAR (everything that thinks). Scan(s) shared selection and per-experiment group chips use ISAR's own contracts; all three donors are GPL-3. | §11 |
 | G13 | Phasing: Phase 0 workspace read API → Phase A read-only viewer → Phase B planner → Phase C directives/sandbox/live dashboard. Read-only first so nothing destabilizes the pending TAVI SVP. | §13 |
 | G23 | **Individual fits show evidence; pooled masters show the current answer; only a revision-matched assessment can certify.** State colouring is the default; one shared persisted action switches plane and dispersion to mutually exclusive entropy colouring. Strip colour and latest-acquisition highlighting have one backend-neutral semantic contract. | §7.3, §8 |
-| G24 | **One arrangement in every state.** Left column (experiment strip, files strip, scan list, full height); the display; Processing and Campaign on the right; Log and Output below; the scan inspector inside the left panel; laptop or desktop chosen at first start. | §0quinquies |
+| G24 | One arrangement in every state: scan list and inspector on the left, four central pages (Scan(s), Plane, Dispersion, Sandbox), Processing and Campaign on the right, Log and Output below. | §0quinquies, §0septies |
 | G25 | **The experiment is a real folder.** Drop-to-create under `Documents\ISAR`, Rename, Save copy as…, Export… through `isar export`, no temporary workspace. | §0quinquies |
+| G27 | Scan(s) is the spectra view over the scan list's shared selection; it draws stored data and chosen stored Fast/Deep curves only, with explicit limits and no scientific fallback. Saved groups are per-experiment view controls. | §0septies |
 | G26 | **The Processing panel is the analysis queue.** Analyzer files are queued by hand or as they arrive and run continuously on the cores ISAR is given, one writer per experiment; no queued pass has a time limit; every control has a plain tooltip (the GUI threshold). | §0sexies |
 
 ---
@@ -122,12 +124,7 @@ right → a compact Log ticker) and built the campaign launcher/dashboard. Its r
 G-series (this document is their canonical home; the retired ledger's originals are in git
 history):
 
-- **G18 — Center view host.** The five display surfaces (fit inspector, waterfall, plane,
-  dispersion, sandbox) are switchable pages of one central host, not five competing docks; docks
-  are tool panels only. Auto-follow (selection → scan page, campaign start → plane page) is
-  user-overridable and display switching remains pure view state (G10 unchanged). Saved dock
-  layouts are version-gated (`saveState(version)`): an old blob fails restore atomically and the
-  window falls back to the programmatic default of the current screen (G24 supersedes the Pass-3 default) — never a binary migration.
+- **G18 — Center view host (original page set, superseded by G27).** The original fit-inspector, Waterfall, Plane, Dispersion and Sandbox surfaces were pages of one central host, not five competing docks. G27 replaces that page set with Scan(s), Plane, Dispersion and Sandbox and keeps the fit inspector in the left panel. Auto-follow selection to Scan(s) and campaign start to Plane remains user-overridable; display switching is view state. Saved dock layouts remain version-gated and fall back atomically to the current-screen default.
 - **G19 — Campaign observation and control.** The GUI *observes* a campaign exclusively through
   workspace artifacts (`ws.session_events()` over `report/session_log.jsonl` — the §7 watch
   promise, now exercised; the terminal `campaign_summary.json` only after the loop ends) and
@@ -188,7 +185,7 @@ empty/ready layout pair, and amends G19 as stated below.
 - **G24 — one arrangement in every state.** The window keeps the same arrangement from first launch
   onward; nothing rearranges when the first data arrives. Left column, top to bottom: the experiment
   strip, the files strip, then the scan list, which takes the remaining height and runs past the
-  bottom bar. Centre: the display (the G18 pages, unchanged by this section). Right panel:
+  bottom bar. Centre: the display (the G18 page set as it stood then; G27 supersedes it with Scan(s), Plane, Dispersion and Sandbox). Right panel:
   *Processing* (the default tab) and *Campaign* (the G19 content, unchanged), which collapses to a
   slim *Processing ‹* rail. Bottom bar, under the centre and the right panel only: Log on the left,
   Output on the right (G25). The scan inspector is part of the left panel: opening it widens the left
@@ -203,12 +200,8 @@ empty/ready layout pair, and amends G19 as stated below.
   screen and Qt accepts it; otherwise the default for the current screen is used and one Log line says
   why. *View ▸ Reset layout* returns to the default for the current screen. `run-isar-gui.bat` starts
   the GUI with `pythonw`, so no console window opens.
-  **Known limit, accepted (2026-10-27, amendment 4).** Opening the scan inspector on a laptop collapses
-  Processing, so the plot keeps its width. If the user re-expands Processing while the inspector is open,
-  the display is held at its 300 px minimum, the fit page's own side tables take most of it, and its plot
-  measures about 86 px wide (offscreen measurement). The user can expand it again and accept a narrower
-  plot (operator, amendment 4: "on small screens some things get squished, but we can try to make it
-  more user-friendly").
+  **Known limit, accepted (2026-10-27; superseded by G27).** The earlier 86 px plot measurement applied to the former fit page while its side tables shared the centre column. G27 moves stored fit tables to the left inspector and gives Scan(s) the plot area. No new narrow-screen plot width is claimed here; the laptop-size human walkthrough remains unrun.
+
 - **G25 — the experiment is a real folder.** With no experiment open, a drop, *Add files…* or
   *Add folder…* creates one at once. It is named after the dropped folder (or, for loose files, their
   common name), placed under `Documents\ISAR\` (Windows' Documents folder), with a numeric suffix when
@@ -248,17 +241,10 @@ empty/ready layout pair, and amends G19 as stated below.
   state, or `not run` where nothing is stored, side by side, with no result picked as "the" result; each
   column switches on by itself when the first stored result of that pass exists (amendment 7), unless the
   user switched it off by hand (`scan_list.hidden` in the session), which the auto rule then respects. The
-  centre plot keeps drawing the fast-pass fit. A missing temperature or Q shows a dash with its reason
+  G27 supersedes that rule: Scan(s) starts at Fit: None and draws only the stored pass the user selects. A missing temperature or Q shows a dash with its reason
   on hover, and a background update keeps selection, expansion and scroll.
-- **Scan inspector (amendment 4, operator via orchestrator, 2026-10-27).** The inspector keeps every
-  row of the old centre metadata that the unit has a value for: the QC flags, the target Q, the
-  campaign-era command and counting mode, the status, type, energy status, calibration rows, the scan
-  and analyzer facts, preset, B and Q rung, in a "Scan metadata" section below Processing. A missing
-  fact has no row; the hashed unit key and the rows the inspector draws itself (analyzer, temperature,
-  Q, slit, points, file, scan numbers) are not repeated. The section scrolls, and the labels elide with
-  the full name as tooltip. On a laptop-size window, opening the inspector collapses an
-  expanded Processing panel to its rail; the user may expand it again, and closing the inspector does
-  not expand it. A desktop-size window is unchanged.
+- **Scan inspector (G24, G27).** The inspector remains in the left panel and retains recorded scan/analyzer facts, QC flags, target Q, campaign-era command, counting mode, calibration and other unit metadata. G27 removes its former raw-counts plot and adds a Fit section for the stored pass summaries and mode values; the Scan(s) page owns spectrum plotting. Pooled-master numbers and tables remain inspectable even though Scan(s) does not draw pooled curves.
+
 - **Stage two (Implemented, 2026-10-27; job `ja0cd202ecb67`, on the intake backend of job
   `jfada74237892`).** The left column now runs: experiment strip, setup section, needs-attention list,
   files strip, scan list. Everything below is BL43LXU only and shows what the intake backend returns;
@@ -324,8 +310,8 @@ The analysis queue was designed on 2026-10-27 (job `j926265e2189c`: design steps
 - **The GUI threshold (operator, 2026-10-27).** Every part of the window is judged against one reader: someone who knows inelastic scattering and the beamtime, perhaps knows broadly what ISAR is, has had at most a short explanation, and at 3 AM cannot reach the operator and has to work out what things do from the screen. So every control, status word, count and mark has a plain tooltip; a control that cannot be used says why in place; an essential action also has a visible label; and nothing is shown that this reader does not need to steer the analysis. The rule governs the whole GUI, not only the queue. **Status:** the tooltips are in the code. A person has **not** yet walked through the window at the laptop size with only the screen and its tooltips; that walk-through is still to be run, and its findings are recorded here when it is.
 - **The panel, top to bottom.**
   - The switch *Fast-pass new scans as they arrive*. It starts on for a new experiment and is stored with that experiment. While it is on, every analyzer file read in from then on (from the watched folder or a drop, new or re-read) joins the fast queue, marked *auto*. It never adds deep passes, never touches what you added by hand, and never sweeps back over older files.
-  - The selection line: "1 analyzer selected (97 K: a06)", or "No analyzers selected". This version selects one analyzer at a time; selecting several at once is not built yet. Pooled masters are named and not queued.
-  - *Fast pass* and *Deep pass*, under *Add to queue:*. Each adds one item per selected analyzer file for that pass. Both are greyed, with the reason in a line beneath, when no experiment is open or the selection holds no analyzer file.
+  - The selection line: one or more analyzer files from the shared scan-list selection, for example “2 analyzers selected (97 K: a06, a07)”. Pooled masters are named and not queued.
+  - *Fast pass* and *Deep pass*, under *Add to queue:*. Each adds one item per selected analyzer file for that pass; pooled masters are excluded. Both are greyed, with the reason in a line beneath, when no experiment is open or no analyzer file is selected.
   - A banner in the warning colour: *Paused*, with *Resume*; "Waiting: a campaign is running in this experiment. Nothing starts until it ends."; or the analysis process's failure, with the log's location.
   - The *Fast queue* and the *Deep queue*, each headed by its counts ("1 running · 4 saving · 13 waiting", or "nothing queued"). Under each heading, one group per scan set: its label, *auto* where it was added automatically, and "N of M done" for what was added since the experiment was opened. Each analyzer is a line with a dot and a word. A group longer than six shows "… N more" and expands on click.
   - One standing note under the *Deep queue* heading while the deep pass's sampler calibration is provisional: "Deep-pass evidence calibration is provisional: all deep results carry this". It is shown once, not per item. A deep count in the scan list reads "(provisional)", and its hover points here.
@@ -341,7 +327,7 @@ The analysis queue was designed on 2026-10-27 (job `j926265e2189c`: design steps
 - **Save copy and Export while analysis runs.** Both stay available. Each holds the queue's writer: a result being saved finishes first, and results that arrive meanwhile wait as *saving* until the copy has been made, or until the export has read the results (its first progress line). Measured on the development machine, a synthetic experiment of 16,804 files and 312 MB copied in 7.4–9.3 s; a laptop has not been measured. A copy that takes about a minute or more is a reason to revisit this rule.
 - **Campaigns.** A campaign does not start while analyzers are running, saving or waiting in the experiment, and the queue starts nothing while a campaign runs. Starting a campaign says why ("analyzers are waiting in the analysis queue; remove them or let them finish first"). Compiling a campaign goal is not refused; only starting it is. `isar run` and `isar drive` run by hand do not take the queue's lock and are not coordinated with it (`docs/WORKSPACE_AND_CLI.md`).
 - **Cores.** *Config ▸ Cores for analysis… (N of M)*, in the menu bar, sets how many cores ISAR may use, from one to this machine's count. It defaults to the machine's cores less two (at least one) and is remembered on this machine. A lower setting takes effect as running analyzers finish; a deep pass already running keeps its cores until it is stopped.
-- **Selection.** The scan list still selects one analyzer at a time; multi-select is a separate job and is not built. A focused scan-set row selects no analyzer, so the panel names none. *Show* in the Finished list is the one panel action that changes the selection.
+- **Selection.** The scan list, Scan(s), inspector, saved groups and Processing queue read one shared selection. Selecting spectra alone queues nothing. *Show* in Finished changes the active spectrum while preserving the selected set.
 - **Scan list marks.** While an analyzer file is in the queue, its *Fast pass* or *Deep pass* cell reads *queued*, *running* or *saving* (the panel says *waiting* for *queued*). A scan-set row's coverage ("1/28 deep") counts the analyzers that hold a current stored result for that pass, and its hover says so. Coverage is not outstanding work, and it differs from the panel's counts by design.
 - **Status words.** Each is a dot and a word, never colour alone.
 
@@ -358,11 +344,26 @@ The analysis queue was designed on 2026-10-27 (job `j926265e2189c`: design steps
 
 - **Limits, not clocks.** No queued pass has a time limit: a pass completes its full comparison of candidate models. The fast pass's per-spectrum safety budget and the deep pass's start budget are gone (2026-10-27). A deep pass has a clock only when a budget is typed on `isar run` (`--deep-budget-minutes`); the window never sets one. A result the engine reports as limited finishes *done with a warning* and says why: the peak-count ceiling was reached, a model's sampling stayed suspect after restarts, or the engine recorded another flag. A result stored before 2026-10-27 may carry an earlier time-limit reason; it is shown with that warning as stored.
 - **Held files.** A file ISAR will not fit without something it needs finishes *held* with the engine's reason, and is not retried by itself. For a missing energy zero, the reason says the energy-zero series is built by `isar run`, which the queue does not do.
-- **Scope, and what is not in this version.** BL43LXU only: other workspaces get what the same code gives, and nothing is built for them. Not in this version: moving an item to the front; a queue that survives leaving the experiment; a setting for one analyzer file; out-of-date marks in the queue; automatic retry of held items; "run again anyway"; a declared stall; a precision control; the deep pass's own speed and use of many cores (fitting optimisation work); multi-select (job `jf2633b9c3c77`).
+- **Scope, and what is not in this version.** BL43LXU only: other workspaces get what the same code gives, and nothing is built for them. Not in this version: moving an item to the front; a queue that survives leaving the experiment; a setting for one analyzer file; out-of-date marks in the queue; automatic retry of held items; “run again anyway”; a declared stall; a precision control; the deep pass's own speed and use of many cores (fitting optimisation work).
 - **Open items, as built.**
   - A saved curves folder is not checked when queued analysis starts. Queued fits read the folder's curves as each item starts, but the check the setup section shows (`report/curves.json`) runs at the next import or `isar run`. After a queued analysis has used the folder, the setup section can therefore still say the folder is not checked yet.
   - Two windows on one experiment are not refused. Each has its own queue, and the writer loses no save, but the same file may be fitted twice.
   - The human walk-through at the GUI threshold (above) has not been run.
+
+### 0septies. Scan(s) spectrum view (2026-10-28, G27)
+
+G27 replaces the old Waterfall central page with a four-page centre: Scan(s), Plane (q, E), Dispersion ω(q) and Sandbox. Scan(s) is the individual-spectrum view; the fit inspector stays in the left panel. This supersedes the old page list and Waterfall display examples in §0ter, §0quinquies, §1.3 and §8. The plane/dispersion projection rules and pooled-data exposure convention in §8 remain in force.
+
+- **G27 — one shared selection.** The scan list, Scan(s), inspector, saved groups and Processing queue use one Selection. The list owns membership and active-spectrum choice; Scan(s) reads selected keys and never fits or enqueues on its own. Clicking a spectrum row selects it. Ctrl-click adds or removes it; Shift-click selects the visible range from the anchor. The row gutter opens or closes a scan set without changing selection; clicking the set row selects its analyzers. Set and analyzer rows show partial-selection counts. A filter can hide selected spectra without removing them; the list says how many selected spectra are outside the filter.
+- **Plot limit.** Scan(s) draws up to ten selected spectra. With more than ten selected, it reads no spectrum bundles and shows a read-only, scan-set-grouped list of selected spectra instead. The list is not another selection editor: change the set in the scan list or recall a saved group. Returning to ten or fewer returns to the plot.
+- **Controls.** Fit starts at **None**; **Fast** and **Deep** draw the corresponding stored pass. Layout is **Offset** or **Overlay**. Offset stacks traces using an automatic step or a user-entered step in the current intensity unit. Overlay compares measured spectra with distinct colours and symbols and draws no fit; Fit is disabled there. One selected spectrum always uses the single-spectrum view regardless of the multi-spectrum layout setting. Fit/layout/scale choices are view state and are saved in the GUI session.
+- **Scale and uncertainty.** **Raw** shows counts N with Poisson error √N, including 0 ± 0. **Normalised** shows N R/M, where M is the recorded monitor at that point and R is the experiment's one frozen reference monitor. R is the nearest power of ten to the median of valid positive kept monitors across the experiment; it is saved when first established, not recalculated for each selection. Error propagation is σ = (R/M) √(V + N²/M), with V the stored count variance; for V=N and N>0 this is y √(1/N + 1/M). Zero-count points remain 0 ± 0, with no floor. Only points with positive usable monitors appear in this scale. If a spectrum has no usable monitor, Normalised names why it is not drawn; Raw can still show its counts when the energy axis is calibrated.
+- **Fits and residuals.** Fast total/component curves are solid; Deep curves are dashed and background components are dotted. A legend identifies each selected spectrum and curve, and marks the active spectrum. Outdated input changes are shown beside each trace. The Curves header marks displayed Deep curves that include an untrusted result, and the Fit tooltip gives its reason. Where deep currentness cannot be judged, the trace says currentness not recorded. In the single-spectrum view, a separate residual panel shows measured minus the selected total fit on the measured energy grid, in the current displayed intensity unit, with the data errors. It is not divided by σ. No residual is drawn for Fit: None or an unavailable curve.
+- **No scientific fallback.** A spectrum needing an energy zero is not drawn until the recorded calibration supplies one; the view never substitutes E₀=0. A pooled master is named as not drawn, never replaced with its member spectra. Missing or unusable data and monitor are named and counted in the not-drawn line; an unavailable pass or curve is named on its spectrum trace. The view does not fit, alter inputs, or silently substitute another result.
+- **Deep curves use the selected deep model.** A new Deep pass stores the actual chosen model manifest beside its chosen parameters, and the read layer evaluates that manifest. It does not try to reconstruct a Deep curve from a guessed Fast-pass structure. A legacy or ambiguous Deep result without enough stored structure keeps its mode table and state, but its curve is named unavailable. Older records without monitor exposure metadata cannot be normalised until an analysis run stores it; if the source monitor itself is missing, the data must be read again with that monitor present.
+- **Inspector.** The left inspector follows the active spectrum without changing the selected set. It shows “k of n selected” and previous/next controls; stepping changes only the active spectrum. Its Fit section shows stored Fast/Deep state, trust/currentness, model label and mode count; each mode lists energy E₀, linewidth Γ (DHO damping, HWHM), and amplitude h with the stored symmetric or asymmetric interval. Missing uncertainty remains “± —” or “—”, never an invented error. The four existing collapsed tables—Interval ladder, Model candidates, Verdict and Provenance—remain below the Fit section. Pooled masters still show their recorded numbers and fit tables even though they have no Scan(s) curve.
+- **Saved groups and the queue.** The group chips save or recall up to nine per-experiment selections. Click a numbered chip or press 1–9 when no text editor has focus to recall; Ctrl+1–Ctrl+9 saves or replaces that slot, and + uses the lowest free slot. Only the group controls (chip Save/Undo, +) or Ctrl+number change a saved group; ordinary list selection does not. Partial groups name missing members, and recalling one drops those members with a notice. Scan(s) does not replace the Processing queue: queue buttons still add the selected eligible analyzer files, one item per file, and selection alone adds nothing. Queue order, one writer and saved-result behavior remain G26.
+- **Known limits.** Pooled masters are not plotted in Scan(s); their recorded numbers and tables remain in the inspector. Normalised display needs stored monitor exposure and a calibrated energy axis. A Deep curve from an older chosen record with no recoverable model manifest is unavailable even though its tables remain. An outdated stored curve is displayed with its warning; in Normalised scale it is placed in the current unit's recorded exposure frame and the experiment's frozen R, without a refit. The G27 widget tests use generated workspaces; a human walkthrough at the GUI threshold has not been run, and no redraw-time target or measured figure is claimed.
 
 ---
 
@@ -401,14 +402,12 @@ acceptance narrative; §12 maps them to components.
    (Q₃, E) 4D space; views are projections (G9).
 2. Swap to e.g. the (H,1,0) plane with energy on the y-axis; watch the heatmap grow as scans
    land; see per-point phonon-energy estimates with error bars.
-3. Click a struggling Q–E scan → see the 1D cut: raw data with error bars, ISAR's best-guess
-   fit. Nudge Bayesian priors to separate two close branches. Or mark a key scan for
-   over-counting ("this goes in the paper — bring down the Poisson scatter over this region").
+3. Select a struggling Q-E spectrum to inspect its raw data and errors. In Scan(s), choose a stored Fast or Deep pass when you want to see its curve and residual; the page does not fit or change saved results.
 4. Monitor progress; see ISAR's running guess at the dispersion; edit it in the GUI to steer
    subsequent scans.
 5. At any time, issue natural-language commands: "scan at this point, fit the peak visible
    here, bring the error on the energy center within 0.1 meV."
-6. Swap to a different temperature; compare dispersions; waterfall the 1D cuts at a key q
+6. Swap to a different temperature; compare dispersions; compare selected 1D spectra in Scan(s)
    by temperature.
 
 ### 1.4 Non-goals
@@ -680,8 +679,9 @@ One figure module, two consumers: the report/diagnostic renderers and the GUI. C
 a shared layer that turns read-API objects into *plot specifications* (data series, bands,
 annotations, styling semantics like `(unreliable)`), with two backends: matplotlib (reports)
 and pyqtgraph (GUI). The **semantics** live in the shared layer so the two views can never
-disagree about what an unreliable interval or a pooled master looks like. This also fixes
-figure hygiene: the render path becomes first-class instead of stranded in `out/`.
+disagree about what an unreliable interval or a pooled master looks like. This also fixes figure hygiene: the render path becomes first-class instead of stranded in `out/`.
+
+G27 applies that same PlotSpec layer to Scan(s): the read API supplies stored measured values and curves; the Qt renderer only presents them.
 
 **Rendering rules (binding, inherited from `../ARCHITECTURE.md` §12):**
 - `interval_reliable=False` suppresses the bootstrap interval, whose ladder row renders as
@@ -713,6 +713,8 @@ figure hygiene: the render path becomes first-class instead of stranded in `out/
 
 ## 8. Views & 4D honesty (G9)
 
+G27 retires Waterfall as a central page. Scan(s) is a per-spectrum 1D view; Plane and Dispersion retain the explicit projection declarations below. The Waterfall-specific history in this section is retained as history, not a second live page.
+
 Data lives in (Q₃, E); every 2D view is a projection and must say so on screen, always:
 a persistent legend like `plane (H, 1, 0) × E — integrating |L| < 0.02, |K−1| < 0.02`.
 
@@ -727,13 +729,13 @@ a persistent legend like `plane (H, 1, 0) × E — integrating |L| < 0.02, |K−
   columns draw only at a q with no persisted master (separate collation, or a workspace
   predating the pooled-spectrum artifact); before this rule the member columns of one q stacked
   at the same x and the most recent scan silently covered the rest. **Data first, fits as they
-  land** (2026-09-08): the plane's and the waterfall's population is `projection.population(ws)`
+  land** (2026-09-08): the Plane population remains `projection.population(ws)`; the retired Waterfall page used the same population
   — every fitted result plus every ledger scan still at status `ingested` (counts on disk, Q and
   T stamped by the drive's early registration before its fit runs), the latter as a data-only view
   with no ω̂ glyph. Before this both views read only `ws.results`, so the first scan of a campaign
-  was invisible for the whole of its fit and the feed said "scan landed" over an empty plot. The
-  same frame governs the
-  waterfall trace and the inspector's pooled data: the master fit models ΣN_i as
+  was invisible for the whole of its fit and the feed said "scan landed" over an empty plot.
+  The persisted master fit curve follows its fit exposure frame:
+  the master fit models ΣN_i as
   (ΣM_i / reference) × f(E_i) on the member-union grid, so the persisted curve f(E) is the
   expected count *per reference monitor*, and raw ΣN drawn against it is off by the local
   exposure ratio (3.3× on a real 8-member optic master). **The colour scale is set by the
@@ -782,10 +784,7 @@ a persistent legend like `plane (H, 1, 0) × E — integrating |L| < 0.02, |K−
   and merge policy made visible. If the user wants different grouping, the GUI edits the card
   (a class-three write via `fit_correction`/card-edit channel) and triggers re-collation on
   re-run. There is exactly one definition of "a dataset."
-- **Display overlays are view state.** Waterfall by temperature at fixed q (item 6),
-  side-by-side dispersion comparison across T, arbitrary overlay sets — pure GUI state, saved
-  in the GUI's own session file (ACIDD-style `config/session.json` pattern), never in the
-  workspace.
+- **Display choices are view state.** Scan(s) layout, scale, and stored-pass choice are saved in the GUI session. They do not change card collation or fit results.
 
 ---
 
@@ -821,6 +820,8 @@ package next to the card, since lattice is card policy):
 All three donors and ISAR are **GPL-3** (verified 2026-07-11), so code may be lifted between
 them freely with copyright/attribution notices. Strategy: copy patterns shamelessly, lift small
 widgets where they fit, factor a shared widget library later **only if it hurts**.
+
+G27's Scan(s) selection and saved groups are local ISAR behavior: groups save stable spectrum identities in the per-experiment GUI store, not cut templates or card collation policy.
 
 ### ACIDD (`C:\Users\AMM\Documents\Github\Science\ACIDD`)
 Donates the **cut/plan gesture** and the image-view scaffolding:
@@ -865,9 +866,9 @@ model selection, branch model, verdicts, the driver, the ledger. The GUI adds no
 | # | Component | MVP items | Reads | Writes | Phase |
 |---|---|---|---|---|---|
 | C1 | Workspace browser (open, card summary, group tree per collation key) | — | card, groups | — | A |
-| C2 | Q-group / fit inspector page: data + fit + components + residuals; interval ladder side-by-side; authoritative horizontal ω₀ interval with source/method/endpoints; candidate table; verdict + confidence + adjudication narrative; provenance panel | 3 (view) | results, assessments, scans, evaluate_model | — | A |
+| C2 | Scan inspector: recorded facts; stored pass and mode tables; interval ladder, candidates, verdict and provenance | 3 (view) | results, assessments, scans | — | A |
 | C3 | Plane heatmap view: declared projection, viridis strips-and-gaps with one proxy-owned colourbar, latest completed-acquisition outline, state/entropy fit grammar with asymmetric energy errors, neutral branch curves, live growth via watch | 2 | results, assessments, branch_model, session_events, watch | — | A |
-| C4 | Waterfall / comparison view: 1D cuts at fixed q by T; dispersion overlays across T | 6 | groups, results | — | A |
+| C4 | Scan(s) spectrum view: selected 1D spectra, stored Fast/Deep curves, residuals, and Offset/Overlay comparison | 6 | selected scans, results, evaluate_model | — | A |
 | C5 | Dispersion view: ω vs q with authoritative asymmetric intervals, the shared state/entropy fit grammar and matching status ribbon, neutral prior curve, off-curve flags | 3, 4 (view) | branch_model, assessments, results | — | A |
 | C6 | Planner: RS map from card lattice/space group, oriented plane, forbidden zones, two-click line, spacing spinbox, scan-series preview, approve | 1 | card, geometry, feasibility | `objective_edit` | B |
 | C7 | Directive composer + inbox monitor: pending/consumed/rejected with driver reasons | 1, 3, 4, 5 | session_events | all four types | C |
