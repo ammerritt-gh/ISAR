@@ -305,7 +305,7 @@ class _Spy:
 
 def _vm(monkeypatch, bl43_ws_readonly):
     snap = bl43_fixture.sample_snapshot(bl43_ws_readonly)
-    monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda ws: snap)
+    monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda ws, **_reads: snap)
     return ScanListViewModel(mw_mod._EmptyWorkspace()), snap
 
 
@@ -347,7 +347,7 @@ def test_vm_rebind_keeps_a_current_key_that_still_exists_and_drops_one_that_does
                                  _Spy(vm.display_requested))
     vm.set_workspace(mw_mod._EmptyWorkspace())
     assert vm.current_key == key and current.calls == [] and len(changed.calls) == 1
-    monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda ws: ScanListSnapshot())
+    monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda ws, **_reads: ScanListSnapshot())
     vm.set_workspace(mw_mod._EmptyWorkspace())
     assert vm.current_key is None and current.calls == [(None,)]
     assert display.calls == []                         # a rebind never asks for the display

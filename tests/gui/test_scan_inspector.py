@@ -350,7 +350,7 @@ def test_a_hidden_panel_ignores_the_list_until_it_is_shown(qtbot, patched, bl43_
 def test_a_key_that_left_the_snapshot_says_so(qtbot, patched, bl43_ws, monkeypatch):
     vm, panel = _panel(qtbot, bl43_ws)
     panel.show_key(A06)
-    monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda ws: ScanListSnapshot())
+    monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda ws, **_reads: ScanListSnapshot())
     vm.on_workspace_changed({"snapshot"})
     assert panel._message.isVisibleTo(panel)
     assert panel._message.text() == "This spectrum is no longer in the experiment"
@@ -368,7 +368,7 @@ def test_a_background_update_redraws_the_same_key_in_place(qtbot, patched, bl43_
                         if sp.key == A06 else sp for sp in s.spectra)
         new.append(dataclasses.replace(s, spectra=spectra))
     monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list",
-                        lambda ws: dataclasses.replace(snap, sets=tuple(new)))
+                        lambda ws, **_reads: dataclasses.replace(snap, sets=tuple(new)))
     vm.on_workspace_changed({"results"})
     f = _fields(panel)
     assert _text(f["Deep pass"]) == "clear" and _reason(f["Deep pass"]) == "count 2"
@@ -385,7 +385,7 @@ def test_a_pooled_master_shows_its_lines_and_the_display_note(qtbot, bl43_ws, mo
                        fast=Status("not recorded", False, "no fast-pass record"),
                        deep=Status("not run", False))
     monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list",
-                        lambda ws: ScanListSnapshot(pooled=(pooled,)))
+                        lambda ws, **_reads: ScanListSnapshot(pooled=(pooled,)))
     vm, panel = _panel(qtbot, bl43_ws)
     panel.show_key("tavi:900:det")
     f = _fields(panel)
