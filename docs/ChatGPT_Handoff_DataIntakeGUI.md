@@ -1,3 +1,8 @@
+# BL43 data-intake GUI: external design review
+
+> **Status:** live
+> **Kind:** external design review the operator obtained (2026-10-27) of the BL43 data-intake GUI design, kept as received; not maintained with the code
+
 **I would keep the approved layout and request a focused revision before approving the design.** The main workflow is well chosen. The changes I would insist on concern resolution setup, correcting user-entered facts, and showing whether stored fits still correspond to the current inputs.
 
 I reviewed the [design](https://chatgpt.com/library?file_id=libfile_47ea8d01ca4c8191bc0460c6561f0f2a&account_id=personal) against the [attached discussion](https://chatgpt.com/library?file_id=libfile_1122390e721c8191be45d677b1351b1a&account_id=personal). It preserves your substantive decisions well; I found no material reversal of what you agreed to. The findings below concern the written design and its integration contracts. I have not inspected the current implementation or the HTML mockup, which is referenced but not attached.

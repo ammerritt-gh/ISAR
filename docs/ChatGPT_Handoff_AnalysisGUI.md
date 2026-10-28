@@ -1,3 +1,8 @@
+# ISAR analysis queue GUI: external design review
+
+> **Status:** live
+> **Kind:** external design review the operator obtained (2026-10-27) of the right-hand analysis queue design (job j926265e2189c), kept as received; not maintained with the code
+
 **I’d ask for a small revision, then approve this.** The design captures your main decisions faithfully. The remaining issues are concentrated in a few execution and display contracts: how fast and deep work interact for the same analyzer, which inputs a queued fit uses, and what the panel promises when it says “done.”
 
 I reviewed the supplied [design](https://chatgpt.com/library?file_id=libfile_3a64a897a04081918bc354334693801e&account_id=personal) against the [transcript](https://chatgpt.com/library?file_id=libfile_7945f8157fe88191a496cc1cc1a1ca15&account_id=personal). The referenced HTML mockup wasn’t attached, so this is a review of behavior and scope rather than visual layout.

@@ -1,3 +1,8 @@
+# ISAR fitting: external design review
+
+> **Status:** live
+> **Kind:** external design review the operator obtained (2026-10-27) of the fitting design (fast and deep pass), kept as received; not maintained with the code
+
 **I would keep the fast/slow split, but change the deep pass’s model accounting and the way it groups hypotheses before spending much more time tuning sampler settings.** Your four follow-ups are well chosen. There are several additional opportunities, including two that could improve accuracy and performance together:
 
 1. **Make the deep pass independent of which models the fast optimiser successfully records.**

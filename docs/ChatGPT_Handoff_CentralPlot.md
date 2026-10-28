@@ -1,3 +1,8 @@
+# ISAR centre scan plot: external design review
+
+> **Status:** live
+> **Kind:** external design review the operator obtained (2026-10-27) of the centre Scan(s) plot design, kept as received; not maintained with the code
+
 **I would approve the direction and ask for a focused revision before implementation.** The design captures your final decisions well, including several places where you corrected the initial proposals. The remaining issues are mostly small but consequential interaction gaps: inspecting a member of a comparison, updating saved groups through the GUI, and specifying normalization precisely enough that data and curves cannot diverge.
 
 There is also **one unrecorded change in fit behavior**: the transcript ends with a labeled Fast fallback when Deep is unavailable, whereas the design requires no fallback. That needs an explicit resolution.
