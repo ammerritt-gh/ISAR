@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ISAR right side, analysis queue: mockup (job j926265e2189c)</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --line: #d5d9e0; --text: #1f2430; --muted: #6b7280;
+    --head: #eef0f3; --action: #2f6fb3; --action-tint: #e8f0fa; --ok: #2e7d4f; --warn: #b7791f;
+    --err: #b42318; --idle: #9aa1ab; --run: #2f6fb3; --sel: #dbe7f6;
+    font-family: "Segoe UI", system-ui, sans-serif; font-size: 12px; color: var(--text);
+  }
+  body { background: #c9ccd2; margin: 0; padding: 24px; }
+  h1 { font-size: 16px; margin: 0 0 4px; }
+  .note { max-width: 1100px; color: #333; margin: 0 0 18px; line-height: 1.45; }
+  .frame-title { font-weight: 600; margin: 26px 0 6px; font-size: 13px; }
+  .frame-sub { color: #444; margin: 0 0 8px; max-width: 1100px; line-height: 1.4; }
+  .win { background: var(--bg); border: 1px solid #888; box-shadow: 0 4px 18px rgba(0,0,0,.25);
+         display: flex; flex-direction: column; overflow: hidden; position: relative; }
+  .laptop { width: 1108px; height: 851px; }
+  .titlebar { height: 28px; background: #fff; border-bottom: 1px solid var(--line); display: flex;
+              align-items: center; padding: 0 10px; gap: 8px; }
+  .menubar { height: 24px; background: #fff; display: flex; align-items: center; gap: 18px; padding: 0 10px;
+             border-bottom: 1px solid var(--line); }
+  .menubar .right-item { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  .main { flex: 1; display: flex; min-height: 0; }
+  .col { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); background: var(--panel); }
+  .phead { background: var(--head); border-bottom: 1px solid var(--line); padding: 4px 8px; font-weight: 600;
+           display: flex; align-items: center; gap: 6px; }
+  .btn { display: inline-block; border: 1px solid #b9c0ca; border-radius: 3px; padding: 2px 8px; background: #fff; }
+  .btn.primary { border-color: var(--action); color: var(--action); background: var(--action-tint); }
+  .btn.danger { border-color: var(--err); color: var(--err); background: #fff; }
+  .btn.small { padding: 1px 6px; font-size: 11px; }
+  .link { color: var(--action); }
+  .muted { color: var(--muted); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: 0; }
+  .ok { background: var(--ok); } .warn { background: var(--warn); } .err { background: var(--err); }
+  .queued { background: transparent; border: 1.5px solid var(--run); width: 5px; height: 5px; }
+  .run { background: var(--run); box-shadow: 0 0 0 2px #cfe0f3; }
+  .exp { padding: 8px; border-bottom: 1px solid var(--line); }
+  .exp .name { font-size: 14px; font-weight: 600; }
+  .exp .path { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .drop.thin { margin: 8px; border: 1.5px dashed #9fb3cc; border-radius: 4px; padding: 5px 8px; display: flex; align-items: center; gap: 6px;
+               color: #44546a; background: #f7f9fc; }
+  .toolrow { display: flex; gap: 6px; padding: 6px 8px; align-items: center; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .search { flex: 1; min-width: 90px; border: 1px solid #b9c0ca; border-radius: 3px; padding: 2px 6px; color: var(--muted); background: #fff; }
+  table { border-collapse: collapse; width: 100%; }
+  th { text-align: left; font-weight: 600; background: #f7f8fa; border-bottom: 1px solid var(--line); padding: 3px 6px; white-space: nowrap; }
+  td { padding: 2px 6px; white-space: nowrap; border-bottom: 1px solid #f0f1f3; }
+  tr.set td { background: #fafbfc; font-weight: 600; }
+  tr.sel td { background: var(--sel); }
+  .tree { flex: 1; overflow: hidden; }
+  .center { flex: 1; display: flex; flex-direction: column; min-width: 0; background: var(--panel); border-right: 1px solid var(--line); }
+  .tabs { display: flex; border-bottom: 1px solid var(--line); background: var(--head); }
+  .tabs span { padding: 4px 12px; border-right: 1px solid var(--line); }
+  .tabs span.on { background: #fff; font-weight: 600; }
+  .plot { flex: 1; margin: 10px; border: 1px solid var(--line); position: relative; background: #fff; }
+  .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted);
+           text-align: center; line-height: 1.6; }
+  .right { width: 300px; background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+  .ptabs { display: flex; border-bottom: 1px solid var(--line); background: var(--head); }
+  .ptabs span { padding: 4px 10px; border-right: 1px solid var(--line); }
+  .ptabs span.on { background: #fff; font-weight: 600; }
+  .ptabs .collapse { margin-left: auto; border-left: 1px solid var(--line); border-right: 0; color: #444; }
+  .rail { width: 26px; background: var(--head); border-left: 1px solid var(--line); writing-mode: vertical-rl;
+          padding-top: 10px; color: #444; display: flex; gap: 10px; align-items: center; }
+  .bottom { height: 120px; display: flex; border-top: 1px solid var(--line); background: var(--panel); }
+  .log { flex: 1; border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; }
+  .logbody { padding: 4px 8px; font-family: Consolas, monospace; font-size: 11px; line-height: 1.5; color: #333; overflow: hidden; }
+  .out { width: 380px; display: flex; flex-direction: column; }
+  .outbody { padding: 6px 8px; line-height: 1.6; }
+  .blk { padding: 7px 8px; border-bottom: 1px solid var(--line); line-height: 1.5; }
+  .switch { display: inline-block; width: 26px; height: 14px; border-radius: 7px; background: var(--action); position: relative; vertical-align: -3px; margin-right: 6px; }
+  .switch::after { content: ""; position: absolute; right: 2px; top: 2px; width: 10px; height: 10px; border-radius: 50%; background: #fff; }
+  .qhead { padding: 4px 8px; font-weight: 600; background: #f7f8fa; border-bottom: 1px solid var(--line); border-top: 1px solid var(--line); display: flex; gap: 6px; }
+  .qhead .r { margin-left: auto; font-weight: 400; color: var(--muted); }
+  .qset { padding: 3px 8px 1px; font-weight: 600; color: #333; display: flex; }
+  .qset .r { margin-left: auto; font-weight: 400; color: var(--muted); }
+  .qitem { padding: 1px 8px 1px 20px; display: flex; align-items: center; gap: 4px; }
+  .qitem .n { width: 30px; }
+  .qitem .w { width: 60px; }
+  .qitem .t { color: var(--muted); width: 54px; text-align: right; }
+  .qitem .act { margin-left: auto; color: var(--muted); width: 30px; text-align: right; }
+  .qitem.hover { background: #f3f6fa; }
+  .qitem.hover .act { color: var(--text); }
+  .callout { background: #fff8d6; border: 1px solid #e3c766; padding: 1px 5px; border-radius: 3px; font-size: 11px; color: #5a4a00; }
+  .dialog { width: 440px; background: #fff; border: 1px solid #888; box-shadow: 0 6px 22px rgba(0,0,0,.3); }
+  .dialog .body { padding: 12px 14px; line-height: 1.5; }
+  .row { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<h1>ISAR — right side as the analysis queue: mockup for discussion</h1>
+<p class="note">Job j926265e2189c, 2026-10-27. Static picture only: nothing here is built. The left side is drawn as
+the left-side job's mockup draws it, plus the queue marks this job adds. Frame 1 is at the laptop geometry
+(1108×851 logical pixels) with the Processing panel expanded. Scan names and temperatures follow the CsV₃Sb₅ example
+set; every Q value and every time is invented. Yellow tags mark points still open.</p>
+
+<div class="frame-title">1 · Laptop, during the beamtime — a new scan is being fast-passed automatically while one deep pass runs</div>
+<p class="frame-sub">The 150 K set's 28 analyzers arrived in the watched folder and were queued for a fast pass
+automatically (the switch is on). Earlier the user selected 97 K a06 and a07 and added them for a deep pass; a06 is
+running. Fast items take freed cores before any waiting deep item; only the user stops a running deep item. Each
+analyzer is its own item; the scan is only a heading. Hovering an item shows its action (✕ removes a waiting item,
+■ stops a running one).</p>
+<div class="win laptop">
+  <div class="titlebar"><b>ISAR</b><span class="muted">— leTacon_SP8_CsV3Sb5</span></div>
+  <div class="menubar"><span>File</span><span>View</span><span>Run</span><span>Help</span>
+    <span class="right-item"><span class="muted">Cores</span> <span class="btn small">14 of 16 ▾</span> <span class="callout">form and place to match TAVI: to check</span></span></div>
+  <div class="main">
+    <div class="col" style="width:372px">
+      <div class="phead">Experiment</div>
+      <div class="exp">
+        <div><span class="name">leTacon_SP8_CsV3Sb5</span> <span class="link" style="font-size:11px">Rename</span> · <span class="link" style="font-size:11px">Details…</span></div>
+        <div class="path">Documents\ISAR\leTacon_SP8_CsV3Sb5</div>
+      </div>
+      <div class="drop thin"><span>⤓</span><span style="flex:1">Watching 1 folder · 86 files · 3 scan sets</span><span class="btn small">Add…</span><span class="btn small">Watch…</span></div>
+      <div class="phead">Scans <span class="muted" style="font-weight:400">3 sets · 84 analyzers</span></div>
+      <div class="toolrow"><span class="search">filter: a06, 97K, queued…</span><span class="btn small">Sort: scan ▾</span><span class="btn small">Columns ▾</span></div>
+      <div class="tree">
+        <table>
+          <tr><th>Scan</th><th>T</th><th>Q (nm⁻¹)</th><th>Fast pass</th><th>Deep pass</th></tr>
+          <tr class="set"><td title="CsV3Sb5_150K_0p5_0p5_3_sum">▾ CsV3Sb5_150K_0p5…</td><td>150 K</td><td class="muted">28 an.</td><td><span class="dot run"></span>11/28</td><td class="muted">—</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a03</td><td></td><td>22.81</td><td><span class="dot ok"></span>done</td><td class="muted">not run</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a04</td><td></td><td>22.88</td><td><span class="dot run"></span>running</td><td class="muted">not run</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a05</td><td></td><td>22.94</td><td><span class="dot queued"></span>queued</td><td class="muted">not run</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a06</td><td></td><td>23.02</td><td><span class="dot queued"></span>queued</td><td class="muted">not run</td></tr>
+          <tr><td class="muted">&nbsp;&nbsp;&nbsp;&nbsp;… 24 more</td><td></td><td></td><td></td><td></td></tr>
+          <tr class="set"><td title="CsV3Sb5_97K_0p5_0p5_3_sum">▾ CsV3Sb5_97K_0p5_0…</td><td>97 K</td><td class="muted">28 an.</td><td><span class="dot ok"></span>27/28</td><td><span class="dot run"></span>0/2</td></tr>
+          <tr class="sel"><td>&nbsp;&nbsp;&nbsp;&nbsp;a06</td><td></td><td>23.02</td><td><span class="dot ok"></span>done</td><td><span class="dot run"></span>running</td></tr>
+          <tr class="sel"><td>&nbsp;&nbsp;&nbsp;&nbsp;a07</td><td></td><td>23.09</td><td><span class="dot ok"></span>done</td><td><span class="dot queued"></span>queued</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a08</td><td></td><td>23.15</td><td><span class="dot ok"></span>done</td><td class="muted">not run</td></tr>
+          <tr><td>&nbsp;&nbsp;&nbsp;&nbsp;a16</td><td></td><td class="muted" title="this file carries no #Q= line">—</td><td><span class="dot warn"></span>held</td><td class="muted">not run</td></tr>
+          <tr><td class="muted">&nbsp;&nbsp;&nbsp;&nbsp;… 23 more</td><td></td><td></td><td></td><td></td></tr>
+          <tr class="set"><td title="CsV3Sb5_302K_0p5_0p5_3_sum">▸ CsV3Sb5_302K_0p5_…</td><td>302 K</td><td class="muted">28 an.</td><td><span class="dot ok"></span>28/28</td><td><span class="dot ok"></span>1/1</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="center">
+      <div class="tabs"><span class="on">Spectrum</span><span>Waterfall</span><span>Plane</span><span>Dispersion</span></div>
+      <div class="plot"><div class="empty">[ spectrum view: CsV3Sb5_97K … a06,<br>fast-pass fit drawn; its deep pass is running ]</div></div>
+    </div>
+    <div class="right">
+      <div class="ptabs"><span class="on">Processing</span><span>Campaign</span><span class="collapse">›</span></div>
+      <div class="blk">
+        <div><span class="switch"></span>Fast-pass new scans as they arrive</div>
+        <div class="muted" style="font-size:11px;margin-left:32px">For this experiment. Deep passes are only ever added by you.</div>
+      </div>
+      <div class="blk">
+        <div style="margin-bottom:4px"><b>2 analyzers selected</b> <span class="muted">(97 K: a06, a07)</span></div>
+        <span class="muted">Add to queue:</span> <span class="btn primary">Fast pass</span> <span class="btn primary">Deep pass</span>
+      </div>
+      <div class="qhead">Fast queue <span class="r">4 running · 13 waiting</span></div>
+      <div>
+        <div class="qset">CsV3Sb5_150K… <span class="r">auto · 11 of 28 done</span></div>
+        <div class="qitem"><span class="dot run"></span><span class="n">a04</span><span class="w">running</span><span class="t"></span><span class="act"></span></div>
+        <div class="qitem hover"><span class="dot run"></span><span class="n">a09</span><span class="w">running</span><span class="t"></span><span class="act" title="Stop this analyzer">■</span></div>
+        <div class="qitem"><span class="dot run"></span><span class="n">a10</span><span class="w">running</span><span class="t"></span><span class="act"></span></div>
+        <div class="qitem"><span class="dot run"></span><span class="n">a11</span><span class="w">saving</span><span class="t"></span><span class="act"></span></div>
+        <div class="qitem"><span class="dot queued"></span><span class="n">a05</span><span class="w">waiting</span><span class="t"></span><span class="act"></span></div>
+        <div class="qitem hover"><span class="dot queued"></span><span class="n">a06</span><span class="w">waiting</span><span class="t"></span><span class="act" title="Remove from the queue">✕</span></div>
+        <div class="qitem muted" style="padding-left:34px">… 11 more waiting</div>
+      </div>
+      <div class="qhead">Deep queue <span class="r">1 running · 1 waiting</span></div>
+      <div>
+        <div class="qset">CsV3Sb5_97K… <span class="r">0 of 2 done</span></div>
+        <div class="qitem"><span class="dot run"></span><span class="n">a06</span><span class="w">running</span><span class="t">34:10</span><span class="act"></span></div>
+        <div class="qitem"><span class="dot queued"></span><span class="n">a07</span><span class="w">waiting</span><span class="t"></span><span class="act"></span></div>
+      </div>
+      <div class="qhead">Finished <span class="r"><span class="link">Clear list</span></span></div>
+      <div>
+        <div class="qset">CsV3Sb5_97K… · fast <span class="r">27 done · 1 held</span></div>
+        <div class="qitem"><span class="dot warn"></span><span class="n">a16</span><span class="w" style="width:auto">held: no Q in the file</span></div>
+        <div class="qset">CsV3Sb5_302K… · deep <span class="r">1 done</span></div>
+        <div class="qitem"><span class="dot ok"></span><span class="n">a06</span><span class="w">done</span><span class="t">41:52</span><span class="act link">Show</span></div>
+      </div>
+      <div style="flex:1"></div>
+      <div class="blk" style="border-top:1px solid var(--line);border-bottom:0;display:flex;gap:6px;align-items:center">
+        <span class="muted" style="flex:1">5 analyzers running on 14 cores</span><span class="btn">Pause</span>
+      </div>
+    </div>
+  </div>
+  <div class="bottom">
+    <div class="log"><div class="phead">Log</div>
+      <div class="logbody">21:02:11 Watched folder: 28 new analyzer files, CsV3Sb5_150K_0p5_0p5_3_sum; queued for a fast pass (automatic)<br>
+        20:41:37 Deep pass done: CsV3Sb5_302K… a06 (41 min 52 s)<br>
+        20:28:05 Not added: CsV3Sb5_97K… a03, a04 already have a current fast pass<br>
+        20:28:05 Queued for a deep pass: CsV3Sb5_97K… a06, a07</div></div>
+    <div class="out"><div class="phead">Output</div>
+      <div class="outbody">Each result is written to the experiment folder as it finishes.<br>
+        <span class="muted">Last written 21:03:40 (150 K a03, fast pass)</span><br>
+        <span class="btn small">Save copy as…</span> <span class="btn small">Export…</span></div></div>
+  </div>
+</div>
+
+<div class="row">
+<div>
+<div class="frame-title">2 · Laptop default: panel collapsed</div>
+<p class="frame-sub" style="max-width:300px">A laptop starts with the panel collapsed (G24). The rail carries the
+running mark and the counts, so a glance says whether ISAR is working. Clicking it expands the panel.</p>
+<div class="win" style="width:120px;height:420px;flex-direction:row;justify-content:flex-end">
+  <div class="rail" style="height:100%"><span>Processing ‹</span><span><span class="dot run"></span>5 running</span><span class="muted">14 waiting</span><span><span class="dot warn"></span>1 needs a look</span></div>
+</div>
+</div>
+<div>
+<div class="frame-title">3 · Paused</div>
+<p class="frame-sub" style="max-width:320px">Pause lets the running analyzers finish and starts nothing new. The
+automatic switch still adds new scans; they wait. The panel says so in words above both queues.</p>
+<div class="win" style="width:300px;height:200px">
+  <div class="ptabs"><span class="on">Processing</span><span>Campaign</span><span class="collapse">›</span></div>
+  <div class="blk" style="background:#fdf6e7"><span class="dot warn"></span><b>Paused.</b> 2 analyzers finishing; nothing new starts; 16 waiting. <span class="btn small primary" style="margin-left:4px">Resume</span></div>
+  <div class="qhead">Fast queue <span class="r">1 finishing · 15 waiting</span></div>
+  <div class="qhead">Deep queue <span class="r">1 finishing · 1 waiting</span></div>
+</div>
+</div>
+</div>
+
+<div class="frame-title">4 · The two confirmations: stopping a deep pass, and closing ISAR with work queued</div>
+<p class="frame-sub">Stopping a running fast analyzer loses about a minute and asks nothing. Stopping a running deep
+analyzer, and closing ISAR with anything running or waiting, ask first and name what is lost. Removing a waiting item
+asks nothing: it is re-added in one click.</p>
+<div class="row">
+  <div class="dialog">
+    <div class="phead">Stop the deep pass?</div>
+    <div class="body">CsV3Sb5_97K… <b>a06</b> has been in its deep pass for 34 min. Stopping now discards that work;
+      its fast-pass result stays. The other analyzers carry on.
+      <div style="text-align:right;margin-top:10px"><span class="btn primary">Keep running</span> <span class="btn danger">Stop a06</span></div></div>
+  </div>
+  <div class="dialog">
+    <div class="phead">Close ISAR?</div>
+    <div class="body">5 analyzers are running (one deep pass, 34 min in) and 14 are waiting.
+      Closing stops the running analyzers, discarding their work, and forgets the waiting ones.
+      Every finished result is already saved in the experiment folder.
+      <div style="text-align:right;margin-top:10px"><span class="btn primary">Keep ISAR open</span> <span class="btn danger">Stop and close</span></div></div>
+  </div>
+</div>
+</body>
+</html>
