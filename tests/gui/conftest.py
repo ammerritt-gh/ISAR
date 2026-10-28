@@ -7,10 +7,13 @@ the GUI tests build workspaces the same way the facade tests do — no copy.
 from __future__ import annotations
 
 import os
+import sys
 import threading
 
 # Must precede any PySide6 import (test modules importorskip PySide6 at module scope).
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+if sys.platform == "win32":
+    os.environ.setdefault("QT_QPA_FONTDIR", os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"))
 
 import pytest
 
