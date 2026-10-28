@@ -139,6 +139,14 @@ class GuiStore:
     def set_watch_paused(self, flag: bool) -> None:
         self._data["watch_paused"] = bool(flag)
 
+    def auto_fast_pass(self) -> bool:
+        """Whether new scans are fast-passed as they arrive; on for an experiment that never chose."""
+        val = self._data.get("auto_fast_pass")
+        return val if isinstance(val, bool) else True
+
+    def set_auto_fast_pass(self, flag: bool) -> None:
+        self._data["auto_fast_pass"] = bool(flag)
+
     # ---- campaign setup form (GUI Pass 3) ----------------------------------
     def campaign_form(self) -> dict:
         """The remembered campaign setup form (goal/spec/tier/budget/seed), or ``{}``."""

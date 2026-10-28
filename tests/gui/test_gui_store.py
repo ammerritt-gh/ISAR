@@ -170,3 +170,20 @@ def test_groups_coexist_with_watched_folders(tmp_path):
     reloaded = GuiStore.load(tmp_path)
     assert reloaded.watched_folders() == [str(__import__("pathlib").Path(r"D:\beam"))]
     assert reloaded.groups()[0].members == ["s:1"]
+
+
+def test_auto_fast_pass_defaults_on_and_round_trips_both_ways(tmp_path):
+    store = GuiStore.load(tmp_path)
+    assert store.auto_fast_pass() is True                       # an experiment that never chose
+    store.set_auto_fast_pass(False)
+    store.save()
+    reloaded = GuiStore.load(tmp_path)
+    assert reloaded.auto_fast_pass() is False
+    reloaded.set_auto_fast_pass(True)
+    reloaded.save()
+    assert GuiStore.load(tmp_path).auto_fast_pass() is True
+
+
+def test_a_non_bool_auto_fast_pass_reads_as_on(tmp_path):
+    (tmp_path / "gui.state.json").write_text(json.dumps({"auto_fast_pass": "no"}), encoding="utf-8")
+    assert GuiStore.load(tmp_path).auto_fast_pass() is True

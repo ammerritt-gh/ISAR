@@ -7,11 +7,13 @@ text shown is its plain word from :mod:`isar_gui.status_words`. This module only
 The words come from the stored records: the fast pass's count states
 (``isar/analyze/fast_pass.py``), the deep pass's states (``isar/session/deep_delivery.py``) and the
 results writer's ``NOT_FITTED`` / ``NOT_RECORDED``. A word missing from the table is never renamed or
-hidden: it shows as stored with the IDLE tone. There is no "running" tone, because no process reports
-a live state.
+hidden: it shows as stored with the IDLE tone. The stored passes have no "running" tone, because a record
+holds no live state; ``Tone.ACTIVE`` belongs to the analysis queue's live work alone (``QUEUE_STATES``)
+and is never a settled status.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import Enum
 
 from PySide6.QtCore import QRectF, Qt
@@ -27,10 +29,11 @@ class Tone(str, Enum):
     WARN = "warn"
     ERR = "err"
     IDLE = "idle"
+    ACTIVE = "active"           # live queue work (running, saving); never a settled status (core law 4)
 
 
-TONE_COLOR: dict[Tone, str] = {Tone.OK: "#2e7d4f", Tone.WARN: "#b7791f",
-                               Tone.ERR: "#b42318", Tone.IDLE: "#9aa1ab"}   # the mockup's palette
+TONE_COLOR: dict[Tone, str] = {Tone.OK: "#2e7d4f", Tone.WARN: "#b7791f", Tone.ERR: "#b42318",
+                               Tone.IDLE: "#9aa1ab", Tone.ACTIVE: "#2b6cb0"}   # the mockup's palette
 
 PARSED, FAST, DEEP = "parsed", "fast", "deep"          # the three status columns
 
@@ -50,7 +53,26 @@ _DEEP_TONES: dict[str, Tone] = {
     _REFUSED: Tone.ERR,
     NOT_RUN: Tone.IDLE,
 }
-_SEVERITY = {Tone.ERR: 3, Tone.WARN: 2, Tone.IDLE: 1, Tone.OK: 0}   # worst first
+_SEVERITY = {Tone.ERR: 4, Tone.WARN: 3, Tone.ACTIVE: 2, Tone.IDLE: 1, Tone.OK: 0}   # worst first
+
+# The analysis queue's live words for the panel and the scan list's marks: status -> (word, tone, what it
+# means, as the hover). "queued" is the scan list's word for an item the panel calls "waiting".
+QUEUE_STATES: Mapping[str, tuple[str, Tone, str]] = {
+    "waiting": ("waiting", Tone.IDLE, "Added; starts when cores free up, fast passes first"),
+    "queued": ("queued", Tone.IDLE,
+               "In the analysis queue for this pass; starts when cores free up, fast passes first"),
+    "running": ("running", Tone.ACTIVE, "ISAR is fitting this analyzer file now"),
+    "saving": ("saving", Tone.ACTIVE, "Finished; ISAR is writing the result into the experiment folder"),
+    "done": ("done", Tone.OK, "Finished and saved in the experiment folder"),
+    "done_warning": ("done with a warning", Tone.WARN,
+                     "Finished and saved, but ISAR reports a limit on this result; the reason is shown beside it"),
+    "held": ("held", Tone.WARN,
+             "ISAR did not fit this file because something it needs is missing; the reason says what. "
+             "Once that is fixed, add the file again"),
+    "failed": ("failed", Tone.ERR,
+               "The fit or the save went wrong; the reason says what. Add the file again to retry"),
+    "stopped": ("stopped", Tone.IDLE, "Stopped by you before it finished; anything already saved stays"),
+}
 
 _ICONS: dict[Tone, QIcon] = {}
 
@@ -69,7 +91,7 @@ def status_tone(column: str, word: str) -> Tone:
 
 
 def summary_tone(tones) -> Tone:
-    """The worst of ERR > WARN > IDLE > OK; an empty collection is IDLE."""
+    """The worst of ERR > WARN > ACTIVE > IDLE > OK; an empty collection is IDLE."""
     worst = None
     for tone in tones:
         if worst is None or _SEVERITY[tone] > _SEVERITY[worst]:
