@@ -46,7 +46,7 @@ def test_a_bare_file_name_opens_in_the_experiments_folder_not_the_last_used_one(
 def test_the_png_export_and_the_campaign_log_save_start_in_the_experiments_folder(opened, tmp_path):
     w, seen = opened
     file_dialogs.get_save_file_name(w, "Save something", str(tmp_path / "other.txt"))      # last used: elsewhere
-    w._export_view("Inspector")                                      # the File menu's "Save view as image"
+    w._export_view("Scan(s)")                                      # the File menu's "Save view as image"
     w.campaign_dock._save_feed()                                     # the campaign log's "Save log…"
     root = Path(w._ws.root).resolve()
     assert [s[0] for s in seen[1:]] == [root, root]

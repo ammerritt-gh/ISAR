@@ -355,7 +355,7 @@ def test_a_provisional_deep_cell_hovers_towards_the_note():
     """The scan list's per-result word keeps "(provisional)" and its hover names the panel's note."""
     fv = SimpleNamespace(deep_pass={"state": "resolved", "trusted": False, "reason": "resolved: count 2 (P 0.85)"})
     cell = _status_cell(facade._deep(fv), DEEP)
-    assert cell.text == "clear (provisional)" and "note under Deep queue in the Processing panel" in cell.tooltip
+    assert cell.text == "clear (provisional) · currentness not recorded" and "note under Deep queue in the Processing panel" in cell.tooltip
     assert "settles" not in cell.tooltip
 
 

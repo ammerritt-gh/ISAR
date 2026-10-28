@@ -52,10 +52,10 @@ def test_export_view_writes_png(qtbot, make_ws, tmp_path):
     assert out.exists() and out.stat().st_size > 0
 
 
-def test_export_inspector_writes_png(qtbot, make_ws, tmp_path):
+def test_export_scans_writes_png(qtbot, make_ws, tmp_path):
     w, _ = _win(qtbot, make_ws)
-    out = tmp_path / "inspector.png"
-    assert w._export_view("Inspector", path=str(out)) is True
+    out = tmp_path / "scans.png"
+    assert w._export_view("Scan(s)", path=str(out)) is True
     assert out.exists() and out.stat().st_size > 0
 
 

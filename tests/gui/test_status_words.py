@@ -111,12 +111,12 @@ def test_an_untrusted_deep_count_says_provisional_in_the_word_and_the_hover():
     """Provisional sampler settings make every deep result untrusted today: the plain word must not claim a settled count."""
     from types import SimpleNamespace
     untrusted, trusted = _deep_cell(False), _deep_cell(True)
-    assert untrusted.text == "clear (provisional)" and "provisional" in untrusted.tooltip
+    assert untrusted.text == "clear (provisional) · currentness not recorded" and "provisional" in untrusted.tooltip
     assert "note under Deep queue in the Processing panel" in untrusted.tooltip         # job amendment 3: the pointer
-    assert trusted.text == "clear" and "provisional" not in trusted.tooltip
+    assert trusted.text == "clear · currentness not recorded" and "provisional" not in trusted.tooltip
     assert "Deep queue" not in trusted.tooltip
     refused = facade._deep(SimpleNamespace(deep_pass={"state": "refused", "trusted": False, "reason": "no fast-pass record"}))
-    assert _status_cell(refused, DEEP).text == "refused"                 # no count to qualify
+    assert _status_cell(refused, DEEP).text == "refused · currentness not recorded"                 # no count to qualify
 
 
 def test_no_meaning_claims_a_settled_count_or_a_removed_batch_path():

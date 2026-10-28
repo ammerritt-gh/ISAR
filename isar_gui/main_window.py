@@ -485,7 +485,7 @@ class MainWindow(QMainWindow):
         # to the same workspace in later tasks.
         self._viewmodel = ViewModel(ws, parent=self)
         self.browser_vm = BrowserViewModel(ws, parent=self)
-        self.inspector_vm = InspectorViewModel(ws, parent=self)
+        self.inspector_vm = InspectorViewModel(ws, parent=self, specs=False)
         self.heatmap_vm = HeatmapViewModel(ws, parent=self)
         self.dispersion_vm = DispersionViewModel(ws, parent=self)
         # The G7 sandbox preview-fit worker; keyed on the workspace ROOT (it re-parses in-process).

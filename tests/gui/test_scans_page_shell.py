@@ -77,3 +77,20 @@ def test_window_group_shortcuts_reach_the_saved_group_bar(qtbot, bl43_ws_readonl
     shortcuts["3"].activated.emit()
 
     assert seen == [(3, True), (3, False)]
+
+
+def test_window_selection_never_builds_the_retired_inspector_plot(qtbot, scans_view_ws_readonly, monkeypatch):
+    from scans_view_fixture import ONE_MODE
+
+    workspace = Workspace.open(scans_view_ws_readonly)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Scan(s) selection invoked the legacy curve reader")
+
+    monkeypatch.setattr(workspace, "evaluate_fit", forbidden)
+    window = MainWindow(workspace, session=Session(), watch=False)
+    qtbot.addWidget(window)
+    window.selection.set([ONE_MODE], clicked=ONE_MODE, origin="list")
+    window.scans_page.flush_redraw()
+    assert window.inspector_vm.current_fit is not None
+    assert window.scans_page.drawn().keys == (ONE_MODE,)
