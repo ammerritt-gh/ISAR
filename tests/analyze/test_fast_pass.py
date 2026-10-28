@@ -83,6 +83,51 @@ def test_a_count_with_a_priced_basin_never_contends_unpriced():
     assert tally.preferred == 1 and tally.unpriced_contenders == [3]
 
 
+@pytest.mark.parametrize("delta", [(), (1,)])
+def test_failed_variant_remains_in_deep_input_when_same_count_sibling_succeeds(monkeypatch, delta):
+    from isar.analyze import deep_pass
+    from isar.session.scan_delivery import _fast_pass_record
+
+    eng = _engine(_expected([(4.0, 0.5, 60.0), (10.0, 0.5, 40.0)]), 2)
+    eng.reached.add(2)
+    successful = eng.variant(2, True, True)
+    failed = eng.variant(2, True, False)
+    failed_model = eng.model(failed, delta)
+
+    # Isolate one optimiser failure; the sibling's start is a valid fitted point. Neither
+    # failure handling nor deep reconstruction requires an optimisation or evidence run.
+    def fit_or_fail(model, theta0, family):
+        if model is failed_model:
+            return None
+        return SimpleNamespace(x=theta0[model.free], nfev=1, message="synthetic success")
+
+    monkeypatch.setattr(eng, "_trf", fit_or_fail)
+    monkeypatch.setattr(eng, "resolve", lambda basin, point: None)
+    modes = [(4.0, 0.5, 60.0, False), (10.0, 0.5, 40.0, False)]
+    assert eng.fit(successful, modes, "ladder") is not None
+    failed_modes = [(e, g, h, i in delta) for i, (e, g, h, _) in enumerate(modes)]
+    assert eng.fit(failed, failed_modes, "ladder") is None
+
+    record = _fast_pass_record(eng.conclude())
+    rows = {m["label"]: m for m in record["models"]}
+    assert failed_model.hyp.label in rows
+    row = rows[failed_model.hyp.label]
+    assert row["evidence_status"] == "not_fitted"
+    assert row["reason"] and row["cost"] is None and row["ln_z"] is None
+    assert row["ln_model_prior"] == pytest.approx(fast_pass._ln_model_prior(len(eng.variants[2]), 2))
+    assert rows[successful.hyp.label]["cost"] is not None
+    # Keep base variants and the attempted mask; do not expand the other 2**k masks.
+    expected_labels = {v.label for v in eng.variants[2]} | {failed_model.hyp.label}
+    assert set(rows) == expected_labels and len(rows) == len(record["models"])
+
+    entries = {e.label: e for e in deep_pass.models_from_record(
+        eng.ctx, record, deep_pass.plain_hypotheses(eng.ctx, 2))}
+    assert set(entries) == expected_labels
+    entry = entries[failed_model.hyp.label]
+    assert entry.fastpass_ln_z is None and entry.fastpass_lnl_opt is None
+    assert entry.ndim == row["k_free"] and entry.log_model_prior == row["ln_model_prior"]
+
+
 def test_a_soft_constraint_replaces_only_its_own_coordinates_recipe_factor():
     # Flat-width arm: the unconstrained width must keep the flat factor, not the catalogue's default.
     arm = prior.PriorSettings(width_kind="flat")

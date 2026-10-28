@@ -744,7 +744,10 @@ count state and its `modes.csv` rows are not changed; the deep pass writes its o
 **What it samples.** Every model of that spectrum's fast-pass record: every count from 0 to the ceiling,
 with and without the background, the delta-mode twins and also the twin parents (the railed fits that
 resolve to a twin). Nested sampling needs no optimiser fit, so no model is left out because it was
-degenerate for the fitter. Each model is rebuilt as the fast pass priced it: the same likelihood
+degenerate for the fitter. A base structural variant at a reached count, or a delta-mask model
+already considered by the search, also remains in the record as `not_fitted` when all its starts
+fail, even if a sibling variant fitted successfully. This retention does not enumerate additional
+delta masks. Each model is rebuilt as the fast pass priced it: the same likelihood
 (Baker–Cousins on raw counts, no zero-count floor), the same priors (the record's configured
 `PriorSettings`, §2.1) and the same ordered energy transform, with the hard-fixed coordinates held out;
 `bayes.EvidenceProblem` is that one sampled problem, shared with `--errors bayes`. If the data changed since

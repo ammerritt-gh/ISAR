@@ -820,7 +820,7 @@ class _Engine:
         """Fit ``modes`` ([(omega0, Gamma, h | None, delta)]) in ``variant`` by TRF, canonicalise,
         and place the optimum in its model's basins (a new or improved basin is resolved).
         Returns (basin, this fit's cost), or None when there is no such model or the start failed
-        (recorded only in the family counts)."""
+        (family counts record attempts; ``conclude`` retains models with no converged start)."""
         if variant is None:
             return None
         modes = sorted(modes, key=lambda m: m[0])
@@ -1527,15 +1527,19 @@ class _Engine:
                 if b.status == "pending":
                     b.status = "no_evidence"
                     b.reason = "not priced"
-            fitted = {b.count for b in self.basins() if b.theta is not None}
-            for k in sorted(self.reached - fitted):
+            # A successful sibling at the same count must not hide an unfitted variant.
+            # Admit each reached base variant and retain already-built delta models, without
+            # enumerating masks the fast search never considered. The deep pass needs no fit.
+            for k in sorted(self.reached):
                 for v in self.variants[k]:
-                    m = self.model(v, ())
-                    if m is not None and not m.basins:
-                        m.basins.append(_Basin(m, 0, None, None, None,
-                                               _ln_model_prior(len(self.variants[k]), k), "",
-                                               status="not_fitted",
-                                               reason=f"no start converged at count {k}"))
+                    self.model(v, ())
+            for m in self.models.values():
+                if m is not None and not m.basins:
+                    k = m.variant.k
+                    m.basins.append(_Basin(m, 0, None, None, None,
+                                           _ln_model_prior(len(self.variants[k]), k), "",
+                                           status="not_fitted",
+                                           reason=f"no start converged for model {m.hyp.label}"))
             basins = sorted(self.basins(), key=lambda b: (b.count, b.model.variant.elastic,
                                                           b.model.variant.background,
                                                           b.model.delta, b.index))
