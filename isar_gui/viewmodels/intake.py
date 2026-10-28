@@ -131,6 +131,14 @@ class IntakeState(QObject):
         self._start_pending()
         self._timer.start()
 
+    def wait_idle(self) -> None:
+        """Block until the worker thread has ended. The worker holds files open inside the experiment folder,
+        and Windows refuses to rename a folder with an open handle in it, so a rename calls this first. The
+        event loop does not run meanwhile, so nothing starts a new worker before the caller's rename."""
+        thread = self._thread
+        if self._active and thread is not None:
+            thread.join()
+
     def _read(self, what: str, call: Callable):
         try:
             return call()

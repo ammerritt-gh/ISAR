@@ -1289,6 +1289,7 @@ class MainWindow(QMainWindow):
         self._flush_gui_store_if_pending()
         self._stop_watch_bridge()
         self._folder_watcher.configure([], True, reset_binding=True)
+        self.intake.wait_idle()                 # its reads hold files open in the folder (WinError 5)
         if self._wsm.rename(name):
             new = self._wsm.root()
             if str(new) == str(old):           # the same name: nothing moved and nothing re-bound

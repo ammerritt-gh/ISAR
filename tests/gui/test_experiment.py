@@ -282,6 +282,32 @@ def test_rename_of_a_watched_experiment_moves_folder_binding_and_recents(
     assert f"Renamed experiment {old.name} to leTacon run 2 ({new})" in _log_text(w)
 
 
+def test_a_rename_waits_for_the_intake_worker_that_holds_a_file_in_the_folder(qtbot, monkeypatch, make_ws):
+    import threading
+    import time
+
+    from isar_gui.viewmodels import intake as intake_mod
+
+    ws = _ready(make_ws)
+    old = Path(ws.root)
+    w = _window(qtbot, ws)
+    holding = threading.Event()
+
+    def slow_current_passes(root, _arg):
+        with open(Path(root) / "card.policy.toml", "rb"):     # an open handle inside the folder
+            holding.set()
+            time.sleep(0.4)
+        return {}
+    monkeypatch.setattr(intake_mod, "current_passes", slow_current_passes)
+    w.intake.reload()
+    assert holding.wait(10)
+    _answer_rename(monkeypatch, "renamed")
+
+    w.rename_experiment()
+    assert (old.parent / "renamed").is_dir() and not old.exists()
+    assert str(w._wsm.root()) == str(old.parent / "renamed")
+
+
 def test_a_failed_rename_leaves_everything_as_it_was_and_watches_again(qtbot, monkeypatch, make_ws):
     import isar_gui.workspace_manager as wm
 
