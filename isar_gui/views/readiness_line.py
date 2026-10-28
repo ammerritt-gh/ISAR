@@ -1,4 +1,4 @@
-"""ReadinessLine -- the Processing panel's line above *Run analysis…*: what can start, and what is missing.
+"""ReadinessLine -- the Processing panel's line above the Fast-pass button: what can start, and what is missing.
 
 One wrapped line from the intake backend's readiness read, for the fit use only::
 
@@ -8,7 +8,7 @@ Every count but the first is a link that opens a small non-modal list of the spe
 and analyzer), the backend's own reason for each, and one button for the action that resolves it:
 *Choose resolution-curve folder…*, *Enter the value…*, *Add data…* and *Show these in the list* leave through
 the signals the window routes to the resolution-folder route, the add-files route and the needs-attention list;
-*Run analysis…* asks for today's Run dialog.
+*Add to the fast queue* adds a fast pass for every analyzer file in the list that has no current one.
 
 The line counts spectra by what the backend says (``can_start``, ``running`` and ``action`` of each
 analyzer's ``fit`` use) and decides nothing; an analyzer whose file never arrived is not a spectrum read, so it
@@ -43,8 +43,17 @@ _BLOCKED = (
 )
 _PHRASES = {action: (one, many) for action, one, many in _BLOCKED}
 _BUTTONS = {"locate_folder": LOCATE_LONG, "enter_value": "Enter the value…", "accept_counts": "Show these in the list",
-            "reverse_declaration": "Show these in the list", "start_analysis": "Run analysis…",
+            "reverse_declaration": "Show these in the list", "start_analysis": "Add to the fast queue",
             "import_again": "Add data…"}
+# What each popup button does, as its hover (the button's action id -> text).
+_BUTTON_TIPS = {
+    "locate_folder": "Choose the folder that holds the measured resolution curves; ISAR then rechecks these spectra",
+    "enter_value": "Shows where to enter the missing value for these scan sets",
+    "accept_counts": "Selects these spectra in the scan list so you can accept their counts as they are",
+    "reverse_declaration": "Selects these spectra in the scan list so you can use them again",
+    "start_analysis": "Adds a fast pass for every analyzer file listed here that has no current fast pass",
+    "import_again": "Opens the file chooser so you can add the missing data files again",
+}
 _CLICK_HINT = "Click a count in blue to list the spectra behind it and the action that fixes it."
 _KIND_OF_ACTION = {"accept_counts": "counts_unaccepted", "reverse_declaration": "declared"}
 _WARN = f"color: {TONE_COLOR[Tone.WARN]};"
@@ -147,6 +156,7 @@ class _Popup(QDialog):
         self.buttons = QHBoxLayout()
         close = QPushButton("Close", self)
         close.setObjectName("readiness_popup_close")
+        close.setToolTip("Closes this list")
         close.clicked.connect(self.hide)
         layout = QVBoxLayout(self)
         layout.addWidget(self._title)
@@ -179,6 +189,7 @@ class _Popup(QDialog):
         for name, text, callback in buttons:
             button = QPushButton(text, self)
             button.setObjectName(name)
+            button.setToolTip(_BUTTON_TIPS.get(name.removeprefix("readiness_"), ""))
             button.clicked.connect(callback)
             self.buttons.addWidget(button)
 
@@ -186,7 +197,7 @@ class _Popup(QDialog):
 class ReadinessLine(QWidget):
     reveal_gap = Signal(str)         # group key -> AttentionList.reveal
     locate_requested = Signal()      # -> locate_resolution_folder
-    run_requested = Signal()         # -> MainWindow.run_analysis
+    run_requested = Signal()         # -> MainWindow.start_analysis
     add_data_requested = Signal()    # -> FilesStrip.choose_files
 
     def __init__(self, intake, labels: Callable[[str], str] | None = None, parent: QWidget | None = None) -> None:
