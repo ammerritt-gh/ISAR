@@ -438,6 +438,37 @@ def test_a_burst_of_changes_redraws_once_and_keeps_scroll_and_selection(qtbot):
     assert not p._queue._soon.isActive()
 
 
+def test_a_progress_only_change_keeps_the_rows_and_a_structural_one_rebuilds(qtbot):
+    def running(step):
+        return item(3, status="running", started=NOW - 40, step=NOW - 5, cores=1, progress=_p("fast", "ladder", step, 5))
+
+    stub = Stub(qview(fast=[group([running(3)])]))
+    p = panel(qtbot, stub)
+    stop = button(p, "queue_item_stop")
+    tip = stop.toolTip()
+    stub.set(qview(fast=[group([running(4)])]))
+    p._queue.refresh()
+    assert button(p, "queue_item_stop") is stop and stop.toolTip() == tip      # nothing under the mouse was replaced
+    assert "trying 4 peaks (up to 5) · 0:05" in texts(p, "queue_item_progress")
+    stub.set(qview(fast=[group([running(4), item(4)])]))                       # a new waiting item: structure
+    p._queue.refresh()
+    assert button(p, "queue_item_stop") is not stop
+    assert len(rows(p)) == 2
+
+
+def test_stop_on_a_row_that_was_not_rebuilt_asks_about_the_current_state(qtbot, asked):
+    def deep(progress):
+        return item(6, kind="deep", status="running", started=NOW - 600, step=NOW - 5, cores=2, progress=progress)
+
+    log = asked(False)
+    stub = Stub(qview(deep=[group([deep(_p("fast", "ladder", 2, 5))])]))
+    p = panel(qtbot, stub)
+    stub.set(qview(deep=[group([deep(_p("deep", "sampling", 1, 9, 1, 3))])]))   # its fast stage is over
+    p._queue.refresh()
+    button(p, "queue_item_stop").click()
+    assert "has been in its deep pass for 10 min" in log[0][0]
+
+
 def test_the_clock_ticks_only_while_something_runs(qtbot, monkeypatch):
     stub = Stub(qview(fast=[group([item(3, status="running", started=NOW - 5, step=NOW - 5,
                                         progress=_p("fast", "seed"))])]))

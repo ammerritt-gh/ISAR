@@ -181,6 +181,7 @@ class QueuePanel(QWidget):
         self._controller = None
         self._expanded: set[tuple[str, str]] = set()      # (queue, scan set) groups shown in full
         self._live: dict[str, tuple[QLabel, QLabel, object]] = {}   # item_id -> (progress, elapsed, ItemView)
+        self._shape: object = object()            # what the rows were last built from (see _signature)
         self._tick = QTimer(self)
         self._tick.setInterval(1000)
         self._tick.timeout.connect(self._tick_labels)
@@ -265,6 +266,7 @@ class QueuePanel(QWidget):
             self._controller.changed.disconnect(self._schedule)
         self._controller = controller
         self._expanded.clear()
+        self._shape = object()                    # another controller's rows are never reused
         if controller is not None:
             controller.changed.connect(self._schedule)
         self.refresh()
@@ -294,6 +296,7 @@ class QueuePanel(QWidget):
     def _stop(self, item) -> None:
         if self._controller is None:
             return
+        item = self._live.get(item.item_id, (None, None, item))[2]       # a row that was not rebuilt has newer data
         if item.pass_kind == "deep":
             if item.progress is not None and item.progress.get("pass") == "fast":
                 lost = f"{item.analyzer} is still doing the fast pass its deep pass starts with."
@@ -405,7 +408,35 @@ class QueuePanel(QWidget):
             "Lets running analyzers finish and starts nothing new until you press Resume. New arrivals still join "
             "the queue and wait. Use it before renaming the experiment folder.")
 
+    def _signature(self, view):
+        """Everything a rebuilt row would show except the running items' progress and clocks, which live in `_live`.
+        Equal signatures mean the widgets stand; a hover, a press or the focus on one is then never lost."""
+        if view is None or not view.bound:
+            return None
+
+        def items(its):
+            return tuple((i.item_id, i.status, i.reason, i.runnable) for i in its)
+
+        def queue(groups):
+            return tuple((g.set_key, g.set_label, g.automatic, g.n_done, g.n_total, items(g.items)) for g in groups)
+
+        finished = tuple((g.set_key, g.set_label, g.pass_kind, tuple(g.counts.items()), items(g.look))
+                         for g in view.finished)
+        return (queue(view.fast), queue(view.deep), finished, frozenset(self._expanded),
+                _currentness.deep_calibration_note())
+
     def _queues(self, view) -> None:
+        self._expanded &= {(kind, g.set_key) for kind, groups in (("fast", view.fast), ("deep", view.deep))
+                           for g in groups} if view is not None else set()
+        shape = self._signature(view)
+        if shape == self._shape:
+            if shape is not None:                 # swap in the newer progress; the tick and this call redraw it
+                fresh = {i.item_id: i for groups in (view.fast, view.deep) for g in groups for i in g.items}
+                for iid, (progress, elapsed, old) in list(self._live.items()):
+                    self._live[iid] = (progress, elapsed, fresh.get(iid, old))
+                self._tick_labels()
+            return
+        self._shape = shape
         bar = self._scroll.verticalScrollBar()
         keep = bar.value()
         self._content.setUpdatesEnabled(False)
@@ -424,8 +455,6 @@ class QueuePanel(QWidget):
             self._rows.addWidget(_label("Nothing queued: no experiment is open.",
                                         "Open an experiment to see its analysis queue here."))
         self._rows.addStretch(1)
-        self._expanded &= {(kind, g.set_key) for kind, groups in (("fast", view.fast), ("deep", view.deep))
-                           for g in groups} if view is not None else set()
         self._content.setUpdatesEnabled(True)
         self._content.layout().activate()
         bar.setValue(keep)
@@ -568,8 +597,10 @@ class QueuePanel(QWidget):
     def _tick_labels(self) -> None:
         now = _now()
         for progress, elapsed, item in self._live.values():
-            text, _tip = progress_text(item, now)
+            text, tip = progress_text(item, now)
             progress.setText(text)
+            if progress.toolTip() != tip:
+                progress.setToolTip(tip)
             self._set_elapsed(elapsed, item, now)
 
     def _finished(self, view, now: float) -> None:
