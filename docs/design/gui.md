@@ -2,7 +2,7 @@
 
 > **Status:** live
 > **Authority:** canonical GUI + workspace_api presentation design
-> **Verified against code revision:** `cafb75b` (2026-10-27)
+> **Verified against code revision:** `df7dac9` (2026-10-28)
 
 **Status:** Design draft, 2026-07-11, substantially built. This document follows the discipline of
 `../ARCHITECTURE.md`: nothing is described in the implemented voice unless it is. Because roughly the first
@@ -11,7 +11,7 @@ verified implementation detail and mirrors the capability status in `../ARCHITEC
 override that canonical status table. The Planned voice of the body text predates the build and is
 preserved as the design record.
 
-### As-built status (verified against `isar_gui/` and `isar/`, 2026-10-27)
+### As-built status (verified against `isar_gui/` and `isar/`, 2026-10-28)
 
 | Phase / capability | Status | Evidence |
 |---|---|---|
@@ -24,6 +24,7 @@ preserved as the design record.
 | **Experiment as a real folder** — drop-to-create, Rename, Save experiment copy…, Export results… (G25) | **Implemented** (2026-10-27) | `workspace_manager.py`, `views/files_strip.py`, `export_action.py`, `isar/report/export.py` |
 | **Scan list and scan inspector** — BL43 scan-set tree, status words, filter and sort, inspector inside the left panel (G24) | **Implemented** (2026-10-27) | `isar/workspace_api/scan_list.py`, `viewmodels/scan_list.py`, `views/scan_list.py`, `views/scan_inspector.py`, `theme.py` |
 | **Left side, stage two** — setup section, *Choose curves folder…*, *Experiment info…*, needs-attention list, fact table, out-of-date marks, readiness line (G24, G25) | **Implemented** (2026-10-27; job `ja0cd202ecb67`, on the intake backend of job `jfada74237892`); user values for Q and other facts stay pinned, and one layout limit is open (§0quinquies) | `viewmodels/intake.py`, `views/setup_section.py`, `views/details_dialog.py`, `views/attention_list.py`, `views/value_entry.py`, `views/fact_table.py`, `views/readiness_line.py`, `tests/gui/test_stage2_walkthrough.py` |
+| **Analysis queue** — the Processing panel's queue: analyzer files queued by hand or as they arrive, fast before deep, continuous on the cores ISAR is given, one writer per experiment; BL43LXU only (G26, §0sexies) | **Implemented** (2026-10-28), tested offscreen and at the engine. The walk-through at the GUI threshold by a person is **not yet run**. Open: a queued fit does not refresh the curves check the setup section shows (§0sexies) | `isar_gui/queue_controller.py`, `isar_gui/views/queue_panel.py`, `isar/session/analysis_queue.py`, `isar/session/analysis_service.py`, `isar/session/file_fit.py`, `isar/session/writer.py`, `isar/session/currentness.py`; `tests/gui/test_window_queue.py`, `test_queue_panel.py`, `test_queue_controller.py` |
 | **Read-only display grammar** — WISH-1/2/3/9 | **Implemented** (G23) | `isar/workspace_api/display.py`, `isar/plotspec/`, plane/dispersion/inspector viewmodels and panes |
 | **Phase B** — planner (C6): objective authoring, forbidden-zone rendering | **Planned** | no objective editor or planner module exists |
 | **Phase C** — directives: inbox, drain protocol, NL compilation, dispersion editor | **Planned** | no directive or inbox machinery exists |
@@ -69,6 +70,7 @@ in the referenced section.
 | G23 | **Individual fits show evidence; pooled masters show the current answer; only a revision-matched assessment can certify.** State colouring is the default; one shared persisted action switches plane and dispersion to mutually exclusive entropy colouring. Strip colour and latest-acquisition highlighting have one backend-neutral semantic contract. | §7.3, §8 |
 | G24 | **One arrangement in every state.** Left column (experiment strip, files strip, scan list, full height); the display; Processing and Campaign on the right; Log and Output below; the scan inspector inside the left panel; laptop or desktop chosen at first start. | §0quinquies |
 | G25 | **The experiment is a real folder.** Drop-to-create under `Documents\ISAR`, Rename, Save copy as…, Export… through `isar export`, no temporary workspace. | §0quinquies |
+| G26 | **The Processing panel is the analysis queue.** Analyzer files are queued by hand or as they arrive and run continuously on the cores ISAR is given, one writer per experiment; no queued pass has a time limit; every control has a plain tooltip (the GUI threshold). | §0sexies |
 
 ---
 
@@ -220,8 +222,8 @@ empty/ready layout pair, and amends G19 as stated below.
     It is refused, with the reason shown, while an engine command or an export writes in the folder,
     and when the experiment holds its own source data files, since its manifest names them inside the
     folder and a rename would leave ISAR unable to find them. When the experiment has fits and its
-    resolution curves sit inside its folder, the Rename dialog says in one line that the next *Run
-    analysis* refits those spectra: ISAR recognises a curve set by its folder's path (operator,
+    resolution curves sit inside its folder, the Rename dialog says in one line that adding those
+    spectra to the queue again will refit them: ISAR recognises a curve set by its folder's path (operator,
     amendment 1: accepted).
   - *Save copy as…* copies the whole folder to a new one. The original stays the active experiment and
     new data keeps going to it; the copy is offered with *Open copy*, and the Log says what the copy
@@ -230,8 +232,9 @@ empty/ready layout pair, and amends G19 as stated below.
     done. Both passes are exported side by side, each labelled, and nothing picks one (operator,
     amendment 3).
   - *Save copy as…* and *Export…* are unavailable, with the reason beside them, while there is no
-    experiment, while an ingest, an analysis, a campaign or an export is writing to it, and while
-    nothing has been read into it yet.
+    experiment, while an ingest, a campaign or an export is writing to it, and while nothing has been
+    read into it yet. (Amended 2026-10-28: a running analysis no longer makes them unavailable; they hold
+    the queue's writer instead, §0sexies.)
   - Campaign *Start* with no experiment open creates an ISAR-named experiment first, as a drop does,
     and launches the campaign into it (G19, amended above).
 - **Scan list (G24).** One row per scan set, labelled by its scan number when its files carry exactly
@@ -266,7 +269,7 @@ empty/ready layout pair, and amends G19 as stated below.
     last curve check's problem is shown in the warning colour on one line, shortened with … to the
     column's width and shown in full on hover (so the scan list keeps S1's 400 px minimum with the
     attention list open); a saved folder is marked
-    unchecked until the next import or analysis start, which is when a curve added or replaced in it
+    unchecked until the next import or `isar run` checks it, which is when a curve added or replaced in it
     is seen. *Details…* (`views/details_dialog.py`, from the experiment strip): the name with
     *Rename…*, the folder, and six optional descriptive fields (title, proposal, sample, people,
     dates, notes) that no fit reads.
@@ -293,12 +296,7 @@ empty/ready layout pair, and amends G19 as stated below.
   - *Help* (`views/help_window.py`, amendment 7): *Quick guide* (`isar_gui/resources/quick_guide.html`, read
     at runtime) and *What the status words mean* (generated from `isar_gui/status_words.py`, so it cannot
     drift from the display), shown in one reused non-modal window (`show()`/`raise_()`, never `exec()`).
-  - *Run analysis…* (`views/setup_section.py`, amendment 7): a button on the setup section's button row,
-    with a muted line for the ready count or the reason it is off; it holds no logic and calls
-    `MainWindow.start_analysis()`, the one entry point the Run menu entry, the Processing button and the
-    readiness list's button also call (the right-hand queue job rebinds it). The amber curves line, when
-    shown, stands in for the muted line only when the missing curves are the whole reason Run is off; any
-    other reason keeps its line, even where a second line squeezes the counts at 1108 px.
+  - *Fast-pass all ready (N)* (`views/setup_section.py`, amendment 7, rebound 2026-10-28): a button on the setup section's button row, with a muted line for the count or the reason it is off. It holds no logic and calls `MainWindow.start_analysis()`, the one entry point that the Run menu entry, the *Processing* button and the needs-attention and readiness lists also call. It adds a fast pass for every ready analyzer file that has no current one (§0sexies). The amber curves line, when shown, stands in for the muted line only when the missing curves are the whole reason it is off; any other reason keeps its line, even where a second line squeezes the counts at 1108 px.
   - *Readiness line* (`views/readiness_line.py`) in Processing: counts of spectra ready, ready with a
     fallback, waiting for resolution curves, needing their counts accepted, running and so on, each
     count opening the list behind it with the backend's reason and the button that resolves it.
@@ -306,16 +304,65 @@ empty/ready layout pair, and amends G19 as stated below.
     backend's writers, in process, and never edits a value a file supplies (operator ruling,
     2026-10-27: user values are only ever added; a later value supersedes an earlier one and both stay
     on record). `IntakeState` (`viewmodels/intake.py`) is the one holder of the reads and writers. It
-    re-reads on the intake watch events, after every save of its own, and at the end of every run, a
-    cancelled one included; the fit-inputs and needs-attention reads run on a worker thread and a
+    re-reads on the intake watch events, after every save of its own, and after each queued result is saved (§0sexies); the fit-inputs and needs-attention reads run on a worker thread and a
     result from before a save is dropped. Every save is refused, with the reason shown, while an
     export runs or another process holds the store ("busy, try again").
   - *Counts accepted* (design amendment 5, operator-approved): the declaration that an `_i` analyzer's
     counts are raw lifts the hold on them and changes no count and no flag (an `_lr` analyzer stays
     held whatever is saved); every fit made that way records it, and *Withdraw* takes it back.
-- **Pinned for later, not built here:** the analyzer overview in the centre, the batch queue, automatic
+- **Pinned for later, not built here:** the analyzer overview in the centre, automatic
   export to an outside folder, `gpi.*` parsing for per-analyzer Q, and user values for Q and for facts
   other than temperature, slit and dead analyzers.
+
+---
+
+### 0sexies. The analysis queue and the GUI threshold (2026-10-28)
+
+The analysis queue was designed on 2026-10-27 (job `j926265e2189c`: design steps 1–24 and the operator's decisions) and built in two slices: the engine under `isar/session/` and the window under `isar_gui/`. This section describes it as built, read from the code; where the design's wording differs, this text governs. The reference picture is `mockups/2026-10-27-isar-right-side-queue.html`, under the same rule.
+
+- **G26 — the Processing panel is the analysis queue.** Analyzer files of a BL43LXU experiment are queued by hand, as a *Fast pass* or a *Deep pass*, or as a fast pass when they arrive. Queued work runs continuously on the cores ISAR is given: two passes of one file never run together, fast items start before deep ones, a running deep pass is stopped only by the user, and no queued pass has a time limit. A result counts as done only once the one writer has saved it in the experiment folder. Queued analysis fits analyzer files and nothing else: no pooled masters, branch identity or dispersion prior, and no language model. The window computes no validity of its own; it shows what the engine reports.
+- **The GUI threshold (operator, 2026-10-27).** Every part of the window is judged against one reader: someone who knows inelastic scattering and the beamtime, perhaps knows broadly what ISAR is, has had at most a short explanation, and at 3 AM cannot reach the operator and has to work out what things do from the screen. So every control, status word, count and mark has a plain tooltip; a control that cannot be used says why in place; an essential action also has a visible label; and nothing is shown that this reader does not need to steer the analysis. The rule governs the whole GUI, not only the queue. **Status:** the tooltips are in the code. A person has **not** yet walked through the window at the laptop size with only the screen and its tooltips; that walk-through is still to be run, and its findings are recorded here when it is.
+- **The panel, top to bottom.**
+  - The switch *Fast-pass new scans as they arrive*. It starts on for a new experiment and is stored with that experiment. While it is on, every analyzer file read in from then on (from the watched folder or a drop, new or re-read) joins the fast queue, marked *auto*. It never adds deep passes, never touches what you added by hand, and never sweeps back over older files.
+  - The selection line: "2 analyzers selected (97 K: a06, a07)", or "No analyzers selected". Pooled masters are named and not queued.
+  - *Fast pass* and *Deep pass*, under *Add to queue:*. Each adds one item per selected analyzer file for that pass. Both are greyed, with the reason in a line beneath, when no experiment is open or the selection holds no analyzer file.
+  - A banner in the warning colour: *Paused*, with *Resume*; "Waiting: a campaign is running in this experiment. Nothing starts until it ends."; or the analysis process's failure, with the log's location.
+  - The *Fast queue* and the *Deep queue*, each headed by its counts ("1 running · 4 saving · 13 waiting", or "nothing queued"). Under each heading, one group per scan set: its label, *auto* where it was added automatically, and "N of M done" for what was added since the experiment was opened. Each analyzer is a line with a dot and a word. A group longer than six shows "… N more" and expands on click.
+  - One standing note under the *Deep queue* heading while the deep pass's sampler calibration is provisional: "Deep-pass evidence calibration is provisional: all deep results carry this". It is shown once, not per item. A deep count in the scan list reads "(provisional)", and its hover points here.
+  - A running analyzer shows its progress, its elapsed time and *■ Stop*; a waiting one shows *✕ Remove*. A waiting deep pass whose file's fast pass has not finished says "waits for this analyzer's fast pass".
+  - *Finished*: one line per scan set and pass with its counts ("27 done · 1 held"), then each analyzer that needs a look (held, failed, stopped or done with a warning, each with its reason), then each finished deep pass with *Show*. *Clear list* tidies this list only; it changes no result and no count.
+  - A footer beside *Pause* (or *Resume*): "5 analyzers running on 14 cores", with the number being saved.
+- **Progress, from the steps the engine has completed.** Nothing is a percentage or an estimate, and no item is declared stalled. A fast pass shows its phase ("starting values", "trying 3 peaks (up to 5)", "comparing models", "checking the fit", "choosing the peak count", "error bars"); the peak count is a ceiling, since the search can stop short of it. A deep pass shows its stage and model: "stage 1 of 3 · model 4 of 9 · this model 3:10". The last stage's length is shown once it starts ("stage 3 · model 1 of 2"). "This model" is the time since the latest step the engine reported. A step much longer than the earlier ones may mean a stuck fit, and *Stop* ends it.
+- **Adding work.** A file that already has a current result for the chosen pass, or is already waiting or running for it, is not added. The Log says which and why ("Not added: 97 K a03, a04 already have a current fast pass"). There is no "run again anyway"; a result whose inputs have changed is not current, so it is added. *Fast-pass all ready (N)* (the button at the top of the left column, the one in *Processing*, the *Run* menu entry, and the buttons in the needs-attention and readiness lists) adds a fast pass for every ready analyzer file without a current one; its label gives the count. Adding from the panel or that button first asks about an unsaved card draft. The automatic switch does not ask.
+- **How the queue runs.** When a core frees, the oldest runnable fast item starts before any deep one, and a deep item starts only while no fast item runs. A fast item takes one core. A deep item takes the idle cores, then gives back those its widest sampling stage cannot use; the next item takes them, fast first. A lowered cores setting changes no running item. An item fixes its inputs when it starts, not when it is added: it reads the experiment's saved values then, and finishes as already done if its result is current at that moment. A deep item whose file has no current fast pass runs that fast stage first, in the same item; a fast result saved before the deep stage is stopped stays saved. An analyzer file is occupied from the start of an item until its result is saved, so the next item on that file starts from the saved result.
+- **Done means saved.** A result reads *saving* until the writer confirms it. The writer is one thread per experiment: it saves whatever has queued up, in arrival order, under the workspace write lock, and changes only that analyzer file's result, so an import or a corrected value made meanwhile survives. A result is refused, with its reason, if its file was read in again with different data, or its fast pass was replaced, while it was being fitted. If ISAR stops before a result is saved, that result is lost and the analyzer is added again by hand. A saved result is never lost.
+- **Stop, pause, remove, leave.** *✕ Remove* takes a waiting item out and asks nothing. *■ Stop* ends one running item; the others carry on. Stopping a fast pass asks nothing. Stopping a deep pass asks first ("Stop the deep pass?"), names the work that will be discarded, and says the fast-pass result stays once saved. *Pause* lets running items finish and starts nothing new until *Resume*; arrivals still join and wait. Closing ISAR, *Open…* or *Recent*, and *New experiment…* ask first when anything is running, saving or waiting, and say what would be lost ("…Leaving stops the running analyzers, discarding their work, and forgets the waiting ones."). The analysis process is then stopped in order: results already handed to the writer are saved first. Nothing from one experiment can land in another, and the queue is forgotten when the experiment is left.
+  - *Rename* is refused while analyzers run or save ("press Pause and wait for the running analyzers to finish"). Once they have finished, Rename stops the idle analysis process and keeps the waiting items and the Finished list.
+- **Save copy and Export while analysis runs.** Both stay available. Each holds the queue's writer: a result being saved finishes first, and results that arrive meanwhile wait as *saving* until the copy has been made, or until the export has read the results (its first progress line). Measured on the development machine, a synthetic experiment of 16,804 files and 312 MB copied in 7.4–9.3 s; a laptop has not been measured. A copy that takes about a minute or more is a reason to revisit this rule.
+- **Campaigns.** A campaign does not start while analyzers are running, saving or waiting in the experiment, and the queue starts nothing while a campaign runs. Starting a campaign says why ("analyzers are waiting in the analysis queue; remove them or let them finish first"). Compiling a campaign goal is not refused; only starting it is. `isar run` and `isar drive` run by hand do not take the queue's lock and are not coordinated with it (`docs/WORKSPACE_AND_CLI.md`).
+- **Cores.** *Config ▸ Cores for analysis… (N of M)*, in the menu bar, sets how many cores ISAR may use, from one to this machine's count. It defaults to the machine's cores less two (at least one) and is remembered on this machine. A lower setting takes effect as running analyzers finish; a deep pass already running keeps its cores until it is stopped.
+- **Selection.** The scan list still selects one analyzer at a time; multi-select is a separate job and is not built. A focused scan-set row selects no analyzer, so the panel names none. *Show* in the Finished list is the one panel action that changes the selection.
+- **Scan list marks.** While an analyzer file is in the queue, its *Fast pass* or *Deep pass* cell reads *queued*, *running* or *saving* (the panel says *waiting* for *queued*). A scan-set row's coverage ("1/28 deep") counts the analyzers that hold a current stored result for that pass, and its hover says so. Coverage is not outstanding work, and it differs from the panel's counts by design.
+- **Status words.** Each is a dot and a word, never colour alone.
+
+  | Word | Meaning |
+  |---|---|
+  | waiting (scan list: queued) | Added; starts when cores free up, fast passes first |
+  | running | ISAR is fitting this analyzer file now |
+  | saving | Finished; ISAR is writing the result into the experiment folder |
+  | done | Finished and saved in the experiment folder |
+  | done with a warning | Finished and saved, but ISAR reports a limit on this result; the reason is shown beside it |
+  | held | ISAR did not fit this file because something it needs is missing; the reason says what. Add the file again once it is fixed |
+  | failed | The fit or the save went wrong; the reason says what. Add the file again to retry |
+  | stopped | Stopped by you before it finished; anything already saved stays |
+
+- **Limits, not clocks.** No queued pass has a time limit: a pass completes its full comparison of candidate models. The fast pass's per-spectrum safety budget and the deep pass's start budget are gone (2026-10-27). A deep pass has a clock only when a budget is typed on `isar run` (`--deep-budget-minutes`); the window never sets one. A result the engine reports as limited finishes *done with a warning* and says why: the peak-count ceiling was reached, a model's sampling stayed suspect after restarts, or the engine recorded another flag. A result stored before 2026-10-27 may carry an earlier time-limit reason; it is shown with that warning as stored.
+- **Held files.** A file ISAR will not fit without something it needs finishes *held* with the engine's reason, and is not retried by itself. For a missing energy zero, the reason says the energy-zero series is built by `isar run`, which the queue does not do.
+- **Scope, and what is not in this version.** BL43LXU only: other workspaces get what the same code gives, and nothing is built for them. Not in this version: moving an item to the front; a queue that survives leaving the experiment; a setting for one analyzer file; out-of-date marks in the queue; automatic retry of held items; "run again anyway"; a declared stall; a precision control; the deep pass's own speed and use of many cores (fitting optimisation work); multi-select (job `jf2633b9c3c77`).
+- **Open items, as built.**
+  - A saved curves folder is not checked when queued analysis starts. Queued fits read the folder's curves as each item starts, but the check the setup section shows (`report/curves.json`) runs at the next import or `isar run`. After a queued analysis has used the folder, the setup section can therefore still say the folder is not checked yet.
+  - Two windows on one experiment are not refused. Each has its own queue, and the writer loses no save, but the same file may be fitted twice.
+  - The human walk-through at the GUI threshold (above) has not been run.
 
 ---
 
@@ -394,6 +441,7 @@ acceptance narrative; §12 maps them to components.
   the directive schemas (§4), and the sanctioned sandbox entry point (§6). It must **never**
   import `isar.analyze` internals, `isar.drive` internals, or parser plugins directly. Enforce
   with an import-linter contract or a grep test.
+- **G26 adds two names to this rule**, both listed with their reasons in `tests/test_import_contract.py`: `isar.session.analysis_queue` (the scheduler's bookkeeping: stdlib only, no I/O, clock or threads) and the single name `isar.session.analysis_service._WinJob` (the Job Object wrapper, so the window's process runner and the analysis service share one copy). The analysis service runs as a subprocess, and the window never imports it.
 
 **Why not a separate repo:** the contract surface will churn while the GUI is young (per-scan
 curves, candidate-model tables, EIG maps are new artifact surface); one repo gives version

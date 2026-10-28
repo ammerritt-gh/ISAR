@@ -185,7 +185,7 @@ IC grids, admissibility gates, structure enumeration, Γ bounds — is owned by 
 and `analyze/structures.py` holds only the generic `Hypothesis` recipe) · `session` (`driver.py`
 orders the stages; `outcome.py` owns the FitOutcome persistence DTO and `results.csv`,
 `scan_delivery.py` the per-scan fits, `master_delivery.py` the pooled masters and certification,
-`evidence_update.py` the cross-q evidence and branch identity) · `cli` · `drive` (`loop.py`
+`evidence_update.py` the cross-q evidence and branch identity; `analysis_service.py` the one long-lived analysis process per open experiment, which runs the queue's items and saves their results through one writer; `analysis_queue.py` the queue's scheduler, which the GUI owns; `file_fit.py` one analyzer file, fast or deep, from the experiment's saved inputs; `writer.py` `save_results`, the one writer, under the workspace write lock) · `cli` · `drive` (`loop.py`
 orchestrates the targeted campaign and `program_runner.py` the discovery step — `run_program` is
 the one seam that runs a `discover_and_map` step end to end, and the consultation channel
 (`drive/consultation.py`) and cold-start producer (`drive/steering/cold_start.py`) hang off it;
@@ -200,7 +200,7 @@ facade) ·
 `intake` (Qt-free; the BL43 append-only user-value and settings store in `isar/intake/`, whose writers
 the GUI calls in process; `workspace_api` only reads it) ·
 `isar_gui` (reads science through `workspace_api`, saves the user's values and settings in process
-through `isar.intake`, and controls campaigns by subprocess + control files).
+through `isar.intake`, controls campaigns by subprocess + control files, and runs the analysis queue through the `isar.session.analysis_service` subprocess).
 The Stage II ↔ III boundary is a **frozen file contract**
 (`report/results.csv`, `report/measurements.jsonl` — the counts-authoritative
 `isar.measurement-arena/1` log, one line per measured arena written before any fit is trusted to

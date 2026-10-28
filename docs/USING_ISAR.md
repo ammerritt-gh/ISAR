@@ -2,7 +2,7 @@
 
 > **Status:** live
 > **Authority:** canonical for the operator workflow
-> **Verified against code revision:** `cafb75b` (2026-10-27)
+> **Verified against code revision:** `df7dac9` (2026-10-28)
 
 How to run ISAR on your own data: set up an experiment once, then re-run one command as scans land.
 Written for a scientist at (or preparing for) a beamtime. For what ISAR *is* and why to trust it,
@@ -322,7 +322,7 @@ start, and what ISAR computes is written there as it arrives. There is no tempor
 shown, while an ingest, an analysis, a campaign or an export is writing to the folder, and when the
 experiment holds its own source data files, since its manifest names them inside the folder and a rename
 would leave ISAR unable to find them. When the experiment has fits and its resolution curves sit inside
-its folder, the Rename dialog says that the next *Run analysis* refits those spectra, because ISAR
+its folder, the Rename dialog says that adding those spectra to the queue again will refit them, because ISAR
 recognises a curve set by its folder's path.
 
 ### The files strip
@@ -384,7 +384,7 @@ for temperature and slit only; Q and the other facts are shown, not entered.
 
 Groups of analyzers (for example one with no Q) offer *Leave out analyzer*: the analyzer is then left out of the fits
 of that scan until you press *Use analyzer again* on it in the *declared* group. A group whose remedy is a button
-carries it: *Choose resolution-curve folder…*, *Add data…* (when files must be added again) or *Run analysis…*.
+carries it: *Choose resolution-curve folder…*, *Add data…* (when files must be added again) or *Fast-pass all ready*.
 
 A **"Counts may not be raw"** group lists analyzers whose counts do not recover to whole numbers; they are
 held out of fitting. *Accept counts as they are* (on the group, or *Accept counts as they are…* in the inspector) declares the counts
@@ -429,7 +429,7 @@ but is drawn in the warning colour, and hovering names each changed input with i
 example "temperature: 97 K (file) → 100 K (yours)". The two passes are judged on their own; a pass the engine
 has no finished record of (fitted before ISAR recorded its inputs, or still running) is not judged and never
 marked. A set row carries the mark when any of its passes does. The mark says the stored fit is out of date,
-not wrong: nothing refits until you *Run analysis…* again, and the mark leaves when the input is the old value
+not wrong: nothing refits until the analyzer is added to the queue again (*Fast pass*, *Deep pass* or *Fast-pass all ready*), and the mark leaves when the input is the old value
 again.
 
 The filter box narrows the list: comma-separated terms, all of which must match, such as an analyzer
@@ -471,27 +471,62 @@ were off a whole number. When the files carry no hkl, Q shows the file's |Q| in 
 hkl. Under the table, **What can be done with this analyzer** gives each step's state (ready, fallback, pending, held) with the engine's
 reason. Everything here is the engine's read; the window computes none of it.
 
-### Run analysis, Stop and the Campaign tab
+### The analysis queue and the Campaign tab
 
-*Run analysis…* is also a button in the setup area at the top of the left column, beside the line that says
-how many spectra are ready, so it is on screen with Processing collapsed. It is off, with the reason in text
-beside it, when there is no experiment, no data, another operation is running or nothing is ready. It, the Run
-menu entry and the Processing button all start the analysis through one entry point in the window.
-The Run dialog opens with the data folder filled in: the last run's, or the folder the experiment's files were
-read from. With nothing to run on, *Run* is off and the dialog says to choose the folder.
+The *Processing* tab on the right is the analysis queue. It fits analyzer files (one spectrum each), one file at
+a time per file and several files at once, on the number of cores you give ISAR: *Config ▸ Cores for analysis…*
+in the menu bar, which defaults to this machine's cores less two. A lower number takes effect as running analyzers
+finish. Once work is queued, the only thing you do is add more or stop something.
 
-*Processing* holds *Run analysis…*, the analysis that runs the fast pass on the experiment's data, with
-the same dialog and progress as before. Above it a readiness line counts the spectra by whether an
-analysis can start, for example "56 spectra read · 52 ready for analysis (30 will use a stand-in value) · 4 need
-resolution curves · 3 running". Every count but the first opens the list behind it (scan set and analyzer, with
-the engine's reason) and the button that resolves it: *Choose resolution-curve folder…*, *Enter the value…*, *Add data…*, *Show these in
-the list* or *Run analysis…*. "Will use a stand-in value" means ready but running on a stated fallback such as the
-zero-temperature limit; a
-missing Q does not stop a fit and is not counted as a block. Before the first result the line says "checking
-readiness…". The window re-reads after each of its own saves, when files in the experiment change, and at the
-end of every run, a cancelled one included. *Stop analysis* asks the running analysis to stop; spectra already stored
-stay stored. *Campaign* is the campaign launcher and monitor, unchanged in content. Pressing *Start*
-with no experiment open creates an ISAR-named experiment (`Campaign_<date>`) first, as a drop does.
+**Adding work.** Select analyzer files in the scan list (one at a time for now), then press *Fast pass* or
+*Deep pass* under *Add to queue:* in *Processing*. Selecting alone queues nothing. *Fast-pass all ready (N)* is the
+button at the top of the left column; it is also in *Processing*, in the *Run* menu, and in the needs-attention and
+readiness lists. It adds a fast pass for every ready analyzer file that has no current one, and its label says how
+many. With *Fast-pass new scans as they arrive* on (the default for a new experiment), every analyzer file read in
+from then on joins the fast queue by itself. A deep pass is only ever added by you. An analyzer whose result is
+already current, or already queued or running for that pass, is not added; the Log says which and why ("Not added:
+… already have a current fast pass"). Adding from the panel or that button first asks about an unsaved card draft.
+
+**What the panel shows.** Each queue has a heading with its counts. Under it, each scan set, then each analyzer with
+a dot and a word: *waiting*, *running*, *saving*, *done*, *done with a warning*, *held*, *failed* or *stopped*. A
+running analyzer shows the stage or step it is on and how long that step has run. The fit reports only the steps it
+has completed, so there is no percentage. A step that runs far longer than the earlier ones may mean a stuck fit;
+*■ Stop* ends it. *Finished* lists what has finished since you opened the experiment: one line per scan set and
+pass with its counts, then each analyzer that needs a look (held, failed, or done with a warning, each with its
+reason), then each finished deep pass with *Show*. *Clear list* tidies that list only. The strip beside *Processing*
+says what is running and what needs a look when the panel is collapsed.
+
+- **Held** means ISAR will not fit the file without something it needs: a missing energy zero, a missing resolution
+  curve for its slit, or counts not accepted as raw. Held files are not retried by themselves. Add the file again
+  once the missing value exists. For a missing energy zero, the reason says that the energy-zero series is built by
+  `isar run`, which the queue does not do.
+- **Done with a warning** means the result is saved, but the engine reports a limit on it, for example "the search
+  reached the peak-count ceiling" or "comparison incomplete, 1 model unresolved after restarts". The warning stays
+  with the stored result.
+- **Provisional deep results.** While the deep pass's sampler calibration is provisional, one line under the *Deep
+  queue* heading says so, and the scan list marks deep counts *(provisional)*. See *The deep pass* below.
+
+**Stop, pause, remove, leave.** *✕ Remove* takes a waiting analyzer out and asks nothing. *■ Stop* ends one running
+analyzer and the others carry on. Stopping a fast pass asks nothing; stopping a deep pass asks first and says what
+the stop discards (its fast-pass result stays once it is saved). *Pause* lets running analyzers finish and starts
+nothing new until you press *Resume*; new arrivals still join the queue and wait. Closing ISAR, *Open…*, *Recent* or
+*New experiment…* asks first when anything is running, saving or waiting, and says what would be lost: running
+analyzers stop and their work is discarded, finished results are saved first, and waiting ones are forgotten.
+Nothing from one experiment lands in another. To rename the experiment, press *Pause* and wait for the running
+analyzers to finish; then *Rename* works and keeps the waiting ones.
+
+**Saving.** A result counts as done only once it is saved in the experiment folder; until then it reads *saving*.
+*Save copy as…* and *Export…* stay available while analysis runs. Each waits for a result being saved to finish, holds
+the saving until it has read the folder, and then goes on. A copy of a large experiment took seconds on the
+development machine; a laptop has not been measured. *Run ▸ Cancel active operation* stops a file read, an export or
+a campaign. It does not stop analyzers; use *■ Stop* for those.
+
+**Campaigns.** A campaign does not start while analyzers are running, saving or waiting in the experiment; *Start*
+says why. The queue starts nothing while a campaign runs. Otherwise the *Campaign* tab is the launcher and monitor it
+has always been. `isar run` and `isar drive` run by hand are not coordinated with the window's queue; do not run
+them on an experiment while the window is analysing it (`WORKSPACE_AND_CLI.md`).
+
+The full set of states, what each control affects and the open items are in `design/gui.md` §0sexies.
 
 ### Log and Output
 
@@ -503,8 +538,9 @@ The Log, bottom left, holds what the window reports. The Output, bottom right, n
 - *Export results…* runs `isar export` on the experiment and names the new folder when it is done, with
   *Open folder*. See *Exporting results* below.
 
-Both actions are unavailable, with the reason beside them, while an ingest, an analysis, a campaign or an
-export is writing to the experiment, and while nothing has been read into it yet.
+Both actions are unavailable, with the reason beside them, while an ingest, a campaign or an export is
+writing to the experiment, and while nothing has been read into it yet. A running analysis does not make
+them unavailable: they wait for a result being saved and hold the queue's saves until they have read the folder.
 
 A save dialog that is offered a plain file name (*File ▸ Save view as image*, the campaign log's save) opens in
 the experiment's folder, not in the folder the last dialog was used in; with no experiment open it opens where
@@ -541,7 +577,7 @@ Nothing picks one pass over the other: the display keeps drawing the fast-pass f
 both passes with their labels. Currentness: for a BL43LXU experiment each pass is judged by the inputs it recorded when it ran (data,
 temperature, slit, Q, exclusions, dead analyzers, counts accepted, the resolution folder and curve, and the
 calibration), as the `inputs` blocks above say. A fit that is out of date keeps its stored result until the
-next *Run analysis…*; the export labels it and refits nothing. `fit_data_mismatch` still flags a spectrum
+next time its analyzer is added to the queue; the export labels it and refits nothing. `fit_data_mismatch` still flags a spectrum
 whose data file was read again with changed content after the fit. Other instruments are not judged: their
 `currentness.assessed` is false.
 
@@ -558,7 +594,7 @@ the fast pass's verdict on that count is in the count columns:
 | `count_probabilities` | every count's probability, as JSON, e.g. `{"3": 0.91, "4": 0.09}` |
 | `probabilities_conditional` | `True` when a count has no evidence, so the probabilities cover only the counts that have it |
 | `numerically_marginal` | `True` when the numerical error of the evidence could move the count, or cross the 0.80 close-call line |
-| `search_limit_reason` | `ceiling` (the mode ceiling was reached). `safety_budget` appears only on records made before 2026-10-27, when a per-spectrum time budget could stop the search; no current pass has a time limit |
+| `search_limit_reason` | `ceiling` (the mode ceiling was reached). `safety_budget` appears only on records made before 2026-10-27, when a per-spectrum time budget could stop the search; the queue sets no time limit |
 | `n_confident`, `n_tentative` | how many of the shown peaks are confident, and how many are tentative |
 | `flags` | warnings kept apart from the state, with their energy interval, e.g. `ambiguous decomposition 5.00-7.00 meV` |
 | `deep_pass_candidate` | `True` when the state is not `resolved`: the spectrum is worth a closer look (`--deep-pass` runs it; five more `deep_*` columns, below) |
@@ -602,7 +638,7 @@ The search and the states are decided as `STATS_PRIMER.md` §2.2 describes.
 The fast pass settles most spectra. When a row reads `close_call`, `unresolved` or `search_limited` (its
 `deep_pass_candidate` is `True`), or you simply want the count checked, send that spectrum to the deep pass: nested-sampling
 evidence for every model of its fast-pass record, then profile intervals and bootstrap errors on the chosen
-model. It never runs on its own.
+model. It never runs on its own: from the command line you ask for it with `--deep-pass`; in the window, *Deep pass* in the analysis queue adds it for a selected analyzer, and the window sets no time limit on it.
 
 ```
 isar run <data file> --workspace DIR --detectors ana7 --deep-pass [--deep-budget-minutes MIN] [--deep-workers K]
