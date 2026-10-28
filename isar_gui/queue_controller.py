@@ -195,7 +195,6 @@ class QueueController(QObject):
         self._root: Path | None = None
         self._queue: AnalysisQueue | None = None
         self._auto_fast = True
-        self._paused = False
         self._recs: dict[str, _Rec] = {}
         self._bind_no = 0
         self._seen_finished = 0                 # how many of the scheduler's finished items were noted
@@ -248,7 +247,6 @@ class QueueController(QObject):
             self._root = root
             if root is not None:
                 self._queue = AnalysisQueue(self._cores, id_prefix=f"q{self._bind_no}-")
-                self._paused = False
         self.changed.emit()
         self._pump()
 
@@ -542,13 +540,11 @@ class QueueController(QObject):
     def pause(self) -> None:
         if self._queue is not None:
             self._queue.pause()
-        self._paused = True
         self.changed.emit()
 
     def resume(self) -> None:
         if self._queue is not None:
             self._queue.resume()
-        self._paused = False
         self.changed.emit()
         self._pump()
 
@@ -635,7 +631,7 @@ class QueueController(QObject):
     def _pump(self) -> None:
         """Start the service on the first item that can start, then send each start the scheduler hands out."""
         q = self._queue
-        if q is None or self._root is None or self._service == "stopping" or self._paused:
+        if q is None or self._root is None or self._service == "stopping" or q.snapshot().paused:
             return
         if self._blocked() is not None:
             return
