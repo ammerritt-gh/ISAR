@@ -11,7 +11,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from isar.analyze import deep_pass, fast_pass
+from isar.analyze import deep_pass, fast_pass, loop, phonon
+from isar.analyze.components import ConstantBackground, PhononDHO
+from isar.analyze.structures import Hypothesis
+from isar.session.predictive_artifact import model_manifest_of
 from isar.analyze.fast_pass import FastPassSettings
 from isar.cli import main as cli
 from isar.drive.isar_io import readers
@@ -156,6 +159,45 @@ def test_deliver_passes_the_fast_pass_search_limit_to_the_deep_pass(monkeypatch)
     assert seen["fast_limit"] == "safety_budget"
     assert record["state"] == "search_limited" and not record["complete"]
     assert "fast pass search limited: safety_budget" in record["search_limited"]
+
+
+def test_chosen_deep_manifest_uses_its_peak_with_the_same_data_arena(monkeypatch):
+    ctx, _ = _spectrum()
+    fast_ctx = dataclasses.replace(ctx, prior_omega=1e6)
+    deep_ctx = dataclasses.replace(fast_ctx, prior_omega=None)
+    assert phonon.antistokes_mode(fast_ctx) == "stokes_only"
+    assert phonon.antistokes_mode(deep_ctx) == "tied"
+    assert loop.data_likelihood_fingerprint(fast_ctx) == loop.data_likelihood_fingerprint(deep_ctx)
+
+    def hypothesis_for(context):
+        peak = ("stokes" if phonon.antistokes_mode(context) == "stokes_only"
+                else "stokes+astokes")
+        return Hypothesis("single", (PhononDHO(peak=peak), ConstantBackground()))
+
+    fast_hyp = hypothesis_for(fast_ctx)
+    deep_hyp = hypothesis_for(deep_ctx)
+    fast_params = {name: 1.0 for name in fast_hyp.build().param_names()}
+    deep_params = {name: 1.0 for name in deep_hyp.build().param_names()}
+    fast_manifest = model_manifest_of(
+        SimpleNamespace(label=fast_hyp.label, params=fast_params), {fast_hyp.label: fast_hyp})
+    entry = SimpleNamespace(problem=SimpleNamespace(hyp=deep_hyp, ctx=deep_ctx))
+    result = SimpleNamespace(label=deep_hyp.label, params=deep_params, within_model={"freq_interval": None})
+
+    def fit_hypothesis(hyp, context, *, x0):
+        assert hyp is deep_hyp and context is deep_ctx and x0 == deep_params
+        return result
+
+    monkeypatch.setattr(loop, "fit_hypothesis", fit_hypothesis)
+    monkeypatch.setattr(deep_delivery.errors, "attach", lambda *args, **kwargs: None)
+    chosen = deep_delivery._chosen(
+        SimpleNamespace(label=deep_hyp.label, status="resolved", runs=[]), entry,
+        {"models": [{"label": deep_hyp.label, "params": deep_params, "ln_z": 0.0}]},
+        REQ, None,
+    )
+
+    deep_manifest = chosen["model_manifest"]
+    assert deep_manifest["components"][0]["peak"] == "stokes+astokes"
+    assert fast_manifest["components"][0]["peak"] == "stokes"
 
 
 def test_deliver_reports_its_sampling_steps_and_ends_on_errors(monkeypatch):

@@ -92,7 +92,7 @@ def _chosen(m, entry, record: dict, request: DeepRequest, executor) -> dict:
     from the fast pass's best basin, keep the better, attach the errors (``errors.attach``)."""
     problem, label = entry.problem, m.label
     out = {"label": label, "status": m.status, "source": None, "params": None, "errors": None,
-           "errors_failure": None}
+           "errors_failure": None, "model_manifest": None}
     basins = [b for b in record.get("models") or () if b.get("label") == label and b.get("params")]
     starts = {}
     runs = [r for r in m.runs if r.usable and r.best_theta]
@@ -116,6 +116,8 @@ def _chosen(m, entry, record: dict, request: DeepRequest, executor) -> dict:
     else:
         (out["source"], result), = fits.items()
     out["params"] = dict(result.params)
+    from isar.session.predictive_artifact import model_manifest_of
+    out["model_manifest"] = model_manifest_of(result, {label: problem.hyp})
     try:
         errors.attach(result, problem.hyp, problem.ctx, M=request.M, seed=request.seed,
                       with_profile=True, boot_workers=request.workers, boot_executor=executor)
