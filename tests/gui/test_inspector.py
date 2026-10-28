@@ -1,6 +1,6 @@
 """C2 fit inspector tests: InspectorViewModel derives the interval ladder (with the correct
 certifying tier), model-candidate rows (posterior-weighted, ΔAIC diagnostic), verdict/provenance;
-InspectorWidget renders each case offscreen; a browser selection drives the inspector. Offscreen
+FitTables renders the retained sections offscreen. Offscreen
 (conftest forces QT offscreen), importorskip, xdist-safe (each test stamps its own workspace)."""
 from __future__ import annotations
 
@@ -14,10 +14,8 @@ pytest.importorskip("PySide6")
 pytest.importorskip("pyqtgraph")
 
 from isar.workspace_api import Workspace
-from isar_gui.main_window import MainWindow
-from isar_gui.session import Session
 from isar_gui.viewmodels.inspector import InspectorViewModel
-from isar_gui.views.inspector_widget import InspectorWidget
+from isar_gui.views.inspector_widget import FitTables
 
 _MVP16 = Path(r"C:\Users\AMM\Documents\ISAR_baselines\mvp_zone_test16")
 
@@ -145,6 +143,23 @@ def test_spec_changed_fires_and_empty_reset(qtbot, make_ws):
     assert vm.is_empty
 
 
+def test_specs_false_keeps_fit_tables_without_building_plot_specs(make_ws):
+    ws = _ws_with(make_ws, _outcome())
+    fit = _fit(ws)
+    full = InspectorViewModel(ws)
+    tables = InspectorViewModel(ws, specs=False)
+    full.set_fit(fit)
+    tables.set_fit(fit)
+
+    assert full.state.main_spec is not None
+    assert tables.state.main_spec is None and tables.state.residuals_spec is None
+    assert tables.state.ladder_rows == full.state.ladder_rows
+    assert tables.state.candidate_rows == full.state.candidate_rows
+    assert tables.state.candidates_recorded == full.state.candidates_recorded
+    assert tables.state.verdict == full.state.verdict
+    assert tables.state.provenance == full.state.provenance
+
+
 def test_provenance_pooled_enumerates_members(make_ws):
     ws = _ws_with(make_ws, _outcome(pooled=True, n_members=2, members=["101", "102"]))
     vm = InspectorViewModel(ws)
@@ -242,21 +257,24 @@ def test_op3_shaped_two_mode_master_shows_pooled_data_components_and_residuals(m
 def test_widget_renders_reliable_case(qtbot, make_ws):
     ws = _ws_with(make_ws, _outcome())
     vm = InspectorViewModel(ws)
-    w = InspectorWidget(vm)
+    w = FitTables()
     qtbot.addWidget(w)
     vm.set_fit(_fit(ws))
+    w.render(vm.state)
     assert w._ladder.rowCount() == 4
     # certifying bootstrap row is bold (visually primary)
     boot_row = next(i for i in range(4) if w._ladder.item(i, 0).text().startswith("bootstrap"))
     assert w._ladder.item(boot_row, 0).font().bold()
+    assert all(not section.header.isChecked() for section in w._sections.values())
 
 
 def test_widget_unreliable_bootstrap_shows_text_no_numbers(qtbot, make_ws):
     ws = _ws_with(make_ws, _outcome(interval_reliable=False, omega0_profile=[4.7, 5.3]))
     vm = InspectorViewModel(ws)
-    w = InspectorWidget(vm)
+    w = FitTables()
     qtbot.addWidget(w)
     vm.set_fit(_fit(ws))
+    w.render(vm.state)
     boot_row = next(i for i in range(w._ladder.rowCount())
                     if w._ladder.item(i, 0).text().startswith("bootstrap"))
     text = w._ladder.item(boot_row, 1).text()
@@ -267,9 +285,10 @@ def test_widget_unreliable_bootstrap_shows_text_no_numbers(qtbot, make_ws):
 def test_widget_candidates_winner_bold(qtbot, make_ws):
     ws = _ws_with(make_ws, _outcome())
     vm = InspectorViewModel(ws)
-    w = InspectorWidget(vm)
+    w = FitTables()
     qtbot.addWidget(w)
     vm.set_fit(_fit(ws))
+    w.render(vm.state)
     headers = [w._candidates.horizontalHeaderItem(i).text()
                for i in range(w._candidates.columnCount())]
     assert headers == ["Model", "P(model)", "ΔAIC", "n_modes"]
@@ -283,9 +302,10 @@ def test_widget_candidates_winner_bold(qtbot, make_ws):
 def test_widget_candidates_not_recorded_placeholder(qtbot, make_ws):
     ws = _ws_with(make_ws, _outcome(candidates=None))
     vm = InspectorViewModel(ws)
-    w = InspectorWidget(vm)
+    w = FitTables()
     qtbot.addWidget(w)
     vm.set_fit(_fit(ws))
+    w.render(vm.state)
     assert w._candidates.item(0, 0).text() == "not recorded"
 
 
@@ -294,34 +314,30 @@ def test_verdict_escapes_markup_in_best_label(qtbot, make_ws):
     (no injected bold segment / display corruption)."""
     ws = _ws_with(make_ws, _outcome(best_label="<b>evil</b>"))
     vm = InspectorViewModel(ws)
-    w = InspectorWidget(vm)
+    w = FitTables()
     qtbot.addWidget(w)
     vm.set_fit(_fit(ws))
+    w.render(vm.state)
     text = w._verdict_label.text()
     assert "&lt;b&gt;evil&lt;/b&gt;" in text   # escaped, shown literally
     assert "<b>evil</b>" not in text           # NOT interpreted as markup
 
 
-def test_widget_empty_state_shows_hint(qtbot, make_ws):
+def test_fit_tables_shows_no_fit_note_then_sections(qtbot, make_ws):
     ws = _ws_with(make_ws, _outcome())
-    vm = InspectorViewModel(ws)
-    w = InspectorWidget(vm)
+    vm = InspectorViewModel(ws, specs=False)
+    w = FitTables()
     qtbot.addWidget(w)
-    assert vm.is_empty
-    assert w._empty_label.isVisibleTo(w)
-
-
-# ---- Integration: browser selection drives inspector ------------------------
-def test_browser_selection_updates_inspector(qtbot, make_ws):
-    ws = _ws_with(make_ws, _outcome())
-    w = MainWindow(ws, session=Session(), watch=False)
-    qtbot.addWidget(w)
-    assert w.inspector_vm.is_empty
-    fit = ws.scans[0].detectors["det"]
-    with qtbot.waitSignal(w.inspector_vm.spec_changed, timeout=1000):
-        w.browser_vm.select(fit)
-    assert not w.inspector_vm.is_empty
-    assert w.inspector_vm.state.main_spec is not None
+    assert w._no_fit.isVisibleTo(w)
+    assert "No stored fit" in w._no_fit.text()
+    vm.set_fit(_fit(ws))
+    w.render(vm.state)
+    assert not w._no_fit.isVisibleTo(w)
+    assert w._ladder.rowCount() == 4
+    verdict = w._sections["Verdict"]
+    verdict.header.click()
+    w.render(vm.state)
+    assert verdict.header.isChecked() and verdict.content.isVisibleTo(w)
 
 
 # ---- Phase 4: raw-unit metadata + counts view (set_unit) --------------------
@@ -548,45 +564,6 @@ def test_request_inspect_routes_fitview_or_unit_key():
     assert got[0] is fit_obj                         # fitted -> FitView
     assert got[1] == "s30:2:det"                     # not fitted -> unit-key str
     assert got[2] is None
-
-
-def test_main_window_routes_unit_key_to_set_unit(qtbot, make_ws):
-    ws = _unit_ws(make_ws)
-    w = MainWindow(ws, session=Session(), watch=False)
-    qtbot.addWidget(w)
-    w._route_inspect("s30:12:ana3")
-    assert not w.inspector_vm.is_empty and w.inspector_vm.state.kind == "unit"
-    w._route_inspect(None)                           # a non-str routes to set_fit (empty here)
-    assert w.inspector_vm.is_empty
-
-
-def test_widget_unit_mode_shows_the_counts_plot_alone(qtbot, make_ws):
-    # The scan-metadata panel lives in the scan inspector now: a raw unit shows its counts plot at the
-    # display's full width, with no side column.
-    ws = _unit_ws(make_ws)
-    vm = InspectorViewModel(ws)
-    w = InspectorWidget(vm)
-    qtbot.addWidget(w)
-    vm.set_unit("s30:12:ana3")
-    assert not hasattr(w, "_metadata_label")
-    assert not w._side.isVisibleTo(w)
-    for hidden in (w._ladder, w._ladder_header, w._candidates, w._verdict_header,
-                   w._provenance_header):
-        assert not hidden.isVisibleTo(w)
-    assert len(w._main_plot.listDataItems()) >= 1
-
-
-def test_widget_unit_then_fit_restores_fit_sections(qtbot, make_ws):
-    # Switching from a unit view back to a fit view re-shows the ladder/verdict (no orphan hiding).
-    ws = _unit_ws(make_ws)
-    vm = InspectorViewModel(ws)
-    w = InspectorWidget(vm)
-    qtbot.addWidget(w)
-    vm.set_unit("s30:12:ana3")
-    fit_ws = _ws_with(make_ws, _outcome())
-    vm.set_fit(_fit(fit_ws))
-    assert w._ladder.isVisibleTo(w) and w._verdict_header.isVisibleTo(w)
-    assert w._side.isVisibleTo(w)
 
 
 # ---- MVP-16 smoke (read-only) ------------------------------------------------

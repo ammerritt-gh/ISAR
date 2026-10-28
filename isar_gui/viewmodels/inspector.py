@@ -190,8 +190,9 @@ class InspectorViewModel(ViewModel):
     #: Emitted after :meth:`set_fit` rebuilds the state (including the empty-state reset).
     spec_changed = Signal()
 
-    def __init__(self, ws, parent=None):
+    def __init__(self, ws, parent=None, *, specs: bool = True):
         super().__init__(ws, parent)
+        self._specs = specs
         self._fit = None
         self._unit_key = None
         self._state = InspectorState()
@@ -265,7 +266,8 @@ class InspectorViewModel(ViewModel):
             st.provenance["interval_source"] = interval.source
             st.provenance["interval_method"] = interval.method or "unknown"
             st.provenance["interval_endpoints"] = f"[{interval.lo:.6g}, {interval.hi:.6g}] meV"
-        self._attach_specs(fit, st)
+        if self._specs:
+            self._attach_specs(fit, st)
         return st
 
     # -- unit (raw parsed scan x analyzer) assembly ------------------------
@@ -280,6 +282,8 @@ class InspectorViewModel(ViewModel):
             det = next(iter(getattr(sv, "detectors", None) or {}), None)
         st = InspectorState(empty=False, kind="unit",
                             metadata=self._unit_metadata(sv, unit_key, scan_number, det))
+        if not self._specs:
+            return st
         try:
             unit = self._ws.unit_data(unit_key)
         except (KeyError, ValueError, OSError) as exc:  # a read surface should not raise; guard anyway

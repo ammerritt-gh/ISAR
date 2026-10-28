@@ -74,7 +74,7 @@ class Rig:
         if wait:
             self.worker()
         if key is not None:
-            self.panel.show_key(key)
+            self.vm.select(key)
 
     def worker(self):
         with self.qtbot.waitSignal(self.intake.worker_changed, timeout=WAIT_MS):
@@ -220,9 +220,9 @@ def test_a_value_applies_to_the_whole_set_and_another_set_shows_its_own_rows(qtb
     rig = Rig(qtbot, ft_ws, A03)
     rig.type_value(monkeypatch, "slit", "60", "60")
     assert rig.text("slit", "used") == "60x60 mm\nyours"
-    rig.panel.show_key(f"{A}:a04")                                                 # the same set: the same value
+    rig.vm.select(f"{A}:a04")                                                      # the same set: the same value
     assert rig.text("slit", "used") == "60x60 mm\nyours"
-    rig.panel.show_key(B03)
+    rig.vm.select(B03)
     assert rig.text("slit", "yours") == "" and rig.text("slit", "used") == "—\nno slit yet: it is chosen from the elastic lines when the analysis starts"
     assert rig.text("temperature", "used") == "97 K\nfile"
     assert f"{bl43_fixture.STEM_B} (4 analyzers)" in rig.table.findChild(_Cell, "fact_applies_to").text()
@@ -329,7 +329,7 @@ def test_counts_that_look_raw_offer_no_counts_action(qtbot, ft_ws):
 # ---- readiness ---------------------------------------------------------------------------------------------------
 def test_readiness_reads_checking_then_matches_the_backend(qtbot, ft_ws):
     rig = Rig(qtbot, ft_ws, A03, wait=False)
-    rig.panel.show_key(A03)
+    rig.vm.select(A03)
     assert rig.intake.attention is None and rig.readiness() == ["Readiness: checking…"]
     rig.worker()
     attention = needs_attention(ft_ws)
@@ -356,7 +356,7 @@ def test_a_pooled_row_shows_no_table_and_the_stage_one_lines_stay(qtbot, tmp_pat
     root = bl43_fixture.pooled_workspace(tmp_path)
     rig = Rig(qtbot, root, None)
     key = next(iter(rig.vm.snapshot.pooled)).key
-    rig.panel.show_key(key)
+    rig.vm.select(key)
     assert rig.table.isHidden() and not rig.table.has_facts
     labels = {rig.panel._facts.itemAt(i, rig.panel._facts.ItemRole.LabelRole).widget().full_text()
               for i in range(rig.panel._facts.rowCount())}
@@ -371,10 +371,10 @@ def test_the_table_replaces_the_stage_one_lines_only_while_it_has_facts(qtbot, f
         return {form.itemAt(i, form.ItemRole.LabelRole).widget().full_text() for i in range(form.rowCount())}
     assert rig.table.has_facts and not labels() & {"Temperature", "Q", "Slit"}
     assert {"File", "Scan numbers", "Analyzer", "Points"} <= labels()
-    rig.panel.show_key(None)
+    rig.vm.select(None)
     assert rig.table.isHidden()
     rig.intake.bind(None)                                   # nothing read: the table has nothing, the lines return
-    rig.panel.show_key(A03)
+    rig.vm.select(A03)
     assert not rig.table.has_facts and {"Temperature", "Q", "Slit"} <= labels()
 
 
@@ -404,8 +404,7 @@ def _assert_no_overlap(panel, table, inside: QRect):
         assert not rects[id(a)].intersects(rects[id(b)]), (a.objectName(), a.text(), b.objectName(), b.text())
     scroll = panel._scroll
     shown = QRect(scroll.viewport().mapTo(panel, scroll.viewport().rect().topLeft()), scroll.viewport().size())
-    others = [w for w in panel.findChildren(QLabel) if w.isVisibleTo(panel) and not table.isAncestorOf(w)
-              and not panel._glw.isAncestorOf(w)]
+    others = [w for w in panel.findChildren(QLabel) if w.isVisibleTo(panel) and not table.isAncestorOf(w)]
     assert len(others) >= 8                                                         # the form's, the sections', the header's
     for w in others:                                                                # the inspector's other labels
         for t in leaves:

@@ -1,4 +1,4 @@
-"""The scan inspector: its lines, its plot, its mount inside the left panel.
+"""The scan inspector: spectrum selection, fit values and its mount inside the left panel.
 
 Offscreen Qt with the real widgets. The scan-list read is monkeypatched to the shared hand-written
 snapshot (``bl43_fixture.sample_snapshot``) over a real BL43LXU-shaped workspace, so the stored unit
@@ -14,13 +14,16 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDockWidget, QFormLayout, QLabel
+import pyqtgraph as pg
 
 import bl43_fixture
 from bl43_fixture import KEY_A, KEY_B, KEY_SINGLE, STEM_A, sample_snapshot
 from gui.window_frame_checks import assert_frame_geometry
 from isar.workspace_api import Workspace
 from isar.workspace_api.scan_list import (Fact, PooledRow, ScanListSnapshot, Status)
+from isar.workspace_api.spectra import POOLED
 from isar_gui import main_window as mw_mod
 from isar_gui.main_window import MainWindow
 from isar_gui.session import Session
@@ -58,6 +61,11 @@ def _panel(qtbot, bl43_ws):
     panel.resize(300, 700)
     panel.show()
     return vm, panel
+
+
+def _select(panel, key):
+    """Drive the same selection signal used by the scan list."""
+    panel._vm.select(key)
 
 
 def _fields(panel):
@@ -99,10 +107,10 @@ def test_a_picked_scan_set_selects_its_spectra_and_inspects_the_first(qtbot, pat
     set_row = patched.sets[0]
     vm.click(f"set:{set_row.key}")
     assert vm.selection.keys == tuple(sp.key for sp in set_row.spectra)
-    assert panel._key == vm.selection.active == set_row.spectra[0].key
+    assert vm.selection.active == set_row.spectra[0].key
     assert panel._body.isVisible() and not panel._message.isVisible()
     vm.select(None)
-    assert panel._key is None and panel._message.isVisible()
+    assert panel._message.text() == "No spectrum selected" and panel._message.isVisible()
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +118,7 @@ def test_a_picked_scan_set_selects_its_spectra_and_inspects_the_first(qtbot, pat
 # ---------------------------------------------------------------------------
 def test_a06_of_a_summed_set_shows_every_line(qtbot, patched, bl43_ws):
     vm, panel = _panel(qtbot, bl43_ws)
-    panel.show_key(A06)
+    _select(panel, A06)
     f = _fields(panel)
     assert _text(f["File"]) == "CsV3Sb5_97K_0p5_0p5_3_sum_a06"
     assert _text(f["Scan numbers"]) == "summed (2 scans merged; the files do not list their numbers)"
@@ -128,21 +136,24 @@ def test_a06_of_a_summed_set_shows_every_line(qtbot, patched, bl43_ws):
     assert _tooltip(f["File"]).endswith("CsV3Sb5_97K_0p5_0p5_3_sum_a06")
     shown = " ".join(_text(w) for w in f.values()) + panel._title.full_text()
     assert "1842762476" not in shown
-    assert panel._title.full_text() == f"a06 · {STEM_A}"
+    assert panel._title.full_text() == f"{STEM_A} · a06 · 97 K"
+    assert panel._position.text() == "1 of 1 selected"
+    assert panel._title.toolTip().startswith(f"{STEM_A} · a06 · 97 K · 1 of 1 selected\n")
 
 
 def test_a_single_scan_set_shows_its_number_and_a_q_in_rlu(qtbot, patched, bl43_ws):
     vm, panel = _panel(qtbot, bl43_ws)
-    panel.show_key(SINGLE)
+    _select(panel, SINGLE)
     f = _fields(panel)
     assert _text(f["Scan numbers"]) == "58"
     assert _text(f["Q"]) == "[4, 0.075, 0] rlu — file (filename)"
     assert _text(f["Temperature"]) == "26 K — file (filename)"
+    assert panel._title.full_text() == "Scan 58 · a06 · 26 K"
 
 
 def test_a_missing_q_shows_a_dash_with_its_reason(qtbot, patched, bl43_ws):
     vm, panel = _panel(qtbot, bl43_ws)
-    panel.show_key(A05)
+    _select(panel, A05)
     f = _fields(panel)
     assert _text(f["Q"]).startswith("—") and _tooltip(f["Q"]) == "not in the file"
     assert _text(f["Parsed"]) == "no Q" and _reason(f["Parsed"]) == "read; Q is not in the file"
@@ -165,7 +176,7 @@ def test_a_unit_shows_its_status_calibration_facts_and_campaign_rows(qtbot, patc
     md = {"unit": A06, "analyzer": "a06", "T": "97 K", "points": "60", **ALL_ROWS, **CAMPAIGN}
     monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
     vm, panel = _panel(qtbot, bl43_ws)
-    panel.show_key(A06)
+    _select(panel, A06)
     f = _fields(panel)
     for label, value in {**ALL_ROWS, **CAMPAIGN}.items():
         assert _text(f[label]) == value and _tooltip(f[label]) == value, label
@@ -181,7 +192,7 @@ def test_a_fact_whose_sources_disagree_keeps_its_row(qtbot, patched, bl43_ws, mo
     md = {"unit": A06, "T_K": t_conflict, "Q_nm": "1.2 (file)", "slit": slit}
     monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
     vm, panel = _panel(qtbot, bl43_ws)
-    panel.show_key(A06)
+    _select(panel, A06)
     f = _fields(panel)
     assert _text(f["T_K"]) == t_conflict and _text(f["slit"]) == slit
     assert "Q_nm" not in f      # no conflict: shown once, on its own line
@@ -196,7 +207,7 @@ def test_a_dict_and_a_long_list_read_as_text_with_the_full_value_in_the_tooltip(
           "modes": _fmt_fact({"value": ["fork", "fold"], "source": "file"})}
     monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
     vm, panel = _panel(qtbot, bl43_ws)
-    panel.show_key(A06)
+    _select(panel, A06)
     f = _fields(panel)
     assert _text(f["fit_spec"]) == "origin: y_over_e_squared, family: _i, bins_tested: 155, bins_off: 1 (file)"
     assert _tooltip(f["fit_spec"]) == _text(f["fit_spec"])
@@ -211,7 +222,7 @@ def test_a_unit_without_those_values_shows_none_of_their_rows(qtbot, patched, bl
     md = {"unit": A06, "analyzer": "a06"}
     monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
     vm, panel = _panel(qtbot, bl43_ws)
-    panel.show_key(A06)
+    _select(panel, A06)
     f = _fields(panel)
     assert set(f) >= {"File", "Q", "Parsed", "Fast pass", "Deep pass"}
     assert not (set(ALL_ROWS) | set(CAMPAIGN)) & set(f)
@@ -222,7 +233,7 @@ def test_a_bl43_scan_shows_no_empty_or_nan_rows(qtbot, patched, bl43_ws):
     # The BL43 headers stamp a counting mode, the set's QC flags and a status; a campaign command, a target Q,
     # a preset and a B field are never in a BL43 file, and a missing fact is not a row.
     vm, panel = _panel(qtbot, bl43_ws)
-    panel.show_key(A06)
+    _select(panel, A06)
     f = _fields(panel)
     assert _text(f["counting mode"]) == "monitor"
     assert _text(f["scan flags"]).startswith("pre_combined_input (warning)")
@@ -236,7 +247,7 @@ def test_a_long_metadata_label_elides_with_its_full_name_in_the_tooltip(qtbot, p
     md = {"unit": A06, "count_recovery_max_deviation": "4.139e-07 (inferred)"}
     monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
     vm, panel = _panel(qtbot, bl43_ws)
-    panel.show_key(A06)
+    _select(panel, A06)
     qtbot.wait(30)
     label = panel._metadata.itemAt(0, QFormLayout.ItemRole.LabelRole).widget()    # the only row
     assert label.full_text() == "count_recovery_max_deviation"
@@ -249,7 +260,7 @@ def test_many_metadata_rows_scroll_inside_the_panel_at_the_laptop_width(qtbot, p
     monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
     vm, panel = _panel(qtbot, bl43_ws)
     panel.resize(mw_mod._INSPECTOR_MIN, 600)
-    panel.show_key(A06)
+    _select(panel, A06)
     qtbot.wait(30)
     assert panel._scroll.verticalScrollBar().maximum() > 0
     assert panel.minimumSizeHint().width() <= mw_mod._INSPECTOR_MIN
@@ -288,21 +299,25 @@ def test_inspector_lines_is_pure_and_marks_statuses():
 
 
 # ---------------------------------------------------------------------------
-# 4: the plot
+# 4: the active spectrum and its position in the selection
 # ---------------------------------------------------------------------------
-def test_the_raw_counts_plot_is_titled_from_the_snapshot(qtbot, patched, bl43_ws):
+def test_stepping_changes_only_the_active_spectrum_and_the_inspector_has_no_plot(qtbot, patched, bl43_ws):
     vm, panel = _panel(qtbot, bl43_ws)
-    panel.show_key(A06)
-    plot = panel._plot
-    assert len(plot.listDataItems()) >= 1
-    assert "raw energy" in plot.getAxis("bottom").labelText
-    title = plot.titleLabel.text
-    assert title == f"{STEM_A} · a06 · raw counts"
-    assert "1842762476" not in title and "not fitted" not in title
-    # the centre's own view model still titles a raw unit "(parsed, not fitted)": it is not changed
-    centre = InspectorViewModel(Workspace.open(bl43_ws))
-    centre.set_unit(A06)
-    assert "not fitted" in centre.state.main_spec.title and A06 not in plot.titleLabel.text
+    vm.selection.set_order(lambda keys: list(keys))
+    vm.selection.set((A06, A05, B03), clicked=A06)
+    keys = vm.selection.keys
+    assert panel._position.text() == f"1 of {len(keys)} selected"
+    first_title = panel._title.full_text()
+    panel._next.click()
+    assert vm.selection.keys == keys and vm.selection.active == keys[1]
+    assert panel._position.text() == f"2 of {len(keys)} selected"
+    assert panel._title.full_text() != first_title
+    panel._previous.click()
+    assert vm.selection.keys == keys and vm.selection.active == keys[0]
+    assert not panel.findChildren(pg.GraphicsLayoutWidget)
+    panel.setFocus()
+    qtbot.keyClick(panel, Qt.Key.Key_Right)
+    assert vm.selection.keys == keys and vm.selection.active == keys[1]
 
 
 # ---------------------------------------------------------------------------
@@ -311,21 +326,23 @@ def test_the_raw_counts_plot_is_titled_from_the_snapshot(qtbot, patched, bl43_ws
 def test_the_panel_follows_the_list_and_emits_close(qtbot, patched, bl43_ws):
     vm, panel = _panel(qtbot, bl43_ws)
     vm.inspect(f"{KEY_A}:a04")
-    assert panel._title.full_text() == f"a04 · {STEM_A}"
+    assert panel._title.full_text() == f"{STEM_A} · a04 · 97 K"
     f = _fields(panel)
     assert _text(f["Fast pass"]) == "close call"
     assert _text(f["Deep pass"]) == "clear" and _reason(f["Deep pass"]) == "count 1 (P 0.91)"
 
     vm.select(B03)                                  # the panel is open: it follows
     f = _fields(panel)
-    assert panel._title.full_text() == f"a03 · {bl43_fixture.STEM_B}"
+    assert panel._title.full_text() == f"{bl43_fixture.STEM_B} · a03 · 97 K"
     assert _text(f["Fast pass"]) == "held: needs resolution curves"
     assert _reason(f["Fast pass"]) == "a03: no resolution curve for a03 at slit 60x60"
 
-    vm.select(None)                                 # nothing selected: it keeps what it shows
-    assert panel._title.full_text() == f"a03 · {bl43_fixture.STEM_B}"
-    vm.select("not:in:snapshot")                    # not a spectrum: same
-    assert panel._title.full_text() == f"a03 · {bl43_fixture.STEM_B}"
+    vm.select(None)
+    assert panel._title.full_text() == "Scan inspector"
+    assert panel._message.text() == "No spectrum selected" and not panel._body.isVisible()
+    vm.select("not:in:snapshot")
+    assert panel._title.full_text() == "Scan inspector"
+    assert panel._message.text() == "No spectrum selected"
 
     with qtbot.waitSignal(panel.close_requested, timeout=1000):
         panel._close.click()
@@ -334,17 +351,18 @@ def test_the_panel_follows_the_list_and_emits_close(qtbot, patched, bl43_ws):
 
 def test_a_hidden_panel_ignores_the_list_until_it_is_shown(qtbot, patched, bl43_ws):
     vm, panel = _panel(qtbot, bl43_ws)
-    panel.show_key(A06)
+    _select(panel, A06)
     panel.hide()
     vm.select(A04)                                  # not followed while hidden
-    assert panel._title.full_text() == f"a06 · {STEM_A}"
+    assert panel._title.full_text() == f"{STEM_A} · a06 · 97 K"
     panel.show()                                    # opened without a key: it follows the list
-    assert panel._title.full_text() == f"a04 · {STEM_A}"
+    assert panel._title.full_text() == f"{STEM_A} · a04 · 97 K"
 
 
 def test_a_key_that_left_the_snapshot_says_so(qtbot, patched, bl43_ws, monkeypatch):
     vm, panel = _panel(qtbot, bl43_ws)
-    panel.show_key(A06)
+    vm.selection.set_order(lambda keys: list(keys))
+    _select(panel, A06)
     monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda ws, **_reads: ScanListSnapshot())
     vm.on_workspace_changed({"snapshot"})
     assert panel._message.isVisibleTo(panel)
@@ -354,12 +372,15 @@ def test_a_key_that_left_the_snapshot_says_so(qtbot, patched, bl43_ws, monkeypat
 
 def test_a_background_update_redraws_the_same_key_in_place(qtbot, patched, bl43_ws, monkeypatch):
     vm, panel = _panel(qtbot, bl43_ws)
-    panel.show_key(A06)
+    _select(panel, A06)
     assert _text(_fields(panel)["Deep pass"]) == "not run"
     snap = sample_snapshot(bl43_ws)
     new = []
     for s in snap.sets:
-        spectra = tuple(dataclasses.replace(sp, deep=Status("resolved", True, "resolved: count 2"))
+        # This list fixture's fit sentinel is not a workspace_api FitView. Keep this test focused on
+        # the refreshed status while letting the spectra reader receive its valid no-fit shape.
+        spectra = tuple(dataclasses.replace(sp, deep=Status("resolved", True, "resolved: count 2"),
+                                            fit=None)
                         if sp.key == A06 else sp for sp in s.spectra)
         new.append(dataclasses.replace(s, spectra=spectra))
     monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list",
@@ -367,13 +388,13 @@ def test_a_background_update_redraws_the_same_key_in_place(qtbot, patched, bl43_
     vm.on_workspace_changed({"results"})
     f = _fields(panel)
     assert _text(f["Deep pass"]) == "clear" and _reason(f["Deep pass"]) == "count 2"
-    assert panel._title.full_text() == f"a06 · {STEM_A}"
+    assert panel._title.full_text() == f"{STEM_A} · a06 · 97 K"
 
 
 # ---------------------------------------------------------------------------
 # 6: a pooled master
 # ---------------------------------------------------------------------------
-def test_a_pooled_master_shows_its_lines_and_the_display_note(qtbot, bl43_ws, monkeypatch):
+def test_a_pooled_master_keeps_its_lines_and_tables_without_a_curve(qtbot, bl43_ws, monkeypatch):
     pooled = PooledRow(key="tavi:900:det", label="pooled master (2 members)",
                        temperature=Fact(200.0, "K", "fit", "fit"),
                        q=Fact((2.0, 0.0, 0.0), "rlu", "fit", "fit"), n_members=2,
@@ -382,15 +403,15 @@ def test_a_pooled_master_shows_its_lines_and_the_display_note(qtbot, bl43_ws, mo
     monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list",
                         lambda ws, **_reads: ScanListSnapshot(pooled=(pooled,)))
     vm, panel = _panel(qtbot, bl43_ws)
-    panel.show_key("tavi:900:det")
+    _select(panel, "tavi:900:det")
     f = _fields(panel)
     assert _text(f["Pooled"]) == "pooled master (2 members)"
     assert _text(f["Members"]) == "2"
     assert _text(f["Temperature"]) == "200 K — fit" and _text(f["Q"]) == "[2, 0, 0] rlu — fit"
     assert _text(f["Fast pass"]) == "not recorded" and _text(f["Deep pass"]) == "not run"
     assert "pooled master (2 members)" in panel._title.full_text()
-    assert panel._plot_note.isVisibleTo(panel) and not panel._glw.isVisibleTo(panel)
-    assert panel._plot_note.text() == "pooled spectrum: shown in the display"
+    assert panel.current_bundle is not None and panel.current_bundle.not_drawn.code == POOLED
+    assert panel._fit_tables.isVisibleTo(panel)
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +436,7 @@ def test_the_window_gives_the_inspector_its_fact_table_and_unimported_data_keeps
 # ---------------------------------------------------------------------------
 def test_the_panel_fits_its_minimum_width_and_elides_long_values(qtbot, patched, bl43_ws):
     vm, panel = _panel(qtbot, bl43_ws)
-    panel.show_key(B03)                              # a long hold reason
+    _select(panel, B03)                              # a long hold reason
     assert panel.minimumSizeHint().width() <= mw_mod._INSPECTOR_MIN
     panel.resize(mw_mod._INSPECTOR_MIN, 700)
     qtbot.wait(30)
@@ -437,7 +458,7 @@ def test_every_value_starts_past_the_end_of_its_label(qtbot, patched, bl43_ws, m
     monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
     vm, panel = _panel(qtbot, bl43_ws)
     panel.resize(mw_mod._INSPECTOR_MIN, 700)
-    panel.show_key(A06)
+    _select(panel, A06)
     qtbot.wait(30)
     spacing = panel._facts.horizontalSpacing()
     rows = list(_form_rows(panel))
@@ -481,7 +502,7 @@ def test_opening_widens_the_left_panel_and_closing_pulls_it_back(qtbot, patched,
     assert abs(w.left_column_dock.width() - (w0 + w.scan_inspector.width() + handle)) <= 4 + handle
     assert abs((display0 - w._center_stack.width()) - (w.scan_inspector.width() + handle)) <= 4 + handle
     assert abs(w.scan_list.width() - list0) <= 4
-    assert w.scan_inspector._title.full_text() == f"a06 · {STEM_A}"     # the panel's own connection
+    assert w.scan_inspector._title.full_text() == f"{STEM_A} · a06 · 97 K"  # the panel's own connection
     assert_frame_geometry(w, LAPTOP)
 
     w.scan_inspector.close_requested.emit()
