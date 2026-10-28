@@ -43,7 +43,7 @@ class ControlledPool:
             run = dp.RunRecord(label, seed, settings, 2, logz, 0.1, 1.0, 17, 5, 0.0,
                                1.0, None, evidence_converged=True)
             self.finished.append((moment, label, stage))
-            future.set_result((label, [run]))
+            future.set_result((label, [run], None))
         return done, set(futures) - done
 
 

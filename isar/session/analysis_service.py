@@ -8,9 +8,10 @@ Process::
 
     <env python> -m isar.session.analysis_service --workspace <root> [--log <path>]
 
-``--log``: the service's stderr, and every item process's stdout and stderr, are appended to this file
-(without it they go to the service's stderr). stdout carries the protocol and nothing else; stderr is free
-text, never parsed. Exit 0 after ``bye``; exit 2 when ``<root>`` holds no ``card.policy.toml`` (one ``log``
+``--log`` appends this service's stderr. Spawned ``pythonw`` items and pool workers have no Python
+stdout/stderr streams; their deep timings travel in progress events through the item pipe instead.
+The GUI runner retains every protocol line in its queue log. stdout carries the protocol and nothing
+else; stderr is free text, never parsed. Exit 0 after ``bye``; exit 2 when ``<root>`` holds no ``card.policy.toml`` (one ``log``
 error line, no ``ready``). Two test-only options, hidden from ``--help``: ``--fit-target`` and
 ``--save-target`` (``<module>:<function>``; defaults :func:`isar.session.file_fit.fit_file` and
 :func:`isar.session.writer.save_results`). The fit target's module also provides ``FileItem``.
@@ -620,7 +621,7 @@ class _Service:
 
 # --- the process ---------------------------------------------------------------------------------------
 def _redirect_stderr(path: str) -> None:
-    """Append fd 2 (and so the stderr every item process inherits) to ``path``."""
+    """Append this process's fd 2 to ``path``; spawned pythonw children have no stderr stream."""
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND)
     os.dup2(fd, 2)
     os.close(fd)

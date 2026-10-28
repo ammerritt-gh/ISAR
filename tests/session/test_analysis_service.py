@@ -87,11 +87,12 @@ def _jsonl(path: Path) -> list[dict]:
 class Svc:
     """One service process; a thread collects its stdout events as they arrive."""
 
-    def __init__(self, root: Path, *, fake: bool = True) -> None:
+    def __init__(self, root: Path, *, fake: bool = True, executable=None, fit_target=None) -> None:
         self.root = root
         env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(HERE), os.environ.get("PYTHONPATH")]))}
-        argv = [sys.executable, "-m", "isar.session.analysis_service", "--workspace", str(root),
-                "--log", str(root / "service.log"), *(FAKE if fake else [])]
+        targets = ["--fit-target", fit_target, "--save-target", "_service_fakes:save_results"] if fit_target else FAKE
+        argv = [executable or sys.executable, "-m", "isar.session.analysis_service", "--workspace", str(root),
+                "--log", str(root / "service.log"), *(targets if fake else [])]
         self.proc = subprocess.Popen(argv, cwd=REPO, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=subprocess.DEVNULL)
         self.events: list[dict] = []
@@ -162,8 +163,8 @@ def service():
     """``launch(root, fake=True) -> Svc``; teardown kills any service still running and every pid it saw."""
     launched: list[Svc] = []
 
-    def launch(root: Path, *, fake: bool = True) -> Svc:
-        svc = Svc(root, fake=fake)
+    def launch(root: Path, *, fake: bool = True, **kwargs) -> Svc:
+        svc = Svc(root, fake=fake, **kwargs)
         launched.append(svc)
         return svc
 
@@ -184,6 +185,41 @@ def service():
 # ---------------------------------------------------------------------------
 # the protocol
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("windowless", [False, pytest.param(True, marks=pytest.mark.skipif(
+    os.name != "nt", reason="pythonw is the Windows GUI interpreter"))])
+def test_deep_attempt_timings_survive_service_item_pool_spawn_and_stop(workspace, service, windowless):
+    """Real two-level spawn, with a synthetic retry ladder and no sampler work."""
+    root = workspace({})
+    executable = Path(sys.executable).with_name("pythonw.exe") if windowless else sys.executable
+    svc = service(root, executable=str(executable), fit_target="_deep_timing_fakes:fit_file")
+    svc.wait("ready")
+    try:
+        svc.start("q1", "synthetic:1:a01", "deep", cores=1)
+        svc.wait("progress", "q1", step=1, timeout_s=15)
+        svc.send(op="stop", item_id="q1")
+        svc.wait("finished", "q1", end="stopped", timeout_s=10)
+    finally:
+        assert svc.shutdown(timeout_s=10) == 0
+    rows = [row for event in svc.of("q1") for row in event.get("timing", [])]
+    completed = [row for row in rows if row["event"] == "run_completed"]
+    assert len(completed) == 3
+    assert [row["restart"] for row in completed] == [0, 1, 2]
+    assert [row["seed"] for row in completed] == [42, 42 + 7919, 42 + 2 * 7919]
+    assert [row["status"] for row in completed] == ["suspect", "failed", "usable"]
+    assert [row["settings"]["step_factor"] for row in completed] == [4, 8, 8]
+    assert [row["settings"]["n_live"] for row in completed] == [400, 400, 800]
+    assert all(row["label"] == "finished" and row["stage"] == "contenders" for row in completed)
+    assert all(row["wall_s"] == 2.5 and row["n_like_calls"] == 17 for row in completed)
+    inventory = [row for row in rows if row["event"] == "worker"]
+    assert len(inventory) == 1 and inventory[0]["workers"] == 1
+    assert "threadpools" in inventory[0]
+    item_pid = svc.wait("started", "q1")["pid"]
+    assert all(row["pid"] == inventory[0]["pid"] != item_pid for row in completed)
+    with (root / "streams.json").open(encoding="utf-8", newline="") as stream:
+        streams = json.load(stream)
+    assert streams == {"item_stderr_none": windowless, "worker_stderr_none": windowless}
 def test_ready_first_ping_errors_and_shutdown(workspace, service):
     svc = service(workspace({}))
     ready = svc.wait("ready")

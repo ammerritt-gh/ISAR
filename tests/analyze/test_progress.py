@@ -109,7 +109,7 @@ def _fake_pool(monkeypatch, values, exploratory=dp.EXPLORATORY):
         record = dp.RunRecord(label=label, seed=0, settings=settings, ndim=2, log_z=lnz, log_z_err=0.1,
                              information_h=1.0, n_like_calls=1, n_iter=1, lnl_max=0.0, wall_s=0.0,
                              reference_lnl=None, evidence_converged=True)
-        return label, [record]
+        return label, [record], None
 
     monkeypatch.setattr(dp, "_stage_task", run)
     return None, clock

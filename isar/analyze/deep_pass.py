@@ -33,15 +33,13 @@ from isar.analyze.progress import DEEP_STAGES, ProgressFn, emitter
 log = logging.getLogger(__name__)
 _timing_log = logging.getLogger(__name__ + ".timing")
 _timing_worker_pid: int | None = None
+_timing_worker_info: dict | None = None
 
 
 def _log_timing(event: str, **fields) -> None:
-    """Flush each completion to stderr's existing run log, even before ordered map returns it.
-
-    Spawned workers have no inherited Python handlers. Install only this diagnostic logger's
-    stderr handler when needed; the GUI already captures stderr into its queue log. StreamHandler
-    flushes each line, so stopping another model cannot erase completed attempts.
-    """
+    """Console diagnostics only; windowless workers deliver timings through the progress pipe."""
+    if sys.stderr is None:
+        return
     _timing_log.setLevel(logging.INFO)
     if not _timing_log.hasHandlers():
         handler = logging.StreamHandler(sys.stderr)
@@ -51,21 +49,24 @@ def _log_timing(event: str, **fields) -> None:
                                                separators=(",", ":")))
 
 
-def _log_worker_once(workers: int) -> None:
-    global _timing_worker_pid
+def _log_worker_once(workers: int) -> dict:
+    """Collect once per worker; return the inventory with every result for its item's progress pipe."""
+    global _timing_worker_pid, _timing_worker_info
     pid = os.getpid()
     if _timing_worker_pid == pid:
-        return
+        return {**_timing_worker_info, "workers": workers}
     _timing_worker_pid = pid
     try:
         from threadpoolctl import threadpool_info
         pools = threadpool_info()
     except Exception as exc:  # diagnostics must not prevent an otherwise runnable fit
         log.warning("deep pass threadpool inventory unavailable: %s: %s", type(exc).__name__, exc)
-        _log_timing("worker", workers=workers, threadpools=None,
-                    inventory_failure=f"{type(exc).__name__}: {exc}")
-        return
-    _log_timing("worker", workers=workers, threadpools=pools)
+        _timing_worker_info = {"event": "worker", "pid": pid, "workers": workers, "threadpools": None,
+                               "inventory_failure": f"{type(exc).__name__}: {exc}"}
+    else:
+        _timing_worker_info = {"event": "worker", "pid": pid, "workers": workers, "threadpools": pools}
+    _log_timing(**_timing_worker_info)
+    return _timing_worker_info
 
 
 CLOSE_CALL_P = 0.80             # the fast pass's threshold (s2.3); ``deep_pass`` takes the record's
@@ -213,15 +214,19 @@ def run_until_clean(label, problem, *, settings, seed, reference_lnl, timing_con
                          reference_lnl=reference_lnl)
         runs.append(rec)
         if timing_context is not None:
-            _log_timing("run_completed", **timing_context, label=label, restart=attempt,
-                        seed=rec.seed, settings=asdict(rec.settings), ndim=rec.ndim,
-                        wall_s=rec.wall_s, n_like_calls=rec.n_like_calls, n_iter=rec.n_iter,
-                        status="usable" if rec.usable else "failed" if rec.failure else "suspect",
-                        failure=rec.failure, suspect=list(rec.suspect))
+            _log_timing(**_attempt_timing(rec, attempt, pid=os.getpid(), **timing_context))
         if rec.usable:
             break
         s = escalate(s, attempt + 1)
     return runs
+
+
+def _attempt_timing(rec, restart, **context):
+    return {"event": "run_completed", **context, "label": rec.label, "restart": restart,
+            "seed": rec.seed, "settings": asdict(rec.settings), "ndim": rec.ndim,
+            "wall_s": rec.wall_s, "n_like_calls": rec.n_like_calls, "n_iter": rec.n_iter,
+            "status": "usable" if rec.usable else "failed" if rec.failure else "suspect",
+            "failure": rec.failure, "suspect": list(rec.suspect)}
 
 
 @dataclass(frozen=True)
@@ -392,6 +397,7 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
     attempted_promotion: set = set()
     failed_direct: set = set()
     fallback_waiting: set = set()
+    reported_workers: set = set()
 
     def over_budget():
         return budget_s is not None and time.perf_counter() - t0 >= budget_s
@@ -416,7 +422,14 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
 
         def accept(job, result):
             nonlocal done
-            lb, runs = result
+            lb, runs, worker = result
+            timing = []
+            if worker is not None:
+                if worker["pid"] not in reported_workers:
+                    timing.append(worker)
+                    reported_workers.add(worker["pid"])
+                timing.extend(_attempt_timing(r, attempt, pid=worker["pid"], stage=job.category,
+                                              workers=workers) for attempt, r in enumerate(runs))
             m = out[lb]
             m.runs.extend(runs)
             good = [r for r in runs if r.usable]
@@ -435,11 +448,15 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
                 queue.append(_StageJob(job.entry, exploratory, "exploratory",
                                        "exploratory_fallback", seeds[lb]))
                 queue.sort(key=job_key)
+                send("sampling", step=done, of=total, stage=stage, stages=DEEP_STAGES, timing=timing)
                 return
             if job.category == "exploratory_fallback":
                 fallback_waiting.remove(lb)
             done += 1
-            send("sampling", step=done, of=total, stage=stage, stages=DEEP_STAGES)
+            # The item owns this callback. Its pipe reaches the retained GUI queue log even when
+            # pythonw gives both the item and its spawned workers no stderr stream. A model's
+            # attempts become durable together when its retry sequence has returned.
+            send("sampling", step=done, of=total, stage=stage, stages=DEEP_STAGES, timing=timing)
 
         if executor is None:
             while queue and not over_budget():
@@ -512,10 +529,11 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
 
 def _stage_task(job, *, stage=None, workers=1):
     label, entry, settings, seed = job
-    _log_worker_once(workers)
-    return label, run_until_clean(label, entry.problem, settings=settings, seed=seed,
-                                  reference_lnl=entry.fastpass_lnl_opt,
-                                  timing_context={"stage": stage, "workers": workers})
+    worker = _log_worker_once(workers)
+    runs = run_until_clean(label, entry.problem, settings=settings, seed=seed,
+                           reference_lnl=entry.fastpass_lnl_opt,
+                           timing_context={"stage": stage, "workers": workers})
+    return label, runs, worker
 
 
 def _better_fit(fast_fit, refit) -> tuple:

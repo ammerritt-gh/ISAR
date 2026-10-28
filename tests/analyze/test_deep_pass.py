@@ -171,7 +171,7 @@ def _fake_pool(monkeypatch, values):
         label, _entry, settings, _seed = job
         clock.t += 100.0
         log.append((label, settings is dp.EXPLORATORY))
-        return label, [_fake_run(label, settings, values[label][1 if settings is dp.EXPLORATORY else 0])]
+        return label, [_fake_run(label, settings, values[label][1 if settings is dp.EXPLORATORY else 0])], None
 
     monkeypatch.setattr(dp, "_stage_task", run)
     return None, clock, log

@@ -30,7 +30,7 @@ def test_import_root_is_the_worktree():
 @pytest.fixture(autouse=True)
 def no_sampling(monkeypatch):
     """A deep stage that runs samples nothing: every stage task returns no runs, errors attach instantly."""
-    monkeypatch.setattr(deep_pass, "_stage_task", lambda job, **kw: (job[0], []))
+    monkeypatch.setattr(deep_pass, "_stage_task", lambda job, **kw: (job[0], [], None))
     monkeypatch.setattr(errors, "attach", lambda *a, **k: None)
 
 
