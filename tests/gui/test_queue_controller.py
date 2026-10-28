@@ -306,6 +306,24 @@ def test_held_failed_and_unsaved_items_say_why_in_their_own_words(rig):
     assert "Failed: 97 K a07 (fast pass): the result could not be saved: disk full" in r.lines
 
 
+@pytest.mark.parametrize("answer", ["saved", "save_failed"])
+def test_a_save_answer_starts_the_deep_item_waiting_on_the_same_file(rig, answer):
+    r = rig(cores=2)
+    r.select(A06)
+    r.ctrl.add_selection("fast")
+    iid = r.wait_commands("start", 1)[0]["item_id"]
+    r.ctrl.add_selection("deep")                               # waits: its file's fast pass is still running
+    r.emit(_result(iid, A06), _finished(iid))                  # the process is gone; the save is not answered yet
+    r.wait(lambda: r.item(A06).status == "saving")
+    assert [c["pass"] for c in r.commands("start")] == ["fast"]
+    if answer == "saved":
+        r.emit(_saved(iid, A06))
+    else:
+        r.emit({"ev": "save_failed", "item_id": iid, "unit_key": A06, "pass": "fast", "error": "disk full"})
+    (_, deep) = r.wait_commands("start", 2)                    # the save's answer frees the file: the deep item starts
+    assert (deep["unit_key"], deep["pass"]) == (A06, "deep")
+
+
 # ---- worked example 4: the writer hold -------------------------------------------------------------------
 def test_a_hold_waits_for_the_writer_and_a_release_is_sent_at_zero(rig):
     r = rig(cores=1)

@@ -737,6 +737,7 @@ class QueueController(QObject):
             if rec.pass_kind == "deep" and pass_kind == "fast" and ev.get("status") in ("done", "done_warning"):
                 self._stages.append((rec, ev["status"], ev.get("reason"), self._clock()))
             QTimer.singleShot(0, self._flush_saved)
+        self._pump()                    # the answer may free the file for a waiting item
 
     def _ev_save_failed(self, ev: dict) -> None:
         iid, pass_kind = ev["item_id"], ev["pass"]
@@ -744,6 +745,7 @@ class QueueController(QObject):
         if self._queue.on_save_failed(iid, pass_kind, error):
             res = self._recs[iid].results[pass_kind]
             res.saved, res.error = False, error
+        self._pump()
 
     def _ev_finished(self, ev: dict) -> None:
         self._queue.on_finished(ev["item_id"], ev["end"], ev.get("reason"))
