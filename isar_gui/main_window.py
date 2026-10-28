@@ -709,6 +709,7 @@ class MainWindow(QMainWindow):
         self._queue.log_line.connect(self.log)
         self._queue.auto_fast_changed.connect(self._on_auto_fast_changed)
         self._queue.changed.connect(self._push_run_row)
+        self._queue.results_saved.connect(self._on_results_saved)
         self._operations.set_writer_guard(self._campaign_refusal)
 
         # ---- the left column: experiment strip, setup section, needs-attention list, files strip, then
@@ -2540,7 +2541,19 @@ class MainWindow(QMainWindow):
         self.inspector = None
 
     # ---- watch -----------------------------------------------------------
-    def _on_workspace_changed(self, changed) -> None:
+    def _on_results_saved(self, keys) -> None:
+        """The queue saved results for ``keys``. A stopped watch bridge (a rename, a window built with
+        ``watch=False``) re-reads nothing, so re-read the experiment here as an ingest does; the shown analyzer
+        re-renders only when it is one of them, and the selection never moves. A running bridge's tick does this."""
+        if self._empty or self._bridge is not None:
+            return
+        shown = self.inspector_vm.current_unit or self._unit_key_for_fit(self.inspector_vm.current_fit)
+        self._ws.refresh()
+        self._on_workspace_changed({"snapshot", "results"}, refresh_shown=False)
+        if shown in keys:
+            self._refresh_inspector_selection()
+
+    def _on_workspace_changed(self, changed, *, refresh_shown: bool = True) -> None:
         # The bridge already refreshed the facade on this (Qt) thread.
         self._warn_generation += 1
         self.log_dock.sync_warnings(self._ws.warnings, self._warn_generation)
@@ -2568,7 +2581,8 @@ class MainWindow(QMainWindow):
             self.heatmap_vm.refresh()
             self.dispersion_vm.refresh()
             self.waterfall_vm.refresh()
-            self._refresh_inspector_selection()
+            if refresh_shown:
+                self._refresh_inspector_selection()
             # The scan rows' q/HKL cells and the auto-q-groups derive from the lattice epochs carried
             # by card_state; a card_state-only tick (no snapshot) still needs them re-derived.
             if changed & {"card_state"} and not (changed & {"snapshot"}):

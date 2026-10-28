@@ -385,3 +385,22 @@ def test_a_campaign_is_refused_while_the_queue_runs_or_holds_waiting_items(qtbot
             "analyzers are waiting in the analysis queue; remove them or let them finish first")
     finally:
         _forget_queue(w)
+
+
+def test_a_saved_result_re_renders_only_the_shown_analyzer_with_the_watch_bridge_stopped(
+        qtbot, monkeypatch, bl43_ws):
+    w = _win(qtbot, bl43_ws)
+    assert w._bridge is None
+    spectra = [sp.key for ss in w.scan_list_vm.snapshot.sets for sp in ss.spectra]
+    shown, other = spectra[0], spectra[1]
+    w.scan_list_vm.select(shown)
+    assert (w.inspector_vm.current_unit or w._unit_key_for_fit(w.inspector_vm.current_fit)) == shown
+    renders, reloads = [], []
+    monkeypatch.setattr(w.inspector_vm, "set_fit", lambda fit: renders.append(fit))
+    monkeypatch.setattr(w.inspector_vm, "set_unit", lambda key: renders.append(key))
+    monkeypatch.setattr(w.intake, "reload", lambda: reloads.append(1))
+    w._queue.results_saved.emit((other,))
+    assert renders == [] and reloads == [1]                                # re-read, the display left alone
+    assert w.scan_list_vm.selected_keys() == (shown,)
+    w._queue.results_saved.emit((other, shown))
+    assert len(renders) == 1 and reloads == [1, 1] and w.scan_list_vm.selected_keys() == (shown,)
