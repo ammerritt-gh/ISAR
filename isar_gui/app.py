@@ -94,7 +94,7 @@ def _legacy_temp_note() -> str | None:
     if not found:
         return None
     return (f"{len(found)} folder(s) from earlier ISAR builds are in {temp_root()}: open one with "
-            "Open… (it then works as an experiment in place) and keep it with Save copy as….")
+            "Open experiment… (it then works as an experiment in place) and keep it with Save experiment copy….")
 
 
 def main(argv=None) -> int:

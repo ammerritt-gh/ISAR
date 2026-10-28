@@ -43,7 +43,7 @@ def _make(qtbot, monkeypatch, snap, size=(360, 520), ws=None):
     update); ``snap=None`` leaves the real read in place."""
     box = {"snap": snap}
     if snap is not None:
-        monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda _ws: box["snap"])
+        monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda _ws, **_reads: box["snap"])
     vm = ScanListViewModel(ws if ws is not None else SimpleNamespace())
     panel = ScanListPanel(vm)
     qtbot.addWidget(panel)
@@ -113,7 +113,7 @@ def test_tree_is_sets_then_files_not_read_and_hides_the_placeholder_numbers(qtbo
     panel, vm, _ = _make(qtbot, monkeypatch, sample)
     assert _tops(panel) == [f"set:{KEY_SINGLE}", f"set:{KEY_B}", f"set:{KEY_A}", "section:not_read"]
     assert [panel._model.invisibleRootItem().child(r, 0).text() for r in range(4)] == [
-        "58", STEM_B, STEM_A, "Files not read"]
+        "58 (1 analyzer)", f"{STEM_B} (4 analyzers)", f"{STEM_A} (4 analyzers)", "Files not read"]
     assert len(_children(panel, "section:not_read")) == 3 and "section:pooled" not in panel._by_id
     assert not any(h in text for text in _all_text(panel) for h in HASHES)
     assert _model_item(panel, f"set:{KEY_A}", "parsed").text() == "4/4"
@@ -142,16 +142,17 @@ def test_a_long_label_keeps_its_full_text_on_hover_and_the_panel_fits_its_column
 def test_default_and_optional_columns(qtbot, monkeypatch, sample):
     panel, vm, _ = _make(qtbot, monkeypatch, sample)
     hidden = {c: panel._view.isColumnHidden(i) for i, c in enumerate(COLUMNS)}
+    # the sample holds stored fast- and deep-pass results, so those two columns are on by themselves
     assert hidden == {"scan": False, "T": False, "Q": False, "parsed": False,
-                      "fast": True, "deep": True, "slit": True, "file": True}
-    panel._column_actions["fast"].trigger()
-    assert not panel._view.isColumnHidden(COLUMNS.index("fast"))
+                      "fast": False, "deep": False, "slit": True, "file": True}
     assert _model_item(panel, f"set:{KEY_A}", "fast").text() == "3/4"
     cell = _model_item(panel, f"spec:{A[4]}", "fast")
-    assert cell.text() == "close_call" and not cell.icon().isNull()
-    assert cell.data(_TONE_ROLE) == Tone.WARN and "close_call" in cell.toolTip()
-    panel._column_actions["fast"].trigger()
+    assert cell.text() == "close call" and not cell.icon().isNull()
+    assert cell.data(_TONE_ROLE) == Tone.WARN and "close_call" in cell.toolTip()      # the code's word is on hover
+    panel._column_actions["fast"].trigger()                      # switched off by hand
     assert panel._view.isColumnHidden(COLUMNS.index("fast"))
+    panel._column_actions["slit"].trigger()                      # and an optional one on
+    assert not panel._view.isColumnHidden(COLUMNS.index("slit"))
 
 
 def test_a_missing_value_is_a_dash_with_its_reason(qtbot, monkeypatch, sample):
@@ -189,9 +190,10 @@ def test_same_temperature_sets_stay_distinct_through_selection_and_the_analyzer_
     assert vm.sort == "analyzer"
     assert _children(panel, "ana:a04") == [f"spec:{B[4]}", f"spec:{A[4]}"]
     assert [_model_item(panel, i).text() for i in _children(panel, "ana:a04")] == [STEM_B, STEM_A]
+    assert _model_item(panel, "ana:a04").text() == "a04 (2 scan sets)"
     assert vm.current_key == B[4] and _current_key(panel) == B[4]
     assert len(display.calls) == n                                  # the regroup asked for nothing
-    assert _model_item(panel, "ana:a04", "Q").text() == "2 scan sets"
+    assert _model_item(panel, "ana:a04", "Q").text() == ""            # the count joined the name in the first column
     assert _model_item(panel, "ana:a04", "T").text() == ""
 
     panel._sort_actions["set"].trigger()
@@ -286,7 +288,7 @@ def test_a_stored_fit_arriving_changes_a_cell_in_place(qtbot, monkeypatch, bl43_
     assert panel._view.isExpanded(_index(panel, f"set:{KEY_A}"))
     assert vm.current_key == A[6] and _current_key(panel) == A[6]
     assert panel._scroll_anchor() == anchor
-    assert _model_item(panel, f"spec:{B[5]}", "fast").text() == "resolved"
+    assert _model_item(panel, f"spec:{B[5]}", "fast").text() == "clear"
     assert display.calls == []
 
 
@@ -306,6 +308,30 @@ def test_a_new_set_arriving_does_not_collapse_or_jump(qtbot, monkeypatch, sample
     assert panel._view.isExpanded(_index(panel, f"set:{KEY_B}")) and panel._view.isExpanded(
         _index(panel, f"set:{KEY_A}"))
     assert panel._scroll_anchor() == anchor and _current_key(panel) == A[6]
+
+
+def test_a_result_column_switched_on_by_a_stored_pass_does_not_scroll_the_list(qtbot, monkeypatch, sample):
+    unstored = dataclasses.replace(sample, sets=tuple(dataclasses.replace(ss, spectra=tuple(
+        dataclasses.replace(sp, fast=Status("not run", False)) for sp in ss.spectra)) for ss in sample.sets))
+    panel, vm, box = _make(qtbot, monkeypatch, unstored, size=(360, 190))
+    for node_id in (f"set:{KEY_A}", f"set:{KEY_B}"):
+        panel._view.expand(_index(panel, node_id))
+    _click(panel, f"spec:{A[6]}")
+    bar = panel._view.verticalScrollBar()
+    bar.setValue(bar.maximum())
+    QApplication.processEvents()
+    assert not panel._view.viewport().rect().contains(panel._view.visualRect(_index(panel, f"spec:{A[6]}")))
+    scrolled = bar.value()
+    assert panel._view.isColumnHidden(COLUMNS.index("fast"))
+    b = list(unstored.sets[1].spectra)
+    b[2] = dataclasses.replace(b[2], fast=Status("resolved", True), fit=SimpleNamespace(unit_id=B[5], pooled=False))
+    sets = list(unstored.sets)
+    sets[1] = dataclasses.replace(sets[1], spectra=tuple(b))
+    box["snap"] = dataclasses.replace(unstored, sets=tuple(sets))
+    vm.on_workspace_changed({"results"})                           # the first fast result: the column comes on by itself
+    QApplication.processEvents()
+    assert not panel._view.isColumnHidden(COLUMNS.index("fast"))
+    assert bar.value() == scrolled and vm.current_key == A[6]
 
 
 def test_the_first_set_in_an_empty_list_opens_and_the_rest_start_closed(qtbot, monkeypatch, sample):
@@ -417,9 +443,20 @@ def test_the_bl43_list_has_no_pooled_section(qtbot, monkeypatch, sample):
     assert "section:pooled" not in panel._by_id
 
 
+def test_inspect_says_in_text_why_it_is_off_on_a_scan_set_row(qtbot, monkeypatch, sample):
+    panel, vm, _ = _make(qtbot, monkeypatch, sample)
+    _click(panel, f"set:{KEY_A}")
+    assert not panel._inspect.isEnabled()
+    assert panel._hint.isVisibleTo(panel) and "scan set cannot be inspected" in panel._hint.text()   # text, not a tooltip
+    assert vm.focus_set == KEY_A                      # the inspector is told which set was picked
+    _click(panel, f"spec:{A[4]}")
+    assert panel._inspect.isEnabled() and "Select an analyzer row, then" in panel._hint.text()
+    assert vm.focus_set is None
+
+
 def test_the_empty_list_says_so(qtbot, monkeypatch):
     panel, vm, _ = _make(qtbot, monkeypatch, ScanListSnapshot())
-    assert panel._empty.text() == "No scans yet" and not panel._empty.isHidden()
+    assert panel._empty.text().startswith("No scans yet") and not panel._empty.isHidden()
     assert panel._view.isHidden() and panel._status.text() == ""
     assert not panel._inspect.isEnabled()
 
@@ -459,19 +496,19 @@ def test_56_spectra_refresh_in_well_under_two_seconds(qtbot, monkeypatch, tmp_pa
 # ---------------------------------------------------------------------------------------------
 def test_view_state_round_trips_the_columns_and_the_sort_but_not_the_filter(qtbot, monkeypatch, sample):
     panel, vm, _ = _make(qtbot, monkeypatch, sample)
-    panel._column_actions["deep"].trigger()
+    panel._column_actions["fast"].trigger()                       # on by itself (results exist): this hides it
     panel._column_actions["file"].trigger()
     panel._sort_actions["temperature"].trigger()
     panel._filter.setText("a05")
     session = SimpleNamespace(view_state={})
     vm.save_view_state(session)
-    assert session.view_state["scan_list"] == {"columns": ["deep", "file"], "sort": "temperature"}
+    assert session.view_state["scan_list"] == {"columns": ["file"], "sort": "temperature", "hidden": ["fast"]}
 
     panel2, vm2, _ = _make(qtbot, monkeypatch, sample)
     vm2.load_view_state(session)
     assert vm2.sort == "temperature" and vm2.filter_text == ""
-    assert not panel2._view.isColumnHidden(COLUMNS.index("deep"))
-    assert panel2._view.isColumnHidden(COLUMNS.index("fast"))
+    assert not panel2._view.isColumnHidden(COLUMNS.index("deep"))      # on by itself
+    assert panel2._view.isColumnHidden(COLUMNS.index("fast"))          # off by hand, remembered
     assert panel2._sort_actions["temperature"].isChecked() and panel2._column_actions["file"].isChecked()
     vm2.load_view_state(SimpleNamespace(view_state={"scan_list": {"columns": "x", "sort": "nope"}}))
     assert vm2.sort == "temperature"                               # bad stored state is ignored
@@ -480,3 +517,22 @@ def test_view_state_round_trips_the_columns_and_the_sort_but_not_the_filter(qtbo
 def test_a_drop_over_the_panel_is_left_to_the_window(qtbot, monkeypatch, sample):
     panel, _, _ = _make(qtbot, monkeypatch, sample)
     assert not panel.acceptDrops() and not panel._view.acceptDrops()
+
+
+def test_a_view_model_with_an_intake_hands_the_read_its_holders_reads(monkeypatch):
+    """The GUI thread never parses the fit-inputs log: the snapshot is given the holder's reads, empty
+    ones (and an empty summary) while the holder has none yet."""
+    seen = []
+    monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list",
+                        lambda ws, **reads: seen.append(reads) or ScanListSnapshot())
+    vm = ScanListViewModel(SimpleNamespace())
+    assert seen == [{}]                                     # no holder: the read makes its own
+    intake = SimpleNamespace(fact_rows=None, fit_inputs=None, summary=None)
+    vm.set_intake(intake)
+    vm.on_workspace_changed(None)
+    assert set(seen[-1]) == {"fact_rows", "fit_inputs", "import_summary"}
+    assert seen[-1]["fact_rows"] == () and seen[-1]["fit_inputs"] == ()
+    assert seen[-1]["import_summary"].n_scans == 0 and not seen[-1]["import_summary"].files_not_read
+    intake.fit_inputs, intake.fact_rows, intake.summary = ("p",), ("f",), "summary"
+    vm.on_workspace_changed(None)
+    assert seen[-1] == {"fact_rows": ("f",), "fit_inputs": ("p",), "import_summary": "summary"}

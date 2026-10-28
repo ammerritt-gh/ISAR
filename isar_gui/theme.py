@@ -1,8 +1,8 @@
 """The GUI's one vocabulary of status dots and words.
 
 A status is always drawn as ``dot_icon(tone)`` (the item's decoration) plus the word as text, never
-as colour alone. The word is the scan-list read's ``Status.word``, unchanged; this module only decides
-the tone of a word. ``TONE_COLOR`` is the only place a status colour is spelled.
+as colour alone. The tone is decided from the scan-list read's ``Status.word`` (the fitting code's word); the
+text shown is its plain word from :mod:`isar_gui.status_words`. This module only decides the tone of a word. ``TONE_COLOR`` is the only place a status colour is spelled.
 
 The words come from the stored records: the fast pass's count states
 (``isar/analyze/fast_pass.py``), the deep pass's states (``isar/session/deep_delivery.py``) and the

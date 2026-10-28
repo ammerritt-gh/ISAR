@@ -23,6 +23,7 @@ from __future__ import annotations
 import shutil
 import types
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -34,11 +35,19 @@ STEM_B = "CsV3Sb5_97K_0p5_0p5_3_rep_sum"
 KEY_A = "CsV3Sb5_97K_0p5_0p5_3_sum:1842762476"         # set keys as ingest makes them
 KEY_B = "CsV3Sb5_97K_0p5_0p5_3_rep_sum:1126149381"
 KEY_SINGLE = "spec1:58"
+# The ``with_t=False`` variant: no temperature in any file or file stem (the BL43 reader takes T from the
+# filename too). The scan key hashes the stem, so these keys are that variant's own.
+STEM_A_NO_T = "CsV3Sb5_0p5_0p5_3_sum"
+STEM_B_NO_T = "CsV3Sb5_0p5_0p5_3_rep_sum"
+KEY_A_NO_T = "CsV3Sb5_0p5_0p5_3_sum:1676739808"
+KEY_B_NO_T = "CsV3Sb5_0p5_0p5_3_rep_sum:1664476669"
 ANALYZERS = (3, 4, 5, 6, 7, 8, 9, 14, 15, 16, 17, 18, 19, 20, 25, 26, 27, 28, 29, 30, 31,
              35, 36, 37, 38, 39, 40, 41)                # BL43's 28, in the card's order
 
 BA122_FILE = "spec1_T26K__scan_58_A6_Q_4_0p075_0_inel.dat"
+BA122_FILE_NO_T = "spec1__scan_58_A6_Q_4_0p075_0_inel.dat"
 BAD_FILE = "CsV3Sb5_97K_0p5_0p5_3_bad_a03"
+BAD_FILE_NO_T = "CsV3Sb5_0p5_0p5_3_bad_a03"
 _N_BINS = 60
 _ENERGY = np.round(np.arange(_N_BINS) * 0.2 - 4.0, 4)   # -4.0 .. 7.8 meV
 
@@ -57,17 +66,21 @@ def _write(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
-def _analyzer_file(path: Path, number: int, *, with_q: bool = True) -> None:
-    """One analyzer file in ``sp8_bl43.emit_file``'s six-column ``_i`` layout."""
+def _analyzer_file(path: Path, number: int, *, with_q: bool = True, with_t: bool = True,
+                   off_integer: bool = False) -> None:
+    """One analyzer file in ``sp8_bl43.emit_file``'s six-column ``_i`` layout. ``off_integer``: the
+    printed error of every third bin squares to half a count more, so (y/e)^2 is off an integer there."""
     monitor, secs = 1e5, 10.0
     rows = ["#      meV      secs   npts          norm_i             y_i            ye_i"]
     for i, energy in enumerate(_ENERGY):
         counts = 25 + i % 7
+        err = counts + (0.5 if off_integer and i % 3 == 0 else 0.0)
         rows.append(f"{energy:10.4f} {secs:9.1f} {int(round(secs / 10)):6d} {monitor:15.7E} "
-                    f"{counts / monitor:15.7E} {counts ** 0.5 / monitor:15.7E}")
+                    f"{counts / monitor:15.7E} {err ** 0.5 / monitor:15.7E}")
     if with_q:
         rows.append(f"#Q=   {20.0 + number / 10:.3f} /nm")
-    rows.append("#T=  97.000 K")
+    if with_t:
+        rows.append("#T=  97.000 K")
     _write(path, "\n".join(rows) + "\n")
 
 
@@ -80,22 +93,27 @@ def _var_file(path: Path, numbers) -> None:
     _write(path, "\n".join(lines))
 
 
-def write_bl43_files(folder: Path, n_analyzers: int = 4) -> Path:
-    """Write the incoming data files into ``folder`` (created); return it."""
+def write_bl43_files(folder: Path, n_analyzers: int = 4, *, with_t: bool = True,
+                     off_integer=()) -> Path:
+    """Write the incoming data files into ``folder`` (created); return it. ``with_t=False`` leaves every
+    file without a temperature, in its trailer and in its name (``STEM_A_NO_T``, ``STEM_B_NO_T``,
+    ``BA122_FILE_NO_T``, ``BAD_FILE_NO_T``); ``off_integer`` names ``"<stem>_aNN"`` files whose counts are not raw."""
     folder.mkdir(parents=True, exist_ok=True)
     numbers = ANALYZERS[:n_analyzers]
-    for stem in (STEM_A, STEM_B):
+    stem_a, stem_b = (STEM_A, STEM_B) if with_t else (STEM_A_NO_T, STEM_B_NO_T)
+    for stem in (stem_a, stem_b):
         for number in numbers:
             # set A's a05 has no #Q= line: a missing Q the scan list must show as a dash
-            _analyzer_file(folder / f"{stem}_a{number:02d}", number,
-                           with_q=not (stem == STEM_A and number == 5))
+            name = f"{stem}_a{number:02d}"
+            _analyzer_file(folder / name, number, with_q=not (stem == stem_a and number == 5),
+                           with_t=with_t, off_integer=name in off_integer)
         _var_file(folder / f"{stem}.var", numbers)
     counts = (np.arange(8) + 1.0) ** 2                 # N = (y/e)^2 recovers exactly
     energies = np.round(np.arange(8) * 0.2, 4)
-    _write(folder / BA122_FILE, "\n".join(
+    _write(folder / (BA122_FILE if with_t else BA122_FILE_NO_T), "\n".join(
         f"{e:.4f} {n:.6E} {n ** 0.5:.6E}" for e, n in zip(energies, counts)) + "\n")
-    _write(folder / f"{STEM_B}_a07", "garbage\n")        # a member left out of a read set
-    _write(folder / BAD_FILE, "not a data file\n")       # a set that fails as a whole
+    _write(folder / f"{stem_b}_a07", "garbage\n")        # a member left out of a read set
+    _write(folder / (BAD_FILE if with_t else BAD_FILE_NO_T), "not a data file\n")   # a set that fails whole
     _write(folder / "notes.txt", "beamtime notes\n")     # unrecognised
     return folder
 
@@ -148,30 +166,60 @@ def stamp_status(ws_root: Path, unit_key: str, status: str, reasons: list[str]) 
     _save(ws, card, session)
 
 
-def build_bl43_workspace(root: Path, n_analyzers: int = 4, *, fits: bool = True) -> Path:
-    """Write the data under ``root/incoming``, ingest it into ``root/ws``, stamp the fits; return ``ws``."""
+def _temperature_optional_card(dest: Path) -> Path:
+    """Write ``dest``: a copy of the shipped card whose file-name patterns let the ``<T>K`` token be
+    absent, so the no-temperature variant's files still read as measurements. The patterns are format
+    knowledge, read from the shipped file and never from the workspace card, so the copy reaches the
+    reader through ``card.SHIPPED_FORMATS``; the shipped card itself is not touched."""
     from isar.parsers import sp8_bl43
+    raw = Path(sp8_bl43._CARD_PATH).read_bytes().decode("utf-8")
+    edits = ((r"_(?P<T_K>\d+(?:p\d+)?)K_(?P<hkl_nominal>", r"_(?:(?P<T_K>\d+(?:p\d+)?)K_)?(?P<hkl_nominal>"),
+             (r"(?P<specfile>spec\d+)_T(?P<T_K>\d+(?:p\d+)?)K__scan_",
+              r"(?P<specfile>spec\d+)_(?:T(?P<T_K>\d+(?:p\d+)?)K_)?_scan_"))
+    for before, after in edits:
+        assert raw.count(before) == 1, before
+        raw = raw.replace(before, after)
+    dest.write_bytes(raw.encode("utf-8"))
+    return dest
+
+
+def build_bl43_workspace(root: Path, n_analyzers: int = 4, *, fits: bool = True, intake: bool = False,
+                         with_t: bool = True, off_integer=()) -> Path:
+    """Write the data under ``root/incoming``, ingest it into ``root/ws``, stamp the fits; return ``ws``.
+
+    ``with_t=False`` builds the no-temperature variant (``STEM_*_NO_T``; its fits are stamped on
+    ``KEY_*_NO_T``).
+
+    ``intake=True`` ingests as ``isar ingest`` does (``workspace_root`` given), so the import record
+    ``report/intake_scans.json`` and the curve check ``report/curves.json`` are written too."""
+    from isar.parsers import sp8_bl43
+    from isar.schema import card as card_mod
     from isar.session import ingest
     from isar.session.state import SessionState
     from isar.session.workspace import Workspace
 
-    incoming = write_bl43_files(Path(root) / "incoming", n_analyzers)
+    incoming = write_bl43_files(Path(root) / "incoming", n_analyzers, with_t=with_t, off_integer=off_integer)
     ws_root = Path(root) / "ws"
     ws_root.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(sp8_bl43._CARD_PATH, ws_root / "card.policy.toml")   # the shipped card, verbatim
     (ws_root / "card.state.json").write_text("{}", encoding="utf-8", newline="\n")
     SessionState().save(ws_root / "session.json")
-    ws = Workspace.open(ws_root)
-    card, session = ws.load()
-    ingest.ingest_batch(card, session, [incoming], data_dir=ws_root / "data")
-    ws.save(card, session)
+    shipped = ({"sp8_bl43": _temperature_optional_card(Path(root) / "bl43_optional_t.policy.toml")}
+               if not with_t else {})
+    with patch.dict(card_mod.SHIPPED_FORMATS, shipped):    # in force for the in-process ingest only
+        ws = Workspace.open(ws_root)
+        card, session = ws.load()
+        ingest.ingest_batch(card, session, [incoming], data_dir=ws_root / "data",
+                            workspace_root=ws_root if intake else None)
+        ws.save(card, session)
     if fits:
-        stamp_fit(ws_root, f"{KEY_A}:a03", "resolved")
-        stamp_fit(ws_root, f"{KEY_A}:a04", "close_call", deep=_DEEP_RESOLVED)
-        stamp_fit(ws_root, f"{KEY_A}:a06", "search_limited")
-        stamp_status(ws_root, f"{KEY_B}:a03", "held_for_calibration",
+        key_a, key_b = (KEY_A, KEY_B) if with_t else (KEY_A_NO_T, KEY_B_NO_T)
+        stamp_fit(ws_root, f"{key_a}:a03", "resolved")
+        stamp_fit(ws_root, f"{key_a}:a04", "close_call", deep=_DEEP_RESOLVED)
+        stamp_fit(ws_root, f"{key_a}:a06", "search_limited")
+        stamp_status(ws_root, f"{key_b}:a03", "held_for_calibration",
                      ["a03: no resolution curve for a03 at slit 60x60"])
-        stamp_status(ws_root, f"{KEY_B}:a04", "excluded", ["undersampled"])
+        stamp_status(ws_root, f"{key_b}:a04", "excluded", ["undersampled"])
     else:
         from isar.session.outcome import _write_results_csv
         _write_results_csv(ws, session)

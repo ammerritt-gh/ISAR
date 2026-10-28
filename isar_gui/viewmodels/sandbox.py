@@ -13,8 +13,22 @@ import threading
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from isar import sandbox_api
+from isar_gui import collector_guard
 
 log = logging.getLogger(__name__)
+
+
+def _work(results: queue.SimpleQueue, root: str, key: str, rid: int, center_override=None) -> None:
+    """The worker thread (NO Qt access, the collector off for its whole life). It gets the queue, never the
+    view-model: a last reference dropped on the worker would destroy that QObject off the GUI thread."""
+    try:
+        res = sandbox_api.preview_fit(root, key, center_override=center_override)
+    except Exception as exc:  # noqa: BLE001 — a crashed preview is a shown state, not a hang
+        log.warning("sandbox worker crashed for %s: %s", key, exc)
+        res = sandbox_api.SandboxResult(
+            unit_key=key, status="error",
+            reason=f"sandbox crashed: {type(exc).__name__}: {exc}")
+    results.put((rid, res))
 
 
 class SandboxViewModel(QObject):
@@ -35,6 +49,7 @@ class SandboxViewModel(QObject):
         self._latest_id = 0     # newest request — only its result may be shown
         self._active = False    # exactly one worker may be active
         self._pending = None    # newest coalesced (root, key, request id, center)
+        self._thread: threading.Thread | None = None
 
     def set_workspace_root(self, root) -> None:
         """Rebind the preview source and invalidate every request from the previous workspace.
@@ -75,30 +90,26 @@ class SandboxViewModel(QObject):
         args = self._pending
         self._pending = None
         self._active = True
-        threading.Thread(target=self._work, args=args, daemon=True).start()
-
-    # ---- worker thread (NO Qt access here) ----
-    def _work(self, root: str, key: str, rid: int, center_override=None) -> None:
-        try:
-            res = sandbox_api.preview_fit(root, key, center_override=center_override)
-        except Exception as exc:  # noqa: BLE001 — a crashed preview is a shown state, not a hang
-            log.warning("sandbox worker crashed for %s: %s", key, exc)
-            res = sandbox_api.SandboxResult(
-                unit_key=key, status="error",
-                reason=f"sandbox crashed: {type(exc).__name__}: {exc}")
-        self._queue.put((rid, res))
+        self._thread = threading.Thread(target=_work, args=(self._queue, *args), daemon=True,
+                                        name="isar-gui-sandbox")
+        collector_guard.hold(self._thread)
+        self._thread.start()
 
     # ---- GUI thread ----
     def _poll(self) -> None:
         latest_res = None
+        answered = False
         try:
             while True:
                 rid, res = self._queue.get_nowait()
                 self._active = False
+                answered = True
                 if rid == self._latest_id:      # keep only the newest request's result; drop stale
                     latest_res = res
         except queue.Empty:
             pass
+        if answered:
+            collector_guard.finish(self._thread)   # its answer is queued: it is only returning
         if latest_res is not None:
             self.result_ready.emit(latest_res)
         self._start_pending()

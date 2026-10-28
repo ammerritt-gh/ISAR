@@ -22,6 +22,7 @@ The Panels menu's two-way sync (checkable action <-> dock ``visibilityChanged``)
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -47,6 +48,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from isar_gui import collector_guard, file_dialogs
 from isar_gui.commands import RunOptions, build_run_command
 from isar_gui.active_unit import ActiveUnitController
 from isar_gui.export_action import ExportController
@@ -90,6 +92,7 @@ from isar_gui.viewmodels import (
     WaterfallViewModel,
 )
 from isar_gui.viewmodels.campaign import CampaignViewModel
+from isar_gui.viewmodels.intake import IntakeState
 from isar_gui.viewmodels.sandbox import SandboxViewModel
 from isar_gui.viewmodels.scan_list import ScanListViewModel
 from isar_gui.views.campaign_dock import CampaignDock
@@ -97,8 +100,11 @@ from isar_gui.views.campaign_monitor import CampaignMonitor
 from isar_gui.views.sandbox_pane import SandboxPane
 from isar_gui.views.browser_dock import BrowserDock
 from isar_gui.views.card_dock import CardDock
+from isar_gui.views.attention_list import AttentionList
 from isar_gui.views.center_host import CenterHost
+from isar_gui.views.details_dialog import DetailsDialog
 from isar_gui.views.dispersion_pane import DispersionPane
+from isar_gui.views import help_window
 from isar_gui.views.experiment_strip import ExperimentStrip
 from isar_gui.views.files_dock import FilesDock
 from isar_gui.views.files_strip import FilesStrip
@@ -106,10 +112,12 @@ from isar_gui.views.heatmap_pane import HeatmapPane
 from isar_gui.views.inspector_widget import InspectorWidget
 from isar_gui.views.output_bar import OutputBar
 from isar_gui.views.processing_panel import ProcessingPanel, ProcessingRail
+from isar_gui.views.readiness_line import ReadinessLine
 from isar_gui.views.rename_dialog import RenameDialog
 from isar_gui.views.scan_inspector import ScanInspectorPanel
 from isar_gui.views.scan_list import ScanListPanel
 from isar_gui.views.scan_table_dock import ScanTableDock
+from isar_gui.views.setup_section import SetupSection, locate_resolution_folder
 from isar_gui.views.scans_dock import ScansDock
 from isar_gui.views.waterfall_pane import WaterfallPane
 from isar_gui.watch_bridge import WatchBridge
@@ -118,7 +126,7 @@ log = logging.getLogger(__name__)
 
 
 # The display's words before any scan is picked (the inspector page's empty text says the same).
-_EMPTY_HINT = "Nothing to show yet. Pick a scan on the left once data is in."
+_EMPTY_HINT = "Select an analyzer in the scan list."
 
 # Bump when the dock inventory/geometry contract changes: restoreState of any OTHER version fails
 # atomically and the window falls back to _apply_default_arrangement (never binary-migrate Qt blobs).
@@ -161,6 +169,12 @@ def initial_arrangement(width: int, height: int) -> str:
     1536x826 are laptop; 1920x1040 and 2560x1392 are desktop)."""
     return "desktop" if width >= DESKTOP_FROM_WIDTH and height >= DESKTOP_FROM_HEIGHT else "laptop"
 
+
+_HEALTH_WORDS = {"tavi": "TAVI (instrument control) is not running. Only needed for campaigns.",
+                 "llm": "The LLM service is not running. Only needed for the optional LLM review."}
+_RERUN_TEXT = "Re-run (only what changed)"
+_RERUN_TIP = ("Run the last analysis again with the same settings; only new, changed or held scans, or ones "
+              "touched by a card edit, are fitted.")
 
 # The five central display surfaces, in switcher order: (host key, button label).
 _CENTER_PAGES = (("scan", "Scan"), ("waterfall", "Waterfall"), ("plane", "Plane (q, E)"),
@@ -222,6 +236,9 @@ class _EmptyWorkspace:
         pass
 
 
+# The watch events after which the intake reads are re-read (the intake files and what they derive from).
+_INTAKE_RELOAD = frozenset({"snapshot", "results", "card", "card_state", "intake_entries",
+                           "intake_settings", "intake_scans", "fit_inputs", "curves"})
 # The status bar's and Processing panel's word for each kind the coordinator emits.
 _ACTIVITY_VERBS = {"ingest": "Ingesting", "drive": "Campaign running", "compile": "Compiling campaign",
                    "export": "Exporting", "run": "Analysing"}
@@ -245,6 +262,7 @@ class MainWindow(QMainWindow):
 
         self._docks: dict[str, object] = {}
         self._warn_generation = 0     # per-bridge-tick counter passed to LogDock.sync_warnings
+        self._help_window = None      # the one Help window, made on first use
         self._empty = False           # True while showing the empty-start (no workspace) state
         self.inspector = None         # the C2 fit inspector (a CenterHost page); None in the empty state
         self._center_host: CenterHost | None = None   # hosts the five display surfaces once bound
@@ -346,6 +364,8 @@ class MainWindow(QMainWindow):
         # a persistent dock isn't double-connected on every rebind.
         self._loc_wired: WeakSet = WeakSet()
         self.log_dock = LogDock(self)
+        # The one Qt-side holder of the intake reads and writers (stage two); every intake panel reads it.
+        self.intake = IntakeState(self)
         self._build_frame()
         self._bind_workspace(ws)
         self._bound = True
@@ -453,7 +473,7 @@ class MainWindow(QMainWindow):
             self.log(f"Experiment {root}: no files read into it yet — drop data to begin")
         elif root is None:
             self.statusBar().showMessage("No experiment open")
-            self.log("No experiment open — New experiment…, Open… or drop data to begin")
+            self.log("No experiment open — New experiment…, Open experiment… or drop data to begin")
         else:
             self.statusBar().showMessage(f"Experiment: {ws.root}")
             self.log(f"Opened experiment {ws.root}")
@@ -483,6 +503,7 @@ class MainWindow(QMainWindow):
         self.scan_list_vm.set_workspace(self._ws)
         self.scan_list_vm.set_active_key(self.active_units.key)
         self.experiment_strip.set_experiment(root)
+        self.intake.bind(root)
         self.files_strip.bind(self.files_vm, root is not None)   # experiment_open
         self.output_bar.set_experiment(root)
         self._show_outside_references()
@@ -591,19 +612,33 @@ class MainWindow(QMainWindow):
         """
         # ---- the mounts ----
         self.experiment_strip = ExperimentStrip(self)
-        self.files_strip = FilesStrip(self)
+        # The scan list re-reads (S2U4) on both intake signals; it is wired before the panels that take their
+        # scan-set labels from it, so those read a fresh list (Qt runs slots in connection order).
         self.scan_list_vm = ScanListViewModel(_EmptyWorkspace(), self)
+        self.scan_list_vm.set_intake(self.intake)
+        self.intake.changed.connect(lambda: self.scan_list_vm.on_workspace_changed(None))
+        self.intake.worker_changed.connect(lambda: self.scan_list_vm.on_workspace_changed(None))
+        self.setup_section = SetupSection(self.intake)
+        self.attention_list = AttentionList(self.intake, self._scan_label)
+        saved = self._session.view_state.get("attention_list")
+        if isinstance(saved, dict) and isinstance(saved.get("expanded"), bool):
+            self.attention_list.set_expanded(saved["expanded"])
+        self.files_strip = FilesStrip(self)
         self.scan_list = ScanListPanel(self.scan_list_vm)
         self.scan_inspector = ScanInspectorPanel(self.scan_list_vm)
+        self.scan_inspector.set_intake(self.intake)
         self.scan_inspector.setMinimumWidth(_INSPECTOR_MIN)
         self.scan_inspector.hide()          # opens closed; the window owns its visibility and width
         self.processing_panel = ProcessingPanel(self)
+        self.readiness_line = ReadinessLine(self.intake, self._scan_label)
+        self.processing_panel.set_readiness_widget(self.readiness_line)
         self.processing_panel.setMinimumWidth(_RIGHT_MIN)
         self.processing_rail = ProcessingRail(self)
         self.output_bar = OutputBar(self)
         self._export = ExportController(self._operations, self)
 
-        # ---- the left column: experiment strip, files strip, then the scan list (all the rest) ----
+        # ---- the left column: experiment strip, setup section, needs-attention list, files strip, then
+        # the scan list (all the rest) ----
         column = QWidget(self)
         column.setObjectName("left_column")
         column.setMinimumWidth(_LEFT_MIN)
@@ -611,6 +646,8 @@ class MainWindow(QMainWindow):
         column_layout.setContentsMargins(0, 0, 0, 0)
         column_layout.setSpacing(0)
         column_layout.addWidget(self.experiment_strip, 0)
+        column_layout.addWidget(self.setup_section, 0)
+        column_layout.addWidget(self.attention_list, 0)
         column_layout.addWidget(self.files_strip, 0)
         column_layout.addWidget(self.scan_list, 1)
 
@@ -664,6 +701,18 @@ class MainWindow(QMainWindow):
         self.experiment_strip.open_requested.connect(self._on_open_workspace)
         self.experiment_strip.recent_chosen.connect(self.load_workspace)
         self.experiment_strip.rename_requested.connect(self.rename_experiment)
+        self.experiment_strip.details_requested.connect(self._open_details)
+        self.setup_section.locate_requested.connect(self._locate_resolution_folder)
+        self.setup_section.run_requested.connect(lambda: self.start_analysis())   # looked up at the click
+        self.attention_list.locate_requested.connect(self._locate_resolution_folder)
+        self.attention_list.add_data_requested.connect(self.files_strip.choose_files)
+        self.attention_list.run_requested.connect(lambda: self.start_analysis())
+        self.readiness_line.locate_requested.connect(self._locate_resolution_folder)
+        self.readiness_line.reveal_gap.connect(self.attention_list.reveal)
+        self.readiness_line.run_requested.connect(lambda: self.start_analysis())
+        for changed in (self.intake.changed, self.intake.worker_changed, self.scan_list_vm.snapshot_changed):
+            changed.connect(self._push_run_row)
+        self.intake.saved.connect(self.log)
         self.files_strip.paths_dropped.connect(self._on_paths_dropped)
         self.files_strip.log_message.connect(self.log)
         self._folder_watcher.status_changed.connect(self.files_strip.set_watch_status)
@@ -684,11 +733,36 @@ class MainWindow(QMainWindow):
         self._export.failed.connect(self.output_bar.show_export_failed)
         self._export.failed.connect(lambda reason, path: self.log(f"Export failed: {reason}"))
         self._export.failed.connect(self._sync_workspace_actions)
-        self.processing_panel.run_requested.connect(self.run_analysis)
+        # The export guard: one export is made from one state of the intake records.
+        self._export.started.connect(lambda: self.intake.set_busy_reason("an export is running"))
+        self._export.finished.connect(lambda _folder: self.intake.set_busy_reason(None))
+        self._export.failed.connect(lambda _reason, _path: self.intake.set_busy_reason(None))
+        self.processing_panel.run_requested.connect(lambda: self.start_analysis())
         self.processing_panel.stop_requested.connect(self._cancel_active_operation)
         self.processing_rail.toggled.connect(
             lambda: self.set_right_panel_collapsed(not self._right_panel_collapsed()))
         self._refresh_recents_menu()
+        self._push_run_row()
+
+    def _scan_label(self, key: str) -> str:
+        """A scan set's label from the scan list's current read; the key stands in for an unknown set."""
+        ss = self.scan_list_vm.snapshot.scan_set(key)
+        return key if ss is None else ss.label
+
+    def _locate_resolution_folder(self) -> None:
+        """*Choose curves folder…* (setup line, attention list, readiness list): the one route; a refused save is
+        shown in the setup section (and, like every save, in the Log)."""
+        self.setup_section.show_save_outcome(locate_resolution_folder(self, self.intake))
+
+    def _open_details(self) -> None:
+        """*Details…* on the strip and *Add details* in the one-time note."""
+        root = self._wsm.root()
+        if root is None:
+            return
+        dialog = DetailsDialog(self.intake, root.name, root, self)
+        dialog.rename_requested.connect(self.rename_experiment)
+        dialog.exec()
+        dialog.deleteLater()
 
     def _frame_dock(self, name: str, title: str, widget: QWidget) -> QDockWidget:
         dock = QDockWidget(title, self)
@@ -1040,21 +1114,42 @@ class MainWindow(QMainWindow):
         self._open_workspace_menu_action.triggered.connect(self._on_open_workspace)
         self._rename_menu_action = file_menu.addAction("Rename experiment…")
         self._rename_menu_action.triggered.connect(self.rename_experiment)
-        self._save_copy_menu_action = file_menu.addAction("Save copy as…")
+        self._save_copy_menu_action = file_menu.addAction("Save experiment copy…")
+        self._save_copy_menu_action.setToolTip("Copy this whole experiment folder to a new place. You keep "
+                                               "working in the original.")
         self._save_copy_menu_action.triggered.connect(self.save_copy_as)
 
         file_menu.addSeparator()
-        report_action = file_menu.addAction("Open Report")
+        report_action = file_menu.addAction("Open HTML report")
+        report_action.setToolTip("Open report/report.html of this experiment in your browser.")
         report_action.triggered.connect(self._open_report)
-        export_menu = file_menu.addMenu("Export View as PNG")
+        export_menu = file_menu.addMenu("Save view as image")
+        export_menu.setToolTip("Save the chosen display as a PNG picture.")
         for label, key in (("Plane (q, E)", "Plane (q, E)"), ("Dispersion", "Dispersion ω(q)"),
                            ("Waterfall", "Waterfall / Comparison"), ("Inspector", "Inspector")):
             act = export_menu.addAction(label)
             act.triggered.connect(lambda _checked=False, k=key: self._export_view(k))
 
+        for menu in (file_menu, export_menu):
+            menu.setToolTipsVisible(True)
         help_menu = self.menuBar().addMenu("&Help")
+        self._guide_action = help_menu.addAction("Quick guide")
+        self._guide_action.triggered.connect(lambda: self._show_help(help_window.GUIDE))
+        self._words_action = help_menu.addAction("What the status words mean")
+        self._words_action.triggered.connect(lambda: self._show_help(help_window.WORDS))
+        help_menu.addSeparator()
         open_log_action = help_menu.addAction("Open GUI Log Folder")
         open_log_action.triggered.connect(self._open_gui_log_folder)
+
+    def default_save_folder(self) -> Path | None:
+        """Where a save dialog offered a bare file name opens: the open experiment's folder (see file_dialogs)."""
+        return None if self._empty else Path(self._ws.root)
+
+    def _show_help(self, page: str) -> None:
+        """Help pages open in one reused, non-modal window (never exec())."""
+        if self._help_window is None:
+            self._help_window = help_window.HelpWindow(self)
+        self._help_window.show_page(page)
 
     def _open_gui_log_folder(self) -> None:
         """Open the durable log directory and say explicitly if the shell cannot do so."""
@@ -1078,9 +1173,7 @@ class MainWindow(QMainWindow):
         # Non-native, like every other experiment dialog here: the Windows-native directory picker
         # refuses a typed path whose folder does not exist yet and offers no way to make one, so
         # the operator had to leave the application and create the folder in Explorer first.
-        path = QFileDialog.getExistingDirectory(
-            self, "Open experiment", start_dir,
-            QFileDialog.Option.ShowDirsOnly | QFileDialog.Option.DontUseNativeDialog)
+        path = file_dialogs.get_existing_directory(self, "Open experiment", start_dir)
         if path:
             self.load_workspace(path)
 
@@ -1217,10 +1310,9 @@ class MainWindow(QMainWindow):
         # confirmation is declined because the manager's "absent or empty" check is the authority.
         # Non-native: the Windows dialog rejects typed paths whose parents do not exist yet, while
         # the manager creates the whole parent chain at promotion.
-        dest, _selected = QFileDialog.getSaveFileName(
+        dest, _selected = file_dialogs.get_save_file_name(
             self, "Save copy as — name a new folder", str(root.parent / f"{root.name}-copy"), "",
-            options=(QFileDialog.Option.DontConfirmOverwrite
-                     | QFileDialog.Option.DontUseNativeDialog))
+            QFileDialog.Option.DontConfirmOverwrite)
         if not dest:
             return
         available, reason, _strip_busy = self._availability()
@@ -1372,6 +1464,7 @@ class MainWindow(QMainWindow):
     def _on_ingest_failed(self, code: int, cause: str) -> None:
         self.statusBar().showMessage(f"Could not ingest data: {cause}")
         self.log(f"ingest failed (exit {code}): {cause}")
+        self.intake.reload()                # its curve check may already have rewritten report/curves.json
         # A real failure (exit != 0) must be visible on screen, never buried in a hidden dock
         # (operator contract). Code 0 is the informational "queued batch dropped" note — not a
         # failure, so it does not force the dock up.
@@ -1548,8 +1641,10 @@ class MainWindow(QMainWindow):
     def _init_run_menu(self) -> None:
         run_menu = self.menuBar().addMenu("&Run")
         self._run_action = run_menu.addAction("Run analysis…")
-        self._run_action.triggered.connect(lambda: self.run_analysis())
-        self._rerun_action = run_menu.addAction("Re-run (only new scans)")
+        self._run_action.triggered.connect(lambda: self.start_analysis())
+        self._rerun_action = run_menu.addAction(_RERUN_TEXT)
+        self._rerun_action.setToolTip(_RERUN_TIP)
+        run_menu.setToolTipsVisible(True)
         self._rerun_action.triggered.connect(self.rerun)
         self._cancel_operation_action = run_menu.addAction("Cancel active operation")
         self._cancel_operation_action.triggered.connect(self._cancel_active_operation)
@@ -1560,7 +1655,11 @@ class MainWindow(QMainWindow):
         can_run = (not self._empty) and (not busy)
         self._run_action.setEnabled(can_run)
         # Re-run additionally needs a remembered previous invocation for this workspace.
-        self._rerun_action.setEnabled(can_run and self._run_state() is not None)
+        can_rerun = can_run and self._run_state() is not None
+        self._rerun_action.setEnabled(can_rerun)
+        # a greyed menu entry says why in its own text
+        self._rerun_action.setText(_RERUN_TEXT if can_rerun else f"{_RERUN_TEXT} — " + (
+            "needs an experiment" if self._empty else "an operation is running" if busy else "run the analysis once first"))
         self._cancel_operation_action.setEnabled(busy)
         self._push_processing_state()
 
@@ -1573,6 +1672,32 @@ class MainWindow(QMainWindow):
             can_run=can_run, run_reason=reason,
             analysis_running=self._operations.is_running_analysis(),
             activity=self._operation_status.text(), last_run=self._last_run_status)
+        self._push_run_row()
+
+    def _push_run_row(self) -> None:
+        """The setup section's Run button: on when an analysis can start, else off with the reason beside it."""
+        curves_only = False
+        if self._empty:
+            enabled, note = False, "Open or create an experiment first."
+        elif self._operations.is_running_analysis():
+            enabled, note = False, "An analysis is running."
+        elif self._operations.is_busy():
+            enabled, note = False, "ISAR is busy with another operation."
+        elif not (self.scan_list_vm.snapshot.sets or self.scan_list_vm.snapshot.files_not_read):
+            enabled, note = False, "No data yet. Add data files below."
+        elif self.readiness_line.checking:
+            enabled, note = False, "Checking what is ready…"
+        else:
+            ready, blockers = self.readiness_line.ready_count, self.readiness_line.blockers
+            enabled = ready != 0                  # None: no readiness read applies (not BL43LXU data); run it
+            note = (f"Nothing is ready yet: {blockers}" if blockers else "Nothing is ready yet.") if ready == 0 else (
+                "" if ready is None else f"{ready} ready for analysis")
+            curves_only = self.readiness_line.only_curves_blocked
+        self.setup_section.set_run_state(enabled, note, curves_only=curves_only)
+
+    def start_analysis(self) -> None:
+        """The one window-level entry point for starting an analysis (the queue job rebinds it)."""
+        self.run_analysis()
 
     def run_analysis(self) -> None:
         """Open the Run dialog (pre-filled from the last run) and launch ``isar run`` on accept."""
@@ -1581,7 +1706,8 @@ class MainWindow(QMainWindow):
         from isar_gui.run_dialog import RunDialog
 
         prev = self._run_state() or {}
-        data = (prev.get("data") or [""])[0]
+        # the last run's data, else the folders the experiment's files were read from: never an empty box
+        data = os.pathsep.join(prev.get("data") or self.scan_list_vm.source_folders())
         opts = RunOptions(**prev["opts"]) if prev.get("opts") else RunOptions()
         dlg = RunDialog(data=data, opts=opts, parent=self)
         if not dlg.exec() or not dlg.data_paths:
@@ -1589,7 +1715,7 @@ class MainWindow(QMainWindow):
         self._launch_run(dlg.data_paths, dlg.options)
 
     def rerun(self) -> None:
-        """Re-run the last invocation verbatim (idempotent — the engine only fits new scans)."""
+        """Re-run the last invocation verbatim (idempotent — the engine fits only new, changed or held scans)."""
         if self._empty or self._operations.is_busy():
             return
         state = self._run_state()
@@ -1704,6 +1830,7 @@ class MainWindow(QMainWindow):
         if not live_workspace:
             self.log("stale campaign completion ignored — workspace changed")
             return
+        self.intake.reload()                # a stopped campaign's passes stop counting as running
         msg = {0: "Campaign met its objective", 3: "Campaign incomplete — see the feed",
                4: "Campaign stopped by operator",
                5: "Campaign scan recovery pending — press Resume to retry",
@@ -1719,6 +1846,7 @@ class MainWindow(QMainWindow):
         if not live_workspace:
             self.log("stale run completion ignored — workspace changed")
             return
+        self.intake.reload()                # a cancelled run's passes stop counting as running or latest
         if code == 0:
             self._set_run_status(f"run finished OK ({datetime.now():%H:%M:%S})", "#2e7d32")
             self.statusBar().showMessage("Run finished — results updated below")
@@ -1804,9 +1932,8 @@ class MainWindow(QMainWindow):
             return False
         if path is None:
             default = f"{Path(self._ws.root).name}_{dock_key.split()[0].lower()}.png"
-            path, _ = QFileDialog.getSaveFileName(self, "Export view as PNG", default,
-                                                  "PNG image (*.png)", "",
-                                                  QFileDialog.Option.DontUseNativeDialog)
+            path, _ = file_dialogs.get_save_file_name(self, "Export view as PNG", default,
+                                                      "PNG image (*.png)")
             if not path:
                 return False
         ok = save_widget_png(glw, path)
@@ -1829,8 +1956,11 @@ class MainWindow(QMainWindow):
     def _init_backends_menu(self) -> None:
         menu = self.menuBar().addMenu("&Backends")
         settings_action = menu.addAction("Settings…")
+        settings_action.setToolTip("Optional: the LLM review service and where TAVI is installed.")
         settings_action.triggered.connect(self._open_settings)
-        self._launch_tavi_action = menu.addAction("Launch TAVI")
+        self._launch_tavi_action = menu.addAction("Launch TAVI (instrument control)")
+        self._launch_tavi_action.setToolTip("Only needed for campaigns that measure.")
+        menu.setToolTipsVisible(True)
         self._launch_tavi_action.triggered.connect(self._launch_tavi)
 
     # ---- View menu (central view switcher; built once, persists across rebinds) ----
@@ -2066,10 +2196,11 @@ class MainWindow(QMainWindow):
             else:
                 ok, reachable, detail, url = item
             name = "LLM" if key == "llm" else "TAVI"
-            label.setText(f"{name} ●")
+            label.setText(f"{'LLM (optional)' if key == 'llm' else 'TAVI (campaigns)'} ●")
             color = "#2e7d32" if ok else ("#b26a00" if reachable else "#c62828")
             label.setStyleSheet(f"color: {color};")
-            label.setToolTip(f"{url} — {detail}")
+            label.setToolTip(f"{url} — {detail}\ngreen = reachable, amber = reachable but reports a problem, "
+                             "red = not reachable, grey = not checked yet")
             status = "ok" if ok else ("reachable_error" if reachable else "down")
             if key == "tavi" and getattr(self, "campaign_dock", None) is not None:
                 self.campaign_dock.set_backend_status("tavi", status, f"{url} — {detail}")
@@ -2079,9 +2210,11 @@ class MainWindow(QMainWindow):
                 if status == "ok" and previous is not None:
                     self.log(f"{name} backend recovered: {url}")
                 elif status != "ok":
-                    message = f"{name} backend {detail}: {url}"
-                    self.log(message)
-                    self.statusBar().showMessage(message)
+                    technical = f"{name} backend {detail}: {url}"
+                    self.log(technical)                         # the log keeps the exact text
+                    self.statusBar().showMessage(_HEALTH_WORDS[key] if status == "down" else
+                                                 f"{name} answered but reports a problem.")
+                    self.statusBar().setToolTip(technical)      # and so does the hover
 
     # ---- status bar: persistent live indicator ----------------------------
     def _init_status_bar(self) -> None:
@@ -2303,12 +2436,13 @@ class MainWindow(QMainWindow):
         # status (scan verdicts, spend context), so fan those out too.
         if changed & {"events", "results", "card_state"}:
             self.campaign_vm.on_workspace_changed(changed)
-        # The scan list re-reads after the bridge refresh and today's fan-out; it never asks for the
-        # display, so the central page does not move under the user.
-        if changed & {"snapshot", "results", "card", "card_state"}:
-            self.scan_list_vm.on_workspace_changed(changed)
+        # The scan list re-reads from the intake's `changed` below (_INTAKE_RELOAD covers snapshot, results,
+        # card and card_state), after the bridge refresh; it never asks for the display, so the central
+        # page does not move under the user.
         if changed & {"results", "snapshot", "card_state"}:
             self.output_bar.note_written(datetime.now())
+        if changed & _INTAKE_RELOAD:
+            self.intake.reload()
         self._live_label.setText(f"live — last update {datetime.now():%H:%M:%S}")
         self.statusBar().showMessage(f"Updated: {', '.join(sorted(changed)) or '(none)'}")
 
@@ -2414,6 +2548,7 @@ class MainWindow(QMainWindow):
         self.dispersion_vm.save_view_state(self._session)
         self.waterfall_vm.save_view_state(self._session)
         self.scan_list_vm.save_view_state(self._session)
+        self._session.view_state["attention_list"] = {"expanded": self.attention_list.is_expanded()}
         # Persist the central view switcher (current page + auto-follow) alongside the other
         # view-state writes; restored on the next ready bind (default: Scan page, auto-follow on).
         if self._center_host is not None:
@@ -2513,6 +2648,9 @@ class MainWindow(QMainWindow):
         self._health_closed = True
         if getattr(self, "_health_probe", None) is not None:
             self._health_probe.shutdown()
+        # Threads (health, sandbox) that already ended give the collector back now; one still blocked
+        # keeps it off until the process exits, which is the safe side of the close-time deadlock.
+        collector_guard.release()
         if getattr(self, "_folder_watcher", None) is not None:
             self._folder_watcher.stop()
         if self._bridge is not None:

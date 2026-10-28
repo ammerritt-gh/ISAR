@@ -33,7 +33,7 @@ packages = ["isar", "isar.synth", "isar.synth.stat2b", "isar.schema", "isar.pars
 # Overlay files for the O41 example workspace (Help ▸ Create O41 Example). The seed campaign
 # artifacts they overlay live under docs/campaigns/ and are NOT packaged, so the menu item still
 # needs a source checkout; without this entry it would fail even from one.
-"isar_gui" = ["resources/eig4-o41-authoritative/*"]
+"isar_gui" = ["resources/eig4-o41-authoritative/*", "resources/*.html"]   # the Help quick guide is read at runtime
 
 [tool.pytest.ini_options]
 # Phase 1 lives under isar/synth/tests; Phase 2 (schema, parsers, synth_format) under tests/.

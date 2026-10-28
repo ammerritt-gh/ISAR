@@ -275,5 +275,5 @@ def test_legacy_temporary_workspaces_get_one_startup_pointer_and_nothing_else(tm
     left.mkdir(parents=True)
     (left / "session.json").write_text("{}", encoding="utf-8", newline="\n")
     note = gui_app._legacy_temp_note()
-    assert str(temproot) in note and "Open…" in note and "Save copy as…" in note
+    assert str(temproot) in note and "Open experiment…" in note and "Save experiment copy…" in note
     assert left.exists()

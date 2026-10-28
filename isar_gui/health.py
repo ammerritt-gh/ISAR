@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
 
+from isar_gui import collector_guard
+
 # Default backend locations (the "default profile", overridable in Settings — never assumed present).
 LLM_DEFAULT_ENDPOINT = "http://127.0.0.1:8766"
 TAVI_DEFAULT_URL = "http://127.0.0.1:8642/api/v1"
@@ -103,6 +105,7 @@ class HealthProbe:
         self._in_flight = False
         self._pending: tuple[int, dict[str, str]] | None = None
         self._shutdown = False
+        self._thread: threading.Thread | None = None
 
     @property
     def in_flight(self) -> bool:
@@ -133,6 +136,8 @@ class HealthProbe:
                 break
         if not completed:
             return completed
+        if self._thread is not None:
+            collector_guard.finish(self._thread)   # its answer is queued: it is only returning
         with self._lock:
             self._in_flight = False
             if not self._shutdown and self._pending is not None:
@@ -146,11 +151,16 @@ class HealthProbe:
         with self._lock:
             self._shutdown = True
             self._pending = None
+        collector_guard.release()
 
     def _start_locked(self, request: tuple[int, dict[str, str]]) -> None:
         self._in_flight = True
-        threading.Thread(target=self._work, args=request, daemon=True,
-                         name="isar-gui-health").start()
+        # The collector stays off while this thread and its endpoint pool run: a collection there could
+        # finalize Qt wrappers off the GUI thread (a close-time deadlock). poll() gives it back.
+        self._thread = threading.Thread(target=self._work, args=request, daemon=True,
+                                        name="isar-gui-health")
+        collector_guard.hold(self._thread)
+        self._thread.start()
 
     def _work(self, generation: int, urls: dict[str, str]) -> None:
         try:

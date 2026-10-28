@@ -121,6 +121,9 @@ class CardPolicy:
     # campaign scope fingerprints when an objective is frozen; code never writes this table.
 
 
+UNKNOWN_KEY = "unknown top-level key"       # the start of each unknown-key warning (the rest are notes)
+
+
 @dataclass(frozen=True)
 class PolicyValidation:
     """Result of validating human-authored ``card.policy.toml`` text.
@@ -137,6 +140,16 @@ class PolicyValidation:
     @property
     def is_valid(self) -> bool:
         return not self.errors
+
+    @property
+    def unknown_keys(self) -> tuple[str, ...]:
+        """The warnings about keys the card schema does not have."""
+        return tuple(w for w in self.warnings if w.startswith(UNKNOWN_KEY))
+
+    @property
+    def notes(self) -> tuple[str, ...]:
+        """The other warnings: keys ISAR reads from elsewhere (the shipped BL43 file, values entered in ISAR)."""
+        return tuple(w for w in self.warnings if not w.startswith(UNKNOWN_KEY))
 
 
 def _with_shipped_format(data: dict) -> tuple[dict, list[str]]:
@@ -182,7 +195,7 @@ def validate_policy_text(text: str) -> PolicyValidation:
         return PolicyValidation(None, ("TOML document must contain a table",))
 
     known = {f.name for f in fields(CardPolicy)}
-    warnings = tuple(f"unknown top-level key {key!r}" for key in sorted(data) if key not in known)
+    warnings = tuple(f"{UNKNOWN_KEY} {key!r}" for key in sorted(data) if key not in known)
     try:
         merged, notes = _with_shipped_format(data)
     except Exception as exc:  # a broken install must be a visible error, never a GUI crash

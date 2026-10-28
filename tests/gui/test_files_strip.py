@@ -13,6 +13,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QMimeData, QUrl
+from PySide6.QtWidgets import QPushButton
 
 from isar_gui.commands import GuiIngestReport
 from isar_gui.folder_watcher import FolderWatcher, WatchStatus
@@ -89,7 +90,8 @@ def test_one_line_form_keeps_counts_and_buttons_on_one_row(qtbot, tmp_path):
 def test_watch_is_disabled_with_the_reason_without_a_store(qtbot, tmp_path):
     strip = _strip(qtbot, _vm(tmp_path, [_file("a.dat")], store=False))
     assert not strip._watch.isEnabled()
-    assert strip._line_text.full_text().endswith("needs an experiment with data")
+    assert not strip._watch_reason.isHidden() and strip._watch_reason.text() == "needs an experiment with data"
+    assert "needs an experiment with data" in strip._watch.toolTip()          # and the button says so on hover
 
 
 def test_watch_suffixes_and_attention(qtbot, tmp_path):
@@ -107,7 +109,7 @@ def test_watch_suffixes_and_attention(qtbot, tmp_path):
 
     strip.set_watch_status(WatchStatus(retrying=(r"D:\beam\bad.dat",)))
     assert not strip._attention.isHidden()
-    assert strip._attention_word.text() == "watch needs attention"
+    assert strip._attention_word.full_text() == "Watch problem: Retrying 1 file(s) that could not be parsed"
     assert strip._attention_word.toolTip() == "Retrying 1 file(s) that could not be parsed"
 
 
@@ -154,6 +156,20 @@ def test_watch_dialog_add_remove_and_pause_reach_the_store(qtbot, tmp_path, monk
     dialog._list.item(0).setSelected(True)
     dialog._remove()
     assert vm.watched() == [] and changes == [1, 1, 1]
+
+
+def test_watch_dialog_says_what_each_control_does_and_what_an_empty_list_wants(qtbot, tmp_path):
+    vm = _vm(tmp_path, [_file("a.dat")])
+    strip = _strip(qtbot, vm)
+    assert strip._watch.full_text() == "Watch a folder…" and strip._add.full_text() == "Add data ▾"
+    strip._open_watch()
+    dialog = strip._watch_dialog
+    assert dialog._empty.isVisibleTo(dialog) and "Add folder…" in dialog._empty.text()      # an empty list says what to do
+    buttons = {b.objectName(): b for b in dialog.findChildren(QPushButton)}
+    assert (buttons["watch_add"].text(), buttons["watch_remove"].text()) == ("Add folder…", "Stop watching")
+    assert "nothing is deleted" in buttons["watch_remove"].toolTip()
+    vm.add_watch(r"D:\beam\numors")
+    assert not dialog._empty.isVisibleTo(dialog)
 
 
 def test_watch_dialog_remove_stops_every_selected_folder(qtbot, tmp_path):

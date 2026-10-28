@@ -297,11 +297,15 @@ is genuinely data- or budget-limited, and resuming without changing something wi
 
 `run-isar-gui.bat` opens the window with no console. Double-click it to open the most recent experiment,
 or drag an experiment folder onto it. A start-up failure shows a message box and is written to the GUI
-log (*Help ▸ Open GUI Log Folder* opens it).
+log (*Help ▸ Open GUI Log Folder* opens it). *Help ▸ Quick guide* is a one-page walk through the first use
+(drop data, choose the curves, run, read the list, export), and *Help ▸ What the status words mean* lists the
+plain status words with the fitting code's word and meaning for each; both open in one reusable window that
+does not block the main window. The guide is `isar_gui/resources/quick_guide.html`, shipped with ISAR; the
+words page is generated from the table the scan list displays from.
 
 With no experiment open, the window says *No experiment open*, with *New experiment…*, *Open…*,
 *Recent ▾* and a labelled drop zone. The arrangement is the same from then on, on a laptop and on a
-desktop: the scan list down the left, the display in the centre, *Processing* and *Campaign* on the
+desktop: the experiment's setup, what needs attention and the scan list down the left, the display in the centre, *Processing* and *Campaign* on the
 right, and the Log and Output along the bottom. On a laptop the right panel starts collapsed to a
 *Processing ‹* rail. *View ▸ Reset layout* returns to the default for the current screen.
 
@@ -324,33 +328,109 @@ recognises a curve set by its folder's path.
 ### The files strip
 
 The strip under the experiment line counts what has been read (for example "58 files · 2 scan sets"),
-and offers *Add…* (files or a folder) and *Watch…*. *Watch…* opens the watched-folders dialog: add or
-remove folders, pause watching, and see the last check and how many new files it found. Watching works
+and offers *Add data ▾* (files or a folder) and *Watch a folder…*. *Watch a folder…* opens the watched-folders
+dialog: add folders, stop watching them (files already read stay in the experiment), pause watching, and see the
+last check and how many new files it found. Watching works
 as it did before. Files that could not be read are listed under *Files not read* in the scan list, each
 with its reason.
+
+### The setup section
+
+Under the experiment line, for a BL43LXU experiment, the setup section says what ISAR read and where it
+found the resolution curves.
+
+- **What was read**: for example "2 scan sets · 56 analyzers read · 1 incomplete set · 3 files not read".
+  *Incomplete set* and *files not read* open, in place, the list behind them: each incomplete set with the
+  analyzers it lacks and why (and the state of its sidecar), and each unread file with its reason (hover
+  shows its full path). Before the first import it says "Nothing read yet".
+- **Resolution curves**: "Resolution curves: <folder> (found beside the data)", "(chosen by you)", or, in the warning colour, "No resolution curves yet. Choose
+  the folder that holds them." (the backend's longer text, with the folder it looked beside, is on hover).
+  *Choose curves folder…* opens a folder chooser and saves the folder you pick at once as this experiment's
+  resolution folder; the analysis uses it. The same button, named *Choose resolution-curve folder…*, sits in the
+  needs-attention group and the readiness list that ask for it. A saved folder is checked at the next import or
+  when an analysis starts, and the section says so until then: a curve file added or replaced in the folder is
+  seen at that point, not before. If another `rf/` folder was found beside newly dropped data, the section names
+  it with *Use this curves folder*; ISAR never switches to it by itself. Hover the counts line for what a scan
+  set, an analyzer and a spectrum are.
+
+*Experiment info…* on the experiment line opens the experiment's name (with *Rename…*), its folder, and six optional
+fields: title, proposal, sample, people, dates and notes. They are kept with the experiment and no fit reads
+them. *Save details* keeps every other value already stored.
+
+### What needs attention
+
+The *Needs attention · N* list sits under the setup section. It shows the groups the engine reports for the
+experiment, in its order and its words: what is missing or uncertain, which steps it affects (read, reduce,
+calibrate, fit, steer) and what resolves it. It opens the first time an experiment has gaps and stays as you
+leave it after that; it scrolls inside a fixed height so the scan list below keeps its room. A group closes
+when the engine's re-read says its gap is gone, never because the window decided so.
+
+A group about a missing temperature or slit takes a value:
+
+1. Open the group and tick the scan sets it concerns (a set row opens to its analyzers).
+2. Type the value (temperature in K; slit horizontal and vertical in mm) and, if you like, a reason. The line
+   under the entry says which scan sets it applies to, and "Not saved yet; press Save" shows while typed text is unsaved.
+3. Press *Save my value*. One save writes the value to exactly the ticked scan sets or to none of them. A refused value
+   shows the engine's reason under the entry and keeps your ticks and text.
+
+Until a temperature exists the fit uses the zero-temperature limit, and the group says "stand-in value used" (hover for what the stand-in is).
+
+**Your values are only ever added.** ISAR never edits a value a file supplies and never changes a data file. A
+later value for the same scan set supersedes the earlier one; both stay on record, and the file's own value
+is still shown beside yours. After the engine's groups the list keeps up to three of its own, which are not
+counted: *Your temperature values* and *Your slit values* (every scan set carrying a value of yours, so *Use
+the file's value* stays reachable after the gap has closed) and *Your accepted counts*. User values are taken
+for temperature and slit only; Q and the other facts are shown, not entered.
+
+Groups of analyzers (for example one with no Q) offer *Leave out analyzer*: the analyzer is then left out of the fits
+of that scan until you press *Use analyzer again* on it in the *declared* group. A group whose remedy is a button
+carries it: *Choose resolution-curve folder…*, *Add data…* (when files must be added again) or *Run analysis…*.
+
+A **"Counts may not be raw"** group lists analyzers whose counts do not recover to whole numbers; they are
+held out of fitting. *Accept counts as they are* (on the group, or *Accept counts as they are…* in the inspector) declares the counts
+raw: it lifts the hold and changes no count and no flag; every fit made that way records it. It is offered
+with an optional reason, and it lifts the hold for an `_i` analyzer only (an `_lr` analyzer stays held
+whatever is saved). The analyzer then appears in *Your accepted counts*, where *Take back acceptance*
+takes it back. The other ways out are to mark the analyzer dead or to correct the data and import again.
+
+A save is refused, and nothing is written, while an export is running ("an export is running") and when
+another ISAR process is saving to the same experiment ("the intake store is busy (another ISAR process is
+saving); try again"). Press *Save* again once it is free.
 
 ### The scan list
 
 Each top-level row is a scan set. Its label is the scan number when its files carry exactly one, and
 otherwise the set's name (for example `CsV3Sb5_97K_0p5_0p5_3_sum`). Expand it to see its analyzers. The
 columns *Scan*, *T*, *Q* and *Parsed* always show; *Columns ▾* adds *Fast pass*, *Deep pass*, *Slit* and
-*File name*. A set row's summary counts spectra, or files received for *Parsed*.
+*File name*. *Fast pass* and *Deep pass* switch on by themselves the first time a result of that pass exists in
+the experiment; if you switch one off (or on) from *Columns ▾*, ISAR remembers your choice and no longer
+overrides it. A set row's summary counts spectra, or files received for *Parsed*.
 
-Every status is a coloured dot with a word, and the word is the one the stored records give:
+Every status is a coloured dot with a word. The list and the inspector show a plain word; hover it to see the
+fitting code's own word and one line on what it means (the filter box matches either word). The export keeps the fitting code's words (`count_state` and the rest).
 
 - **Parsed** is `ok`, a gap (`no T`, `no Q`), or `not read`. It says the file was read and nothing more:
   not that the spectrum is calibrated, matched to a resolution curve or ready to fit.
-- **Fast pass** and **Deep pass** show the state each pass stored for that spectrum: `resolved`,
-  `close_call`, `unresolved` or `search_limited` for the fast pass, and `resolved`, `close_call`,
-  `search_limited` or `refused` for the deep pass. A spectrum with nothing stored shows `not run`, or
-  `held` (with the hold's reason on hover), `not fitted`, or `not recorded` for a fit stored before the
-  fast pass existed.
+- **Fast pass** and **Deep pass** show the state each pass stored for that spectrum. Fast pass: *clear*
+  (`resolved`), *close call* (`close_call`), `unresolved` or *search limit reached* (`search_limited`). Deep
+  pass: *clear*, *close call*, *search limit reached* or `refused`. A spectrum with nothing stored shows `not
+  run`, or *held: needs resolution curves* (or an energy zero, a slit setting, its counts accepted; the hold's
+  reason is on hover), `not fitted`, or `not recorded` for a fit stored before the fast pass existed.
 - **`not run` and `fitting`.** A spectrum that has been read but not fitted shows `not run` in these
   columns, while `report/results.csv` and the export's `fits.json` say `fitting` for the same entry.
   Both mean there is no stored fit.
 
 A dash (—) marks a missing temperature or Q; hover over it for the reason. Both passes are shown side by
 side and neither is picked as the result.
+
+**Out of date.** When an input a pass used has changed since the pass ran (a temperature or slit you saved, the
+resolution folder, a dead analyzer, changed data), the *Fast pass* or *Deep pass* word keeps its stored text
+but is drawn in the warning colour, and hovering names each changed input with its old and new value, for
+example "temperature: 97 K (file) → 100 K (yours)". The two passes are judged on their own; a pass the engine
+has no finished record of (fitted before ISAR recorded its inputs, or still running) is not judged and never
+marked. A set row carries the mark when any of its passes does. The mark says the stored fit is out of date,
+not wrong: nothing refits until you *Run analysis…* again, and the mark leaves when the input is the old value
+again.
 
 The filter box narrows the list: comma-separated terms, all of which must match, such as an analyzer
 (`a06`), a temperature (`97K`), a file name or a status word. The list says how many of how many spectra
@@ -374,25 +454,61 @@ On a laptop, opening the inspector collapses *Processing* to its rail so the plo
 *Processing* again from the rail and it stays open while the inspector is open. Closing the inspector
 does not expand it.
 
+For BL43LXU spectra the inspector has a **Facts** table: one block each for temperature, slit, Q, the
+counts' origin and the analyzer, with three cells per fact.
+
+- **From the files**: the value with its source (such as `header` or `filename`), or "— missing".
+- **Yours**: the value you saved, with its reason, or empty.
+- **Used**: the value the fits use and whose it is (`file` or `yours`), or the named fallback when there is none.
+  A value of yours that differs from the file's is drawn in the warning colour, and hovering gives both numbers.
+
+Temperature and slit apply to the whole scan set (the table says which). Each has *Enter my value…* (a value in K
+or mm and an optional reason; a later one supersedes the earlier) and *Use the file's value* (withdraws yours;
+available only when you have one). The analyzer block has *Leave out analyzer…* / *Use analyzer again…*, and *Accept counts as they are…* /
+*Take back acceptance…* when its counts may not be raw. Q and the counts' origin are shown only. The counts' origin
+reads like "N = (y/e)², 60 bins tested, none off an integer": how the counts were recovered and how many bins
+were off a whole number. When the files carry no hkl, Q shows the file's |Q| in nm⁻¹ and says campaign planning needs the
+hkl. Under the table, **What can be done with this analyzer** gives each step's state (ready, fallback, pending, held) with the engine's
+reason. Everything here is the engine's read; the window computes none of it.
+
 ### Run analysis, Stop and the Campaign tab
 
+*Run analysis…* is also a button in the setup area at the top of the left column, beside the line that says
+how many spectra are ready, so it is on screen with Processing collapsed. It is off, with the reason in text
+beside it, when there is no experiment, no data, another operation is running or nothing is ready. It, the Run
+menu entry and the Processing button all start the analysis through one entry point in the window.
+The Run dialog opens with the data folder filled in: the last run's, or the folder the experiment's files were
+read from. With nothing to run on, *Run* is off and the dialog says to choose the folder.
+
 *Processing* holds *Run analysis…*, the analysis that runs the fast pass on the experiment's data, with
-the same dialog and progress as before. *Stop* asks the running analysis to stop; spectra already stored
+the same dialog and progress as before. Above it a readiness line counts the spectra by whether an
+analysis can start, for example "56 spectra read · 52 ready for analysis (30 will use a stand-in value) · 4 need
+resolution curves · 3 running". Every count but the first opens the list behind it (scan set and analyzer, with
+the engine's reason) and the button that resolves it: *Choose resolution-curve folder…*, *Enter the value…*, *Add data…*, *Show these in
+the list* or *Run analysis…*. "Will use a stand-in value" means ready but running on a stated fallback such as the
+zero-temperature limit; a
+missing Q does not stop a fit and is not counted as a block. Before the first result the line says "checking
+readiness…". The window re-reads after each of its own saves, when files in the experiment change, and at the
+end of every run, a cancelled one included. *Stop analysis* asks the running analysis to stop; spectra already stored
 stay stored. *Campaign* is the campaign launcher and monitor, unchanged in content. Pressing *Start*
 with no experiment open creates an ISAR-named experiment (`Campaign_<date>`) first, as a drop does.
 
 ### Log and Output
 
-The Log, bottom left, holds what the window reports. The Output, bottom right, says where results are written and when the last one was written. It has two actions:
+The Log, bottom left, holds what the window reports. The Output, bottom right, names the experiment folder and when it last changed. It has two actions:
 
-- *Save copy as…* copies the whole experiment folder to a new one. The original stays the active
+- *Save experiment copy…* copies the whole experiment folder to a new one. The original stays the active
   experiment and new data keeps going to it. The copy is offered as *Open copy*, and the Log says what the
   copy still reads from outside its folder (its source data files, its resolution curves).
-- *Export…* runs `isar export` on the experiment and names the new folder when it is done, with
+- *Export results…* runs `isar export` on the experiment and names the new folder when it is done, with
   *Open folder*. See *Exporting results* below.
 
 Both actions are unavailable, with the reason beside them, while an ingest, an analysis, a campaign or an
 export is writing to the experiment, and while nothing has been read into it yet.
+
+A save dialog that is offered a plain file name (*File ▸ Save view as image*, the campaign log's save) opens in
+the experiment's folder, not in the folder the last dialog was used in; with no experiment open it opens where
+the last one did.
 
 ### Exporting results
 
@@ -404,10 +520,17 @@ folder holds:
   deep record's own flag on deep rows; fast rows say `not assessed`, because the fast pass stores no trust
   flag. `count_state` is that row's own pass's state. A deep row leaves empty the cells its record does
   not store (amplitudes, heights, peak positions and the per-peak errors). An empty cell means missing,
-  never zero.
+  never zero. For a BL43LXU experiment `inputs_current` is `true` or `false` for the row's own pass, and empty
+  where that pass was not judged.
 - `fits.json`: one record per spectrum, fitted or not, with both stored pass records in full. A spectrum
   with no mode row (zero modes, held, never fitted) is still listed with its state. A deep pass that
-  contributes no rows says why in its `deep` block.
+  contributes no rows says why in its `deep` block. For a BL43LXU experiment each record also has an
+  `inputs` block with one entry per pass, `fast` and `deep` (null where the spectrum has no such pass):
+  `current` (true when every input the pass used still has its value, false when one changed, null when it
+  could not be judged), `used` (the inputs the pass used, as recorded) and `changed` (each input that
+  differs now: `input`, `from`, `to` and, for temperature and slit, `to_source` of `user`, `file` or
+  `missing`). The top-level `currentness.assessed` is true only for a BL43LXU experiment that holds
+  fit-input records, and false for any other instrument.
 - `spectra/`: one CSV per spectrum with the data ISAR holds now. Its `#` header lines give the exposure
   the stored fit used, or `exposure: not stored` where ISAR stored none. The columns are the energy,
   counts, sigma (the square root of the counts, zero at zero counts, no floor) and the QC mask.
@@ -415,9 +538,12 @@ folder holds:
 - `README.txt`: units and conventions.
 
 Nothing picks one pass over the other: the display keeps drawing the fast-pass fit, but the export carries
-both passes with their labels. Currentness is only partly checked: `fit_data_mismatch` flags a spectrum
-whose data file was read again with changed content after the fit. A change to a fit's resolution curve
-or settings after the fit is not detected yet; that waits for the left-side stage two work.
+both passes with their labels. Currentness: for a BL43LXU experiment each pass is judged by the inputs it recorded when it ran (data,
+temperature, slit, Q, exclusions, dead analyzers, counts accepted, the resolution folder and curve, and the
+calibration), as the `inputs` blocks above say. A fit that is out of date keeps its stored result until the
+next *Run analysis…*; the export labels it and refits nothing. `fit_data_mismatch` still flags a spectrum
+whose data file was read again with changed content after the fit. Other instruments are not judged: their
+`currentness.assessed` is false.
 
 ## Reading the peak count
 

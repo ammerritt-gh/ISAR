@@ -17,22 +17,38 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 from PySide6.QtCore import Signal
 
+from isar.workspace_api import ImportSummary
 from isar.workspace_api.scan_list import (Fact, PooledRow, ScanListSnapshot, ScanSetRow, SpectrumRow,
                                           UnreadFile, natural_key, scan_list)
+from isar_gui import status_words
+from isar_gui.plain_words import drop_echo, plain_reason
 from isar_gui.theme import DEEP, FAST, PARSED, Tone, status_tone, summary_tone
 from isar_gui.viewmodels.base import ViewModel
 
 COLUMNS = ("scan", "T", "Q", "parsed", "fast", "deep", "slit", "file")   # model order
 OPTIONAL_COLUMNS = ("fast", "deep", "slit", "file")                      # Columns ▾; the rest always show
+RESULT_COLUMNS = ("fast", "deep")     # these switch on by themselves when the first result of that pass exists
 TITLES = {"scan": "Scan", "T": "T", "Q": "Q", "parsed": "Parsed", "fast": "Fast pass",
           "deep": "Deep pass", "slit": "Slit", "file": "File name"}
 SORTS = ("set", "temperature", "analyzer")
+# What a column holds, as the header's hover (E1/E2: the result columns are another batch's).
+HEADER_TIPS = {
+    "scan": "The scan set (one scan, one file per analyzer) and, under it, each analyzer's spectrum.",
+    "T": "Sample temperature, as the files give it (or as you entered it).",
+    "Q": "Momentum transfer of the spectrum, in the units the file gives.",
+    "parsed": ("Whether ISAR read the file. On a scan set, files read of files received. 'no T' and 'no Q' mean "
+               "the file was read but holds no temperature or no Q."),
+    "slit": "Slit opening of the scan set, as the files give it (or as you entered it).",
+    "file": "The file this spectrum was read from.",
+}
 _STATE_KEY = "scan_list"
 _DASH = "—"
 _TEMP_TERM = re.compile(r"(\d+(?:\.\d+)?)\s*k", re.IGNORECASE)
+_NO_SUMMARY = ImportSummary(0, 0, (), (), {}, None, None)     # nothing imported yet: the ledger's lists stand
 
 
 @dataclass(frozen=True)
@@ -40,6 +56,7 @@ class Cell:
     text: str
     tooltip: str | None = None        # None: the view shows the text itself
     tone: Tone | None = None          # a status dot; None for plain text
+    stale: bool = False               # the pass's inputs changed since it was made: the word is drawn in WARN
 
 
 @dataclass(frozen=True)
@@ -79,12 +96,25 @@ def _fact_cell(fact: Fact, with_unit: bool = True) -> Cell:
 
 
 def _status_cell(status, column: str) -> Cell:
-    tip = f"{status.word}: {status.reason}" if status.reason else status.word
-    return Cell(status.word, tip, status_tone(column, status.word))
+    reason = drop_echo(status.word, status.reason)            # "resolved: resolved: ..." said the word twice
+    plain = status_words.plain_word(column, status.word, status.reason, status.provisional)
+    # the plain word, the fitting code's word, its meaning
+    tip = status_words.tooltip(column, status.word, reason, status.provisional)
+    stale = status.current is False
+    if stale:
+        lines = "\n".join(f"{name}: {used} → {now}" for name, used, now in status.changed)
+        tip = f"Inputs changed since this {column} pass:\n{lines}" + (f"\n{tip}")
+    return Cell(plain, tip, status_tone(column, status.word), stale)
 
 
-def _summary_cell(stored: int, total: int, tones, what: str) -> Cell:
-    return Cell(f"{stored}/{total}", f"{stored} of {total} {what}", summary_tone(tones))
+def _summary_cell(stored: int, total: int, tones, what: str, statuses=(), column: str = "") -> Cell:
+    """The ``11/28`` cell of a set or an analyzer; ``statuses`` are its spectra's passes, any of which
+    may have changed inputs."""
+    tip = f"{stored} of {total} {what}"
+    stale = sum(s.current is False for s in statuses)
+    if stale:
+        tip += f"\n{stale} of {stored} {column}-pass results have changed inputs"
+    return Cell(f"{stored}/{total}", tip, summary_tone(tones), stale > 0)
 
 
 def _temperature(fact: Fact) -> float | None:
@@ -105,13 +135,23 @@ def _term_hits(term: str, temperature: Fact, haystack) -> bool:
     return any(term in (h or "").casefold() for h in haystack)
 
 
+def _status_words(row) -> list[str]:
+    """Every word the filter matches for a row's passes: the fitting code's word and the plain word shown."""
+    out = []
+    for column in (PARSED, FAST, DEEP):
+        status = getattr(row, column, None)
+        if status is not None:
+            out += [status.word, status_words.plain_word(column, status.word, status.reason, status.provisional)]
+    return out
+
+
 def spectrum_matches(terms, ss: ScanSetRow, sp: SpectrumRow) -> bool:
-    hay = (sp.analyzer, ss.label, sp.file_name, sp.parsed.word, sp.fast.word, sp.deep.word)
+    hay = (sp.analyzer, ss.label, sp.file_name, *_status_words(sp))
     return all(_term_hits(t, ss.temperature, hay) for t in terms)
 
 
 def pooled_matches(terms, p: PooledRow) -> bool:
-    hay = (p.label, "pooled", p.fast.word, p.deep.word)
+    hay = (p.label, "pooled", *_status_words(p))
     return all(_term_hits(t, p.temperature, hay) for t in terms)
 
 
@@ -125,14 +165,20 @@ class ScanListViewModel(ViewModel):
     display_requested = Signal(object)  # FitView | str unit key | None: MainWindow._route_inspect's payload
     current_changed = Signal(object)    # str key | None: the list's current spectrum or pooled row
     inspect_requested = Signal(str)     # open the inspector column on this key
+    set_focused = Signal(object)        # str set key | None: a scan-set row was picked (no spectrum is meant)
 
     def __init__(self, ws, parent=None) -> None:
         super().__init__(ws, parent)
         self._snapshot: ScanListSnapshot = scan_list(ws)
         self._current_key: str | None = None
+        self._focus_set: str | None = None    # the scan set whose row the user picked, until a spectrum is
         self._sort = "set"
-        self._optional: set[str] = set()      # the optional columns switched on
+        self._optional: set[str] = set()      # the optional columns the user switched on
+        self._hidden: set[str] = set()        # result columns the user switched off: the auto rule leaves them off
+        self._auto: set[str] = set()          # result columns on because a result of that pass exists
         self._filter_text = ""
+        self._intake = None
+        self._auto = self._auto_columns()
 
     # ---- reads ---------------------------------------------------------------------------
     @property
@@ -142,6 +188,10 @@ class ScanListViewModel(ViewModel):
     @property
     def current_key(self) -> str | None:
         return self._current_key
+
+    @property
+    def focus_set(self) -> str | None:
+        return self._focus_set
 
     @property
     def sort(self) -> str:
@@ -155,16 +205,43 @@ class ScanListViewModel(ViewModel):
     def filter_active(self) -> bool:
         return bool(filter_terms(self._filter_text))
 
+    def source_folders(self) -> list[str]:
+        """The folders the experiment's data files were read from (the manifest's paths), first-seen order."""
+        snap = self._snapshot
+        paths = [sp.file_path for ss in snap.sets for sp in ss.spectra if sp.file_path]
+        paths += [f.path for f in snap.files_not_read]
+        return list(dict.fromkeys(str(Path(p).parent) for p in paths))
+
     def visible_columns(self) -> tuple[str, ...]:
-        return tuple(c for c in COLUMNS if c not in OPTIONAL_COLUMNS or c in self._optional)
+        return tuple(c for c in COLUMNS if c not in OPTIONAL_COLUMNS or c in self._optional or c in self._auto)
+
+    def layout_choices(self) -> tuple:
+        """What the user chose about the layout; a change of it reveals the selection. A column a stored pass
+        switches on by itself is not a choice, so its arrival does not move the list."""
+        return (self._sort, self._filter_text, frozenset(self._optional), frozenset(self._hidden))
+
+    def _auto_columns(self) -> set[str]:
+        """The result columns to show by themselves: a stored record of that pass exists, and the user has not
+        switched the column off."""
+        snap = self._snapshot
+        rows = [sp for ss in snap.sets for sp in ss.spectra] + list(snap.pooled)
+        return {c for c in RESULT_COLUMNS if c not in self._hidden and any(getattr(r, c).stored for r in rows)}
 
     def column_title(self, column: str) -> str:
-        """The header; ``Q`` carries its unit when every present Q has the same one."""
-        if column == "Q":
-            unit = self._common_q_unit()
+        """The header; ``Q`` and ``T`` carry their unit when every present value has the same one."""
+        if column in ("Q", "T"):
+            unit = self._common_q_unit() if column == "Q" else self._common_t_unit()
             if unit:
-                return f"Q ({unit})"
+                return f"{column} ({unit})"
         return TITLES[column]
+
+    def header_tip(self, column: str) -> str:
+        return HEADER_TIPS.get(column, "")
+
+    def _common_t_unit(self) -> str | None:
+        units = {ss.temperature.unit for ss in self._snapshot.sets if ss.temperature.value is not None}
+        units |= {p.temperature.unit for p in self._snapshot.pooled if p.temperature.value is not None}
+        return next(iter(units)) if len(units) == 1 else None
 
     def _common_q_unit(self) -> str | None:
         qs = [sp.q for ss in self._snapshot.sets for sp in ss.spectra]
@@ -185,9 +262,21 @@ class ScanListViewModel(ViewModel):
             self.snapshot_changed.emit()
 
     def set_column_visible(self, column: str, visible: bool) -> None:
-        if column in OPTIONAL_COLUMNS and visible != (column in self._optional):
-            (self._optional.add if visible else self._optional.discard)(column)
+        if column in OPTIONAL_COLUMNS and visible != (column in self.visible_columns()):
+            if visible:
+                self._optional.add(column)
+                self._hidden.discard(column)
+            else:                         # a hand choice: remembered, and the auto rule no longer overrides it
+                self._optional.discard(column)
+                self._hidden.add(column)
+            self._auto = self._auto_columns()
             self.snapshot_changed.emit()
+
+    def set_intake(self, intake) -> None:
+        """The window's IntakeState: every re-read passes its fact rows, fit inputs and import summary to
+        the scan-list read, so this thread never parses the fit-inputs log. The marks update on its
+        ``worker_changed`` (the window re-reads on both of its signals)."""
+        self._intake = intake
 
     # ---- the workspace changed -----------------------------------------------------------
     def set_workspace(self, ws) -> None:
@@ -200,13 +289,23 @@ class ScanListViewModel(ViewModel):
         self._reread()
 
     def _reread(self) -> None:
-        self._snapshot = scan_list(self._ws)
+        intake = self._intake
+        reads = {} if intake is None else {
+            "fact_rows": intake.fact_rows or (), "fit_inputs": intake.fit_inputs or (),
+            "import_summary": intake.summary or _NO_SUMMARY}      # None (not read yet): no marks, no lists
+        self._snapshot = scan_list(self._ws, **reads)
+        self._auto = self._auto_columns()
         cleared = self._current_key is not None and self._snapshot.spectrum(self._current_key) is None
         if cleared:
             self._current_key = None
+        lost_set = self._focus_set is not None and self._snapshot.scan_set(self._focus_set) is None
+        if lost_set:
+            self._focus_set = None
         self.snapshot_changed.emit()
         if cleared:
             self.current_changed.emit(None)
+        if lost_set:
+            self.set_focused.emit(None)
 
     # ---- selection -----------------------------------------------------------------------
     def select(self, key: str | None) -> None:
@@ -215,10 +314,18 @@ class ScanListViewModel(ViewModel):
         A fitted spectrum hands its ``FitView`` to the display, any other key its unit key, and
         ``None`` clears the display: today's rule of ``ScansViewModel.request_inspect``."""
         self._current_key = key
+        self._focus_set = None
         self.current_changed.emit(key)
         row = None if key is None else self._snapshot.spectrum(key)
         fit = None if row is None else row.fit
         self.display_requested.emit(key if fit is None else fit)
+
+    def select_set(self, set_key: str) -> None:
+        """The user picked a scan-set row: the inspector (when open) summarises the set. The current spectrum
+        and the display stay as they are; ``select`` of a spectrum ends this."""
+        if set_key != self._focus_set and self._snapshot.scan_set(set_key) is not None:
+            self._focus_set = set_key
+            self.set_focused.emit(set_key)
 
     def inspect(self, key: str) -> None:
         """Select ``key`` if it is not current, then ask for the inspector column."""
@@ -232,6 +339,7 @@ class ScanListViewModel(ViewModel):
         if key == self._current_key or (key is not None and self._snapshot.spectrum(key) is None):
             return
         self._current_key = key
+        self._focus_set = None
         self.current_changed.emit(key)
 
     # ---- what the filter lets through -----------------------------------------------------
@@ -303,17 +411,17 @@ class ScanListViewModel(ViewModel):
         if unread:
             parsed_tones.append(Tone.ERR)             # an unread member is an ERR
         cells = {
-            "scan": Cell(ss.label, tip),
+            "scan": Cell(f"{ss.label} ({n} analyzer{'' if n == 1 else 's'})", tip),
             "T": _fact_cell(ss.temperature),
-            "Q": Cell(f"{n} analyzer{'' if n == 1 else 's'}"),
+            "Q": Cell(""),
             "parsed": _summary_cell(ss.files_received - unread, ss.files_received, parsed_tones,
                                     "files received were read"),
             "fast": _summary_cell(sum(sp.fast.stored for sp in ss.spectra), n,
                                   [status_tone(FAST, sp.fast.word) for sp in ss.spectra],
-                                  "spectra through the fast pass"),
+                                  "spectra through the fast pass", [sp.fast for sp in ss.spectra], FAST),
             "deep": _summary_cell(sum(sp.deep.stored for sp in ss.spectra), n,
                                   [status_tone(DEEP, sp.deep.word) for sp in ss.spectra],
-                                  "spectra through the deep pass"),
+                                  "spectra through the deep pass", [sp.deep for sp in ss.spectra], DEEP),
             "slit": _fact_cell(ss.slit),
             "file": Cell(""),
         }
@@ -353,17 +461,17 @@ class ScanListViewModel(ViewModel):
             children = tuple(self._spectrum_node(sp, with_unit, ss) for ss, sp in
                              sorted(shown[ana], key=lambda p: (natural_key(p[0].label), p[1].key)))
             cells = {
-                "scan": Cell(ana),
-                "Q": Cell(f"{n} scan set{'' if n == 1 else 's'}"),
+                "scan": Cell(f"{ana} ({n} scan set{'' if n == 1 else 's'})"),
+                "Q": Cell(""),
                 "parsed": _summary_cell(sum(sp.parsed.stored for sp in all_sp), n,
                                         [status_tone(PARSED, sp.parsed.word) for sp in all_sp],
                                         "spectra read"),
                 "fast": _summary_cell(sum(sp.fast.stored for sp in all_sp), n,
                                       [status_tone(FAST, sp.fast.word) for sp in all_sp],
-                                      "spectra through the fast pass"),
+                                      "spectra through the fast pass", [sp.fast for sp in all_sp], FAST),
                 "deep": _summary_cell(sum(sp.deep.stored for sp in all_sp), n,
                                       [status_tone(DEEP, sp.deep.word) for sp in all_sp],
-                                      "spectra through the deep pass"),
+                                      "spectra through the deep pass", [sp.deep for sp in all_sp], DEEP),
             }
             nodes.append(Node(f"ana:{ana}", "analyzer", None, cells, children))
         return nodes
@@ -371,7 +479,7 @@ class ScanListViewModel(ViewModel):
     @staticmethod
     def _file_node(f: UnreadFile) -> Node:
         return Node(f"file:{f.path}", "file", None,
-                    {"scan": Cell(f"{f.name} · {f.reason}", f"{f.path}\n{f.reason}", Tone.ERR)})
+                    {"scan": Cell(f"{f.name} · {plain_reason(f.reason)}", f"{f.path}\n{f.reason}", Tone.ERR)})
 
     @staticmethod
     def _pooled_node(p: PooledRow, with_unit: bool) -> Node:
@@ -382,7 +490,8 @@ class ScanListViewModel(ViewModel):
     # ---- view state (G10: view state only, never the workspace) ---------------------------
     def save_view_state(self, session) -> None:
         session.view_state[_STATE_KEY] = {
-            "columns": [c for c in OPTIONAL_COLUMNS if c in self._optional], "sort": self._sort}
+            "columns": [c for c in OPTIONAL_COLUMNS if c in self._optional], "sort": self._sort,
+            "hidden": [c for c in RESULT_COLUMNS if c in self._hidden]}      # not the auto-on ones: per experiment
 
     def load_view_state(self, session) -> None:
         st = (getattr(session, "view_state", None) or {}).get(_STATE_KEY)
@@ -391,6 +500,9 @@ class ScanListViewModel(ViewModel):
         cols = st.get("columns")
         optional = {c for c in cols if c in OPTIONAL_COLUMNS} if isinstance(cols, list) else self._optional
         sort = st.get("sort") if st.get("sort") in SORTS else self._sort
-        if optional != self._optional or sort != self._sort:
-            self._optional, self._sort = optional, sort
+        off = st.get("hidden")
+        hidden = {c for c in off if c in RESULT_COLUMNS} if isinstance(off, list) else self._hidden
+        if optional != self._optional or sort != self._sort or hidden != self._hidden:
+            self._optional, self._sort, self._hidden = optional, sort, hidden
+            self._auto = self._auto_columns()
             self.snapshot_changed.emit()

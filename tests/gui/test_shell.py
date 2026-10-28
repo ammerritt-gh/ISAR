@@ -61,8 +61,8 @@ def test_empty_start_window(qtbot):
     assert w.centralWidget() is not w._center_stack
     assert w._center_stack.isAncestorOf(w._center_host) and w._center_host is not None
     assert w._center_stack.currentWidget() is w._center_host
-    assert "Nothing to show yet" in w._empty_hint.text()
-    assert "Nothing to show yet" in w.inspector._empty_label.text()
+    assert "Select an analyzer in the scan list." == w._empty_hint.text()
+    assert "Select an analyzer in the scan list." == w.inspector._empty_label.text()
     assert w.windowTitle() == "ISAR — no experiment"
     assert "No experiment open" in w.statusBar().currentMessage()
     # Workspace-specific docks are withheld until data has a workspace.  The old Files dock stays

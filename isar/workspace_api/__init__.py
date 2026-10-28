@@ -22,7 +22,7 @@ from .workspace import SCHEMA_VERSION, Workspace, WorkspaceNotFound
 from .intake_view import (Change, ConditionRow, FactRow, PassInputs, UnitFitInputs, import_summary,
                           needs_attention)
 from isar.intake.readiness import (AnalyzerReadiness, AttentionGroup, AttentionItem, CurveSummary, FileNotRead,
-                                   ImportSummary, IncompleteSet, NeedsAttention, ScanReadiness, UseState)
+                                   ImportSummary, IncompleteSet, NeedsAttention, ScanReadiness, USES, UseState)
 from .scan_keys import scan_prefix, split_key, unit_key
 from .config_gates import (DEFAULT_CLOUD_FALLBACK_MODEL, PolicyValidation, validate_endpoint,
                            validate_policy_text)
@@ -105,4 +105,5 @@ __all__ = [
     "IncompleteSet",
     "FileNotRead",
     "CurveSummary",
+    "USES",
 ]

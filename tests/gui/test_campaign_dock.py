@@ -112,13 +112,15 @@ def _goal_sha(text):
 def test_start_disabled_until_tavi_ok_and_source_present(dock_env):
     dock, vm, ops, ws, root = dock_env
     assert not dock._start_btn.isEnabled()          # TAVI down + empty goal
+    assert dock._start_reason.isVisible() and "TAVI" in dock._start_reason.text()      # the reason is text, not just hover
     dock.set_backend_status("tavi", "ok", "up")
     assert not dock._start_btn.isEnabled()          # still no goal text
+    assert dock._start_reason.text() == "Enter a goal or pick a program file" and dock._start_reason.isVisible()
     dock._goal.setPlainText("map the branch")
-    assert dock._start_btn.isEnabled()
+    assert dock._start_btn.isEnabled() and not dock._start_reason.isVisible()
     dock.set_backend_status("tavi", "down", "gone")
     assert not dock._start_btn.isEnabled()
-    assert "TAVI" in dock._start_btn.toolTip()
+    assert "TAVI" in dock._start_btn.toolTip() and dock._start_reason.text() == dock._start_btn.toolTip()
 
 
 def test_start_maps_form_to_drive_options_with_llm_env(dock_env):
@@ -454,7 +456,9 @@ def test_feed_hydrates_events_consumed_before_dock_connected(qtbot, make_ws):
 
 
 def test_feed_copy_selection_copy_all_and_save_text(dock_env, tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QApplication, QFileDialog
+    from PySide6.QtWidgets import QApplication
+
+    from isar_gui import file_dialogs
 
     dock, vm, ops, ws, root = dock_env
     path = root / "report" / "session_log.jsonl"
@@ -472,7 +476,7 @@ def test_feed_copy_selection_copy_all_and_save_text(dock_env, tmp_path, monkeypa
     assert QApplication.clipboard().text() == visible
 
     destination = tmp_path / "campaign-log.txt"
-    monkeypatch.setattr(QFileDialog, "getSaveFileName",
+    monkeypatch.setattr(file_dialogs, "get_save_file_name",
                         lambda *_args, **_kwargs: (str(destination), "Text (*.txt)"))
     dock._save_feed()
     assert destination.read_text(encoding="utf-8") == visible + "\n"

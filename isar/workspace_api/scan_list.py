@@ -2,23 +2,33 @@
 
 One function over the open experiment's read-only facade, :func:`scan_list`, returns a frozen
 :class:`ScanListSnapshot`: scan sets, their analyzers (spectra), the files that were not read, and
-pooled masters. This module is Qt-free (hard rule 6) and read-only (hard rule 7): it never opens a
-file, re-fits, writes or reads ``results.csv``.
+pooled masters. This module is Qt-free (hard rule 6) and read-only (hard rule 7): it never re-fits,
+writes or reads ``results.csv``; the only files it reads are the intake records, through the facade.
 
 The dataclasses, constants and lookup helpers here are final. :func:`scan_list` never raises: the
 window calls it on every bind, and an empty workspace gives an empty snapshot.
+
+Stage two (the BL43 intake backend): a scan set the import record holds takes its temperature and slit
+from the backend's fact rows (one source per set; every other set keeps the ledger's), the files not
+read and the completeness of a set from the import summary, and each pass is judged current or not from
+the fit-inputs read. The caller may hand those reads in, so the GUI thread never parses the fit-inputs
+log; left out, they are read from ``ws`` here.
 """
 from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 # Re-exported so the GUI (isar_gui/theme.py) takes the results writer's words from the facade and
 # never imports isar.session.* itself (the G16 import contract).
+from isar.intake.readiness import ImportSummary
 from isar.session.outcome import NOT_FITTED, NOT_RECORDED
+from .intake_view import FactRow, PassInputs, UnitFitInputs
+from .intake_view import import_summary as read_import_summary
 from .scan_keys import scan_prefix, split_key
 
 PARSED_OK = "ok"          # Parsed: the file was read; nothing is missing from T and Q
@@ -45,10 +55,14 @@ class Fact:
 
 @dataclass(frozen=True)
 class Status:
-    word: str                 # shown verbatim, never renamed
+    word: str                 # the fitting code's word, returned verbatim (the export keeps it); the GUI's
+                              # display table (isar_gui/status_words.py) glosses it, this read does not
     stored: bool              # Parsed: True when the file was read. Fast/Deep: True when the word
                               # comes from that pass's own stored record ("through the pass")
     reason: str | None = None # tooltip text: the stored reason, the hold reason, what is missing
+    current: bool | None = None   # stage two: the pass's inputs are still current (None: not judged)
+    changed: tuple[tuple[str, str, str], ...] = ()   # stage two: (input, from, to) when not current
+    provisional: bool = False # deep: the stored record is untrusted (provisional sampler settings)
 
 
 @dataclass(frozen=True)
@@ -133,6 +147,57 @@ class ScanListSnapshot:
 
 
 _DIGITS = re.compile(r"(\d+)")
+
+# ---- what a pass's changed inputs are called (one table, so a notebook reads the same words) ----
+_CHANGE_LABELS = {
+    "data": "data revision", "temperature": "temperature", "slit": "slit", "q": "Q",
+    "excluded": "scan excluded", "dead": "declared dead", "dead_in_scan": "dead analyzers in the scan",
+    "counts_accepted": "counts accepted", "resolution_folder": "resolution folder",
+    "curve": "resolution curve", "resolution_library": "resolution library",
+    "calibration_setting": "calibration slit", "calibration_basis": "slit basis",
+    "calibration_zero": "energy zero", "calibration_zero_source": "energy-zero source",
+    "calibration_held_reason": "calibration hold"}
+_CHANGE_UNITS = {"temperature": "K", "slit": "mm", "calibration_zero": "meV"}
+_HASHED = ("data", "curve", "resolution_library")    # shown by their first 8 characters
+_SOURCED = ("temperature", "slit")                   # the inputs that carry where the value came from
+_SOURCE_WORDS = {"user": "yours"}
+
+
+def _change_value(field_name: str, value) -> str:
+    if value is None:
+        return "none"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_change_value(field_name, v) for v in value) or "none"
+    if field_name in _HASHED:
+        return str(value)[:8]
+    text = f"{value:g}" if isinstance(value, (int, float)) else str(value)
+    unit = _CHANGE_UNITS.get(field_name)
+    return f"{text} {unit}" if unit else text
+
+
+def _change_line(p: PassInputs, change) -> tuple[str, str, str]:
+    """``(input, from, to)`` of one change, the value with its source where the input has one."""
+    name = change.field
+    used_source = now_source = None
+    if name in _SOURCED:
+        entry = p.inputs.get(name) if isinstance(p.inputs, Mapping) else None
+        used_source = entry.get("source") if isinstance(entry, Mapping) else None
+        now_source = change.now_source
+
+    def shown(value, source) -> str:
+        text = _change_value(name, value)
+        return f"{text} ({_SOURCE_WORDS.get(source, source)})" if source else text
+    return (_CHANGE_LABELS.get(name, name), shown(change.used, used_source), shown(change.now, now_source))
+
+
+def _judged(status: Status, p: PassInputs | None) -> Status:
+    """``status`` with its currentness. Only a pass the ledger holds is judged, and only a finished one: a
+    running pass's inputs are the refit's, not the stored fit's, so the stored fit waits for the re-read."""
+    if p is None or p.state != "finished" or not status.stored:
+        return status
+    return replace(status, current=not p.changed, changed=tuple(_change_line(p, c) for c in p.changes))
 
 
 def natural_key(text: str) -> tuple:
@@ -219,11 +284,14 @@ def _fast(sv, fv) -> Status:
 
 def _deep(fv) -> Status:
     if fv is not None and fv.deep_pass.get("state"):
-        return Status(fv.deep_pass["state"], True, fv.deep_pass.get("reason"))
+        dp = fv.deep_pass
+        # a refusal states no count, so it has nothing to qualify; no trusted flag means it is not provisional
+        return Status(dp["state"], True, dp.get("reason"),
+                      provisional=dp["state"] != "refused" and not dp.get("trusted", True))
     return Status(NOT_RUN, False)
 
 
-def _spectrum(sv, set_key: str, f, t_known: bool) -> SpectrumRow:
+def _spectrum(sv, set_key: str, f, t_known: bool, passes: UnitFitInputs | None = None) -> SpectrumRow:
     prov = sv.provenance or {}
     det = split_key(sv.scan_id)[2]
     fv = sv.detectors.get(det)
@@ -234,16 +302,29 @@ def _spectrum(sv, set_key: str, f, t_known: bool) -> SpectrumRow:
                      "read; " + "; ".join(f"{g} is not in the file" for g in gaps)))
     return SpectrumRow(
         key=sv.scan_id, set_key=set_key, analyzer=det, q=q, parsed=parsed,
-        fast=_fast(sv, fv), deep=_deep(fv),
+        fast=_judged(_fast(sv, fv), passes.fast if passes else None),
+        deep=_judged(_deep(fv), passes.deep if passes else None),
         file_name=Path(f.path).name if f is not None else None,
         file_path=f.path if f is not None else None,
         n_points=_int_or_none(prov.get("n_points")),
         fit=fv if sv.status == "fitted" and fv is not None else None)
 
 
-def _scan_set(set_key: str, entries: list, files: list, patterns) -> tuple[ScanSetRow, list]:
+def _used_fact(row: FactRow | None, unit: str | None) -> Fact:
+    """The fact the backend says is in force: the user's value (origin ``user``) or the file's."""
+    if row is None or row.used_source == "missing" or row.used_value is None:
+        return _missing()
+    if row.used_source == "user":
+        return Fact(row.used_value, unit, "user", "user")
+    return Fact(row.used_value, unit, row.file_source, _origin(row.file_source))
+
+
+def _scan_set(set_key: str, entries: list, files: list, patterns, intake_facts=None,
+              passes=None) -> tuple[ScanSetRow, list]:
     """One scan set from its ledger entries (analyzers, natural order) and its manifest files;
-    returns the row and the member files it leaves out."""
+    returns the row and the member files it leaves out. ``intake_facts`` (``{fact: FactRow}`` of the set,
+    when the import record holds it) is the one source of its temperature and slit; ``passes`` maps unit
+    keys to their fit inputs."""
     first = entries[0]
     prov = first.provenance or {}
     facts = prov.get("scan_facts") or {}
@@ -255,6 +336,13 @@ def _scan_set(set_key: str, entries: list, files: list, patterns) -> tuple[ScanS
         temperature = Fact(first.T, "K", "scan", "file")
     else:
         temperature = _missing()
+    slit = _fact(facts.get("slit"), None)
+    t_in_file = temperature.value is not None     # Parsed judges the file's T, never the used one
+    if intake_facts is not None:
+        t_row = intake_facts.get("temperature")
+        t_in_file = t_row is not None and t_row.file_source != "missing"
+        temperature = _used_fact(t_row, "K")
+        slit = _used_fact(intake_facts.get("slit"), None)
     label = (str(scan_numbers[0]) if len(scan_numbers) == 1
              else prov.get("scan_label") or str(first.scan_number))
 
@@ -268,7 +356,7 @@ def _scan_set(set_key: str, entries: list, files: list, patterns) -> tuple[ScanS
         f = files[0] if len(files) == 1 else by_number.get(_detector_number(split_key(sv.scan_id)[2]))
         if f is not None:
             used.add(f.path)
-        spectra.append(_spectrum(sv, set_key, f, temperature.value is not None))
+        spectra.append(_spectrum(sv, set_key, f, t_in_file, (passes or {}).get(sv.scan_id)))
 
     flag = next((fl.get("reason") for fl in prov.get("scan_flags") or []
                  if fl.get("type") == "missing_analyzer"), None) or _LEFT_OUT
@@ -279,7 +367,7 @@ def _scan_set(set_key: str, entries: list, files: list, patterns) -> tuple[ScanS
         scan_numbers=scan_numbers,
         summed=any(fl.get("type") == "pre_combined_input" for fl in prov.get("scan_flags") or []),
         n_merged=_int_or_none((facts.get("n_merged_scans") or {}).get("value")),
-        temperature=temperature, slit=_fact(facts.get("slit"), None), spectra=tuple(spectra),
+        temperature=temperature, slit=slit, spectra=tuple(spectra),
         unread=tuple(sorted(left_out, key=lambda u: natural_key(u.name))),
         files_received=len(files))
     return row, left_out
@@ -310,9 +398,37 @@ def _unread_reason(f) -> str | None:
     return None
 
 
-def scan_list(ws) -> ScanListSnapshot:
+def _read(ws, name: str) -> Sequence:
+    """``ws.<name>()``, or nothing for a workspace without that read (the GUI's null workspace)."""
+    call = getattr(ws, name, None)
+    return call() if callable(call) else ()
+
+
+def scan_list(ws, *, fact_rows: Sequence[FactRow] | None = None,
+              fit_inputs: Sequence[UnitFitInputs] | None = None,
+              import_summary: ImportSummary | None = None) -> ScanListSnapshot:
     """The scan list of the open experiment ``ws`` (a ``Workspace`` or anything with its read
-    surface, such as the GUI's null workspace). Read-only; never raises on an empty workspace."""
+    surface, such as the GUI's null workspace). Read-only; never raises on an empty workspace.
+
+    The three keywords are the intake backend's reads (``ws.fact_rows()``, ``ws.fit_inputs()`` and
+    ``import_summary(ws.root)``); ``None`` reads them here. The GUI passes the ones its holder already
+    has, so its thread never parses the fit-inputs log or recomputes the summary."""
+    if fact_rows is None:
+        fact_rows = _read(ws, "fact_rows")
+    if fit_inputs is None:
+        fit_inputs = _read(ws, "fit_inputs")
+    if import_summary is None:
+        root = getattr(ws, "root", None)
+        import_summary = None if root is None else read_import_summary(root)
+    facts: dict[str, dict[str, FactRow]] = {}    # scan set -> fact -> row, the sets the import record holds
+    for row in fact_rows:
+        if row.analyzer is None:
+            facts.setdefault(row.scan, {})[row.fact] = row
+    passes = {u.unit: u for u in fit_inputs}
+    summary = import_summary if import_summary is not None and (
+        import_summary.n_scans > 0 or import_summary.files_not_read) else None
+    missing = {} if summary is None else {i.scan: len(i.missing_analyzers) for i in summary.incomplete_sets}
+
     patterns = _patterns(ws)
     files = list(ws.files)
     members: dict[str, list] = {}   # scan-set key -> the manifest files that hold its scans
@@ -334,7 +450,10 @@ def scan_list(ws) -> ScanListSnapshot:
     sets = []
     for set_key, entries in by_set.items():
         entries.sort(key=lambda sv: natural_key(split_key(sv.scan_id)[2]))
-        row, left_out = _scan_set(set_key, entries, members.get(set_key, []), patterns)
+        row, left_out = _scan_set(set_key, entries, members.get(set_key, []), patterns,
+                                  facts.get(set_key), passes)
+        if summary is not None and (set_key in missing or set_key in facts):
+            row = replace(row, expected_analyzers=len(row.spectra) + missing.get(set_key, 0))
         sets.append(row)
         for u in left_out:
             unread.setdefault(u.path, u)
@@ -342,6 +461,10 @@ def scan_list(ws) -> ScanListSnapshot:
         reason = _unread_reason(f)
         if reason is not None and f.path not in unread:
             unread[f.path] = UnreadFile(path=f.path, name=Path(f.path).name, reason=reason)
+
+    if summary is not None:
+        unread = {f.path: UnreadFile(path=f.path, name=Path(f.path).name, reason=f.reason, set_key=f.scan)
+                  for f in summary.files_not_read}
 
     counts = Counter(s.label for s in sets)
     sets = [replace(s, label=f"{s.label} [{s.experiment_id}]") if counts[s.label] > 1 else s

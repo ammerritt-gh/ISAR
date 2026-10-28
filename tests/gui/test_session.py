@@ -129,6 +129,19 @@ def test_autosaver_swallows_save_failure_and_reports(qtbot):
     assert errors and "disk gone" in errors[0] and "autosave failed" in errors[0]
 
 
+def test_autosaver_pins_its_file_when_built(qtbot, tmp_path, monkeypatch):
+    """The target is fixed at construction. pytest-qt closes a left-over window after the per-test
+    monkeypatch is undone; a path resolved at write time then reached the operator's real profile."""
+    pytest.importorskip("PySide6")
+    built = tmp_path / "built"
+    monkeypatch.setenv("APPDATA", str(built))
+    saver = sess.Autosaver(lambda: sess.Session())
+    monkeypatch.setenv("APPDATA", str(tmp_path / "later"))
+    saver.flush_now()
+    assert (built / "isar_gui" / "session.json").exists()
+    assert not (tmp_path / "later").exists()
+
+
 def test_autosaver_save_failure_without_callback_goes_to_stderr(qtbot, capsys, tmp_path):
     """With no on_error callback, a save failure is written to stderr rather than swallowed silently."""
     pytest.importorskip("PySide6")

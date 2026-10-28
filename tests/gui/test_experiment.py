@@ -107,6 +107,7 @@ class _Forbidden:
 
 def _no_dialogs(monkeypatch):
     monkeypatch.setattr(main_window, "QFileDialog", _Forbidden("QFileDialog"))
+    monkeypatch.setattr(main_window, "file_dialogs", _Forbidden("file_dialogs"))
     monkeypatch.setattr(main_window, "QMessageBox", _Forbidden("QMessageBox"))
 
 
@@ -387,16 +388,7 @@ def test_rename_dialog_cleans_the_name_and_warns_of_a_refit_only_with_fits(make_
 
 # ---- Save copy as ----------------------------------------------------------------------------
 def _choose_copy_folder(monkeypatch, dest):
-    from PySide6.QtWidgets import QFileDialog
-
-    class _Dialog:
-        Option = QFileDialog.Option
-
-        @staticmethod
-        def getSaveFileName(*_a, **_k):
-            return str(dest), ""
-
-    monkeypatch.setattr(main_window, "QFileDialog", _Dialog)
+    monkeypatch.setattr(main_window.file_dialogs, "get_save_file_name", lambda *_a, **_k: (str(dest), ""))
 
 
 def test_after_save_copy_as_another_drop_goes_to_the_original(
@@ -474,12 +466,12 @@ def test_output_bar_texts(qtbot, monkeypatch, tmp_path):
     root = tmp_path / "leTacon_SP8_CsV3Sb5"
     bar.set_experiment(root)
     assert bar._status.full_text() == (
-        "Results are written to …\\leTacon_SP8_CsV3Sb5 as they arrive · nothing written yet")
+        "Experiment folder: …\\leTacon_SP8_CsV3Sb5 · no change yet")
     assert str(root) in bar._status.toolTip()
     bar.note_written(datetime.now().replace(hour=6, minute=41, second=30))
-    assert bar._status.full_text().endswith("· last written 06:41:30")
+    assert bar._status.full_text().endswith("· last change 06:41:30")
     bar.note_written(datetime(2026, 1, 2, 3, 4, 5))
-    assert bar._status.full_text().endswith("· last written 2026-01-02 03:04:05")
+    assert bar._status.full_text().endswith("· last change 2026-01-02 03:04:05")
 
     bar.show_copy_done(tmp_path / "kept")
     assert bar._message.full_text() == (
@@ -562,7 +554,7 @@ def test_last_written_on_bind_is_the_session_files_time(qtbot, make_ws):
     stamp = time.time() + 120                            # newer than every other watched file
     os.utime(root / "session.json", (stamp, stamp))
     w = _window(qtbot, Workspace.open(root))
-    assert f"last written {datetime.fromtimestamp(stamp):%H:%M:%S}" in w.output_bar._status.full_text()
+    assert f"last change {datetime.fromtimestamp(stamp):%H:%M:%S}" in w.output_bar._status.full_text()
 
 
 def test_a_missing_source_folder_is_said_in_the_strip_and_the_log(qtbot, make_ws, tmp_path):

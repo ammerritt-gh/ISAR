@@ -62,8 +62,11 @@ class CardDock(QDockWidget):
         row = QWidget()
         row_l = QHBoxLayout(row)
         row_l.setContentsMargins(0, 0, 0, 0)
-        self._save_btn = QPushButton("Save")
-        self._reload_btn = QPushButton("Reload")
+        self._save_btn = QPushButton("Save card")
+        self._save_btn.setToolTip("Save the edits to card.policy.toml: the instrument settings and fitting "
+                                  "guidelines of this experiment. A new analysis uses them.")
+        self._reload_btn = QPushButton("Reload from disk")
+        self._reload_btn.setToolTip("Discard the edits shown here and read card.policy.toml again.")
         self._save_btn.clicked.connect(self.save)
         self._reload_btn.clicked.connect(self.reload)
         row_l.addWidget(self._save_btn)
@@ -222,11 +225,20 @@ class CardDock(QDockWidget):
         return self.reload(discard_dirty=True)
 
     def _confirm_warnings(self, validation: PolicyValidation) -> bool:
-        message = "\n".join(validation.warnings)
+        # Unknown keys and the notes about keys ISAR reads elsewhere (the shipped BL43 file, values entered
+        # in ISAR) are different things: each sits under its own heading, and the title names what is there.
+        unknown, notes = validation.unknown_keys, validation.notes
+        sections = []
+        if unknown:
+            sections.append("These keys are not part of the current card schema:\n" + "\n".join(unknown))
+        if notes:
+            sections.append("These keys are not used (ISAR reads them from elsewhere):\n" + "\n".join(notes))
+        title = ("Card keys to review" if unknown and notes
+                 else "Unknown card keys" if unknown else "Card keys not used")
         answer = QMessageBox.warning(
             self,
-            "Unknown card keys",
-            f"These keys are not part of the current card schema:\n{message}\n\nSave anyway?",
+            title,
+            "\n\n".join(sections) + "\n\nSave anyway?",
             QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Cancel,
         )

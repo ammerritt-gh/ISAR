@@ -197,6 +197,21 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
 - [ ] **GUI-7 — Reclaimable in-flight scans** (§16.7). Resume re-attaches via the run event's
       `job_id` instead of re-proposing. **Blocked on:** TAVI job-query support.
       **Acceptance:** a resumed campaign re-attaches to an in-flight scan rather than re-proposing it.
+- [ ] **GUI-8 — Left-side UI clean-up batch** (operator pin, 2026-10-28). Batch with whatever the
+      beamtime turns up: scan-set names elided in the middle lose the part that tells sets apart
+      (`97K` / `302K`); the Log still prints the raw "TAVI backend unreachable (URLError)" line; the
+      scan-set summary text is very pale; Output's buttons are cut short with the inspector open; the
+      hover for a deep "clear (provisional)" still says the deep pass settles the count; the deferred
+      rows A4, A10, B3, D16, E3, F12, G10, G11, I7, I10, I12 and I13 of the 2026-10-27 fresh-user
+      audit. Held to the operator's GUI threshold (AGENTS.md memory, 2026-10-27): a physicist new
+      to the GUI, at 3 AM, with nobody to ask.
+      **Acceptance:** each item fixed or ruled out, checked on font-enabled renders at 1108×851.
+- [ ] **GUI-9 — User values for Q and other facts** (operator pin, 2026-10-27). Only temperature,
+      slit, dead analyzers and counts-accepted take user values; a sample reorientation changes
+      every Q. **Acceptance:** a user adds a Q value with a reason on chosen analyzers, file values
+      untouched, affected fits marked out of date.
+- [ ] **GUI-10 — Rename an experiment that holds its own source files** (operator pin, 2026-10-27).
+      Refused today. **Acceptance:** the rename succeeds and every recorded source path still resolves.
 
 ---
 
@@ -586,12 +601,20 @@ conditions — these are wants, not commitments.
 - `isar/workspace_api/intake_view.py:75` — the fact rows' slit fallback and readiness each decide whether a
   scan's stored calibration matches the inputs in force, by different comparisons; use one helper in
   `readiness.py` for both. Revisit when `calibration_inputs_key` or the folder-in-force rule next changes.
+- `isar_gui/main_window.py:1104` — two flags track whether an export is running (`_activity_kind` and
+  `ExportController._running`); drop the controller fallback in `_availability`/`_rename_refusal`.
+  Revisit if an export ever queues behind another job instead of being refused.
+- `isar_gui/views/output_bar.py:116` — `set_available(save_copy, export, reason)` takes two flags that
+  are always equal; take one. Revisit if the two actions get separate rules.
+- `isar_gui/views/attention_list.py:87` — three near-identical wrapped-label classes (`_Line`, `_Wrapped`,
+  `_Cell`), four pluraliser helpers and a `_WARN` style in five files; one `WrappedLabel`, one helper,
+  one theme constant. Revisit when any of them next needs a wrapping or minimum-size fix.
 
 ---
 
 ## Notes
 
-routine suite 1.6 min, over its 1-min budget
+routine suite 1.4 min, over its 1-min budget
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test

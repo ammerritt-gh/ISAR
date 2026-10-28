@@ -21,9 +21,9 @@ preserved as the design record.
 | **Pass 3** — campaign workspace: launcher, live feed, cooperative stop | **Implemented** (G19) | `views/campaign_dock.py`, `control/stop-<token>.json` protocol |
 | **Pass 3** — compact campaign monitor | **Implemented** (G20) | `views/campaign_monitor.py` |
 | **Desktop window** — one arrangement in every state: scan list in the left column, Processing and Campaign on the right, Log and Output below (G24) | **Implemented** (2026-10-27); the display at the laptop's narrowest combination is an open item (§0quinquies) | `main_window.py`, `views/experiment_strip.py`, `views/output_bar.py`, `views/processing_panel.py`, `tests/gui/test_window_frame.py` |
-| **Experiment as a real folder** — drop-to-create, Rename, Save copy as…, Export… (G25) | **Implemented** (2026-10-27) | `workspace_manager.py`, `views/files_strip.py`, `export_action.py`, `isar/report/export.py` |
+| **Experiment as a real folder** — drop-to-create, Rename, Save experiment copy…, Export results… (G25) | **Implemented** (2026-10-27) | `workspace_manager.py`, `views/files_strip.py`, `export_action.py`, `isar/report/export.py` |
 | **Scan list and scan inspector** — BL43 scan-set tree, status words, filter and sort, inspector inside the left panel (G24) | **Implemented** (2026-10-27) | `isar/workspace_api/scan_list.py`, `viewmodels/scan_list.py`, `views/scan_list.py`, `views/scan_inspector.py`, `theme.py` |
-| **Left side, stage two** — setup section, *Locate…*, *Details…*, needs-attention list, fact table, out-of-date marks (G24, G25) | **Planned** (waits on job `jfada74237892`, the intake backend) | none yet |
+| **Left side, stage two** — setup section, *Choose curves folder…*, *Experiment info…*, needs-attention list, fact table, out-of-date marks, readiness line (G24, G25) | **Implemented** (2026-10-27; job `ja0cd202ecb67`, on the intake backend of job `jfada74237892`); user values for Q and other facts stay pinned, and one layout limit is open (§0quinquies) | `viewmodels/intake.py`, `views/setup_section.py`, `views/details_dialog.py`, `views/attention_list.py`, `views/value_entry.py`, `views/fact_table.py`, `views/readiness_line.py`, `tests/gui/test_stage2_walkthrough.py` |
 | **Read-only display grammar** — WISH-1/2/3/9 | **Implemented** (G23) | `isar/workspace_api/display.py`, `isar/plotspec/`, plane/dispersion/inspector viewmodels and panes |
 | **Phase B** — planner (C6): objective authoring, forbidden-zone rendering | **Planned** | no objective editor or planner module exists |
 | **Phase C** — directives: inbox, drain protocol, NL compilation, dispersion editor | **Planned** | no directive or inbox machinery exists |
@@ -236,9 +236,15 @@ empty/ready layout pair, and amends G19 as stated below.
     and launches the campaign into it (G19, amended above).
 - **Scan list (G24).** One row per scan set, labelled by its scan number when its files carry exactly
   one and otherwise by the set's name; the analyzers sit beneath it. Each status is a coloured dot and
-  a word, and the word is the one the stored records give. *Parsed* claims only that the file was read:
+  a word: the plain word of the display table `isar_gui/status_words.py` (clear, close call, search limit
+  reached, held: needs …), with the fitting code's word and a one-line meaning on hover, and the code's word
+  in the export (amendment 7; the facade still returns the code's word verbatim, and the filter matches
+  both). A deep count made on provisional sampler settings reads with the mark `(provisional)` in its word and
+  its hover, which says it is not yet to be trusted. *Parsed* claims only that the file was read:
   never calibration, a resolution curve or a fit. *Fast pass* and *Deep pass* show each pass's stored
-  state, or `not run` where nothing is stored, side by side, with no result picked as "the" result. The
+  state, or `not run` where nothing is stored, side by side, with no result picked as "the" result; each
+  column switches on by itself when the first stored result of that pass exists (amendment 7), unless the
+  user switched it off by hand (`scan_list.hidden` in the session), which the auto rule then respects. The
   centre plot keeps drawing the fast-pass fit. A missing temperature or Q shows a dash with its reason
   on hover, and a background update keeps selection, expansion and scroll.
 - **Scan inspector (amendment 4, operator via orchestrator, 2026-10-27).** The inspector keeps every
@@ -250,13 +256,63 @@ empty/ready layout pair, and amends G19 as stated below.
   the full name as tooltip. On a laptop-size window, opening the inspector collapses an
   expanded Processing panel to its rail; the user may expand it again, and closing the inspector does
   not expand it. A desktop-size window is unchanged.
-- **Stage two (Planned, waits on job `jfada74237892`, the intake backend).** Not built: the setup
-  section and *Locate…* for the resolution-curve folder; *Details…* for the experiment's descriptive
-  fields; a needs-attention list with ticked-scan entry; the inspector's fact table with *Set my
-  value…*, *Use the file's value*, *Mark dead* and *In use*; and the out-of-date mark (warning colour
-  with a tooltip) on a fit whose inputs changed. User values are only ever added, never file values
-  edited (operator ruling, 2026-10-27). Stage two reads the intake backend's named contracts and keeps
-  no second store for the same facts.
+- **Stage two (Implemented, 2026-10-27; job `ja0cd202ecb67`, on the intake backend of job
+  `jfada74237892`).** The left column now runs: experiment strip, setup section, needs-attention list,
+  files strip, scan list. Everything below is BL43LXU only and shows what the intake backend returns;
+  the window computes no gap, no readiness and no value of its own, and keeps no second store.
+  - *Setup section* (`views/setup_section.py`): what was read (scan sets, analyzers, incomplete sets,
+    files not read; the last two open in place) and where the resolution curves were found, with
+    *Locate…*, which saves the folder the user picks at once as the experiment's resolution folder. The
+    last curve check's problem is shown in the warning colour on one line, shortened with … to the
+    column's width and shown in full on hover (so the scan list keeps S1's 400 px minimum with the
+    attention list open); a saved folder is marked
+    unchecked until the next import or analysis start, which is when a curve added or replaced in it
+    is seen. *Details…* (`views/details_dialog.py`, from the experiment strip): the name with
+    *Rename…*, the folder, and six optional descriptive fields (title, proposal, sample, people,
+    dates, notes) that no fit reads.
+  - *Needs-attention list* (`views/attention_list.py`): the backend's groups in its order and words.
+    The user ticks the scan sets (or analyzers) a gap concerns and enters one value and an optional
+    reason; *Save* is one all-or-nothing write on exactly the ticks, and a group closes only when the
+    worker's re-read says so. Analyzer groups offer *Mark dead* and *In use*; the "Counts may not be
+    raw" group also offers *Counts accepted*. After the backend's groups the list keeps up to three of
+    its own, not counted: "Your temperature values", "Your slit values" (so *Use the file's value*
+    stays reachable after the gap closes) and "Your accepted counts" (with *Withdraw*). It scrolls
+    inside 160 px so the scan list keeps its room.
+  - *Fact table* (`views/fact_table.py`) in the scan inspector: for temperature, slit, Q, the count
+    origin and the analyzer, three cells (from the files, yours, used) and the per-use readiness. A
+    value of yours that differs from the file's is drawn in the warning colour with both numbers on
+    hover. Temperature and slit apply to the whole scan set and offer *Set my value…* and *Use the
+    file's value*; the analyzer offers *Mark dead* / *In use* and, for counts that may not be raw,
+    *Accept counts…* / *Withdraw acceptance*. Q and the count origin are shown only; when the files
+    carry no hkl, Q shows the scan list's |Q| and says steering needs the hkl.
+  - *Out-of-date mark* (`viewmodels/scan_list.py`, `views/scan_list.py`): a *Fast pass* or *Deep
+    pass* word whose recorded inputs differ from today's keeps its stored text, is drawn in the
+    warning colour, and names each changed input, from and to, on hover. The two passes are judged
+    separately; a pass with no finished input record is not judged and never marked. The mark says
+    the fit is out of date; nothing refits.
+  - *Help* (`views/help_window.py`, amendment 7): *Quick guide* (`isar_gui/resources/quick_guide.html`, read
+    at runtime) and *What the status words mean* (generated from `isar_gui/status_words.py`, so it cannot
+    drift from the display), shown in one reused non-modal window (`show()`/`raise_()`, never `exec()`).
+  - *Run analysis…* (`views/setup_section.py`, amendment 7): a button on the setup section's button row,
+    with a muted line for the ready count or the reason it is off; it holds no logic and calls
+    `MainWindow.start_analysis()`, the one entry point the Run menu entry, the Processing button and the
+    readiness list's button also call (the right-hand queue job rebinds it). The amber curves line, when
+    shown, stands in for the muted line only when the missing curves are the whole reason Run is off; any
+    other reason keeps its line, even where a second line squeezes the counts at 1108 px.
+  - *Readiness line* (`views/readiness_line.py`) in Processing: counts of spectra ready, ready with a
+    fallback, waiting for resolution curves, needing their counts accepted, running and so on, each
+    count opening the list behind it with the backend's reason and the button that resolves it.
+  - *Writes and reads.* The GUI writes user values, conditions and settings only through the intake
+    backend's writers, in process, and never edits a value a file supplies (operator ruling,
+    2026-10-27: user values are only ever added; a later value supersedes an earlier one and both stay
+    on record). `IntakeState` (`viewmodels/intake.py`) is the one holder of the reads and writers. It
+    re-reads on the intake watch events, after every save of its own, and at the end of every run, a
+    cancelled one included; the fit-inputs and needs-attention reads run on a worker thread and a
+    result from before a save is dropped. Every save is refused, with the reason shown, while an
+    export runs or another process holds the store ("busy, try again").
+  - *Counts accepted* (design amendment 5, operator-approved): the declaration that an `_i` analyzer's
+    counts are raw lifts the hold on them and changes no count and no flag (an `_lr` analyzer stays
+    held whatever is saved); every fit made that way records it, and *Withdraw* takes it back.
 - **Pinned for later, not built here:** the analyzer overview in the centre, the batch queue, automatic
   export to an outside folder, `gpi.*` parsing for per-analyzer Q, and user values for Q and for facts
   other than temperature, slit and dead analyzers.

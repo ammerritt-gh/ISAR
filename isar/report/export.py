@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from isar.analyze.resolution import curve_from_record
+from isar.intake import scans as intake_scans
 from isar.session import outcome as outcome_mod
 from isar.session.workspace import Workspace
 from isar.workspace_api import Workspace as ReadWorkspace
@@ -37,11 +38,11 @@ EXPORT_SCHEMA = "isar.export-fits/1"
 EXPORTS_DIRNAME = "exports"
 _MAX_SUFFIX = 100
 
-# modes.csv: the results writer's columns unchanged, then nine for the export (the bounds empty on
-# fast rows).
+# modes.csv: the results writer's columns unchanged, then ten for the export (the bounds empty on
+# fast rows; inputs_current empty where the row's pass was not judged).
 MODES_COLUMNS = outcome_mod._MODES_COLUMNS + [
     "pass", "trust", "scan_label", "spectrum_file", "fit_data_mismatch",
-    "omega0_lo", "omega0_hi", "gamma_lo", "gamma_hi"]
+    "omega0_lo", "omega0_hi", "gamma_lo", "gamma_hi", "inputs_current"]
 SPECTRUM_COLUMNS = ["x_raw", "energy_meV", "counts", "sigma", "mask"]
 FAST_TRUST = "not assessed"   # the fast pass stores no trust flag; absence is not a verdict
 
@@ -55,7 +56,8 @@ Nothing was refitted to make it. Each export is a new folder; an earlier one is 
 Files
 -----
 modes.csv     one row per fitted mode per pass (fast and deep), mode_index 0 the lowest energy
-fits.json     one record per spectrum: its state, both stored pass records in full, provenance
+fits.json     one record per spectrum: its state, both stored pass records in full, provenance, and
+              what each pass's inputs were
 spectra/      one CSV per spectrum: the data ISAR holds now
 resolution/   one CSV per measured resolution curve a fit used
 README.txt    this note
@@ -123,8 +125,7 @@ ISAR holds now, which the spectrum CSV carries. fit_data_mismatch true means the
 with changed content after the fit, so the stored fit and its modes.csv rows describe earlier data
 than the spectrum CSV holds; the next Run analysis refits it. "fitted-against revision not recorded"
 means ISAR stored no input revision for that fit; the current revision is not a substitute.
-Currentness is not assessed: this export does not check whether each fit's other inputs (resolution,
-settings) changed after the fit.
+@CURRENTNESS@
 
 Resolution curves
 -----------------
@@ -402,9 +403,44 @@ def _isar_version():
         return None
 
 
-def _write_readme(folder: Path) -> None:
+NOT_ASSESSED_TEXT = """\
+Currentness is not assessed: this export does not check whether each fit's other inputs (resolution,
+settings) changed after the fit.
+"""
+BL43_CURRENTNESS_TEXT = """\
+Currentness: each fits.json record has an `inputs` block with one entry per pass, fast and deep (null where
+the spectrum has no such pass). `current` is true when every input the pass used still has the value it had,
+false when one changed after the fit was made, and null when it could not be judged (a fit stored before ISAR
+recorded its inputs, or a pass still running). `used` holds the inputs the pass used, as recorded. `changed`
+lists each input that differs now: `input`, `from` (used), `to` (now) and, for temperature and slit, `to_source`
+(user, file or missing). The inputs are: data, temperature, slit, q, excluded, dead, dead_in_scan,
+counts_accepted, resolution_folder, curve, resolution_library, calibration_setting, calibration_basis,
+calibration_zero, calibration_zero_source, calibration_held_reason. The `inputs_current` column of modes.csv
+is that `current` for the row's own pass (true / false; empty when not judged). A fit whose inputs changed
+keeps its stored result until the next Run analysis.
+"""
+
+
+def _write_readme(folder: Path, bl43: bool) -> None:
+    text = README_TEXT.replace("@CURRENTNESS@", (BL43_CURRENTNESS_TEXT if bl43 else NOT_ASSESSED_TEXT).rstrip("\n"))
     with open(folder / "README.txt", "w", encoding="utf-8", newline="\r\n") as f:
-        f.write(README_TEXT)
+        f.write(text)
+
+
+def _pass_record(p) -> dict:
+    """One pass's currentness from the backend's read: whether the inputs it used still hold, what it used and
+    what differs now. A pass the backend has no finished record of (fitted before inputs were recorded, or a
+    refit still running, whose inputs are not the stored fit's) is not judged."""
+    if p is None or p.state != "finished":
+        return {"current": None, "used": None, "changed": []}
+    return {"current": not p.changed, "used": p.inputs,
+            "changed": [{"input": c.field, "from": c.used, "to": c.now, "to_source": c.now_source}
+                        for c in p.changes]}
+
+
+def _inputs_current(record) -> str:
+    """A modes.csv cell: ``true`` / ``false``, empty where the pass was not judged."""
+    return "" if record is None or record["current"] is None else str(record["current"]).lower()
 
 
 def _null_nonfinite(value):
@@ -426,11 +462,24 @@ def _write_fits(folder: Path, doc: dict) -> None:
         f.write("\n")
 
 
+def _currentness(bl43: bool, has_records: bool) -> dict:
+    if bl43 and has_records:
+        return {"assessed": True,
+                "note": "each fit's inputs are checked against the intake records; see inputs on each record"}
+    if bl43:
+        return {"assessed": False,
+                "note": "this workspace has no recorded fit inputs, so no fit is judged; see inputs on each record"}
+    return {"assessed": False,
+            "note": "this export does not check whether each fit's inputs changed after the fit"}
+
+
 def _build(root: Path, stage: Path, progress) -> tuple:
     """Write everything but fits.json into ``stage``; return (the fits.json body, the summary counts)."""
     ws = Workspace.open(root)
     card, session = ws.load()
     api = ReadWorkspace.open(root)
+    bl43 = intake_scans.applies(card)      # only BL43 has fit-input records
+    fit_inputs = {u.unit: u for u in api.fit_inputs()} if bl43 else {}
     spectra_dir = stage / "spectra"
     spectra_dir.mkdir()
     curves = _Curves(stage / "resolution")
@@ -492,6 +541,14 @@ def _build(root: Path, stage: Path, progress) -> tuple:
                                      "fit_without_fast_pass"),
                           "n_modes_exported": len(fast_rows)}
         record["deep"] = _deep_block(oc, len(deep_rows)) if oc is not None else None
+        fit = fit_inputs.get(e.scan_id)
+        record["inputs"] = {
+            "fast": _pass_record(fit.fast if fit else None) if oc is not None else None,
+            "deep": _pass_record(fit.deep if fit else None) if record["deep"] is not None else None}
+        for row in fast_rows:
+            row["inputs_current"] = _inputs_current(record["inputs"]["fast"])
+        for row in deep_rows:
+            row["inputs_current"] = _inputs_current(record["inputs"]["deep"])
         by_fast[fast_state] = by_fast.get(fast_state, 0) + 1
         if record["deep"] is not None:
             by_deep[record["deep"]["state"]] = by_deep.get(record["deep"]["state"], 0) + 1
@@ -525,7 +582,7 @@ def _build(root: Path, stage: Path, progress) -> tuple:
             progress(i, len(items))
 
     outcome_mod._replace_csv(stage / "modes.csv", MODES_COLUMNS, rows)
-    _write_readme(stage)
+    _write_readme(stage, bl43)
     doc = {
         "schema": EXPORT_SCHEMA, "workspace": str(Path(root).resolve()),
         "experiment": Path(root).resolve().name, "isar_version": _isar_version(),
@@ -534,9 +591,7 @@ def _build(root: Path, stage: Path, progress) -> tuple:
         "passes": {"exported": ["fast", "deep"],
                    "selection": "none: both passes are exported side by side, each labelled; "
                                 "nothing picks one"},
-        "currentness": {"assessed": False,
-                        "note": "this export does not check whether each fit's inputs changed "
-                                "after the fit"},
+        "currentness": _currentness(bl43, bool(fit_inputs)),
         "counts": {"spectra": len(records), "modes": n_fast + n_deep, "modes_fast": n_fast,
                    "modes_deep": n_deep, "by_state": {"fast": by_fast, "deep": by_deep},
                    "with_deep_pass": sum(by_deep.values())},

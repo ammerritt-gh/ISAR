@@ -1,7 +1,7 @@
 """OutputBar -- the bottom-right of the window: where results go, and the two explicit actions.
 
-A status line ("Results are written to …\\leTacon_SP8_CsV3Sb5 as they arrive · last written 06:41:30")
-with *Save copy as…* and *Export…*. When an action is unavailable the buttons are disabled and the
+A status line ("Experiment folder: …\\leTacon_SP8_CsV3Sb5 · last change 06:41:30")
+with *Save experiment copy…* and *Export results…*. When an action is unavailable the buttons are disabled and the
 reason is shown beside them. Purely presentational: the buttons are signals and the window decides
 what they do.
 
@@ -19,15 +19,18 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
 from isar_gui.theme import TONE_COLOR, Tone
-from isar_gui.views.elided_label import ElidedLabel
+from isar_gui.views.elided_label import ElidedButton, ElidedLabel
 
 _NOTHING_WRITTEN = "No experiment, so nothing is being written."
+_SAVE_COPY_TIP = "Copy this whole experiment folder to a new place. You keep working in the original."
+_EXPORT_TIP = ("Write the stored fit results (modes.csv, fits.json, spectra and curves) to a new folder for use "
+               "outside ISAR. Nothing is refitted.")
 _ERROR_STYLE = f"color: {TONE_COLOR[Tone.ERR]};"
 
 
 class OutputBar(QWidget):
-    save_copy_requested = Signal()      # "Save copy as…"
-    export_requested = Signal()         # "Export…"
+    save_copy_requested = Signal()      # "Save experiment copy…"
+    export_requested = Signal()         # "Export results…"
     open_copy_requested = Signal(object)  # Path of a finished copy ("Open copy")
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -40,10 +43,10 @@ class OutputBar(QWidget):
 
         self._status = ElidedLabel(_NOTHING_WRITTEN, self)
         self._status.setObjectName("output_status")
-        self._save_copy = QPushButton("Save copy as…", self)
+        self._save_copy = ElidedButton("Save experiment copy…", self)      # shortens before it widens the bar
         self._save_copy.setObjectName("output_save_copy")
         self._save_copy.clicked.connect(self.save_copy_requested)
-        self._export = QPushButton("Export…", self)
+        self._export = ElidedButton("Export results…", self)
         self._export.setObjectName("output_export")
         self._export.clicked.connect(self.export_requested)
         self._reason = QLabel("", self)
@@ -104,13 +107,14 @@ class OutputBar(QWidget):
             self._status.set_full_text(_NOTHING_WRITTEN)
             return
         if self._last_written is None:
-            tail = "nothing written yet"
+            tail = "no change yet"
         elif self._last_written.date() == datetime.now().date():
-            tail = f"last written {self._last_written:%H:%M:%S}"
+            tail = f"last change {self._last_written:%H:%M:%S}"
         else:
-            tail = f"last written {self._last_written:%Y-%m-%d %H:%M:%S}"
-        self._status.set_full_text(f"Results are written to …\\{self._root.name} as they arrive · {tail}")
-        self._status.setToolTip(f"Results are written to {self._root}")   # the full path on hover
+            tail = f"last change {self._last_written:%Y-%m-%d %H:%M:%S}"
+        self._status.set_full_text(f"Experiment folder: …\\{self._root.name} · {tail}")
+        self._status.setToolTip(f"The experiment folder; the data summary and the results are written into it as "
+                                f"they arrive.\n{self._root}")   # the full path on hover
 
     # ---- the two actions -----------------------------------------------------------------
     def set_available(self, save_copy: bool, export: bool, reason: str) -> None:
@@ -120,8 +124,8 @@ class OutputBar(QWidget):
         off = not (save_copy and export)
         self._reason.setText(reason if off else "")
         self._reason.setVisible(off and bool(reason))
-        for button in (self._save_copy, self._export):
-            button.setToolTip("" if button.isEnabled() else reason)
+        self._save_copy.setToolTip(_SAVE_COPY_TIP if self._save_copy.isEnabled() else reason)
+        self._export.setToolTip(_EXPORT_TIP if self._export.isEnabled() else reason)
 
     def show_copy_done(self, folder: Path) -> None:
         """Name the finished copy and offer *Open copy*; new data keeps going to the original."""

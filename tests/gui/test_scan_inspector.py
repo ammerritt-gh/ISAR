@@ -47,7 +47,7 @@ def patched(monkeypatch, bl43_ws):
     snapshot = dataclasses.replace(snapshot, sets=tuple(
         dataclasses.replace(s, spectra=tuple(dataclasses.replace(sp, fit=None) for sp in s.spectra))
         for s in snapshot.sets))
-    monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda ws: snapshot)
+    monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda ws, **_reads: snapshot)
     return snapshot
 
 
@@ -72,6 +72,8 @@ def _fields(panel):
 
 
 def _text(field) -> str:
+    if isinstance(field, _Note):          # a wrapped line (the energy range) holds its whole text
+        return field.text()
     return (field if isinstance(field, ElidedLabel) else field.findChildren(ElidedLabel)[0]).full_text()
 
 
@@ -87,6 +89,25 @@ def _reason(field) -> str | None:
 def _has_dot(field) -> bool:
     return any(lbl.pixmap() is not None and not lbl.pixmap().isNull()
                for lbl in field.findChildren(QLabel))
+
+
+# ---------------------------------------------------------------------------
+# a scan-set row is not "nothing picked"
+# ---------------------------------------------------------------------------
+def test_a_picked_scan_set_row_is_summarised_in_the_open_inspector(qtbot, patched, bl43_ws):
+    vm, panel = _panel(qtbot, bl43_ws)
+    set_row = patched.sets[0]
+    vm.select_set(set_row.key)
+    assert panel._message.isVisible() and not panel._body.isVisible()
+    text = panel._message.text()
+    assert f"Scan set {set_row.label}" in text and f"{len(set_row.spectra)} analyzer" in text
+    assert set_row.spectra[0].analyzer in text and "Files:" in text and "Temperature:" in text
+    assert panel._title.full_text() == f"Scan set {set_row.label}"
+    vm.select(A06)                                  # a spectrum ends the set's summary
+    assert panel._body.isVisible() and not panel._message.isVisible()
+    vm.select_set(set_row.key)
+    vm.set_focused.emit(None)                       # the set left the read: back to the plain hint
+    assert "Select an analyzer row" in panel._message.text()
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +127,7 @@ def test_a06_of_a_summed_set_shows_every_line(qtbot, patched, bl43_ws):
     energy = _text(f["Energy range"])
     assert energy.startswith("-4 to 7.8 meV") and "raw axis, zero not applied" in energy
     assert _text(f["Parsed"]) == "ok" and _has_dot(f["Parsed"])
-    assert _text(f["Fast pass"]) == "search_limited" and _has_dot(f["Fast pass"])
+    assert _text(f["Fast pass"]) == "search limit reached" and _has_dot(f["Fast pass"])
     assert _text(f["Deep pass"]) == "not run" and _has_dot(f["Deep pass"])
     # the full file path is the file line's tooltip; the hashed placeholder number is nowhere
     assert _tooltip(f["File"]).endswith("CsV3Sb5_97K_0p5_0p5_3_sum_a06")
@@ -263,7 +284,8 @@ def test_inspector_lines_is_pure_and_marks_statuses():
     row = snap.spectrum(B03)
     lines = inspector_lines(row, snap.scan_set(row.set_key), None)
     by = {ln.label: ln for ln in lines}
-    assert by["Fast pass"].column == "fast" and by["Fast pass"].text == "held"
+    assert by["Fast pass"].column == "fast" and by["Fast pass"].text == "held: needs resolution curves"
+    assert by["Fast pass"].word == "held" and "held" in by["Fast pass"].tooltip     # the fitting code's word
     assert by["Fast pass"].reason == "a03: no resolution curve for a03 at slit 60x60"
     assert by["Fast pass"].group == "processing" and by["Parsed"].group == "facts"
     assert by["Energy range"].text == "— no parsed counts for this spectrum"
@@ -296,13 +318,13 @@ def test_the_panel_follows_the_list_and_emits_close(qtbot, patched, bl43_ws):
     vm.inspect(f"{KEY_A}:a04")
     assert panel._title.full_text() == f"a04 · {STEM_A}"
     f = _fields(panel)
-    assert _text(f["Fast pass"]) == "close_call"
-    assert _text(f["Deep pass"]) == "resolved" and _reason(f["Deep pass"]) == "resolved: count 1 (P 0.91)"
+    assert _text(f["Fast pass"]) == "close call"
+    assert _text(f["Deep pass"]) == "clear" and _reason(f["Deep pass"]) == "count 1 (P 0.91)"
 
     vm.select(B03)                                  # the panel is open: it follows
     f = _fields(panel)
     assert panel._title.full_text() == f"a03 · {bl43_fixture.STEM_B}"
-    assert _text(f["Fast pass"]) == "held"
+    assert _text(f["Fast pass"]) == "held: needs resolution curves"
     assert _reason(f["Fast pass"]) == "a03: no resolution curve for a03 at slit 60x60"
 
     vm.select(None)                                 # nothing selected: it keeps what it shows
@@ -349,7 +371,7 @@ def test_a_background_update_redraws_the_same_key_in_place(qtbot, patched, bl43_
                         lambda ws: dataclasses.replace(snap, sets=tuple(new)))
     vm.on_workspace_changed({"results"})
     f = _fields(panel)
-    assert _text(f["Deep pass"]) == "resolved" and _reason(f["Deep pass"]) == "resolved: count 2"
+    assert _text(f["Deep pass"]) == "clear" and _reason(f["Deep pass"]) == "count 2"
     assert panel._title.full_text() == f"a06 · {STEM_A}"
 
 
@@ -374,6 +396,23 @@ def test_a_pooled_master_shows_its_lines_and_the_display_note(qtbot, bl43_ws, mo
     assert "pooled master (2 members)" in panel._title.full_text()
     assert panel._plot_note.isVisibleTo(panel) and not panel._glw.isVisibleTo(panel)
     assert panel._plot_note.text() == "pooled spectrum: shown in the display"
+
+
+# ---------------------------------------------------------------------------
+# the fact table (S2U3) takes over the stage-one fact lines
+# ---------------------------------------------------------------------------
+def test_the_window_gives_the_inspector_its_fact_table_and_unimported_data_keeps_the_stage_one_lines(
+        qtbot, patched, bl43_ws, monkeypatch):
+    """bl43_ws was built without the intake record, so the backend holds no facts for it: the table stays
+    empty and the Temperature, Q and Slit lines are not lost; with facts the lines give way (test_fact_table)."""
+    w = _window(qtbot, monkeypatch, LAPTOP, bl43_ws)
+    table = w.scan_inspector._fact_table
+    assert table is not None and w.scan_inspector._rows_layout.indexOf(table) == 1
+    w.scan_list_vm.inspect(A06)
+    qtbot.wait(50)
+    assert not table.has_facts and table.isHidden()
+    f = _fields(w.scan_inspector)
+    assert _text(f["Temperature"]) == "97 K — file (header)" and "Slit" in f and "Q" in f
 
 
 # ---------------------------------------------------------------------------

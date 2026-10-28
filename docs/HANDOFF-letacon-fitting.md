@@ -36,3 +36,4 @@ none
 - About 25 lesser findings deferred, listed as known issues in the bodies of PR #48 and PR #49.
 - No ChatGPT review ran on job j6420291926ab (requests too large; fix is Workflow job j01326cc9bce3).
 - The fcc campaign-test regression from PR #46 stays open until the scene `presence` bound exists.
+- For the replan of job j313eac923389: its S3 export slice was built by job ja0cd202ecb67 (PR #52): `isar export` writes both passes, `modes.csv` with `pass` and `trust` columns; there is no rule picking one pass as "the" result (operator, 2026-10-27: "give both fast and deep results, and just label them clearly"), so its display reads `FitView.fast_pass` / `deep_pass` itself. The centre fit page's metadata panel moved to the left-side scan inspector.
