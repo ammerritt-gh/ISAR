@@ -1121,6 +1121,7 @@ def load_workspace(workspace, spectrum, detector=None, *, refresh_fast_pass=Fals
     front-end calls ``sandbox_api.preview_fit`` makes (nothing is written, the card is a copy).
     Explicit ``refresh_fast_pass`` recalibrates that copy and regenerates the record in memory."""
     import copy
+    from isar.intake import inputs, store
     from isar.reduce import combine, qc
     from isar.session import calibrations, ingest, outcome, router, scan_delivery, unit_data
     from isar.session import guidelines as guide_mod
@@ -1151,6 +1152,18 @@ def load_workspace(workspace, spectrum, detector=None, *, refresh_fast_pass=Fals
                 and int(r.scan_number) == int(scan_number)), None)
     if rec is None or det not in rec.spectra:
         raise ValueError(f"scan {spectrum!r} / detector {det!r} not found in the re-parsed data")
+    # Freeze the same saved values and conditions as StartPoint.plan before either calibration
+    # or context construction. The parsed record and the append-only intake store remain intact.
+    read = store.read_all(workspace, store.ENTRIES)
+    indexed = inputs.index_entries(read.entries, lines=read.lines)
+    for line in inputs.damage_lines(workspace, read=read, index=indexed):
+        print(line, file=sys.stderr, flush=True)
+    si = inputs.scan_inputs({"scan": f"{experiment}:{scan_number}", "facts": rec.facts}, indexed)
+    if si.excluded is not None:
+        raise ValueError(f"scan {spectrum!r} is excluded: {si.excluded.reason or si.excluded.entry}")
+    if det in si.dead:
+        raise ValueError(f"analyzer {spectrum!r} is dead: {si.dead[det].reason or si.dead[det].entry}")
+    rec = inputs.apply(rec, si)
     sp = rec.spectra[det]
     q = [float(v) for v in sp.q] if sp.q is not None else None     # the driver's way, so the fingerprint can match
     T = unit_data.scan_temperature(rec)

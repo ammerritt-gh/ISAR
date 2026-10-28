@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -212,7 +213,7 @@ def test_workspace_refresh_is_explicit_and_only_changes_card_copy(harness, monke
 
     card = SimpleNamespace(state={"refreshed": False})
     stored = {"arena_fingerprint": "old-arena"}
-    rec = SimpleNamespace(experiment_id="synthetic", scan_number=1,
+    rec = SimpleNamespace(experiment_id="synthetic", scan_number=1, facts={},
                           spectra={"a01": SimpleNamespace(q=None)})
     session = SimpleNamespace(data_paths=["synthetic-source"],
                               scans={"synthetic:1:a01": SimpleNamespace(detectors={"a01": stored})})
@@ -250,3 +251,78 @@ def test_workspace_refresh_is_explicit_and_only_changes_card_copy(harness, monke
         with pytest.raises(ValueError, match="changed curve"):
             harness.load_workspace(tmp_path, "synthetic:1:a01")
     assert card.state == {"refreshed": False} and stored == {"arena_fingerprint": "old-arena"}
+
+
+@pytest.mark.parametrize("condition", [None, "excluded", "dead"])
+def test_refresh_uses_saved_inputs_and_refuses_saved_conditions(harness, monkeypatch, tmp_path, condition):
+    import numpy as np
+    from isar.intake import store
+    from isar.reduce import combine, qc
+    from isar.session import calibrations, ingest, outcome, router, scan_delivery, guidelines
+    from isar.session.workspace import Workspace
+
+    @dataclass
+    class Temperature:
+        setpoint: object
+        sensors: dict
+        valid_mask: object
+
+    @dataclass
+    class Record:
+        experiment_id: str
+        scan_number: int
+        facts: dict
+        temperature: Temperature
+        spectra: dict
+
+    rec = Record("synthetic", 1, {"T_K": {"value": 100.0, "source": "file"},
+                                "slit": {"value": "0.1x0.1", "source": "file"}},
+                 Temperature(np.array([100.0]), {}, np.array([True])),
+                 {"a01": SimpleNamespace(q=None)})
+    for fact, value in (("temperature", 300.0), ("slit", "0.4x0.4")):
+        store.append(tmp_path, store.ENTRIES,
+                     {"kind": "value", "fact": fact, "value": value, "targets": ["synthetic:1"]})
+    if condition:
+        store.append(tmp_path, store.ENTRIES,
+                     {"kind": "condition", "condition": condition, "declared": True,
+                      "targets": ["synthetic:1" + (":a01" if condition == "dead" else "")]})
+    before = (tmp_path / store.ENTRIES).read_bytes()
+    card = SimpleNamespace(state={})
+    session = SimpleNamespace(data_paths=["synthetic-source"], scans={"synthetic:1:a01":
+                              SimpleNamespace(detectors={"a01": {"arena_fingerprint": "old"}})})
+    monkeypatch.setattr(Workspace, "open", lambda path: SimpleNamespace(load=lambda: (card, session)))
+    monkeypatch.setattr(outcome, "fast_pass_of", lambda value: value)
+    monkeypatch.setattr(ingest, "discover", lambda *args: SimpleNamespace(companion_files=[]))
+    monkeypatch.setattr(ingest, "parse_all", lambda *args: [rec])
+    monkeypatch.setattr(combine, "reduce_record", lambda *args: None)
+    monkeypatch.setattr(qc, "qc_record", lambda *args: None)
+    monkeypatch.setattr(router, "route", lambda records: SimpleNamespace(measurements=records))
+    monkeypatch.setattr(router, "apply_context_updates", lambda *args, **kwargs: None)
+    monkeypatch.setattr(guidelines, "resolve", lambda card: object())
+    seen = {}
+
+    def refresh_card(card, records, **kwargs):
+        assert not condition, "a saved condition reached calibration"
+        seen["calibration"] = records[0]
+        return []
+
+    def context(effective, *args, T, **kwargs):
+        seen.update(context=effective, temperature=T)
+        return "ctx", 20, []
+
+    monkeypatch.setattr(calibrations, "refresh_tabulated", refresh_card)
+    monkeypatch.setattr(calibrations, "calibration_view", lambda card: card)
+    monkeypatch.setattr(calibrations, "resolve", lambda *args: SimpleNamespace(held_reason=None))
+    monkeypatch.setattr(scan_delivery, "build_context", context)
+    monkeypatch.setattr(harness, "_refresh_fast_record", lambda *args, **kwargs: ({"new": True}, {}))
+    monkeypatch.setattr(harness, "_loaded", lambda *args, **kwargs: kwargs)
+    if condition:
+        with pytest.raises(ValueError, match=condition):
+            harness.load_workspace(tmp_path, "synthetic:1:a01", refresh_fast_pass=True)
+    else:
+        harness.load_workspace(tmp_path, "synthetic:1:a01", refresh_fast_pass=True)
+        assert seen["calibration"] is seen["context"]
+        assert seen["calibration"].facts["slit"]["value"] == "0.4x0.4"
+        assert seen["temperature"] == 300.0
+        assert rec.facts["slit"]["value"] == "0.1x0.1" and rec.temperature.setpoint[0] == 100.0
+    assert (tmp_path / store.ENTRIES).read_bytes() == before
