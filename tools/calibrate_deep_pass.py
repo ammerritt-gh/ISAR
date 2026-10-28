@@ -2,8 +2,9 @@
 
 A research tool run by hand (an agent or the operator), never by the product and never as a
 routine test; tests/test_calibrate_deep_pass.py exercises it on synthetic rows only. It samples
-nothing it was not told to and refits nothing: the models, their Laplace evidence and the
-fast-pass optimum come from a saved fast-pass record through `deep_pass.models_from_record`.
+nothing it was not told to. The default workspace path refits nothing: the models, their
+Laplace evidence and fast-pass optimum come from a saved record through
+`deep_pass.models_from_record`. Explicit --refresh-fast-pass regenerates that record once.
 
 The protocol is the operator's one-pass ruling of 2026-10-26 (a deliberate narrowing of the design's
 D1 protocol; the report says which parts remain for a later calibration):
@@ -43,7 +44,19 @@ pass runs here as the record's producer, about a minute, and seeds nothing):
         --bench-case close_doublet --bench-level high --bench-draw 0 ^
         --output <main checkout>\\out\\j6420291926ab\\deep-calibration\\close_doublet_high
 
-Defaults fit the dedicated machine: --workers 16 --run-timeout-s 3600 --wall-cap-s 7200
+The report-only sampler screen (operator, 2026-10-28) is a separate protocol:
+--rslice-screen --model LABEL1 --model LABEL2 --model LABEL3 selects exactly those models,
+rslice at 400 live points, factors 1 and 2, three seeds (18 runs). Add --include-rwalk-baseline
+for nine rwalk 400x4 runs, or --rwalk-baseline PATH to a matching prior report's calibration.json.
+It never selects or installs settings. At most 18 workers; the same per-run and whole-pass caps
+apply. Check shared-machine load before choosing the worker count.
+If the saved calibration or record is stale, --refresh-fast-pass explicitly rebuilds calibration
+on a copied card and regenerates the fast record using its saved fitting settings and hints.
+It requires --include-rwalk-baseline and a workspace source; the regenerated record is retained
+in calibration.json metadata. Workspace files are never written. Regeneration precedes the
+sampler wall cap (as does --bench-case preparation).
+
+Defaults: --workers 16 --run-timeout-s 3600 --wall-cap-s 7200
 --reference-live 1600 --reference-tolerance 0.5 --difference-max 2.0 --difference-target 1.0.
 The output folder must be new. Exit 0: the pass ran and wrote its report (aims reached or missed);
 1: a failure (the report still holds whatever finished). `--self-check` runs the arithmetic checks.
@@ -594,6 +607,8 @@ def _reached(aim):
 
 
 def render_markdown(report):
+    if report.get("protocol") == "rslice_screen":
+        return _render_screen(report)
     a = report.get("analysis") or {}
     meta = report.get("metadata") or {}
     lines = ["# Deep-pass calibration (one bounded pass)", "",
@@ -861,6 +876,186 @@ def calibrate(entries, *, preferred_count, output, workers=16, run_timeout_s=360
     return report
 
 
+def _screen_baseline(path, entries, metadata):
+    """Admit a saved rwalk 400x4 baseline only for this same likelihood and prior."""
+    with Path(path).open(encoding="utf-8", newline="") as stream:
+        saved = json.load(stream)
+    for key in ("arena_fingerprint", "prior_provenance"):
+        if metadata.get(key) is None or saved.get("metadata", {}).get(key) != metadata[key]:
+            raise ValueError(f"rwalk baseline {key} differs or is missing")
+    core = {m["label"]: m for m in saved.get("core", [])}
+    expected = _settings(400, 4)
+    rows = []
+    for entry in entries:
+        old = core.get(entry.label, {})
+        if old.get("ndim") != entry.ndim or old.get("log_model_prior") != entry.log_model_prior:
+            raise ValueError(f"rwalk baseline model identity differs: {entry.label}")
+        matching = [r for r in saved.get("runs", []) if r.get("label") == entry.label
+                    and r.get("engine") == "dynesty"
+                    and all(r.get("settings", {}).get(k) == v for k, v in expected.items())]
+        if len(matching) != SEEDS or len({r["seed"] for r in matching}) != SEEDS or not all(
+                clean(r) for r in matching):
+            raise ValueError(f"rwalk baseline needs three distinct clean 400x4 seeds: {entry.label}")
+        rows.extend(matching)
+    return dict(source=str(Path(path).resolve()), runs=rows)
+
+
+def _screen_analysis(report):
+    rows = report["runs"] + report.get("baseline", {}).get("runs", [])
+    configs = [("rslice", 1), ("rslice", 2)]
+    if report["include_rwalk_baseline"] or report.get("baseline"):
+        configs.append(("rwalk", 4))
+    groups = []
+    for sample, factor in configs:
+        for model in report["core"]:
+            rr = sorted((r for r in rows if r["label"] == model["label"]
+                         and r["settings"]["sample"] == sample
+                         and r["settings"]["step_factor"] == factor), key=lambda r: r["seed"])
+            z = [r["log_z"] for r in rr if clean(r)]
+            groups.append(dict(label=model["label"], sample=sample, step_factor=factor,
+                               expected=SEEDS, complete=len(rr) == len(z) == SEEDS,
+                               seed_std=statistics.stdev(z) if len(z) >= 2 else None,
+                               **summary(rr)))
+    comparison = []
+    baseline = [g for g in groups if g["sample"] == "rwalk"]
+    for factor in (1, 2):
+        current = [g for g in groups if g["sample"] == "rslice" and g["step_factor"] == factor]
+        complete = all(g["complete"] for g in current)
+        max_std = max(g["seed_std"] for g in current) if complete else None
+        ratio = None
+        if complete and baseline and all(g["complete"] for g in baseline):
+            base_time = sum(g["total_wall_s"] for g in baseline)
+            ratio = sum(g["total_wall_s"] for g in current) / base_time if base_time > 0 else None
+        comparison.append(dict(step_factor=factor, complete=complete, max_seed_std=max_std,
+                               mean_wall_ratio=ratio,
+                               reading_target_met=(max_std <= 2.0 and ratio <= 1.5)
+                               if max_std is not None and ratio is not None else None))
+    return dict(groups=groups, comparison=comparison)
+
+
+def _render_screen(report):
+    analysis = report["analysis"]
+    rows = [("this invocation", r) for r in report["runs"]]
+    rows += [("saved baseline", r) for r in report.get("baseline", {}).get("runs", [])]
+    lines = ["# Deep-pass rslice screen", "",
+             f"State: {report['status']}; {report.get('elapsed_wall_s', 0):.1f} s of "
+             f"{report['wall_cap_s']:g} s cap; {len(report['runs'])}/{len(report['planned'])} "
+             f"run records; {len(report['not_run'])} never started.", "",
+             f"Workers: {report['machine']['workers']} single-threaded; per-run cap "
+             f"{report['run_timeout_s']:g} s. Models are exactly the three caller-selected labels.", "",
+             "This is report only: no settings or CALIBRATION_STATUS are installed. Three seeds "
+             "do not establish accuracy; low scatter cannot exclude a common missed mode. The "
+             "suggested reading target (not a gate) is maximum seed SD <=2 nats and mean wall "
+             "time <=1.5 times the comparable rwalk baseline. Missing runs remain incomplete.", ""]
+    if report.get("baseline"):
+        lines += [f"Saved baseline: {report['baseline']['source']} (matching arena, prior and model identities).", ""]
+    if report.get("error"):
+        lines += ["Failure:", "```text", report["error"], "```", ""]
+    lines += ["## Per-model groups", "", "SD is the sample standard deviation (ddof=1).", ""]
+    lines += _table(["Model", "Sampler", "Step", "Clean/expected", "Complete", "Median lnZ", "Range",
+                     "SD", "Calls", "Mean seconds"], [
+        [g["label"], g["sample"], g["step_factor"], f"{g['n_clean']}/{g['expected']}", g["complete"],
+         g["median_log_z"], g["spread"], g["seed_std"], g["real_calls"], g["mean_wall_s"]]
+        for g in analysis["groups"]])
+    lines += ["", "## Comparison with rwalk 400x4", ""] + _table(
+        ["rslice step", "Complete", "Max model SD", "Mean wall ratio", "Reading target met"], [
+            [c["step_factor"], c["complete"], c["max_seed_std"], c["mean_wall_ratio"], c["reading_target_met"]]
+            for c in analysis["comparison"]])
+    lines += ["", "## Every seed", ""] + _table(
+        ["Source", "Model", "Sampler", "Step", "Seed", "lnZ", "Best lnL", "Calls", "Seconds",
+         "Converged", "Suspect/error"], [
+            [source, r["label"], r["settings"]["sample"], r["settings"]["step_factor"], r["seed"],
+             r["log_z"], r["lnl_max"], r["n_like_calls"], r["wall_s"], r["evidence_converged"],
+             "; ".join(r["suspect"]) or r.get("error") or ""] for source, r in rows])
+    if report["not_run"]:
+        lines += ["", "## Never started", ""] + _table(["Model", "Sampler", "Step", "Seed"], [
+            [r["label"], r["settings"]["sample"], r["settings"]["step_factor"], r["seed"]]
+            for r in report["not_run"]])
+    return "\n".join(lines) + "\n"
+
+
+def rslice_screen(entries, *, labels, output, workers=16, run_timeout_s=3600, wall_cap_s=7200,
+                  seed=20261026, metadata=None, include_rwalk_baseline=False, baseline=None):
+    """One bounded rslice 400x{1,2} three-seed screen on exactly three explicit models.
+
+    Optional rwalk 400x4 baseline runs use the same caps; a saved baseline is read only after
+    its arena, prior, model identities and sampler settings match. No automatic follow-up runs.
+    """
+    labels = list(labels)
+    by_label = {e.label: e for e in entries}
+    if len(labels) != 3 or len(set(labels)) != 3 or any(lb not in by_label for lb in labels):
+        raise ValueError("rslice screen needs exactly three distinct available --model labels")
+    if (not 1 <= workers <= 18 or workers != int(workers)
+            or not finite(run_timeout_s) or run_timeout_s <= 0
+            or not finite(wall_cap_s) or wall_cap_s <= 0):
+        raise ValueError("rslice screen needs 1-18 workers and positive finite time caps")
+    if include_rwalk_baseline and baseline is not None:
+        raise ValueError("choose either a saved rwalk baseline or new baseline runs")
+    entries = [by_label[lb] for lb in labels]
+    if any(e.ndim < 1 or not finite(e.log_model_prior) for e in entries):
+        raise ValueError("screen models need sampled parameters and a finite model prior")
+    metadata = metadata or {}
+    saved_baseline = _screen_baseline(baseline, entries, metadata) if baseline is not None else None
+    configs = [("rslice", 1), ("rslice", 2)] + ([("rwalk", 4)] if include_rwalk_baseline else [])
+    jobs = []
+    for model in entries:
+        for sample, factor in configs:
+            for _ in range(SEEDS):
+                next_seed = seed + len(jobs) + 1
+                if not 0 <= next_seed < 2**32:
+                    raise ValueError("seed sequence exceeds uint32 range")
+                jobs.append(dict(model=model, stage="rslice_screen" if sample == "rslice" else "rwalk_baseline",
+                                 settings={**_settings(400, factor), "sample": sample},
+                                 seed=next_seed, engine="dynesty"))
+    jobs.sort(key=lambda j: -j["settings"]["step_factor"] *
+              (j["model"].ndim + (3 if j["settings"]["sample"] == "rslice" else 20)))
+    output = Path(output).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    if any((output / name).exists() for name in ("calibration.json", "calibration.md")):
+        raise FileExistsError("choose a fresh output folder; the previous calibration is preserved")
+    start = time.monotonic()
+    report = dict(protocol="rslice_screen", status="running", started_utc=datetime.now(timezone.utc).isoformat(),
+                  output=str(output), machine=dict(platform=platform.platform(), processor=platform.processor(),
+                                                   logical_cpus=os.cpu_count(), workers=workers, threads_per_run=1),
+                  versions={p: importlib.metadata.version(p) for p in ("numpy", "scipy", "dynesty")},
+                  metadata=metadata, run_timeout_s=run_timeout_s, wall_cap_s=wall_cap_s, seed=seed,
+                  include_rwalk_baseline=include_rwalk_baseline,
+                  core=[dict(label=e.label, count=e.count, ndim=e.ndim, fastpass_ln_z=e.fastpass_ln_z,
+                             fastpass_lnl_opt=e.fastpass_lnl_opt, log_model_prior=e.log_model_prior)
+                        for e in entries], planned=[{**_base_row(j), "status": "planned"} for j in jobs],
+                  runs=[], not_run=[], analysis={})
+    if saved_baseline is not None:
+        report["baseline"] = saved_baseline
+
+    def refresh():
+        report["analysis"] = _screen_analysis(report)
+        report["elapsed_wall_s"] = time.monotonic() - start
+        write_report(report, output)
+
+    def keep(row):
+        report["runs"].append(row)
+        print(f"{row['settings']['sample']} {row['label']} seed={row['seed']} "
+              f"400x{row['settings']['step_factor']}: {row['status']}, "
+              f"lnZ={row['log_z']}, {row['wall_s']:.1f}s", flush=True)
+        refresh()
+
+    skipped = []
+    try:
+        refresh()
+        run_jobs(jobs, workers=workers, timeout_s=run_timeout_s, on_result=keep,
+                 deadline=start + wall_cap_s, skipped=skipped)
+        report["not_run"] = [{**_base_row(j), "status": "not_started", "error": WALL_CAP} for j in skipped]
+        capped = bool(skipped) or any(r.get("error") == WALL_CAP for r in report["runs"])
+        complete = len(report["runs"]) == len(jobs) and all(clean(r) for r in report["runs"])
+        report["status"] = "cut_by_wall_cap" if capped else "complete" if complete else "not_finished"
+    except BaseException:
+        report.update(status="interrupted_or_failed", error=traceback.format_exc())
+        raise
+    finally:
+        refresh()
+    return report
+
+
 # --------------------------------------------------------------------------- the problem spectrum
 def _revision():
     try:
@@ -903,9 +1098,26 @@ def load_bench_case(name, level="high", draw=0):
                    detector=truth.resolution, draw=draw)
 
 
-def load_workspace(workspace, spectrum, detector=None):
+def _refresh_fast_record(ctx, card, g, *, scan_number, q, T):
+    """Regenerate through the production fast search, preserving saved settings and hints."""
+    from isar.analyze import fast_pass
+    from isar.session import guidelines, scan_delivery
+
+    settings = guidelines.fast_pass_settings(card)
+    labels = g.structure_labels_for(scan_number=scan_number, q=q, T=T)
+    structures, _offered, warning = scan_delivery._structure_whitelist(labels, ctx, settings.mode_ceiling)
+    if warning:
+        print(f"fast-pass refresh: {warning}", file=sys.stderr, flush=True)
+    result = fast_pass.run_fast_pass(ctx, settings=settings,
+                                    peaks=g.peaks_for(scan_number=scan_number, q=q, T=T),
+                                    structures=structures)
+    return scan_delivery._fast_pass_record(result), result.timing
+
+
+def load_workspace(workspace, spectrum, detector=None, *, refresh_fast_pass=False):
     """A saved workspace spectrum: its record from the ledger, its context rebuilt through the same
-    front-end calls ``sandbox_api.preview_fit`` makes (nothing is written, the card is a copy)."""
+    front-end calls ``sandbox_api.preview_fit`` makes (nothing is written, the card is a copy).
+    Explicit ``refresh_fast_pass`` recalibrates that copy and regenerates the record in memory."""
     import copy
     from isar.reduce import combine, qc
     from isar.session import calibrations, ingest, outcome, router, scan_delivery, unit_data
@@ -932,7 +1144,6 @@ def load_workspace(workspace, spectrum, detector=None):
         qc.qc_record(rec, card)
     routed = router.route(records)
     router.apply_context_updates(routed, card, session, companion_files=plan.companion_files)
-    runcal = calibrations.calibration_view(card)
     g = guide_mod.resolve(card)
     rec = next((r for r in routed.measurements if str(r.experiment_id) == str(experiment)
                 and int(r.scan_number) == int(scan_number)), None)
@@ -941,13 +1152,26 @@ def load_workspace(workspace, spectrum, detector=None):
     sp = rec.spectra[det]
     q = [float(v) for v in sp.q] if sp.q is not None else None     # the driver's way, so the fingerprint can match
     T = unit_data.scan_temperature(rec)
+    if refresh_fast_pass:
+        for line in calibrations.refresh_tabulated(card, [rec], base_dir=workspace):
+            print(line, flush=True)
+    runcal = calibrations.calibration_view(card)
     calres = calibrations.resolve(rec, det, card, runcal)
+    if calres.held_reason:
+        raise ValueError(f"calibration held for {spectrum!r}: {calres.held_reason}")
     ctx, n_used, _reasons = scan_delivery.build_context(rec, det, card, calres, None, g,
                                                          scan_number=rec.scan_number, q=q, T=T)
     if ctx is None:
         raise ValueError(f"loader failure: only {n_used} points survive the masks for {spectrum!r}")
+    refreshed = {}
+    if refresh_fast_pass:
+        original_arena = record.get("arena_fingerprint")
+        print(f"Regenerating fast-pass record for {spectrum}; workspace files remain unchanged.", flush=True)
+        record, timing = _refresh_fast_record(ctx, card, g, scan_number=rec.scan_number, q=q, T=T)
+        refreshed = dict(original_arena_fingerprint=original_arena, refreshed_fast_pass_record=record,
+                         refreshed_fast_pass_timing=timing)
     return _loaded(ctx, record, source="workspace", spectrum=spectrum, detector=det,
-                   workspace=str(workspace))
+                   workspace=str(workspace), **refreshed)
 
 
 def spectrum_summary(record):
@@ -1062,6 +1286,13 @@ def main():
     parser.add_argument("--bench-level", default="high")
     parser.add_argument("--bench-draw", type=int, default=0)
     parser.add_argument("--output", type=Path, help="a NEW folder for calibration.json and calibration.md")
+    parser.add_argument("--refresh-fast-pass", action="store_true",
+                        help="explicitly rebuild workspace calibration and fast record in memory; requires a new rwalk baseline")
+    parser.add_argument("--rslice-screen", action="store_true",
+                        help="report-only 400-live rslice factors 1,2, three seeds on three --model labels")
+    parser.add_argument("--model", action="append", default=[], help="exact model label; repeat three times for --rslice-screen")
+    parser.add_argument("--include-rwalk-baseline", action="store_true", help="also run rwalk 400x4, three seeds per selected model")
+    parser.add_argument("--rwalk-baseline", type=Path, help="existing calibration.json with a matching rwalk 400x4 baseline")
     parser.add_argument("--workers", type=int, default=16)
     parser.add_argument("--run-timeout-s", type=float, default=3600)
     parser.add_argument("--wall-cap-s", type=float, default=7200)
@@ -1083,11 +1314,31 @@ def main():
             or (args.spectrum and not args.workspace):
         parser.error("--output and exactly one source are required: --workspace W --spectrum KEY, "
                      "or --bench-case NAME")
+    if args.refresh_fast_pass and (not args.rslice_screen or not args.workspace or args.bench_case
+                                   or not args.include_rwalk_baseline or args.rwalk_baseline):
+        parser.error("--refresh-fast-pass requires a workspace --rslice-screen and --include-rwalk-baseline")
+    if args.include_rwalk_baseline and args.rwalk_baseline:
+        parser.error("choose --include-rwalk-baseline or --rwalk-baseline, not both")
+    if args.rslice_screen:
+        if len(args.model) != 3 or len(set(args.model)) != 3:
+            parser.error("--rslice-screen requires exactly three distinct --model labels")
+        if not 1 <= args.workers <= 18:
+            parser.error("--rslice-screen permits 1-18 workers")
+    elif args.model or args.include_rwalk_baseline or args.rwalk_baseline:
+        parser.error("--model and baseline options require --rslice-screen")
     if args.bench_case:
         loaded = load_bench_case(args.bench_case, args.bench_level, args.bench_draw)
     else:
-        loaded = load_workspace(args.workspace.resolve(), args.spectrum, args.detector)
+        loaded = load_workspace(args.workspace.resolve(), args.spectrum, args.detector,
+                                refresh_fast_pass=args.refresh_fast_pass)
     meta = loaded["metadata"]
+    if args.rslice_screen:
+        report = rslice_screen(loaded["entries"], labels=args.model, output=args.output,
+                               workers=args.workers, run_timeout_s=args.run_timeout_s,
+                               wall_cap_s=args.wall_cap_s, seed=args.seed, metadata=meta,
+                               include_rwalk_baseline=args.include_rwalk_baseline, baseline=args.rwalk_baseline)
+        print(f"{report['status']}; {report['elapsed_wall_s']:.0f}s; report only; output: {args.output.resolve()}")
+        return 0
     core = core_set(loaded["entries"], meta["preferred_count"], meta["mode_ceiling"])
     meta["core_labels"] = [e.label for e in core]
     print(f"Problem spectrum {meta['spectrum']}: fast-pass state {meta['fast_pass_state']}, preferred "

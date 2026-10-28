@@ -877,6 +877,21 @@ bit-identical; the shared stencil changed synthetic log-likelihoods by at most 2
 the paired benchmark. Floating-point changes can still change an optimizer or sampler path.
 Paired evaluator timings and their limits are recorded in [the speedup plan](plans/speedup.md).
 
+**Report-only sampler screen (operator decision, 2026-10-28).** Saved time buys a shorter wait
+at today's settings. One bounded comparison of dynesty `rslice` and `rwalk` is authorized;
+it does not install sampler settings or change `CALIBRATION_STATUS`. The existing research
+tool `tools/calibrate_deep_pass.py --rslice-screen` takes exactly three explicit `--model`
+labels and runs 400 live points, step factors 1 and 2, three seeds each. A matching saved
+rwalk 400 x 4 baseline may be supplied with `--rwalk-baseline`; if calibration/record rebuilding
+is needed, `--refresh-fast-pass --include-rwalk-baseline` regenerates a record on an in-memory
+card copy and includes nine fresh baseline runs. Workspace files are not written.
+Regeneration precedes the sampling cap. Each sampling run is capped at 3600 seconds and the
+single sampling invocation at 7200 seconds; at most 18 workers are allowed, subject to shared
+machine load. The report records every seed, calls, best likelihood, wall time, sample SD,
+range and unfinished work. Maximum deciding-model SD at most 2 nats and mean wall time at
+most 1.5 times rwalk are suggested reading targets, not gates. Three agreeing seeds cannot
+exclude a common missed mode. Any adoption or further sampling requires a later decision.
+
 #### Deep-pass calibration (one pass, 2026-10-26)
 
 Report: `out\j6420291926ab\deep-calibration\a05\calibration.md` and `calibration.json` beside it (gitignored, main checkout; the
