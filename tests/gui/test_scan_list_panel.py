@@ -536,3 +536,69 @@ def test_a_view_model_with_an_intake_hands_the_read_its_holders_reads(monkeypatc
     intake.fit_inputs, intake.fact_rows, intake.summary = ("p",), ("f",), "summary"
     vm.on_workspace_changed(None)
     assert seen[-1] == {"fact_rows": ("f",), "fit_inputs": ("p",), "import_summary": "summary"}
+
+
+# ---------------------------------------------------------------------------------------------
+# C-selection: the one selection as a tuple of keys (the analysis queue's controller reads it)
+# ---------------------------------------------------------------------------------------------
+def _selection_vm(monkeypatch, snap):
+    box = {"snap": snap}
+    monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda _ws, **_reads: box["snap"])
+    vm = ScanListViewModel(SimpleNamespace())
+    return vm, _Spy(vm.selection_changed), box
+
+
+def test_selecting_a_spectrum_selects_its_key_and_a_pooled_master_its_own(monkeypatch):
+    vm, spy, _ = _selection_vm(monkeypatch, _pooled_snapshot())
+    assert vm.selected_keys() == ()
+    vm.select("tavi:11:det")
+    vm.select("tavi:900:det")                                  # a pooled master is a selection like any other
+    vm.select(None)
+    assert spy.calls == [(("tavi:11:det",),), (("tavi:900:det",),), ((),)]
+    assert vm.selected_keys() == ()
+
+
+def test_select_keys_is_a_user_click_and_takes_the_first_key(monkeypatch):
+    vm, spy, _ = _selection_vm(monkeypatch, _pooled_snapshot())
+    display = _Spy(vm.display_requested)
+    vm.select_keys(["tavi:12:det", "tavi:11:det"])
+    assert vm.selected_keys() == ("tavi:12:det",) and vm.current_key == "tavi:12:det"
+    assert len(display.calls) == 1                             # the display follows, as for select()
+    vm.select_keys(())
+    assert vm.selected_keys() == () and vm.current_key is None
+    assert spy.calls == [(("tavi:12:det",),), ((),)]
+
+
+def test_a_focused_scan_set_row_selects_no_analyzer(monkeypatch):
+    vm, spy, _ = _selection_vm(monkeypatch, _pooled_snapshot())
+    vm.select("tavi:11:det")
+    vm.select_set("tavi:11")                                   # the set row picked: the list highlights no spectrum
+    assert vm.selected_keys() == () and vm.current_key == "tavi:11:det"      # the display's spectrum stays
+    assert spy.calls[-1] == ((),)
+    vm.select_set("tavi:11")                                   # no change, no second signal
+    assert len(spy.calls) == 2
+    vm.select("tavi:12:det")                                   # a spectrum ends the focus
+    assert vm.selected_keys() == ("tavi:12:det",)
+
+
+def test_the_active_unit_following_changes_the_selection_only_when_it_differs(monkeypatch):
+    vm, spy, _ = _selection_vm(monkeypatch, _pooled_snapshot())
+    vm.set_active_key("tavi:11:det")
+    vm.set_active_key("tavi:11:det")
+    vm.set_active_key("not:in:list")                           # a key the snapshot lacks leaves the current one
+    assert spy.calls == [(("tavi:11:det",),)] and vm.selected_keys() == ("tavi:11:det",)
+
+
+def test_a_re_read_that_drops_the_selected_spectrum_or_the_focused_set_says_so(monkeypatch):
+    vm, spy, box = _selection_vm(monkeypatch, _pooled_snapshot())
+    vm.select("tavi:11:det")
+    del spy.calls[:]
+    box["snap"] = dataclasses.replace(box["snap"], sets=box["snap"].sets[1:])
+    vm.on_workspace_changed()
+    assert spy.calls == [((),)] and vm.selected_keys() == ()
+    vm.select("tavi:12:det")
+    vm.select_set("tavi:12")
+    del spy.calls[:]
+    box["snap"] = dataclasses.replace(box["snap"], sets=())
+    vm.on_workspace_changed()
+    assert vm.selected_keys() == () and spy.calls[-1] == ((),)

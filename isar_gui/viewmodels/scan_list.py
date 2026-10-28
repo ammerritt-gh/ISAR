@@ -166,6 +166,7 @@ class ScanListViewModel(ViewModel):
     current_changed = Signal(object)    # str key | None: the list's current spectrum or pooled row
     inspect_requested = Signal(str)     # open the inspector column on this key
     set_focused = Signal(object)        # str set key | None: a scan-set row was picked (no spectrum is meant)
+    selection_changed = Signal(tuple)   # tuple[str, ...]: the selected keys, list order (C-selection)
 
     def __init__(self, ws, parent=None) -> None:
         super().__init__(ws, parent)
@@ -192,6 +193,23 @@ class ScanListViewModel(ViewModel):
     @property
     def focus_set(self) -> str | None:
         return self._focus_set
+
+    def selected_keys(self) -> tuple[str, ...]:
+        """The selected spectrum or pooled keys, list order (C-selection). Today's one selection: the current
+        key, and none while a scan-set row is focused, so a panel never names a spectrum the list no longer
+        highlights."""
+        return () if self._current_key is None or self._focus_set is not None else (self._current_key,)
+
+    def select_keys(self, keys) -> None:
+        """Select ``keys`` as a user click would (with ``select``'s signals). One selection for now: the first."""
+        keys = tuple(keys)
+        self.select(keys[0] if keys else None)
+
+    def set_queue(self, controller) -> None:
+        """The analysis queue controller whose marks the list shows (filled by the queue-marks unit)."""
+
+    def _emit_selection(self) -> None:
+        self.selection_changed.emit(self.selected_keys())
 
     @property
     def sort(self) -> str:
@@ -306,6 +324,8 @@ class ScanListViewModel(ViewModel):
             self.current_changed.emit(None)
         if lost_set:
             self.set_focused.emit(None)
+        if cleared or lost_set:
+            self._emit_selection()
 
     # ---- selection -----------------------------------------------------------------------
     def select(self, key: str | None) -> None:
@@ -316,6 +336,7 @@ class ScanListViewModel(ViewModel):
         self._current_key = key
         self._focus_set = None
         self.current_changed.emit(key)
+        self._emit_selection()
         row = None if key is None else self._snapshot.spectrum(key)
         fit = None if row is None else row.fit
         self.display_requested.emit(key if fit is None else fit)
@@ -326,6 +347,7 @@ class ScanListViewModel(ViewModel):
         if set_key != self._focus_set and self._snapshot.scan_set(set_key) is not None:
             self._focus_set = set_key
             self.set_focused.emit(set_key)
+            self._emit_selection()
 
     def inspect(self, key: str) -> None:
         """Select ``key`` if it is not current, then ask for the inspector column."""
@@ -341,6 +363,7 @@ class ScanListViewModel(ViewModel):
         self._current_key = key
         self._focus_set = None
         self.current_changed.emit(key)
+        self._emit_selection()
 
     # ---- what the filter lets through -----------------------------------------------------
     def _sorted_sets(self) -> list[ScanSetRow]:
