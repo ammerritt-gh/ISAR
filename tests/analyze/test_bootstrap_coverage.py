@@ -23,6 +23,7 @@ def context_from_ground_truth(gt, counts) -> ScanContext:
                        instrument="synthetic", energy_status="needs_zero")
 
 
+@pytest.mark.statistical
 @pytest.mark.slow
 def test_bootstrap_omega0_coverage_on_synthetic_truth():
     cfg = config.default_run_config()

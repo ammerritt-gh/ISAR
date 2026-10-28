@@ -63,6 +63,7 @@ def _coverages(target, R, seed0):
     return dict(used=used, hesse=hesse, hesse_valid=hesse_valid, boot=boot, bayes=bayes)
 
 
+@pytest.mark.statistical
 @pytest.mark.slow
 def test_three_methods_agree_and_calibrated_when_well_counted():
     """Well-counted regime: HESSE, bootstrap, posterior all ≈calibrated on ω₀, and bootstrap≈
@@ -79,6 +80,7 @@ def test_three_methods_agree_and_calibrated_when_well_counted():
     assert abs(boot_cov - bayes_cov) <= 0.25, f"boot={boot_cov:.2f} vs bayes={bayes_cov:.2f}"
 
 
+@pytest.mark.statistical
 @pytest.mark.slow
 def test_bootstrap_and_posterior_agree_and_hold_at_low_counts():
     """Sparse regime: the two roads that replace the Jacobian stay calibrated on ω₀ and keep

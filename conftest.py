@@ -113,3 +113,18 @@ os.environ["ISAR_EXPERIMENTS_ROOT"] = os.path.join(_profile, "experiments")
 def pytest_unconfigure(config):
     if _PROFILE_OWNER:
         shutil.rmtree(_profile, ignore_errors=True)  # scratch folder in the system temp; a leftover is harmless
+
+
+def pytest_addoption(parser):
+    parser.addoption("--run-statistical", action="store_true", default=False,
+                     help="Include repeated-fit coverage/bias campaigns (explicit opt-in).")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Long statistical campaigns never run as an accidental side effect of a full suite."""
+    if config.getoption("--run-statistical"):
+        return
+    campaigns = [item for item in items if item.get_closest_marker("statistical")]
+    if campaigns:
+        items[:] = [item for item in items if not item.get_closest_marker("statistical")]
+        config.hook.pytest_deselected(items=campaigns)

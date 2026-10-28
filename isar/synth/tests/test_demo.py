@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from isar.analyze import estimators
-from isar.synth import config, demo
+from isar.synth import config, demo, score
 
 
 # ----------------------------------------------------------------- Layer 1: algebra
@@ -76,10 +76,29 @@ def test_plot_layer1_smoke(tmp_path):
     assert out.exists() and out.stat().st_size > 0
 
 
+@pytest.fixture
+def layer2_result():
+    """Distinct finite values exercise every plotted estimator/count series without fitting."""
+    cfg = config.RunConfig(H_values=(demo.DEMO_H,), target_counts_levels=(30, 100), M=4)
+    cells = [config.CellScore(
+        H=demo.DEMO_H, target_peak_counts=target, estimator=e, n_reliable=4,
+        gamma_bias_mean=0.02 * (i - 1), gamma_bias_std=0.1,
+        gamma_pull_std=0.9 + 0.1 * i)
+        for i, e in enumerate(demo.ESTIMATOR_ORDER) for target in cfg.target_counts_levels]
+    return demo.Layer2Result(
+        H=demo.DEMO_H, targets=cfg.target_counts_levels, T=cfg.T, M=cfg.M,
+        run=score.ScoreRun(cfg=cfg, scores=cells), amp_true=np.array([2.0, 5.0]),
+        amp_bias={e: np.array([0.02 * (i - 1), 0.01 * (i - 1)])
+                  for i, e in enumerate(demo.ESTIMATOR_ORDER)},
+        amp_bias_sem={e: np.array([0.01, 0.005]) for e in demo.ESTIMATOR_ORDER})
+
+
 # ----------------------------------------------------------- slow: real DHO fits
 @pytest.mark.slow
 def test_layer2_end_to_end_dev():
-    cfg = config.default_run_config(dev_mode=True)
+    # This is a shape/integration check, not a Monte Carlo calibration campaign.
+    cfg = config.RunConfig(H_values=(demo.DEMO_H,), target_counts_levels=(30, 100),
+                           M=3, dev_mode=True)
     l2 = demo.run_layer2(cfg, n_workers=1)
     assert l2.H == demo.DEMO_H
     # one amp_true and sas_true entry per target
@@ -93,6 +112,7 @@ def test_layer2_end_to_end_dev():
         assert len(l2.amp_bias_sem[e]) == len(cfg.target_counts_levels)
 
 
+@pytest.mark.statistical
 @pytest.mark.slow
 def test_layer2_normalization_straddle_low_counts():
     # At 15 cts the normalization straddle is strongest (M=1000 gate: neyman=-14%, pearson>0).
@@ -106,6 +126,7 @@ def test_layer2_normalization_straddle_low_counts():
     assert nb < bc_b < pe, f"straddle violated: neyman={nb:.4f} bc={bc_b:.4f} pearson={pe:.4f}"
 
 
+@pytest.mark.statistical
 @pytest.mark.slow
 def test_layer2_high_count_agreement():
     # At 300 cts all three Gamma-bias values agree within 0.05 meV.
@@ -116,10 +137,8 @@ def test_layer2_high_count_agreement():
     assert max(biases) - min(biases) < 0.05
 
 
-@pytest.mark.slow
-def test_plot_layer2_smokes(tmp_path):
-    cfg = config.default_run_config(dev_mode=True)
-    l2 = demo.run_layer2(cfg, n_workers=1)
+def test_plot_layer2_smokes(tmp_path, layer2_result):
+    l2 = layer2_result
     for fn, func in [
         ("gamma.png", demo.plot_gamma_bias),
         ("norm.png", demo.plot_normalization_bias),
@@ -131,11 +150,18 @@ def test_plot_layer2_smokes(tmp_path):
         assert out.exists() and out.stat().st_size > 0
 
 
-@pytest.mark.slow
-def test_main_dev_smoke(tmp_path, monkeypatch):
+def test_main_dev_smoke(tmp_path, monkeypatch, layer2_result):
     monkeypatch.setattr(sys, "argv", ["demo", "--dev", "--workers", "1"])
     monkeypatch.setattr(config, "FIGURE_DIR", tmp_path)
+    calls = []
+
+    def run_layer2(cfg, *, n_workers):
+        calls.append((cfg, n_workers))
+        return layer2_result
+
+    monkeypatch.setattr(demo, "run_layer2", run_layer2)
     demo.main()
+    assert calls == [(config.default_run_config(dev_mode=True), 1)]
     expected = [
         "demo_layer1_constant_rate.png",
         "demo_dho_gamma_bias.png",

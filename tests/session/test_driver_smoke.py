@@ -176,13 +176,8 @@ def test_run_batch_emits_timer_stages(tmp_path):
 
 
 # --------------------------------------------------------------------------- IN8 generated-pair driver
-# The three IN8 campaign smokes are slow-marked (owner rule 2026-08-08, condition fired): under
-# evidence selection their guideline-declared peaks force 2-mode offers whose railed superset
-# candidates escalate to dynesty inside every master fit — ~76 s each at ESCALATION_N_LIVE=128
-# (measured serial, post-cut) against the not-slow lane's ~1 min contract. The full lane still
-# runs them pre-merge.
-@pytest.mark.slow
-def test_in8_provenance_carries_fit_seconds(tmp_path):
+# Timing persistence and exclusion use fixed fits; numerical recovery stays end-to-end.
+def test_in8_provenance_carries_fit_seconds(tmp_path, fixed_fit):
     """A fitted scan stamps entry.provenance['fit_seconds'] (+ two_stage/errors_attach), which rides
     home through the ledger round-trip and shows up in the fit_scans stage per_task list."""
     from isar.parsers import ill_in8
@@ -190,7 +185,7 @@ def test_in8_provenance_carries_fit_seconds(tmp_path):
     ws = _init_workspace(tmp_path, ill_in8)
 
     timer = StageTimer(errors_tier="full", M=30)
-    driver.run_batch(ws, [data], M=30, timer=timer)
+    driver.run_batch(ws, [data], M=30, timer=timer, workers=1)
 
     # The reloaded ledger keeps fit_seconds on the fitted scan's provenance (round-trip).
     _card, session = ws.load()
@@ -199,7 +194,7 @@ def test_in8_provenance_carries_fit_seconds(tmp_path):
     prov = e82.provenance
     assert isinstance(prov.get("fit_seconds"), float) and prov["fit_seconds"] >= 0.0
     assert "two_stage_seconds" in prov  # attached from the fit dict
-    assert prov["fast_pass"]["total_seconds"] > 0.0     # C-timing's per-spectrum entry
+    assert prov["fast_pass"]["total_seconds"] == 0.125     # C-timing's per-spectrum entry
 
     # The fit_scans stage aggregates the per-task timing for the fitted scan.
     fit = next(s for s in timer.to_dict()["stages"] if s["stage"] == "fit_scans")
@@ -237,19 +232,18 @@ def test_in8_driver_end_to_end(tmp_path):
     assert (ws.report_dir / "results.csv").exists()
 
 
-@pytest.mark.slow
-def test_in8_guideline_exclusion_refits_one(tmp_path):
+def test_in8_guideline_exclusion_refits_one(tmp_path, fixed_fit):
     from isar.parsers import ill_in8
     data = write_in8_pair(tmp_path / "in8")
     ws = _init_workspace(tmp_path, ill_in8)
-    driver.run_batch(ws, [data], M=30)
+    driver.run_batch(ws, [data], M=30, workers=1)
 
     # The correction channel: exclude the main scan in the card, re-run -> exactly that scan changes.
     ws.policy_path.write_text(
         ws.policy_path.read_text(encoding="utf-8")
         + f'\n[[fitting.overrides]]\nscan = {IN8_MAIN_NUMOR}\nexclude = true\nreason = "smoke exclude"\n',
         encoding="utf-8")
-    s2 = driver.run_batch(ws, [data], M=30)
+    s2 = driver.run_batch(ws, [data], M=30, workers=1)
     _card, session = ws.load()
     e82 = _find(session, IN8_MAIN_NUMOR)
     assert e82.status == "excluded" and "smoke exclude" in "; ".join(e82.reasons)

@@ -26,6 +26,28 @@ command that regenerates its evidence. Where a capability is not yet wired in, i
 
 ---
 
+## Running the statistical checks
+
+Ordinary full validation (serial or parallel) includes real-fit integrations and
+serial/parallel equivalence, but deselects tests marked `statistical`. On the operator's
+explicit request, run the repeated-fit campaigns with:
+
+```bat
+python -m pytest --run-statistical -m statistical -n 4 --dist worksteal --durations=20
+```
+
+Wrap the command with a wall-clock timer and a timeout that kills its process tree.
+This lane contains the bootstrap coverage test, two Bayesian coverage comparisons, and
+two DHO estimator-bias campaigns. Their replica counts, sampler settings and acceptance
+tolerances are unchanged. Naming a test or `-m statistical` alone does not opt in;
+`--run-statistical` is required by the repository's collection hook in `conftest.py`.
+
+Routine tests check the behavior they own: session routing, certification bookkeeping,
+timing persistence and exclusion use the explicit fixed-fit fixture in
+`tests/session/conftest.py`, while parsing, calibration, collation, persistence and
+certification still execute. Demo plot/CLI smokes use a constructed `Layer2Result`;
+dedicated integration tests retain real fitting. Production fitting settings are unchanged.
+
 ## 0. Three questions, one vocabulary
 
 Every number in a `results.csv` row answers exactly one of the three questions, and trusting a

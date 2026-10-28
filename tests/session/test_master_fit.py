@@ -224,13 +224,8 @@ def test_force_masters_unknown_id_fails_loud(monkeypatch):
                             force_masters=frozenset({"master:nope"}))
 
 
-# The run_batch campaign family below is slow-marked (owner rule 2026-08-08): each test drives
-# real fits over synthetic IN8 files, and under evidence selection every clean synthetic scan
-# tends to offer a junk 2-mode superset whose railed member escalates to dynesty — per-scan
-# escalation cost × scans × batches made the worst of these (~drains_wave) run 30+ minutes in
-# the fast lane. The full lane still runs them pre-merge; pytest-timeout (900 s) bounds each.
-@pytest.mark.slow
-def test_force_masters_accepts_a_bare_string_as_one_id(tmp_path, monkeypatch):
+# Routing tests keep real driver plumbing, with no model search.
+def test_force_masters_accepts_a_bare_string_as_one_id(tmp_path, monkeypatch, fixed_fit):
     # A bare string is one ledger id, not an iterable of characters; iterating it would produce
     # one-character ids that match nothing and fail the targeted refit loudly but wrongly.
     data = _in8_file(tmp_path, "STRM", 54700, 2.25)
@@ -293,8 +288,7 @@ def _detectors_no_timing(detectors):
     return out
 
 
-@pytest.mark.slow
-def test_run_batch_routes_scan_and_master_bootstrap_caps_by_role(tmp_path, monkeypatch):
+def test_run_batch_routes_scan_and_master_bootstrap_caps_by_role(tmp_path, monkeypatch, fixed_fit):
     data = _in8_file(tmp_path, "ROLEM", 54500, 2.25)
     ws = Workspace.open(tmp_path / "role-ws")
     ws.root.mkdir(parents=True, exist_ok=True)
@@ -320,9 +314,8 @@ def test_run_batch_routes_scan_and_master_bootstrap_caps_by_role(tmp_path, monke
     assert observed == {"scan_M": 17, "master_M": 123}
 
 
-@pytest.mark.slow
 def test_run_batch_routes_optional_error_tiers_by_role_and_keeps_legacy_default(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, fixed_fit):
     data = _in8_file(tmp_path, "ROLET", 54600, 2.25)
 
     def execute(name, **tier_kwargs):
@@ -354,13 +347,7 @@ def test_run_batch_routes_optional_error_tiers_by_role_and_keeps_legacy_default(
         "scan": "fast", "master": "cheap"}
 
 
-# The three heaviest campaign tests once exceeded the global 900 s ceiling (the full lane's
-# worker-kill failures of 2026-08-08 are exactly these three): explicit budgets so the full lane
-# completes with named results. Verified by full-lane rerun 2026-08-09 — the budgets hold, and
-# under the suite's ISAR_ESCALATION_N_LIVE=32 cap these now run 614 s / 405 s / 385 s against a
-# 26:16 -> 11:25 whole-lane time, so the budgets are headroom rather than a live constraint.
-# They stay: the cap is a test-side measure, and the real cost reduction is still the N-mode
-# growth policy (H8, design recorded, not implemented).
+# Real numerical and spawned-pool equivalence is deliberately retained here.
 @pytest.mark.timeout(2700)
 @pytest.mark.slow
 def test_parallel_masters_match_serial_end_to_end(tmp_path):
@@ -421,9 +408,8 @@ def test_parallel_masters_match_serial_end_to_end(tmp_path):
     assert not any(k.startswith("master:") for k in session.scans)
 
 
-@pytest.mark.slow
 def test_master_only_certification_fits_no_physical_rows_and_reuses_publication(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, fixed_fit):
     from isar.drive import loop as drive_loop
 
     data = _in8_file(tmp_path, "CERT", 57000, 2.25)
@@ -504,10 +490,8 @@ def test_master_only_certification_fits_no_physical_rows_and_reuses_publication(
     assert progress["completed"] == 1 and progress["reused_workspace"] == 1
 
 
-@pytest.mark.timeout(2700)
-@pytest.mark.slow
 def test_master_certification_subset_refits_only_dirty_q_and_preserves_clean_master(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, fixed_fit):
     from isar.drive import loop as drive_loop
 
     first_data = _in8_file(tmp_path, "SUBA", 57500, 2.15)
@@ -563,7 +547,7 @@ def test_master_certification_subset_refits_only_dirty_q_and_preserves_clean_mas
     assert after.scans[masters[1].scan_id].provenance["analysis_tier"] == "full"
 
 
-def test_master_certification_survives_a_master_born_out_of_key_order(tmp_path, monkeypatch):
+def test_master_certification_survives_a_master_born_out_of_key_order(tmp_path, monkeypatch, fixed_fit):
     """A master keeps the synthetic scan number it was born with; a later master with a lower
     collation key shifts every sorted position after it. The final certification compared the
     ledger-derived group index with the run's sorted position and died on "group-index drift"
@@ -623,10 +607,8 @@ def test_master_certification_survives_a_master_born_out_of_key_order(tmp_path, 
     assert dict(seen)[born_first.scan_id] == master_delivery._MASTER_SCAN_BASE
 
 
-@pytest.mark.timeout(2700)
-@pytest.mark.slow
 def test_master_certification_drains_wave_and_checkpoints_success_after_worker_failure(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, fixed_fit):
     from isar.drive import loop as drive_loop
 
     first_data = _in8_file(tmp_path, "FAILA", 58000, 2.15)
