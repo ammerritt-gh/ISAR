@@ -91,7 +91,7 @@ _LOG_FORMAT = "%(asctime)s %(process)d %(name)s %(levelname)s: %(message)s"
 
 
 # --- Job Objects: one per item, so a stop kills its whole tree (win32) ---------------------------------
-# A Qt-free copy of isar_gui/process.py's _WinJob (this layer may not import isar_gui), plus wait_empty.
+# The one Job Object wrapper: Qt-free and stdlib-only, so isar_gui/process.py imports this class for its runner.
 if sys.platform == "win32":
     from ctypes import wintypes
 
@@ -155,8 +155,9 @@ if sys.platform == "win32":
 
 
 class _WinJob:
-    """One kill-on-close Windows Job Object holding one item's process tree. Closing the handle, explicitly
-    or because the service died, terminates every process still in it."""
+    """One kill-on-close Windows Job Object holding one process tree (an item's here, the GUI runner's
+    subprocess in isar_gui.process). Closing the handle, explicitly or because its owner died, terminates
+    every process still in it."""
 
     def __init__(self, handle) -> None:
         self._handle = handle

@@ -28,7 +28,16 @@ WORKSPACE_API_DIR = REPO_ROOT / "isar" / "workspace_api"
 # (any depth below those). Everything else from isar.* — drive, session, analyze, reduce, report,
 # schema, cli, parsers … — is forbidden.
 # The intake writers are called in process by the GUI (saves go straight into the running ISAR).
-GUI_ALLOWED = {"isar.workspace_api", "isar.geometry", "isar.plotspec", "isar.intake.settings", "isar.intake.values"}
+GUI_ALLOWED = {
+    "isar.workspace_api", "isar.geometry", "isar.plotspec", "isar.intake.settings", "isar.intake.values",
+    # C-schedule: the analysis queue's bookkeeping, which the design gives to the GUI ("the GUI keeps the
+    # two queues"). Stdlib only, no I/O, no clock, no threads, imports nothing from isar.
+    "isar.session.analysis_queue",
+    # That one name only: the Job Object wrapper, so the GUI's process runner and the analysis service
+    # share one copy. The module is stdlib-only at import; nothing else of it is allowed (the resolved-name
+    # check in _offenders admits `from isar.session.analysis_service import _WinJob` and no other name).
+    "isar.session.analysis_service._WinJob",
+}
 
 # G7: only the sandbox viewmodel may cross from Qt land to the one frozen-config preview API.
 SANDBOX_VIEWMODEL = GUI_DIR / "viewmodels" / "sandbox.py"
@@ -202,3 +211,19 @@ def test_allowlist_logic_flags_a_known_violation():
     assert not _allowed("isar.intake.values", WORKSPACE_API_ALLOWED)  # the read facade never writes
     assert _allowed("isar.intake.values", GUI_ALLOWED)
     assert not _constrained("isar_gui.viewmodels.base")  # sibling package is not constrained
+
+
+def test_the_service_allowance_is_one_name_and_the_queue_module(tmp_path):
+    """The two G16 additions admit exactly what the rationale says: the queue module, and `_WinJob` of the service."""
+    src = tmp_path / "probe.py"
+
+    def offenders(text: str) -> list:
+        src.write_text(text, encoding="utf-8")
+        return _offenders(src, GUI_ALLOWED)
+
+    assert offenders("from isar.session.analysis_queue import AnalysisQueue\n") == []
+    assert offenders("from isar.session.analysis_service import _WinJob\n") == []
+    assert offenders("from isar.session.analysis_service import main\n")           # any other name is refused
+    assert offenders("import isar.session.analysis_service\n")                       # so is the whole module
+    assert offenders("from isar.session import analysis_service\n")
+    assert offenders("from isar.session.driver import run_batch\n")                  # the rest of session stays out

@@ -11,7 +11,6 @@ touches a workspace; it only runs a command and relays bytes.
 """
 from __future__ import annotations
 
-import ctypes
 import logging
 import sys
 from datetime import datetime
@@ -19,122 +18,11 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
+# The one Job Object wrapper (kill-on-close, one subprocess tree); the engine's analysis service uses the same
+# class. Stdlib-only at import, and the only name the GUI takes from isar.session.analysis_service.
+from isar.session.analysis_service import _WinJob
+
 log = logging.getLogger(__name__)
-
-if sys.platform == "win32":
-    from ctypes import wintypes
-
-    _K32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    _KILL_ON_JOB_CLOSE = 0x2000
-    _EXTENDED_LIMIT_INFO = 9            # JobObjectExtendedLimitInformation
-    _PROCESS_SET_QUOTA = 0x0100
-    _PROCESS_TERMINATE = 0x0001
-
-    # Declare prototypes: ctypes defaults every restype/argument to a 32-bit c_int, which would
-    # silently truncate 64-bit HANDLEs on return AND on the way back in. Handles happen to be
-    # small today; do not rely on it.
-    _K32.CreateJobObjectW.restype = wintypes.HANDLE
-    _K32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
-    _K32.SetInformationJobObject.restype = wintypes.BOOL
-    _K32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int,
-                                             wintypes.LPVOID, wintypes.DWORD)
-    _K32.OpenProcess.restype = wintypes.HANDLE
-    _K32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-    _K32.AssignProcessToJobObject.restype = wintypes.BOOL
-    _K32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
-    _K32.TerminateJobObject.restype = wintypes.BOOL
-    _K32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
-    _K32.CloseHandle.restype = wintypes.BOOL
-    _K32.CloseHandle.argtypes = (wintypes.HANDLE,)
-
-    class _IoCounters(ctypes.Structure):
-        _fields_ = [(n, ctypes.c_uint64) for n in (
-            "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-            "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
-
-    class _BasicLimits(ctypes.Structure):
-        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
-                    ("PerJobUserTimeLimit", ctypes.c_int64),
-                    ("LimitFlags", wintypes.DWORD),
-                    ("MinimumWorkingSetSize", ctypes.c_size_t),
-                    ("MaximumWorkingSetSize", ctypes.c_size_t),
-                    ("ActiveProcessLimit", wintypes.DWORD),
-                    ("Affinity", ctypes.c_size_t),
-                    ("PriorityClass", wintypes.DWORD),
-                    ("SchedulingClass", wintypes.DWORD)]
-
-    class _ExtendedLimits(ctypes.Structure):
-        _fields_ = [("BasicLimitInformation", _BasicLimits),
-                    ("IoInfo", _IoCounters),
-                    ("ProcessMemoryLimit", ctypes.c_size_t),
-                    ("JobMemoryLimit", ctypes.c_size_t),
-                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
-                    ("PeakJobMemoryUsed", ctypes.c_size_t)]
-
-
-class _WinJob:
-    """One Windows Job Object holding one subprocess tree (best-effort — see ``kill_tree``).
-
-    ``KILL_ON_JOB_CLOSE`` means closing the handle — explicitly, or implicitly when the GUI
-    process dies and the OS reclaims its handles — terminates every process still in the job.
-    GUI death therefore takes a running campaign's tree with it by design; campaigns are
-    crash-resumable, so nothing is lost beyond the in-flight iteration.
-    """
-
-    def __init__(self) -> None:
-        self._handle = None
-
-    @classmethod
-    def create(cls) -> _WinJob | None:
-        """A job with kill-on-close set, or ``None`` (logged) when the OS refuses."""
-        if sys.platform != "win32":
-            return None
-        handle = _K32.CreateJobObjectW(None, None)
-        if not handle:
-            log.warning("job object create failed (winerror %s)", ctypes.get_last_error())
-            return None
-        info = _ExtendedLimits()
-        info.BasicLimitInformation.LimitFlags = _KILL_ON_JOB_CLOSE
-        if not _K32.SetInformationJobObject(handle, _EXTENDED_LIMIT_INFO,
-                                            ctypes.byref(info), ctypes.sizeof(info)):
-            log.warning("job object limit set failed (winerror %s)", ctypes.get_last_error())
-            _K32.CloseHandle(handle)
-            return None
-        job = cls()
-        job._handle = handle
-        return job
-
-    def assign(self, pid: int) -> bool:
-        if self._handle is None:
-            return False
-        proc = _K32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, int(pid))
-        if not proc:
-            log.warning("job assign: OpenProcess(%s) failed (winerror %s)",
-                        pid, ctypes.get_last_error())
-            return False
-        try:
-            ok = bool(_K32.AssignProcessToJobObject(self._handle, proc))
-            if not ok:
-                log.warning("job assign: AssignProcessToJobObject(%s) failed (winerror %s)",
-                            pid, ctypes.get_last_error())
-            return ok
-        finally:
-            _K32.CloseHandle(proc)
-
-    def terminate(self) -> bool:
-        """Kill every process in the job atomically (no enumeration race)."""
-        if self._handle is None:
-            return False
-        ok = bool(_K32.TerminateJobObject(self._handle, 1))
-        if not ok:
-            log.warning("TerminateJobObject failed (winerror %s)", ctypes.get_last_error())
-        return ok
-
-    def close(self) -> None:
-        """Close the handle (idempotent) — kill-on-close reaps any process still inside."""
-        handle, self._handle = self._handle, None
-        if handle:
-            _K32.CloseHandle(handle)
 
 
 class ProcessRunner(QObject):
@@ -200,6 +88,13 @@ class ProcessRunner(QObject):
 
     def is_running(self) -> bool:
         return self._proc is not None and self._proc.state() != QProcess.ProcessState.NotRunning
+
+    def write_line(self, text: str) -> bool:
+        """Send ``text`` plus a newline (UTF-8) to the process's stdin; False when it is not running or the
+        write was refused. The write is buffered and flushed by the event loop."""
+        if not self.is_running():
+            return False
+        return self._proc.write(text.encode("utf-8") + b"\n") >= 0
 
     def stop(self) -> None:
         """Kill the running process (if any). ``finished`` still fires with its (non-zero) code."""

@@ -61,3 +61,17 @@ def test_stderr_is_merged_into_the_stream(qtbot):
     with qtbot.waitSignal(runner.finished, timeout=15000):
         runner.start([sys.executable, "-c", "import sys; sys.stderr.write('boom\\n')"])
     assert any("boom" in ln for ln in lines)
+
+
+def test_write_line_reaches_the_child_utf8_and_is_refused_when_not_running(qtbot):
+    runner = ProcessRunner()
+    assert runner.write_line("nobody is listening") is False          # never started
+    lines: list[str] = []
+    runner.line.connect(lines.append)
+    echo = ("import sys; sys.stdout.reconfigure(encoding='utf-8'); "
+            "print('GOT ' + sys.stdin.readline().strip(), flush=True)")
+    with qtbot.waitSignal(runner.finished, timeout=15000):
+        runner.start([sys.executable, "-c", echo])
+        assert runner.write_line("café μ") is True
+    assert "GOT café μ" in lines
+    assert runner.write_line("too late") is False                     # ended
