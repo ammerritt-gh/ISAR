@@ -7,7 +7,8 @@ uses"). The reads are the backend's own contracts, returned unchanged:
 * on the GUI thread, from a fresh ``Workspace(root)`` per reload: ``fact_rows``, ``conditions``,
   ``summary`` (``import_summary``) and ``settings`` (``current_settings``), then ``changed``;
 * on a worker thread: ``fit_inputs`` and ``attention`` (``needs_attention``), which parse the
-  fit-inputs log and so cost about a third of a second each; then ``worker_changed``.
+  fit-inputs log and so cost about a third of a second each, and ``current`` (``current_passes``: which
+  stored passes of every analyzer file are current, C-current-read); then ``worker_changed``.
 
 The worker follows :mod:`isar_gui.viewmodels.sandbox`: one thread at a time, the newest request
 pending, results through a queue polled on the GUI thread, no Qt on the worker. Each reload takes a
@@ -33,6 +34,7 @@ from isar.intake import settings as intake_settings
 from isar.intake import values as intake_values
 from isar.intake.settings import SaveResult
 from isar.workspace_api import Workspace, import_summary, needs_attention
+from isar.workspace_api.currentness import current_passes
 from isar_gui import collector_guard
 
 log = logging.getLogger(__name__)
@@ -60,31 +62,37 @@ def _work(results: queue.SimpleQueue, root: Path, generation: int) -> None:
     """The worker thread's reads (NO Qt access, the collector off for its whole life); the answer goes back
     through ``results``."""
     try:
-        # shortcut: the worker parses the fit-inputs log twice per reload (once in fit_inputs, once inside
-        # needs_attention); ask the intake job for a needs_attention that takes the fit-inputs read if a
-        # reload during a run is seen to lag.
+        # shortcut: the worker reads the fit-inputs log three times per reload (fit_inputs, needs_attention
+        # and current_passes each parse it); ask the intake job for reads that share one parse if a reload
+        # during a run is seen to lag.
         fit_inputs = tuple(Workspace(root).fit_inputs())
         attention = needs_attention(root)
-        item = (generation, root, attention, fit_inputs, None)
+        try:
+            current = current_passes(root, None)
+        except Exception:  # noqa: BLE001 - logged; the adds then fall back to "nothing is current" and the item start rechecks
+            log.exception("intake worker current_passes of %s failed", root)
+            current = None
+        item = (generation, root, attention, fit_inputs, current, None)
     except Exception as exc:  # noqa: BLE001 - reported on the GUI thread as `error`
         log.exception("intake worker read of %s failed", root)
-        item = (generation, root, None, None, f"worker: {type(exc).__name__}: {exc}")
+        item = (generation, root, None, None, None, f"worker: {type(exc).__name__}: {exc}")
     results.put(item)
 
 
 class IntakeState(QObject):
     changed = Signal()                 # after the GUI-thread reads are swapped in (bind, reload, after a save)
-    worker_changed = Signal()          # after the worker's reads (attention, fit_inputs) are swapped in together
+    worker_changed = Signal()          # after the worker's reads (attention, fit_inputs, current) are swapped in together
     saved = Signal(str)                # SaveOutcome.message of every save, ok or not, for the Log
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._root: Path | None = None
         self._fact_rows = self._conditions = self._summary = self._settings = None
-        self._attention = self._fit_inputs = None
+        self._attention = self._fit_inputs = self._current = None
         self._error: str | None = None
         self._busy: str | None = None
         self._generation = 0            # bumped by every reload; a worker result carries the one it served
+        self._answered = 0              # the generation of the worker answer swapped in last
         self._active = False            # exactly one worker thread at a time, until it is seen ended
         self._thread: threading.Thread | None = None
         self._pending: tuple[Path, int] | None = None   # the newest request not yet started
@@ -98,7 +106,7 @@ class IntakeState(QObject):
         """The experiment bound (or ``None``: unbound, every read emptied); re-reads at once."""
         root = None if root is None else Path(root)
         if root != self._root:
-            self._attention = self._fit_inputs = None     # another experiment's marks are never shown
+            self._attention = self._fit_inputs = self._current = None     # another experiment's marks are never shown
         self._root = root
         self.reload()
 
@@ -109,7 +117,7 @@ class IntakeState(QObject):
         self._error = None
         if root is None:
             self._fact_rows = self._conditions = self._summary = self._settings = None
-            self._attention = self._fit_inputs = None
+            self._attention = self._fit_inputs = self._current = None
             self._pending = None
             self.changed.emit()
             return
@@ -156,7 +164,7 @@ class IntakeState(QObject):
         except queue.Empty:
             pass
         if latest is not None:
-            _gen, _root, self._attention, self._fit_inputs, error = latest
+            self._answered, _root, self._attention, self._fit_inputs, self._current, error = latest
             if error is not None:
                 self._error = error
             self.worker_changed.emit()
@@ -194,6 +202,18 @@ class IntakeState(QObject):
     @property
     def fit_inputs(self):
         return self._fit_inputs
+
+    @property
+    def current(self) -> Mapping[str, frozenset[str]] | None:
+        """``unit_key -> {"fast", "deep"} subset`` with a current stored result (C-current), for every analyzer
+        file of the ledger; ``None`` before the first worker answer, when unbound, or when that read failed."""
+        return self._current
+
+    @property
+    def current_pending(self) -> bool:
+        """True while ``current`` may be older than the last reload: a reload is queued, or its worker has not
+        answered. An add that reads ``current`` waits for this to be False."""
+        return self._root is not None and self._answered != self._generation
 
     @property
     def error(self) -> str | None:

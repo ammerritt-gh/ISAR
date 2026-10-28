@@ -63,6 +63,13 @@ class ProcessingPanel(QWidget):
         """Place the readiness line above *Run analysis…*."""
         self._layout.insertWidget(self._layout.indexOf(self._run), widget)
 
+    def set_controller(self, controller) -> None:
+        """The queue controller the panel shows and drives (``None``: none); the queue panel unit fills this."""
+
+    def set_activity(self, text: str) -> None:
+        """The line for an ingest, an export or a campaign running in the window (``""`` hides it); the queue
+        panel unit fills this."""
+
     def set_state(self, *, can_run: bool, run_reason: str, analysis_running: bool,
                   activity: str, last_run: tuple[str, str] | None) -> None:
         """``activity``: today's operation text ("Analysing + 1 queued", "" when idle);
@@ -112,6 +119,9 @@ class ProcessingRail(QWidget):          # the slim right-edge strip; paints vert
 
     def text(self) -> str:
         return "Processing ‹" if self._collapsed else "›"
+
+    def set_controller(self, controller) -> None:
+        """The queue controller whose state the rail summarises (``None``: none); the queue panel unit fills this."""
 
     def _apply_texts(self) -> None:
         name = "Expand the processing panel" if self._collapsed else "Collapse the processing panel"
