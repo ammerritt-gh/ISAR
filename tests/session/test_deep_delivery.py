@@ -76,9 +76,21 @@ def test_is_current_follows_the_settings_signature_and_a_refusal():
     assert not deep_delivery.is_current({}, REQ) and not deep_delivery.is_current(None, REQ)
 
 
-def test_an_installed_calibration_makes_a_stored_deep_pass_stale(monkeypatch):
+@pytest.mark.parametrize("changed", ["live_points", "accepted_sigma", "exploratory_sigma", "status", "revision"])
+def test_an_installed_calibration_makes_a_stored_deep_pass_stale(monkeypatch, changed):
     oc = {"deep_pass": _deep_record()}
-    monkeypatch.setattr(deep_pass, "ACCEPTED", dataclasses.replace(deep_pass.ACCEPTED, n_live=800))
+    if changed == "live_points":
+        monkeypatch.setattr(deep_pass, "ACCEPTED", dataclasses.replace(
+            deep_pass.ACCEPTED, n_live=2 * deep_pass.ACCEPTED.n_live))
+    elif changed in {"accepted_sigma", "exploratory_sigma"}:
+        name = "ACCEPTED" if changed == "accepted_sigma" else "EXPLORATORY"
+        settings = getattr(deep_pass, name)
+        monkeypatch.setattr(deep_pass, name, dataclasses.replace(
+            settings, calibrated_sigma=settings.calibrated_sigma + 1.0))
+    elif changed == "status":
+        monkeypatch.setattr(deep_pass, "CALIBRATION_STATUS", "provisional: synthetic recalibration")
+    else:
+        monkeypatch.setattr(deep_delivery, "ALGORITHM_REVISION", deep_delivery.ALGORITHM_REVISION + 1)
     assert not deep_delivery.is_current(oc, REQ)
 
 

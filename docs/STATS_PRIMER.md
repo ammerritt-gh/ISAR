@@ -768,7 +768,7 @@ folder and wall time, and reads `ISAR_COUNT_BENCH_MAX_SECONDS` (default 5400 s).
 `out\count_bench\<timestamp>\`: `figures.json`, `cases.csv`, `true_peaks.csv`, `fitted_peaks.csv`,
 `records.jsonl` and the truth-versus-fit galleries. The run outputs are gitignored, not committed.
 
-### 2.4 The deep pass: nested-sampling evidence on the spectra you choose **[Partial; one-pass calibration done and its accuracy aims missed, settings provisional]**
+### 2.4 The deep pass: nested-sampling evidence on the spectra you choose **[Partial; production-retry uncertainty updated, absolute accuracy unestablished, settings provisional]**
 
 The fast pass (§2.2) prices every count with Laplace evidence. The deep pass prices the same models by
 nested sampling, which makes no Gaussian assumption about the posterior, so it is the check on Laplace's
@@ -865,14 +865,16 @@ the fast pass's threshold: the preferred count carries less than 0.80 of the pro
 `close_call_p`, §2.2).
 
 **The numerical qualification, and its limit.** Each model's ln Z is perturbed by an independent normal draw
-whose sigma is the larger of the settings' calibrated sigma (9.7 accepted, 12.38 exploratory; both provisional, from
-three seeds on one spectrum)
-and dynesty's own error, 4000 times. The result is *numerically marginal* (`deep_numerically_marginal`) when the
-winning count changes in more than 5% of the draws, or when the 5-95% band of the preferred count's probability
-crosses 0.80. The limit is one-sided. A marginal flag says the sampling noise could move the decision. An
-unflagged result does not say the evidence is accurate: agreement between runs bounds the error from below, not
-from above, and the sigmas rest on three seeds on one spectrum. That is why the live-point and step-length escalation and an
-independent sampler are part of the calibration protocol below.
+whose sigma is the larger of the settings' calibrated sigma (5.55 accepted, 12.38 exploratory; both provisional)
+and dynesty's own error, 4000 times. ACCEPTED uses the largest per-model one-sided 95% upper SD estimate
+from the final usable production retries in Q2 below, rounded upward to 0.01 nat; EXPLORATORY retains
+its historical screen estimate because Q2 did not complete every required usable-seed group.
+The result is *numerically marginal* (`deep_numerically_marginal`) when the winning count changes in more
+than 5% of the draws, or when the 5-95% band of the preferred count's probability crosses 0.80. The limit
+is one-sided. A marginal flag says the sampling noise could move the decision. An unflagged result does
+not say the evidence is accurate: repeatability cannot exclude a mode missed by every seed. Q2's upper
+SD estimate assumes independent normally distributed seed errors and covers only one spectrum.
+It is not an accuracy certificate; the reference and independent-sampler checks remain necessary.
 
 **What H is.** Each run records H, the information gained from prior to posterior in nats (dynesty's
 `information`). Nested-sampling's own error is about sqrt(H / n_live), which is why H is recorded with every
@@ -895,12 +897,13 @@ the count result. The chosen model's per-method durations are retained in the se
 timing block as `errors_method_seconds`, alongside the aggregate errors duration.
 
 **Provisional calibration status.** The sampler settings, the two sigmas and the suspect gap are provisional.
-The settings and sigmas come from one calibration pass (next subsection) that **missed both accuracy aims**; the
-suspect gap is unchanged. While the status reads provisional, every deep-pass count decision is labelled
-untrusted: the record carries `trusted: false` and the reason in `results.csv` ends "provisional sampler
-settings: untrusted until calibration". **At four or more modes on spectra like the one measured, deep-pass
-counts are numerically marginal at these settings**, and the next step is a method change (a follow-up job), not
-more tuning of these settings.
+The original screen **missed both accuracy aims**. Q2 updates ACCEPTED's uncertainty for the production
+restart policy; it establishes neither absolute accuracy nor the 2-nat repeatability target on the broader
+new seed set. EXPLORATORY's sigma, the sampler settings and the suspect gap are unchanged. While the status
+reads provisional, every deep-pass count decision is labelled untrusted: the record carries `trusted: false`
+and the reason in `results.csv` ends "provisional sampler settings: untrusted until calibration". Whether a
+particular count decision is numerically marginal is determined by its perturbation calculation above.
+No further fitting is authorized by completion of this measurement.
 
 **Evaluator work (2026-10-28).** A generated single-mode ACCEPTED run, profiled with cProfile,
 spent about 87% of sampler wall time inside the likelihood and 5% in the prior transform.
@@ -940,8 +943,10 @@ overstated rwalk's production scatter. Excluding flagged runs, factor 2's maximu
 SD is about 0.86 times rwalk's, at about 1.47 times its mean per-run wall time. With only two
 or three usable seeds these scatter estimates are indistinguishable: **no advantage is shown
 for rslice under the production retry policy**. The screen did not itself run that policy,
-and neither filtering raw runs nor agreement between seeds establishes accuracy. No sampler
-setting or calibration status changed. A read-only audit verified the screen's frozen inputs
+and neither filtering raw runs nor agreement between seeds establishes accuracy. That screen changed no
+sampler setting or calibration status; Q2 below subsequently updates only ACCEPTED's uncertainty constant.
+The screen's small usable-seed subset does not establish a 2-nat rwalk scatter limit on new seeds.
+A read-only audit verified the screen's frozen inputs
 against its saved workspace and current input hashes; it bypassed the defective refresh path.
 Historical curve identity was checked by path/name/size/mtime, not a historical shape hash.
 Exact seeds, likelihoods, calls and times remain in ignored `out/deep-rslice-20261028/report/`.
@@ -959,15 +964,28 @@ seed errors. EXPLORATORY then adds 0.5 for its stopping tolerance. All nine usab
 per model are required for a proposal. This remains a provisional single-spectrum estimate,
 not evidence of absolute accuracy. The tool reports proposals and installs nothing itself.
 
-The authorized invocation failed during Windows result collection: polling a closed worker
-pipe raised `BrokenPipeError`, and the same failure interrupted cleanup. Its partial attempt
-records survive in ignored `out/deep-retry-20261028/`; they do not supply complete model groups
-or justify new sigmas. The installed constants and provisional status remain unchanged.
-The collector now stops reading after a final result, treats closed pipes explicitly, and
-cleans every worker even when another worker's cleanup fails. Synthetic regressions cover
-these paths. Completing Q2 requires a separately authorized real-data invocation.
+The first invocation failed in Windows pipe collection and cleanup; its partial records remain in
+ignored `out/deep-retry-20261028/` and do not supply the installed estimate. The collector now stops reading
+after a final result, handles closed pipes explicitly and cleans every worker even if another cleanup fails.
+Synthetic regressions cover these paths.
 
-#### Deep-pass calibration (one pass, 2026-10-26)
+**Authorized replacement outcome and installation (2026-10-28).** The replacement returned all scheduled
+jobs without a cap or harness failure. ACCEPTED met the required usable-seed coverage for every deciding
+model; its largest per-model 95% upper SD estimate, rounded upward, installs `calibrated_sigma=5.55`.
+This is about 0.5722 times the historical 9.7 constant, using a different protocol: final usable production
+retries and a conservative SD upper estimate, rather than raw first-attempt sample SD.
+EXPLORATORY remains at 12.38 because the five-peak group did not meet the all-nine-final-usable rule.
+The rule is unchanged; an exhausted suspect chain is retained rather than discarded to complete the group.
+The report's `not_finished` status reflects that incomplete usable group, not an execution crash.
+
+The exploratory promotion allowance remains `3 * 12.38 + 10 = 47.14` nats. Updating ACCEPTED's uncertainty
+does not reduce that allowance, so no promotion-saving estimate follows from the new constant.
+The settings and `CALIBRATION_STATUS` remain provisional and all deep count decisions untrusted. The
+replacement completes the authorized measurement; no further runs are implied. Exact attempt records,
+seed values and timings remain in the ignored main-checkout report
+`out/deep-retry-20261028-r2/report/calibration.json`. The current configuration is the table below.
+
+#### Historical deep-pass calibration (one pass, 2026-10-26)
 
 Report: `out\j6420291926ab\deep-calibration\a05\calibration.md` and `calibration.json` beside it (gitignored, main checkout; the
 pre-finalisation files are kept there as `calibration.snapshot.*`).
@@ -1009,12 +1027,13 @@ points and step 1, nearly 300 nats lower). Twelve of the 84 screen runs fall mor
 fast-pass optimum (one at 400 live x step 4: count 5, 17.5 nats), so the gap check does flag the failure it is for.
 A larger gap would calibrate the check to the failure, so it is **unchanged**.
 
-**Installed (provisional).** The screened configuration with the smallest total seed range on the deciding models,
-400 live points at step factor 4, becomes `ACCEPTED`; `EXPLORATORY` is 128 live points, `dlogz` 0.5, at the same step
-factor. Sigma is the largest sample standard deviation of the three seeds on the counts 4 to 6 models: **9.7 nats**
+**Initial installation (historical, provisional).** The screened configuration with the smallest total seed range
+on the deciding models, 400 live points at step factor 4, became `ACCEPTED`; `EXPLORATORY` used 128 live points,
+`dlogz` 0.5, at the same step factor. The original sigma was the largest sample standard deviation of the three
+seeds on the counts 4 to 6 models: **9.7 nats**
 (count 5 at 400 x 4; the range there is 17.6), and 11.88 + 0.5 = **12.38 nats** for the exploratory settings (the 0.5
-for the early `dlogz` stop). These sigmas make nearly every comparison involving four or more modes numerically
-marginal, which is the honest reading of this pass.
+for the early `dlogz` stop). These original sigmas made nearly every comparison involving four or more modes
+numerically marginal in that pass. Q2 above supersedes ACCEPTED's sigma; EXPLORATORY retains this provenance.
 
 **Aims, each stated.** The tool's chosen configuration needs a reference, so it chose none.
 
@@ -1051,10 +1070,12 @@ CPU-hours inside 6558 s of wall.
 UltraNest attempt, which finished nothing. Agreement between repeated runs is a lower bound on the error, not
 proof of accuracy. Nothing here supports the 1 or 2 nat aims at four or more modes.
 
+**Current constants (Q2 amendment, 2026-10-28).**
+
 | Constant (`deep_pass.py`) | Value | Status |
 |---|---|---|
-| Accepted settings (`ACCEPTED`) | 400 live points, random walk of `4 x (ndim + 20)` steps, `dlogz` 0.05, no iteration cap, sigma 9.7 | provisional (one-pass screen; 1 and 2 nat aims missed) |
-| Exploratory settings (`EXPLORATORY`) | 128 live points, same walk, `dlogz` 0.5, sigma 12.38 | provisional (one-pass screen) |
+| Accepted settings (`ACCEPTED`) | 400 live points, random walk of `4 x (ndim + 20)` steps, `dlogz` 0.05, no iteration cap, sigma 5.55 | provisional (Q2 production-retry upper SD estimate; absolute accuracy unestablished) |
+| Exploratory settings (`EXPLORATORY`) | 128 live points, same walk, `dlogz` 0.5, sigma 12.38 | provisional (historical screen retained; Q2 usable-seed coverage incomplete) |
 | Contender floor, always at least two (`CONTENDER_MIN_P`) | fast-pass probability 0.01 | provisional |
 | Promotion window (`RELEVANCE_GAP`) | 10 nats | provisional |
 | Suspect gap | 5 + 0.5 x ndim nats | provisional, unchanged by the pass |

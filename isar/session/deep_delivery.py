@@ -20,7 +20,7 @@ from isar.session.state import canonical_hash
 log = logging.getLogger(__name__)
 
 SCHEMA = "isar.deep-pass/1"
-ALGORITHM_REVISION = 3  # budgeted admission retains evidence relevance rather than dimension priority
+ALGORITHM_REVISION = 4  # Q2 accepted uncertainty measures final usable production retries
 UNTRUSTED = "provisional sampler settings: untrusted until calibration"
 
 

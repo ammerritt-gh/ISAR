@@ -84,11 +84,18 @@ protocol and corrected interpretation are in STATS_PRIMER §2.4. Both large raw-
 were flagged by production's suspect check and would be retried. Among unflagged seeds,
 factor 2's maximum model SD is about 0.86 times rwalk's at about 1.47 times mean wall time:
 no advantage is shown for rslice under production retry, with only two or three usable seeds.
-Q2's bounded measurement of final usable production retries failed in Windows pipe collection
-and cleanup before complete model groups were available. The collector repair has synthetic
-regressions; the retained partial evidence does not justify new uncertainty constants. Both
-sigmas and provisional status stay unchanged. Completing the measurement with conservative
-SD upper bounds requires a separately authorized invocation. Raw fit values stay local.
+The broader Q2 seed set does not establish a 2-nat rwalk repeatability limit. After the first
+invocation failed in Windows pipe collection, the authorized replacement completed execution
+without a cap or harness failure. Its final usable production retries support ACCEPTED's
+installed sigma 5.55: the largest per-model one-sided 95% upper SD estimate, rounded upward.
+This constant is about 0.5722 times its historical value. The estimate assumes independent
+normal seed errors on one spectrum; it does not certify absolute accuracy.
+EXPLORATORY retains 12.38 because a deciding-model group failed the unchanged all-usable-seeds
+requirement. The report is partial for that reason, with the exhausted suspect chain retained.
+The promotion allowance remains 47.14 nats, so this sigma update supplies no promotion-saving
+estimate. Sampler settings and provisional/untrusted status remain unchanged. Q2 is complete
+as authorized, with no further runs implied. Exact outcomes stay in the ignored main-checkout
+report `out/deep-retry-20261028-r2/report/calibration.json`.
 The operator's Q1 ruling replaces the old fit-to-fit completeness comparison with the best
 found ln L plus model-prior weight against the leading count's aggregate ln Z minus the margin.
 Dismissals are recorded as "dismissed on its best found fit". This local-fit heuristic is not

@@ -1,7 +1,22 @@
 # ISAR fitting: external design review
 
 > **Status:** live
-> **Kind:** external design review the operator obtained (2026-10-27) of the fitting design (fast and deep pass), kept as received; not maintained with the code
+> **Kind:** external design review the operator obtained (2026-10-27) of the fitting design (fast and deep pass); original review kept below, preceded by a dated qualification
+
+**Current qualification (2026-10-28).** The review below describes earlier revisions; current behavior
+and later rulings are maintained in [STATS_PRIMER §2.4](STATS_PRIMER.md)
+and the [speedup plan](plans/speedup.md). The bounded rslice screen showed no advantage under production
+retry on its small usable-seed subset. The authorized Q2 replacement then measured final usable rwalk
+retries on new seeds: ACCEPTED's provisional sigma is now 5.55, about 0.5722 times its historical constant.
+EXPLORATORY stays at 12.38 because a deciding-model group did not satisfy the unchanged usable-seed
+requirement. Its 47.14-nat promotion allowance therefore stays unchanged. The replacement returned all
+scheduled jobs; the partial report reflects an exhausted suspect chain, not a harness failure.
+The SD upper estimate assumes independent normal seed errors on one spectrum and is not an accuracy
+certificate or evidence of a 2-nat repeatability limit. Sampler settings and calibration status remain
+provisional, and deep count decisions remain untrusted. No further sampling is implied. The exact
+replacement report remains local to the main checkout at `out/deep-retry-20261028-r2/report/calibration.json`.
+
+---
 
 **I would keep the fast/slow split, but change the deep pass’s model accounting and the way it groups hypotheses before spending much more time tuning sampler settings.** Your four follow-ups are well chosen. There are several additional opportunities, including two that could improve accuracy and performance together:
 

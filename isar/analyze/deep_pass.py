@@ -76,12 +76,14 @@ CONTENDER_MIN_P = 0.01          # fast-pass probability that makes a model a sta
 RELEVANCE_GAP = 10.0            # nats below the leader beyond which more precision cannot matter
 MAX_RESTARTS = 2
 FAST_PASS_SCHEMA = "isar.fast-pass/1"    # scan_delivery.FAST_PASS_RECORD_SCHEMA; analyze imports no session code
-# The one calibration pass missed both aims (1 and 2 nats); the numbers below are the screen's most stable
-# configuration on the deciding models, not a settled accuracy. The next step is a method change.
-CALIBRATION_STATUS = ("provisional: one-pass calibration on le Tacon 302 K a05, 2026-10-26; 2-nat limit missed "
-                      "(reference reached only counts 0-2; seed std 9.7 nats at 400 live x step factor 4 on the "
-                      "deciding models); UltraNest not finished (6 of 6 runs hit the 3600 s per-run limit); "
-                      "report out/j6420291926ab/deep-calibration/a05/ (calibration.json, calibration.md)")
+# Q2 measures final usable production retries. ACCEPTED uses a conservative SD upper bound;
+# EXPLORATORY keeps its historical sigma because its usable model groups were incomplete.
+# Neither repeatability nor the suspect check establishes absolute evidence accuracy.
+CALIBRATION_STATUS = ("provisional: production-retry uncertainty measurement, 2026-10-28; "
+                      "accepted sigma uses the largest per-model one-sided 95% SD upper bound, rounded up, "
+                      "from nine usable outcomes per deciding model; exploratory measurement incomplete, "
+                      "historical sigma retained; normal-seed approximation on one spectrum, not accuracy; "
+                      "report out/deep-retry-20261028-r2/report/ (calibration.json, calibration.md)")
 SUSPECT_GAP_BASE = 5.0          # PROVISIONAL, unchanged: the pass's large deficits are failed runs, not a gap to widen
 SUSPECT_GAP_PER_DIM = 0.5       # PROVISIONAL, unchanged
 
@@ -94,7 +96,7 @@ class SamplerSettings:
     dlogz: float = 0.05
     max_iter: int | None = None     # the deep pass has no iteration cap
     bound: str = "multi"
-    calibrated_sigma: float = 1.0   # lnZ error in nats; installed values are the one-pass screen's seed std
+    calibrated_sigma: float = 1.0   # provisional lnZ uncertainty in nats; level-specific provenance below
 
     def step_kwargs(self, ndim: int) -> dict:
         if self.sample == "rwalk":
@@ -104,8 +106,9 @@ class SamplerSettings:
         raise ValueError(f"unknown sample method {self.sample!r}")
 
 
-# PROVISIONAL, from the one-pass screen on a05 (sigma = largest 3-seed std on counts 4-6; EXPLORATORY adds 0.5 for dlogz).
-ACCEPTED = SamplerSettings(n_live=400, step_factor=4, calibrated_sigma=9.7)
+# Q2: largest per-model 95% upper SD bound on final usable retries, rounded upward to 0.01 nat.
+ACCEPTED = SamplerSettings(n_live=400, step_factor=4, calibrated_sigma=5.55)
+# Historical one-pass screen: largest three-seed SD plus 0.5 for dlogz; Q2 incomplete at this level.
 EXPLORATORY = SamplerSettings(n_live=128, step_factor=4, dlogz=0.5, calibrated_sigma=12.38)
 
 
