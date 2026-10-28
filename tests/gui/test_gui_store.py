@@ -187,3 +187,100 @@ def test_auto_fast_pass_defaults_on_and_round_trips_both_ways(tmp_path):
 def test_a_non_bool_auto_fast_pass_reads_as_on(tmp_path):
     (tmp_path / "gui.state.json").write_text(json.dumps({"auto_fast_pass": "no"}), encoding="utf-8")
     assert GuiStore.load(tmp_path).auto_fast_pass() is True
+
+
+def test_saved_group_slots_create_replace_restore_and_free_order(tmp_path):
+    store = GuiStore.load(tmp_path)
+    assert store.free_slot() == 1
+    assert store.save_slot(1, ["k1", "k2", "k1"]) is None
+    first = store.slot_group(1)
+    assert first is not None
+    assert first.name == "Group 1" and first.members == ["k1", "k2"] and first.slot == 1
+    assert store.group_order()[-1] == first.id
+
+    previous = store.save_slot(1, ["k3"])
+    assert previous is not None
+    assert previous.id == first.id and previous.members == ["k1", "k2"]
+    assert store.slot_group(1).members == ["k3"]
+    store.restore_slot(1, previous)
+    assert store.slot_group(1).members == ["k1", "k2"]
+    assert store.slot_group(1).id == first.id
+
+    assert store.save_slot(2, ["k4"]) is None
+    slot_two = store.slot_group(2)
+    assert slot_two is not None
+    store.restore_slot(2, None)
+    assert store.slot_group(2) is None
+    assert all(group.id != slot_two.id for group in store.groups())
+    assert slot_two.id not in store.group_order()
+
+
+def test_saved_group_slots_fill_nine_and_replace_an_occupied_slot(tmp_path):
+    store = GuiStore.load(tmp_path)
+    for slot in range(1, 10):
+        assert store.save_slot(slot, [f"k{slot}"]) is None
+    assert store.free_slot() is None
+    previous = store.save_slot(3, ["replacement"])
+    assert previous is not None and previous.members == ["k3"]
+    assert store.slot_group(3).members == ["replacement"]
+
+
+def test_invalid_slot_values_are_read_as_manual_and_preserved(tmp_path):
+    path = tmp_path / "gui.state.json"
+    original = {"groups": [{"id": "x", "name": "n", "members": [], "slot": True},
+                           {"id": "y", "name": "m", "members": [], "slot": "3"},
+                           {"id": "first", "name": "first", "members": [], "slot": 3},
+                           {"id": "second", "name": "second", "members": [], "slot": 3}]}
+    path.write_text(json.dumps(original), encoding="utf-8")
+    store = GuiStore.load(tmp_path)
+    assert [group.slot for group in store.groups()] == [None, None, 3, None]
+    assert store.slot_group(3).id == "first"
+    assert store.slot_groups() == {3: store.groups()[2]}
+    store.save()
+    assert json.loads(path.read_text(encoding="utf-8"))["groups"] == original["groups"]
+    for slot in (0, 10, True, "3"):
+        try:
+            store.slot_group(slot)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid slot {slot!r} was accepted")
+
+
+def test_normalisation_reference_is_frozen_once_and_round_trips(tmp_path):
+    store = GuiStore.load(tmp_path)
+    assert store.normalisation_reference() is None
+    assert store.freeze_normalisation_reference(1e5) == 1e5
+    assert store.freeze_normalisation_reference(1e6) == 1e5
+    store.save()
+    assert GuiStore.load(tmp_path).normalisation_reference() == 1e5
+
+
+def test_normalisation_reference_rejects_invalid_values_and_repairs_invalid_storage(tmp_path):
+    path = tmp_path / "gui.state.json"
+    path.write_text(json.dumps({"normalisation_reference": "abc"}), encoding="utf-8")
+    store = GuiStore.load(tmp_path)
+    assert store.normalisation_reference() is None
+    assert store.freeze_normalisation_reference(1e5) == 1e5
+    for value in (0, -1, float("nan"), float("inf"), True):
+        try:
+            store.freeze_normalisation_reference(value)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid reference {value!r} was accepted")
+
+
+def test_restore_slot_recreates_a_missing_record_ahead_of_a_conflicting_slot(tmp_path):
+    store = GuiStore.load(tmp_path)
+    assert store.save_slot(1, ["old"]) is None
+    previous = store.save_slot(1, ["replacement"])
+    assert previous is not None
+    store.delete_group(previous.id)
+    assert store.save_slot(1, ["new owner"]) is None
+
+    store.restore_slot(1, previous)
+
+    assert store.slot_group(1).id == previous.id
+    assert store.slot_group(1).members == ["old"]
+    assert store.groups()[1].slot is None

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import uuid
 from dataclasses import dataclass, field
@@ -26,6 +27,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 STORE_NAME = "gui.state.json"
+GROUP_SLOTS = tuple(range(1, 10))
 
 
 @dataclass
@@ -40,6 +42,7 @@ class GroupRec:
     id: str
     name: str
     members: list = field(default_factory=list)
+    slot: int | None = None
 
 
 class GuiStore:
@@ -224,12 +227,103 @@ class GuiStore:
     def groups(self) -> list[GroupRec]:
         """All manual groups as :class:`GroupRec` (members ordered + deduped). Malformed rows skipped."""
         out: list[GroupRec] = []
+        seen_slots: set[int] = set()
         for g in self._raw_groups():
             if not isinstance(g, dict) or not g.get("id"):
                 continue
+            slot = g.get("slot")
+            if (not isinstance(slot, int) or isinstance(slot, bool) or slot not in GROUP_SLOTS
+                    or slot in seen_slots):
+                slot = None
+            else:
+                seen_slots.add(slot)
             out.append(GroupRec(id=str(g["id"]), name=str(g.get("name") or ""),
-                                members=self._dedup(g.get("members"))))
+                                members=self._dedup(g.get("members")), slot=slot))
         return out
+
+    @staticmethod
+    def _validate_slot(slot: int) -> None:
+        if not isinstance(slot, int) or isinstance(slot, bool) or slot not in GROUP_SLOTS:
+            raise ValueError(f"group slot must be an integer from 1 to 9, got {slot!r}")
+
+    def slot_groups(self) -> dict[int, GroupRec]:
+        """The saved Scan(s) groups by occupied slot, with invalid/duplicate values omitted."""
+        return {group.slot: group for group in self.groups() if group.slot is not None}
+
+    def slot_group(self, slot: int) -> GroupRec | None:
+        self._validate_slot(slot)
+        return self.slot_groups().get(slot)
+
+    def free_slot(self) -> int | None:
+        occupied = self.slot_groups()
+        return next((slot for slot in GROUP_SLOTS if slot not in occupied), None)
+
+    def save_slot(self, slot: int, members) -> GroupRec | None:
+        """Save the selection in a slot, returning an independent copy of its previous record."""
+        self._validate_slot(slot)
+        previous = self.slot_group(slot)
+        new_members = self._dedup(members)
+        if previous is None:
+            gid = uuid.uuid4().hex
+            self._owned_list_for_write("groups").append(
+                {"id": gid, "name": f"Group {slot}", "members": new_members, "slot": slot})
+            self._owned_list_for_write("group_order").append(gid)
+            return None
+        raw = self._find(previous.id)
+        if raw is None:
+            return None
+        raw["members"] = new_members
+        return GroupRec(previous.id, previous.name, list(previous.members), previous.slot)
+
+    def restore_slot(self, slot: int, previous: GroupRec | None) -> None:
+        """Restore the prior slot contents after an in-memory undo; persistence remains the caller's job."""
+        self._validate_slot(slot)
+        if previous is None:
+            current = self.slot_group(slot)
+            if current is not None:
+                self.delete_group(current.id)
+            return
+        raw = self._find(previous.id)
+        if raw is None:
+            groups = self._owned_list_for_write("groups")
+            insert_at = next((i for i, group in enumerate(groups)
+                              if isinstance(group, dict) and type(group.get("slot")) is int
+                              and group["slot"] == slot), len(groups))
+            groups.insert(insert_at, {"id": previous.id, "name": previous.name,
+                                      "members": self._dedup(previous.members), "slot": slot})
+            order = self.group_order()
+            if previous.id not in order:
+                self._owned_list_for_write("group_order").append(previous.id)
+            return
+        raw["members"] = self._dedup(previous.members)
+        raw["name"] = previous.name
+        raw["slot"] = previous.slot
+
+    def normalisation_reference(self) -> float | None:
+        value = self._data.get("normalisation_reference")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        try:
+            value = float(value)
+        except OverflowError:
+            return None
+        return value if math.isfinite(value) and value > 0 else None
+
+    def freeze_normalisation_reference(self, value: float) -> float:
+        """Freeze the first finite positive R; later calls retain the stored value."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("normalisation reference must be finite and positive")
+        try:
+            value = float(value)
+        except OverflowError as exc:
+            raise ValueError("normalisation reference must be finite and positive") from exc
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("normalisation reference must be finite and positive")
+        current = self.normalisation_reference()
+        if current is not None:
+            return current
+        self._data["normalisation_reference"] = value
+        return value
 
     def memberships_of(self, scan_key: str) -> list[str]:
         """Ids of the manual groups that contain ``scan_key`` (order follows :meth:`groups`).

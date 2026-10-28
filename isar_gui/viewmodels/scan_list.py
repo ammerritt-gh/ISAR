@@ -24,8 +24,10 @@ from PySide6.QtCore import Signal
 from isar.workspace_api import ImportSummary
 from isar.workspace_api.scan_list import (Fact, PooledRow, ScanListSnapshot, ScanSetRow, SpectrumRow,
                                           UnreadFile, natural_key, scan_list)
+from isar.workspace_api.spectra import SpectraCache
 from isar_gui import status_words
 from isar_gui.plain_words import drop_echo, plain_reason
+from isar_gui.selection import Selection
 from isar_gui.theme import DEEP, FAST, PARSED, QUEUE_STATES, Tone, status_tone, summary_tone
 from isar_gui.viewmodels.base import ViewModel
 
@@ -189,6 +191,8 @@ class ScanListViewModel(ViewModel):
     def __init__(self, ws, parent=None) -> None:
         super().__init__(ws, parent)
         self._snapshot: ScanListSnapshot = scan_list(ws)
+        self.selection = Selection(parent=self)
+        self.spectra_cache = SpectraCache()
         self._current_key: str | None = None
         self._focus_set: str | None = None    # the scan set whose row the user picked, until a spectrum is
         self._sort = "set"

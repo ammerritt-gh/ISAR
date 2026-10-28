@@ -34,6 +34,14 @@ from .scene_view import (Curve, GapEntry, HypothesisEntry, HypothesisMap, ModeMa
                          SceneRevisionView, hypothesis_map, scene_revision)
 from .agenda_view import (AgendaRevisionView, FreshnessReport, agenda_revision, read_transitions)
 from .decision_view import latest_decision
+from .spectra import (
+    AMPLITUDE_HEADING, CACHE_SIZE, CURVE_UNAVAILABLE, DEEP_DOES_NOT_REBUILD,
+    ENERGY_HEADING, FINE_POINTS, LINEWIDTH_HEADING, MONITOR_NOT_STORED,
+    NO_ENERGY_ZERO, NO_MONITOR, NO_PASS, NOT_JUDGED_TEXT, NOT_PARSED, OUTDATED_TEXT,
+    POOLED, CurveComponent, Measured, ModeRow, NotDrawn, PassCurves, PassName,
+    PassSummary, Role, Scale, ScaledSpectrum, SpectraCache, SpectrumBundle,
+    nearest_power_of_ten, normalisation_reference, normalised_points, spectrum_bundles,
+)
 
 __all__ = [
     "Workspace",
@@ -106,4 +114,35 @@ __all__ = [
     "FileNotRead",
     "CurveSummary",
     "USES",
+    "Scale",
+    "PassName",
+    "Role",
+    "FINE_POINTS",
+    "CACHE_SIZE",
+    "NOT_PARSED",
+    "POOLED",
+    "NO_ENERGY_ZERO",
+    "NO_MONITOR",
+    "MONITOR_NOT_STORED",
+    "NO_PASS",
+    "CURVE_UNAVAILABLE",
+    "DEEP_DOES_NOT_REBUILD",
+    "OUTDATED_TEXT",
+    "NOT_JUDGED_TEXT",
+    "ENERGY_HEADING",
+    "LINEWIDTH_HEADING",
+    "AMPLITUDE_HEADING",
+    "NotDrawn",
+    "Measured",
+    "ModeRow",
+    "PassSummary",
+    "CurveComponent",
+    "PassCurves",
+    "ScaledSpectrum",
+    "SpectrumBundle",
+    "SpectraCache",
+    "spectrum_bundles",
+    "normalisation_reference",
+    "nearest_power_of_ten",
+    "normalised_points",
 ]
