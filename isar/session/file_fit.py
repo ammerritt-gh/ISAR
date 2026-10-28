@@ -9,13 +9,13 @@ the writer (:func:`isar.session.writer.save_results`) applies.
 
 A deep item builds on the stored fast pass when it is current, and otherwise runs the fast stage first and
 emits it before any deep work. Its sampling pool is sized to the widest stage it can run
-(:func:`_deep_width`); when that is fewer cores than it was given it says so first (status ``"cores"``).
+(:func:`isar.analyze.deep_pass.stage_width`); when that is fewer cores than it was given it says so first
+(status ``"cores"``).
 """
 from __future__ import annotations
 
 import copy
 import logging
-import math
 import os
 import time
 from collections.abc import Callable
@@ -23,8 +23,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-import numpy as np
-
+from isar.analyze import deep_pass
 from isar.analyze.progress import ProgressFn
 from isar.intake import curves, scans as intake_scans
 from isar.reduce import combine, qc
@@ -175,7 +174,7 @@ def _fit(root: Path, item: FileItem, progress, emit) -> None:
         status, reason = _fast_status(fast_entry, det, tabulated)
         return result("deep", "held" if status == "held" else "failed",
                       f"Deep pass not run: no fast-pass fit to build on ({reason})")
-    n = min(item.cores, _deep_width(oc["fast_pass"]))
+    n = min(item.cores, deep_pass.stage_width(oc["fast_pass"]))
     if n < item.cores:
         result("cores", "cores", cores=n)
     record, timing, stop = _deep_stage(fast_entry, oc, task, nop_card, g, view, driver._exclusion_ids(card),
@@ -242,27 +241,6 @@ def _parse_unit_record(card, session, prev: ScanEntry, exp: str, scan: int):
     if rec is None:
         return None
     return rec, {**{Path(f).name: str(Path(f).resolve()) for f in sub.measurement_files}, **source_by_name}
-
-
-def _deep_width(fast_record: dict) -> int:
-    """The most models one deep-pass stage runs at once on this fast-pass record: its contenders (stage 1)
-    or the rest (stage 2; stage 3 reruns a subset of stage 2), by deep_pass's own contender rule.
-    shortcut: the contender rule is written twice; move it into deep_pass as one function both call once S1U1 has landed"""
-    from isar.analyze import deep_pass
-    saturated = fast_record.get("ln_like_saturated")
-    groups: dict = {}
-    for m in fast_record.get("models") or ():
-        groups.setdefault(m["label"], []).append(m)
-    weights = []
-    for basins in groups.values():
-        priced = [b["ln_z"] for b in basins if b.get("ln_z") is not None]
-        z = float(np.logaddexp.reduce(priced)) - float(saturated) if priced and saturated is not None else None
-        weights.append(z + float(basins[0]["ln_model_prior"]) if z is not None and math.isfinite(z) else -math.inf)
-    fz = np.array(sorted(weights, reverse=True))
-    fp = np.exp(fz - fz.max()) if np.isfinite(fz).any() else np.zeros(len(fz))
-    fp = fp / fp.sum() if fp.sum() > 0 else fp
-    n_contenders = sum(1 for i in range(len(fz)) if i < 2 or fp[i] >= deep_pass.CONTENDER_MIN_P)
-    return max(1, n_contenders, len(fz) - n_contenders)
 
 
 def _deep_stage(fast_entry, oc, task, card, g, view, exclusions, request, progress) -> tuple:

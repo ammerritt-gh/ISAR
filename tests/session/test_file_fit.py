@@ -18,7 +18,7 @@ import isar
 from isar.analyze import deep_pass, errors
 from isar.intake import values
 from isar.session import calibrations, deep_delivery, driver, file_fit, ingest, measurement_store, scan_delivery
-from isar.session.file_fit import FileItem, _deep_width, fit_file
+from isar.session.file_fit import FileItem, fit_file
 from isar.session.state import ScanEntry, canonical_hash, content_hash
 from isar.session.writer import save_results
 
@@ -207,7 +207,7 @@ def test_a_deep_item_runs_on_the_cores_its_widest_stage_can_use_and_says_so(tmp_
     ws, _data, scan = _ingested(tmp_path)
     unit = f"{scan}:a04"
     _save(ws, _fit(ws, unit))
-    w = _deep_width(ws.load()[1].get(unit).detectors["a04"]["fast_pass"])
+    w = deep_pass.stage_width(ws.load()[1].get(unit).detectors["a04"]["fast_pass"])
     assert w > 1
     got = []
     real = deep_delivery.deliver
@@ -264,7 +264,7 @@ def _width_by_deep_pass(record) -> int:
 def test_the_deep_width_is_the_widest_stage_the_deep_pass_runs(models):
     """Example 9."""
     record = _record(models)
-    assert _deep_width(record) == _width_by_deep_pass(record)
+    assert deep_pass.stage_width(record) == _width_by_deep_pass(record)
 
 
 # ---------------------------------------------------------------------------

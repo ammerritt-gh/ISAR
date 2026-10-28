@@ -264,9 +264,45 @@ def close_call(models, *, close_call_p: float = CLOSE_CALL_P, seed: int = 0) -> 
             "numerical": bool(flip > NUMERIC_FLIP_FRACTION or (lo < close_call_p <= hi))}
 
 
+def _weight(ln_z, log_model_prior: float) -> float:
+    return ln_z + log_model_prior if ln_z is not None and math.isfinite(ln_z) else -math.inf
+
+
 def _fast_weight(e: ModelEntry) -> float:
-    z = e.fastpass_ln_z
-    return z + e.log_model_prior if z is not None and math.isfinite(z) else -math.inf
+    return _weight(e.fastpass_ln_z, e.log_model_prior)
+
+
+def _contender_count(weights) -> int:
+    """How many of these fast weights, ranked, are stage-1 contenders: always the top two, and every model
+    whose normalised fast-pass P is at least CONTENDER_MIN_P. P falls with rank, so they are a prefix."""
+    fz = np.array(sorted(weights, reverse=True))
+    fp = np.exp(fz - fz.max()) if np.isfinite(fz).any() else np.zeros(len(fz))
+    fp = fp / fp.sum() if fp.sum() > 0 else fp
+    return sum(1 for i in range(len(fz)) if i < 2 or fp[i] >= CONTENDER_MIN_P)
+
+
+def _label_groups(models) -> dict:
+    """A fast-pass record's models grouped by label: the basins of one model."""
+    groups: dict = {}
+    for m in models:
+        groups.setdefault(m["label"], []).append(m)
+    return groups
+
+
+def _record_ln_z(basins, saturated) -> float | None:
+    """A model's fast-pass lnZ from its basins' prices, relative to the saturated likelihood; None unpriced."""
+    priced = [b["ln_z"] for b in basins if b.get("ln_z") is not None]
+    return float(np.logaddexp.reduce(priced)) - float(saturated) if priced and saturated is not None else None
+
+
+def stage_width(record: dict) -> int:
+    """The most models one :func:`deep_pass` stage runs at once on this fast-pass record: its contenders
+    (stage 1) or the rest (stage 2; stage 3 reruns a subset of stage 2). Reads only the record's prices."""
+    saturated = record.get("ln_like_saturated")
+    weights = [_weight(_record_ln_z(basins, saturated), float(basins[0]["ln_model_prior"]))
+               for basins in _label_groups(record.get("models") or ()).values()]
+    n = _contender_count(weights)
+    return max(1, n, len(weights) - n)
 
 
 def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
@@ -292,10 +328,7 @@ def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
     chunk = max(1, int(chunk))
     send = emitter(progress, "deep")
     order = sorted(entries, key=lambda e: -_fast_weight(e))
-    fz = np.array([_fast_weight(e) for e in order])
-    fp = np.exp(fz - fz.max()) if np.isfinite(fz).any() else np.zeros(len(order))
-    fp = fp / fp.sum() if fp.sum() > 0 else fp
-    contenders = {e.label for i, e in enumerate(order) if i < 2 or fp[i] >= CONTENDER_MIN_P}
+    contenders = {e.label for e in order[:_contender_count([_fast_weight(e) for e in order])]}
     out = {e.label: ModelEvidence(e.label, e.count, "not_run", log_model_prior=e.log_model_prior)
            for e in order}
     by_label = {e.label: e for e in order}
@@ -456,11 +489,8 @@ def models_from_record(ctx, record: dict, hypotheses: Mapping) -> list:
     if record.get("prior_provenance") != json.loads(json.dumps(prior.recipe_provenance(ctx, ps))):
         raise ValueError("prior provenance differs from the record's settings")
     saturated = record.get("ln_like_saturated")
-    groups: dict = {}
-    for m in record["models"]:
-        groups.setdefault(m["label"], []).append(m)
     entries = []
-    for label, basins in groups.items():
+    for label, basins in _label_groups(record["models"]).items():
         first = basins[0]
         hyp = _model_hypothesis(ctx, label, first, hypotheses)
         try:
@@ -471,13 +501,12 @@ def models_from_record(ctx, record: dict, hypotheses: Mapping) -> list:
         if len(names) != int(first["k_free"]) or set(names) != set(first["free"]):
             raise ValueError(f"model {label!r}: the rebuilt model samples {names}, the record "
                              f"fitted {list(first['free'])}")
-        priced = [b["ln_z"] for b in basins if b.get("ln_z") is not None]
         costed = [-0.5 * b["cost"] for b in basins if b.get("cost") is not None]
-        if priced and saturated is None:
+        if saturated is None and any(b.get("ln_z") is not None for b in basins):
             raise ValueError("the record prices a model but carries no ln_like_saturated")
         entries.append(ModelEntry(
             label=label, count=int(first["n_peaks"]), ndim=len(names),
-            fastpass_ln_z=(float(np.logaddexp.reduce(priced)) - float(saturated)) if priced else None,
+            fastpass_ln_z=_record_ln_z(basins, saturated),
             fastpass_lnl_opt=max(costed) if costed else None,
             problem=EvidenceProblem(hyp, loop.candidate_context(hyp, ctx), bundle),
             log_model_prior=float(first["ln_model_prior"])))
