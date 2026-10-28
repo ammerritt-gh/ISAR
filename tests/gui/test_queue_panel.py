@@ -296,6 +296,19 @@ def test_the_finished_list_shows_counts_reasons_show_and_clears_only_itself(qtbo
     assert not button(empty, "queue_clear").isEnabled() and button(empty, "queue_clear").toolTip()
 
 
+def test_every_finished_deep_item_has_show_whatever_its_end(qtbot):
+    ends = ("done", "done_warning", "held", "failed", "stopped")
+    look = tuple(item(n, kind="deep", status=s, reason=None if s in ("done", "stopped") else "why")
+                 for n, s in enumerate(ends, 1))
+    stub = Stub(qview(finished=[FinishedGroup("E:12", "97 K", "deep", {"done": 1}, look)]))
+    p = panel(qtbot, stub)
+    show = [b for b in p.findChildren(QAbstractButton) if b.objectName() == "queue_item_show"]
+    assert len(show) == 5 and all(b.toolTip() for b in show)
+    assert "reason" in show[2].toolTip()                               # the held item's: where to find why
+    show[2].click()
+    assert stub.calls == [("show", "E:12:a03")]
+
+
 # ---- the states that say why ------------------------------------------------------------------------------
 @pytest.mark.parametrize("selection, bound, reason", [
     (NO_SEL, True, "Select analyzer files in the scan list, then press Fast pass or Deep pass."),

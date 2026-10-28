@@ -541,9 +541,11 @@ class QueuePanel(QWidget):
             if item.reason:
                 grid.addWidget(_label(item.reason, f"Why this analyzer is {word}.", name="queue_item_reason"),
                                1, 1, 1, 4)
-            if item.pass_kind == "deep" and item.status in ("done", "done_warning"):
-                show = _button("Show", "Selects this analyzer in the scan list and shows its deep result in the "
-                               "centre display. This is the only button in the panel that changes your selection.",
+            if item.pass_kind == "deep":
+                shows = ("its deep result" if item.status in ("done", "done_warning") else
+                         "the analyzer, so its reason and any missing value can be found")
+                show = _button("Show", f"Selects this analyzer in the scan list and shows {shows} in the centre "
+                               "display. This is the only button in the panel that changes your selection.",
                                "queue_item_show", tool=True)
                 show.clicked.connect(lambda _=False, i=item: self._show(i))
                 grid.addWidget(show, 0, 4)
