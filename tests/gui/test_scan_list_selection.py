@@ -16,7 +16,7 @@ import bl43_fixture
 from bl43_fixture import KEY_A, KEY_B, KEY_SINGLE
 from isar_gui.selection import ORIGIN_GROUP, ORIGIN_LIST
 from isar_gui.views.scan_list import GUTTER, _KEY_ROLE
-from test_scan_list_panel import A, B, _index, _make
+from gui.test_scan_list_panel import A, B, _index, _make
 
 
 @pytest.fixture
@@ -142,7 +142,7 @@ def test_keyboard_focus_ranges_and_container_space(panel_vm):
     QTest.keyClick(panel._view, Qt.Key.Key_Down)
     assert vm.selection.keys == (B[6],)
     QTest.keyClick(panel._view, Qt.Key.Key_Space, ctrl)
-    assert vm.selection.keys == (B[6], *A.values()) and vm.selection.active == A[3]
+    assert vm.selection.keys == (B[6], *A.values()) and vm.selection.active == B[6]
     QTest.keyClick(panel._view, Qt.Key.Key_Space)
     assert vm.selection.keys == tuple(A.values())
 

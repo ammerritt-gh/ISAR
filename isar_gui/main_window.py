@@ -806,7 +806,6 @@ class MainWindow(QMainWindow):
         self.files_strip.paths_dropped.connect(self._on_paths_dropped)
         self.files_strip.log_message.connect(self.log)
         self._folder_watcher.status_changed.connect(self.files_strip.set_watch_status)
-        self.scan_list_vm.display_requested.connect(self._route_inspect)
         self.scan_list_vm.inspect_requested.connect(self._inspect_from_list)
         self.scan_inspector.close_requested.connect(self._close_scan_inspector)
         self.active_units.active_changed.connect(self.scan_list_vm.set_active_key)
