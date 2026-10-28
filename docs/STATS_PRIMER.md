@@ -901,6 +901,19 @@ still propagates and every retry is logged. Maximum deciding-model SD at most 2 
 most 1.5 times rwalk are suggested reading targets, not gates. Three agreeing seeds cannot
 exclude a common missed mode. Any adoption or further sampling requires a later decision.
 
+**Screen outcome (2026-10-28; report only).** The authorized screen completed all planned
+runs, using a fresh rwalk baseline with the same evaluator as rslice. Factor 1 retained a
+low-evidence outlier and did not meet the repeatability target. Factor 2 met both suggested
+reading targets: its maximum model seed SD was about 0.16 times the fresh rwalk value, at
+about 1.47 times the mean per-run wall time. It improved the worst case, not every model:
+the four-peak baseline was more repeatable under rwalk. Seed scatter at factor 2 still exceeded
+dynesty's nominal uncertainty. Three seeds per model and shared-workstation timings make this
+a promising comparison, not calibration or evidence that all posterior modes were found.
+The low-likelihood outliers remain in spread calculations; convergence alone did not detect
+them. No sampler setting or calibration status changed. Exact seeds, likelihoods, calls and
+times remain only in the ignored `out/deep-rslice-20261028/report/calibration.md` and JSON;
+the local synthesis is `out/fitting_audit/REPORT.md`. No follow-up sampling was run.
+
 #### Deep-pass calibration (one pass, 2026-10-26)
 
 Report: `out\j6420291926ab\deep-calibration\a05\calibration.md` and `calibration.json` beside it (gitignored, main checkout; the

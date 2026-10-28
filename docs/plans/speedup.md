@@ -75,8 +75,12 @@ and transform measurements, not whole-pass speedup claims; different widths, CPU
 changed floating-point search paths limit extrapolation.
 
 Reliability remains alongside speed work: today's deep settings are provisional and untrusted.
-The operator authorized one bounded rslice screen, retaining today's production settings; its
-protocol is in STATS_PRIMER §2.4. Raw seeds and fit values belong only in the ignored local report.
+The one authorized rslice screen completed, retaining today's production settings; its
+protocol and interpretation are in STATS_PRIMER §2.4. Factor 1 retained a low-evidence outlier.
+Factor 2 met the proposed reading targets: maximum model seed SD was about 0.16 times fresh
+rwalk, at about 1.47 times mean wall time. It was not uniformly more repeatable across models,
+and three seeds cannot establish accuracy. Adoption remains an operator decision. Raw seeds
+and fit values belong only in the ignored local report; no follow-up sampling was run.
 The count-completeness change requires distinguishing an attained local optimum from a genuine
 likelihood upper bound. A wholly unpriced count must not be dismissed by comparing its fit
 quality with the selected model's fit quality alone; count priors and within-count model weights
