@@ -313,13 +313,16 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       on all models; the choice of refusal or hold is the operator's.
 - [ ] **FIT-8 — Deep-pass nested sampling is not accurate at four or more modes.** The one calibration pass
       (2026-10-26, le Tacon 302 K a05, 7 core models, 98 runs, `STATS_PRIMER.md` §2.4) found that no screened
-      dynesty random-walk setting reaches the 2 nat limit on the deciding differences. At the installed 400 live x
-      step factor 4 the three seeds on the counts 4, 5 and 6 models span 1.1, 17.6 and 10.5 nats (sigma 9.7);
+      dynesty random-walk setting reached the 2 nat limit on the deciding differences. At 400 live x
+      step factor 4 the historical three seeds on the counts 4, 5 and 6 models span 1.1, 17.6 and 10.5 nats
+      (the original sigma was 9.7);
       at 128 live points and step 1 count 5 spans 271 nats. The spread is mostly one run per model landing in a
       mode 12 to 20 nats lower in log-likelihood. The reference (1600 live) reached only counts 0 to 2, and all six
       UltraNest runs hit the 3600 s per-run limit. The earlier finding (128 against 400 live points, 31 to 54 nats at 11 to
-      14 parameters) stands. Deep counts at four or more modes are untrusted and numerically marginal at these
-      settings. **Acceptance:** a method change (a follow-up job: not more tuning of these settings) that brings the
+      14 parameters) stands. Q2 (2026-10-28) supersedes ACCEPTED's sigma with 5.55 from final usable production
+      retries; EXPLORATORY retains 12.38 because its usable-seed coverage was incomplete. Deep counts remain
+      untrusted; numerical marginality is evaluated for each decision by its perturbation calculation.
+      **Acceptance:** a method change (a follow-up job: not more tuning of these settings) that brings the
       deciding differences within 2 nats, aim 1 nat, on repeated seeds and against a reference at the deciding
       counts, on more than one spectrum; then `CALIBRATION_STATUS` can leave provisional.
 - [ ] **FIT-9 — Laplace may price the count above the best too low.** Measured on the earlier ladder's tuning
