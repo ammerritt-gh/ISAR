@@ -25,7 +25,7 @@ from isar.workspace_api.scan_list import (Fact, PooledRow, ScanListSnapshot, Sca
                                           Status, scan_list)
 from isar_gui.theme import Tone
 from isar_gui.viewmodels.scan_list import COLUMNS, ScanListViewModel
-from isar_gui.views.scan_list import _ID_ROLE, _KEY_ROLE, _TONE_ROLE, ScanListPanel
+from isar_gui.views.scan_list import GUTTER, _ID_ROLE, _KEY_ROLE, _TONE_ROLE, ScanListPanel
 
 A = {n: f"{KEY_A}:a{n:02d}" for n in (3, 4, 5, 6)}
 B = {n: f"{KEY_B}:a{n:02d}" for n in (3, 4, 5, 6)}
@@ -78,14 +78,18 @@ def _index(panel, node_id):
     return panel._model.indexFromItem(panel._by_id[node_id])
 
 
-def _click(panel, node_id):
-    """What a click does: the row becomes the tree's current index."""
+def _click(panel, node_id, *, gutter=False):
+    """A real select-zone click; programmatic current-index changes do not select."""
     index = _index(panel, node_id)
     parent = index.parent()
     while parent.isValid():
         panel._view.expand(parent)
         parent = parent.parent()
-    panel._view.setCurrentIndex(index)
+    panel._view.scrollTo(index)
+    QApplication.processEvents()
+    rect = panel._view.visualRect(index)
+    point = QPoint(rect.left() + (4 if gutter else GUTTER + 8), rect.center().y())
+    QTest.mouseClick(panel._view.viewport(), Qt.MouseButton.LeftButton, pos=point)
 
 
 def _current_key(panel):
@@ -178,11 +182,11 @@ def test_q_header_carries_a_shared_unit_and_the_cells_drop_it(qtbot, monkeypatch
 def test_same_temperature_sets_stay_distinct_through_selection_and_the_analyzer_flip(
         qtbot, monkeypatch, sample):
     panel, vm, _ = _make(qtbot, monkeypatch, sample)
-    display = _Spy(vm.display_requested)
+    display = _Spy(vm.selection.changed)
     _click(panel, f"spec:{B[4]}")
-    assert display.calls == [(B[4],)]                              # not fitted: the unit key
+    assert display.calls[-1][0].keys == (B[4],)
     _click(panel, f"spec:{A[4]}")
-    assert display.calls[-1][0] is sample.spectrum(A[4]).fit       # fitted: its FitView
+    assert display.calls[-1][0].keys == (A[4],)
     _click(panel, f"spec:{B[4]}")
     n = len(display.calls)
 
@@ -190,8 +194,8 @@ def test_same_temperature_sets_stay_distinct_through_selection_and_the_analyzer_
     assert vm.sort == "analyzer"
     assert _children(panel, "ana:a04") == [f"spec:{B[4]}", f"spec:{A[4]}"]
     assert [_model_item(panel, i).text() for i in _children(panel, "ana:a04")] == [STEM_B, STEM_A]
-    assert _model_item(panel, "ana:a04").text() == "a04 (2 scan sets)"
-    assert vm.current_key == B[4] and _current_key(panel) == B[4]
+    assert _model_item(panel, "ana:a04").text() == "a04 (1 of 2 selected)"
+    assert vm.selection.active == B[4] and _current_key(panel) == B[4]
     assert len(display.calls) == n                                  # the regroup asked for nothing
     assert _model_item(panel, "ana:a04", "Q").text() == ""            # the count joined the name in the first column
     assert _model_item(panel, "ana:a04", "T").text() == ""
@@ -206,7 +210,7 @@ def test_temperature_sort_orders_the_sets_and_keeps_the_selection_and_expansion(
     _click(panel, f"spec:{A[6]}")
     panel._sort_actions["temperature"].trigger()
     assert _tops(panel)[:3] == [f"set:{KEY_SINGLE}", f"set:{KEY_B}", f"set:{KEY_A}"]   # 26 K, then 97 K
-    assert vm.current_key == A[6] and _current_key(panel) == A[6]
+    assert vm.selection.active == A[6] and _current_key(panel) == A[6]
     assert panel._view.isExpanded(_index(panel, f"set:{KEY_A}"))
 
 
@@ -237,11 +241,11 @@ def test_filter_keeps_the_summaries_and_shows_the_matches_open(qtbot, monkeypatc
 def test_the_selected_spectrum_outside_the_filter_keeps_the_display(qtbot, monkeypatch, sample):
     panel, vm, _ = _make(qtbot, monkeypatch, sample)
     _click(panel, f"spec:{B[4]}")
-    display, current = _Spy(vm.display_requested), _Spy(vm.current_changed)
+    display, current = _Spy(vm.selection.changed), _Spy(vm.selection.active_changed)
     panel._filter.setText("a05")
     assert not panel._notice.isHidden()
     assert panel._notice.text() == f"The selected spectrum (a04, {STEM_B}) is outside the filter"
-    assert vm.current_key == B[4] and display.calls == [] and current.calls == []
+    assert vm.selection.active == B[4] and display.calls == [] and current.calls == []
     panel._status.linkActivated.emit("clear")
     assert panel._notice.isHidden() and _current_key(panel) == B[4]
 
@@ -270,7 +274,7 @@ def test_a_stored_fit_arriving_changes_a_cell_in_place(qtbot, monkeypatch, bl43_
     anchor = panel._scroll_anchor()
     assert anchor is not None
     assert _model_item(panel, f"spec:{B[5]}", "fast").text() == "not run"
-    display = _Spy(vm.display_requested)
+    display = _Spy(vm.selection.changed)
 
     if ws is not None:
         bl43_fixture.stamp_fit(bl43_ws, B[5], "resolved")
@@ -286,7 +290,7 @@ def test_a_stored_fit_arriving_changes_a_cell_in_place(qtbot, monkeypatch, bl43_
     QApplication.processEvents()
 
     assert panel._view.isExpanded(_index(panel, f"set:{KEY_A}"))
-    assert vm.current_key == A[6] and _current_key(panel) == A[6]
+    assert vm.selection.active == A[6] and _current_key(panel) == A[6]
     assert panel._scroll_anchor() == anchor
     assert _model_item(panel, f"spec:{B[5]}", "fast").text() == "clear"
     assert display.calls == []
@@ -318,7 +322,7 @@ def test_a_result_column_switched_on_by_a_stored_pass_does_not_scroll_the_list(q
         panel._view.expand(_index(panel, node_id))
     _click(panel, f"spec:{A[6]}")
     bar = panel._view.verticalScrollBar()
-    bar.setValue(bar.maximum())
+    bar.setValue(0)  # move the selected late row out of view, regardless of viewport height
     QApplication.processEvents()
     assert not panel._view.viewport().rect().contains(panel._view.visualRect(_index(panel, f"spec:{A[6]}")))
     scrolled = bar.value()
@@ -331,7 +335,7 @@ def test_a_result_column_switched_on_by_a_stored_pass_does_not_scroll_the_list(q
     vm.on_workspace_changed({"results"})                           # the first fast result: the column comes on by itself
     QApplication.processEvents()
     assert not panel._view.isColumnHidden(COLUMNS.index("fast"))
-    assert bar.value() == scrolled and vm.current_key == A[6]
+    assert bar.value() == scrolled and vm.selection.active == A[6]
 
 
 def test_the_first_set_in_an_empty_list_opens_and_the_rest_start_closed(qtbot, monkeypatch, sample):
@@ -342,15 +346,16 @@ def test_the_first_set_in_an_empty_list_opens_and_the_rest_start_closed(qtbot, m
     assert panel._view.isExpanded(_index(panel, "section:not_read"))
 
 
-def test_the_active_unit_following_selects_and_reveals_without_asking_for_the_display(
-        qtbot, monkeypatch, sample):
+def test_the_active_unit_only_moves_within_the_existing_selection(qtbot, monkeypatch, sample):
     panel, vm, _ = _make(qtbot, monkeypatch, sample)
-    display = _Spy(vm.display_requested)
-    assert not panel._view.isExpanded(_index(panel, f"set:{KEY_A}"))
+    vm.select_keys((A[3], A[6]))
+    display = _Spy(vm.selection.changed)
     vm.set_active_key(A[6])
-    assert panel._view.isExpanded(_index(panel, f"set:{KEY_A}")) and _current_key(panel) == A[6]
-    vm.set_active_key("no:such:key")                               # unknown: the current one stays
-    assert vm.current_key == A[6] and display.calls == []
+    assert vm.selection.keys == (A[3], A[6]) and vm.selection.active == A[6]
+    assert len(display.calls) == 1 and not display.calls[0][0].keys_changed
+    vm.set_active_key(B[4])
+    vm.set_active_key("no:such:key")
+    assert vm.selection.active == A[6] and len(display.calls) == 1
 
 
 # ---------------------------------------------------------------------------------------------
@@ -377,26 +382,23 @@ def test_double_click_and_the_inspect_button_open_the_inspector(qtbot, monkeypat
     assert len(inspect_spy.calls) == 2
 
 
-def test_inspect_acts_only_on_the_row_the_tree_shows_as_current(qtbot, monkeypatch, sample):
+def test_a_set_click_enables_inspect_on_its_first_spectrum(qtbot, monkeypatch, sample):
     panel, vm, _ = _make(qtbot, monkeypatch, sample)
-    inspect_spy = _Spy(vm.inspect_requested)
+    inspected = _Spy(vm.inspect_requested)
     _click(panel, f"spec:{A[6]}")
-    assert panel._inspect.isEnabled()
-    _click(panel, f"set:{KEY_A}")                                # the visible current row is a set
-    assert not panel._inspect.isEnabled()
-    panel._inspect.click()                                         # disabled: nothing opens
-    assert inspect_spy.calls == []
-    _click(panel, f"spec:{A[6]}")
-    assert panel._inspect.isEnabled()
-
-
-def test_clicking_a_set_row_leaves_the_display_alone(qtbot, monkeypatch, sample):
-    panel, vm, _ = _make(qtbot, monkeypatch, sample)
-    _click(panel, f"spec:{A[6]}")
-    display = _Spy(vm.display_requested)
     _click(panel, f"set:{KEY_A}")
+    assert panel._inspect.isEnabled() and vm.selection.keys == tuple(A.values())
+    panel._inspect.click()
+    assert inspected.calls == [(A[3],)]
+
+
+def test_the_gutter_and_section_rows_leave_selection_alone(qtbot, monkeypatch, sample):
+    panel, vm, _ = _make(qtbot, monkeypatch, sample)
+    _click(panel, f"spec:{A[6]}")
+    changes = _Spy(vm.selection.changed)
+    _click(panel, f"set:{KEY_A}", gutter=True)
     _click(panel, "section:not_read")
-    assert display.calls == [] and vm.current_key == A[6]
+    assert changes.calls == [] and vm.selection.active == A[6]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -431,9 +433,9 @@ def test_a_pooled_section_appears_only_with_pooled_masters(qtbot, monkeypatch, t
     assert _tops(panel)[-1] == "section:pooled"
     (child,) = _children(panel, "section:pooled")
     assert panel._by_id[child].text() == "pooled master (2 members)"
-    display = _Spy(vm.display_requested)
+    display = _Spy(vm.selection.changed)
     _click(panel, child)
-    assert len(display.calls) == 1 and vm.current_key == panel._by_id[child].data(_KEY_ROLE)
+    assert len(display.calls) == 1 and vm.selection.active == panel._by_id[child].data(_KEY_ROLE)
     assert panel._inspect.isEnabled()
     assert panel._status.text() == "2 spectra"                      # a pooled master is not a spectrum
 
@@ -443,15 +445,7 @@ def test_the_bl43_list_has_no_pooled_section(qtbot, monkeypatch, sample):
     assert "section:pooled" not in panel._by_id
 
 
-def test_inspect_says_in_text_why_it_is_off_on_a_scan_set_row(qtbot, monkeypatch, sample):
-    panel, vm, _ = _make(qtbot, monkeypatch, sample)
-    _click(panel, f"set:{KEY_A}")
-    assert not panel._inspect.isEnabled()
-    assert panel._hint.isVisibleTo(panel) and "scan set cannot be inspected" in panel._hint.text()   # text, not a tooltip
-    assert vm.focus_set == KEY_A                      # the inspector is told which set was picked
-    _click(panel, f"spec:{A[4]}")
-    assert panel._inspect.isEnabled() and "Select an analyzer row, then" in panel._hint.text()
-    assert vm.focus_set is None
+
 
 
 def test_the_empty_list_says_so(qtbot, monkeypatch):
@@ -558,35 +552,33 @@ def test_selecting_a_spectrum_selects_its_key_and_a_pooled_master_its_own(monkey
     assert vm.selected_keys() == ()
 
 
-def test_select_keys_is_a_user_click_and_takes_the_first_key(monkeypatch):
+def test_queue_select_keys_uses_every_key_in_list_order(monkeypatch):
     vm, spy, _ = _selection_vm(monkeypatch, _pooled_snapshot())
-    display = _Spy(vm.display_requested)
     vm.select_keys(["tavi:12:det", "tavi:11:det"])
-    assert vm.selected_keys() == ("tavi:12:det",) and vm.current_key == "tavi:12:det"
-    assert len(display.calls) == 1                             # the display follows, as for select()
+    assert vm.selected_keys() == ("tavi:11:det", "tavi:12:det")
+    assert vm.selection.active == "tavi:11:det"
     vm.select_keys(())
-    assert vm.selected_keys() == () and vm.current_key is None
-    assert spy.calls == [(("tavi:12:det",),), ((),)]
+    assert vm.selected_keys() == () and vm.selection.active is None
+    assert spy.calls == [(("tavi:11:det", "tavi:12:det"),), ((),)]
 
 
-def test_a_focused_scan_set_row_selects_no_analyzer(monkeypatch):
+def test_scan_set_click_is_the_same_selection_the_queue_reads(monkeypatch):
     vm, spy, _ = _selection_vm(monkeypatch, _pooled_snapshot())
-    vm.select("tavi:11:det")
-    vm.select_set("tavi:11")                                   # the set row picked: the list highlights no spectrum
-    assert vm.selected_keys() == () and vm.current_key == "tavi:11:det"      # the display's spectrum stays
-    assert spy.calls[-1] == ((),)
-    vm.select_set("tavi:11")                                   # no change, no second signal
-    assert len(spy.calls) == 2
-    vm.select("tavi:12:det")                                   # a spectrum ends the focus
-    assert vm.selected_keys() == ("tavi:12:det",)
+    vm.click("set:tavi:11")
+    assert vm.selected_keys() == ("tavi:11:det",)
+    vm.click("set:tavi:11")
+    assert len(spy.calls) == 1
+    vm.click("set:tavi:12", ctrl=True)
+    assert vm.selected_keys() == ("tavi:11:det", "tavi:12:det")
 
 
-def test_the_active_unit_following_changes_the_selection_only_when_it_differs(monkeypatch):
+def test_queue_selection_does_not_change_when_only_active_moves(monkeypatch):
     vm, spy, _ = _selection_vm(monkeypatch, _pooled_snapshot())
-    vm.set_active_key("tavi:11:det")
-    vm.set_active_key("tavi:11:det")
-    vm.set_active_key("not:in:list")                           # a key the snapshot lacks leaves the current one
-    assert spy.calls == [(("tavi:11:det",),)] and vm.selected_keys() == ("tavi:11:det",)
+    vm.select_keys(("tavi:11:det", "tavi:12:det"))
+    spy.calls.clear()
+    vm.set_active_key("tavi:12:det")
+    vm.set_active_key("not:in:list")
+    assert spy.calls == [] and vm.selected_keys() == ("tavi:11:det", "tavi:12:det")
 
 
 def test_a_re_read_that_drops_the_selected_spectrum_or_the_focused_set_says_so(monkeypatch):
@@ -597,7 +589,7 @@ def test_a_re_read_that_drops_the_selected_spectrum_or_the_focused_set_says_so(m
     vm.on_workspace_changed()
     assert spy.calls == [((),)] and vm.selected_keys() == ()
     vm.select("tavi:12:det")
-    vm.select_set("tavi:12")
+    vm.click("set:tavi:12")
     del spy.calls[:]
     box["snap"] = dataclasses.replace(box["snap"], sets=())
     vm.on_workspace_changed()

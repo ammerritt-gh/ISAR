@@ -11,12 +11,14 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
-from PySide6.QtCore import QItemSelectionModel, QModelIndex, QPoint, Qt
+from PySide6.QtCore import QEvent, QItemSelection, QItemSelectionModel, QModelIndex, QPoint, QRect, Qt
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QMenu, QPushButton, QSizePolicy, QToolButton, QTreeView, QVBoxLayout,
-                               QWidget)
+                               QStyle, QStyledItemDelegate, QStyleOption, QStyleOptionViewItem,
+                               QToolTip, QWidget)
 
+from isar_gui.selection import ORIGIN_LIST, ORIGIN_REFRESH, ORIGIN_STEP
 from isar_gui.theme import TONE_COLOR, Tone, dot_icon
 from isar_gui.viewmodels.scan_list import (COLUMNS, OPTIONAL_COLUMNS, SORTS, TITLES,
                                            ScanListViewModel)
@@ -28,9 +30,152 @@ _TONE_ROLE = Qt.ItemDataRole.UserRole + 3     # what the item's dot was drawn fo
 _STALE_ROLE = Qt.ItemDataRole.UserRole + 4    # whether the item's word was drawn as out of date
 _SORT_LABELS = {"set": "By scan set", "temperature": "By temperature", "analyzer": "By analyzer"}
 _HINT = "Select an analyzer row, then double-click it or press Open inspector."
-_HINT_SET = "A scan set cannot be inspected: select one of its analyzer rows (for example a06) under it."
-_HINT_NONE = "Select an analyzer row (for example a06) under a scan set to open the inspector."
+_HINT_NONE = "Select an analyzer row, or a scan-set row for all its analyzers, to open the inspector."
 _NEW_CONTAINER_KINDS = ("set", "analyzer")
+
+GUTTER = 24
+
+
+class _ScanTree(QTreeView):
+    """Qt owns focus/navigation; Selection owns every selected identity."""
+    def __init__(self, panel):
+        super().__init__(panel)
+        self._panel = panel
+        self.hover = None
+        self.setMouseTracking(True)
+        self.viewport().setAttribute(Qt.WidgetAttribute.WA_Hover, False)
+
+    def selectionCommand(self, index, event=None):
+        return QItemSelectionModel.SelectionFlag.NoUpdate
+
+    def visible_ids(self):
+        index = self.model().index(0, 0)
+        out = []
+        while index.isValid():
+            out.append(index.data(_ID_ROLE))
+            index = self.indexBelow(index)
+        return tuple(out)
+
+    def _hit(self, point):
+        index = self.indexAt(point)
+        if not index.isValid():
+            return QModelIndex(), None
+        first = index.siblingAtColumn(0)
+        gutter = self.visualRect(first)
+        gutter.setWidth(GUTTER)
+        zone = "open" if self.model().hasChildren(first) and gutter.contains(point) else "select"
+        return first, zone
+
+    def _click(self, index, modifiers):
+        self._panel._vm.click(index.data(_ID_ROLE) if index.isValid() else None,
+                             ctrl=bool(modifiers & Qt.KeyboardModifier.ControlModifier),
+                             shift=bool(modifiers & Qt.KeyboardModifier.ShiftModifier),
+                             visible=self.visible_ids())
+
+    def mousePressEvent(self, event):
+        index, zone = self._hit(event.position().toPoint())
+        super().mousePressEvent(event)
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        if zone == "open":
+            self.setExpanded(index, not self.isExpanded(index))
+        else:
+            self._click(index, event.modifiers())
+
+    def mouseDoubleClickEvent(self, event):
+        index, zone = self._hit(event.position().toPoint())
+        if event.button() == Qt.MouseButton.LeftButton and zone == "open":
+            self.setExpanded(index, not self.isExpanded(index))
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event):
+        super().keyPressEvent(event)
+        key, modifiers = event.key(), event.modifiers()
+        index = self.currentIndex().siblingAtColumn(0)
+        if key == Qt.Key.Key_Space:
+            self._click(index, modifiers)
+        elif key in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Home, Qt.Key.Key_End,
+                     Qt.Key.Key_PageUp, Qt.Key.Key_PageDown):
+            shift = bool(modifiers & Qt.KeyboardModifier.ShiftModifier)
+            ctrl = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+            if shift or (not ctrl and index.data(_KEY_ROLE)):
+                self._click(index, modifiers)
+
+    def selectAll(self):
+        self._panel._vm.select_all_visible(self.visible_ids())
+
+    def mouseMoveEvent(self, event):
+        index, zone = self._hit(event.position().toPoint())
+        hover = (index.data(_ID_ROLE), zone) if index.isValid() else None
+        if hover != self.hover:
+            self.hover = hover
+            self.viewport().update()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self.hover = None
+        self.viewport().update()
+        super().leaveEvent(event)
+
+    def viewportEvent(self, event):
+        if event.type() == QEvent.Type.Leave:
+            self.hover = None
+            self.viewport().update()
+        elif event.type() == QEvent.Type.ToolTip:
+            index, zone = self._hit(event.pos())
+            if zone == "open":
+                noun = "analyzer group" if index.data(_KIND_ROLE) == "analyzer" else "scan set"
+                QToolTip.showText(event.globalPos(), f"This edge opens or closes the {noun}. "
+                                 "It does not change the selection.", self)
+                return True
+        return super().viewportEvent(event)
+
+    def drawRow(self, painter, option, index):
+        option = QStyleOptionViewItem(option)
+        option.state &= ~QStyle.StateFlag.State_MouseOver
+        if self.hover and index.data(_ID_ROLE) == self.hover[0]:
+            rect = QRect(option.rect)
+            if self.hover[1] == "open":
+                rect = self.visualRect(index.siblingAtColumn(0))
+                rect.setWidth(GUTTER)
+            color = option.palette.highlight().color()
+            color.setAlpha(36)
+            painter.fillRect(rect, color)
+        super().drawRow(painter, option, index)
+
+
+class _ContainerDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index):
+        if index.column() != 0 or not index.model().hasChildren(index):
+            super().paint(painter, option, index)
+            return
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        view = self.parent()
+        style = view.style()
+        # Let the item style paint the full selected background before drawing the gutter.
+        label, separator, suffix = opt.text.rpartition(" (")
+        opt.rect.adjust(GUTTER, 0, 0, 0)
+        if separator:
+            suffix = " (" + suffix
+            room = max(0, opt.rect.width() - opt.fontMetrics.horizontalAdvance(suffix) - 6)
+            opt.text = opt.fontMetrics.elidedText(label, Qt.TextElideMode.ElideMiddle, room) + suffix
+        style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, view)
+        branch = QStyleOption()
+        branch.rect = QRect(option.rect.left() + 4, option.rect.center().y() - 7, GUTTER - 8, 14)
+        branch.palette = option.palette
+        branch.state = QStyle.StateFlag.State_Enabled | QStyle.StateFlag.State_Children
+        if view.isExpanded(index):
+            branch.state |= QStyle.StateFlag.State_Open
+        style.drawPrimitive(QStyle.PrimitiveElement.PE_IndicatorBranch, branch, painter, view)
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        if index.column() == 0 and index.model().hasChildren(index):
+            size.setWidth(size.width() + GUTTER)
+        return size
 
 
 class ScanListPanel(QWidget):           # no public signals; it acts through the VM
@@ -48,7 +193,7 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
 
         self._build_widgets()
         vm.snapshot_changed.connect(self._refresh)
-        vm.current_changed.connect(self._on_vm_current_changed)
+        vm.selection.changed.connect(self._on_selection_changed)
         self._refresh()
 
     # ---- construction --------------------------------------------------------------------
@@ -87,26 +232,29 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
         self._columns_button.setToolTip("Choose which columns the list shows.")
 
         self._model = QStandardItemModel(0, len(COLUMNS), self)
-        self._view = QTreeView(self)
+        self._view = _ScanTree(self)
         self._view.setObjectName("scan_list_tree")
         self._view.setModel(self._model)
         self._view.setAccessibleName("Scan list")
         self._view.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self._view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._view.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self._view.setUniformRowHeights(True)
-        self._view.setIndentation(14)
+        self._view.setIndentation(GUTTER)
+        self._view.setRootIsDecorated(False)
+        self._view.setExpandsOnDoubleClick(False)
+        self._view.setItemDelegateForColumn(0, _ContainerDelegate(self._view))
         self._view.setAcceptDrops(False)
         header = self._view.header()
         header.setStretchLastSection(False)
+        header.setFirstSectionMovable(False)
         header.setMinimumSectionSize(36)
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self._view.expanded.connect(lambda idx: self._on_toggled(idx, True))
         self._view.collapsed.connect(lambda idx: self._on_toggled(idx, False))
         self._view.activated.connect(self._on_activated)
-        self._view.selectionModel().currentChanged.connect(self._on_current_index_changed)
 
         self._empty = QLabel("No scans yet. Drop data files on the box above, or use Add data.", self)
         self._empty.setObjectName("scan_list_empty")
@@ -126,8 +274,7 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
 
         self._inspect = QPushButton("Open inspector", self)
         self._inspect.setObjectName("scan_list_inspect")
-        self._inspect.setToolTip("Show the facts, readiness and raw counts of the selected analyzer. Select an "
-                                 "analyzer row (for example a06) under a scan set first.")
+        self._inspect.setToolTip("Show the facts, readiness and fit results of the active selected spectrum.")
         self._inspect.clicked.connect(self._on_inspect_clicked)
         self._hint = QLabel(_HINT, self)
         self._hint.setObjectName("scan_list_hint")
@@ -167,28 +314,19 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
         if not self._busy:
             self._vm.set_column_visible(column, on)
 
-    def _on_current_index_changed(self, current: QModelIndex, _previous: QModelIndex) -> None:
-        if not self._busy and current.isValid():
-            key = current.siblingAtColumn(0).data(_KEY_ROLE)
-            if key:                              # analyzer, section and file rows leave the display be
-                self._vm.select(key)
-            elif current.siblingAtColumn(0).data(_KIND_ROLE) == "set":
-                self._vm.select_set(current.siblingAtColumn(0).data(_ID_ROLE).removeprefix("set:"))
-        self._update_footer()                    # Inspect follows the visible row, which a set row changes too
-
     def _on_activated(self, index: QModelIndex) -> None:
         key = index.siblingAtColumn(0).data(_KEY_ROLE)
         if key:
             self._vm.inspect(key)
 
     def _on_inspect_clicked(self) -> None:
-        key = self._visible_key()
+        key = self._vm.selection.active
         if key:
             self._vm.inspect(key)
 
-    def _visible_key(self) -> str | None:
-        index = self._view.currentIndex()
-        return index.siblingAtColumn(0).data(_KEY_ROLE) if index.isValid() else None
+    def index_for_key(self, key: str) -> QModelIndex:
+        item = self._by_key.get(key)
+        return self._model.indexFromItem(item) if item is not None else QModelIndex()
 
     def _on_toggled(self, index: QModelIndex, opened: bool) -> None:
         node_id = index.siblingAtColumn(0).data(_ID_ROLE)
@@ -196,9 +334,19 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
             return
         (self._expanded.add if opened else self._expanded.discard)(node_id)
 
-    def _on_vm_current_changed(self, _key) -> None:
-        self._restore_selection(reveal=True)
+    def _on_selection_changed(self, change) -> None:
+        self._refresh_marks()
+        self._restore_selection(reveal=change.origin not in (ORIGIN_LIST, ORIGIN_REFRESH, ORIGIN_STEP))
         self._update_footer()
+
+    def _refresh_marks(self) -> None:
+        for node_id, item in self._by_id.items():
+            if node_id.startswith(("set:", "ana:")) or node_id == "section:pooled":
+                text, name, description, tip = self._vm.container_presentation(node_id)
+                item.setText(text)
+                item.setToolTip(tip)
+                item.setData(name, Qt.ItemDataRole.AccessibleTextRole)
+                item.setData(description, Qt.ItemDataRole.AccessibleDescriptionRole)
 
     # ---- refresh: reconcile in place ------------------------------------------------------------
     @contextmanager
@@ -284,6 +432,8 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
             first.setData(node.key, _KEY_ROLE)
         if first.data(_KIND_ROLE) != node.kind:
             first.setData(node.kind, _KIND_ROLE)
+        first.setData(node.accessible_name or None, Qt.ItemDataRole.AccessibleTextRole)
+        first.setData(node.accessible_description or None, Qt.ItemDataRole.AccessibleDescriptionRole)
         for column, item in zip(COLUMNS, items):
             cell = node.cells.get(column)
             text = cell.text if cell else ""
@@ -346,28 +496,30 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
 
     # ---- selection follows the view model's identity --------------------------------------------
     def _restore_selection(self, reveal: bool) -> None:
-        key = self._vm.current_key
-        focus = self._vm.focus_set
-        item = self._by_id.get(f"set:{focus}") if focus else (self._by_key.get(key) if key else None)
+        keys = self._vm.selection.keys
+        selected = set(keys)
+        model_selection = QItemSelection()
         selection = self._view.selectionModel()
         with self._changing():
-            if item is None:
-                current = selection.currentIndex()
-                if current.isValid() and current.siblingAtColumn(0).data(_KEY_ROLE):
-                    selection.clearSelection()
-                    selection.clearCurrentIndex()
-                return
-            index = self._model.indexFromItem(item)
+            for node_id, item in self._by_id.items():
+                key = item.data(_KEY_ROLE)
+                members = self._vm.container_keys(node_id) if key is None else ()
+                if key in selected or (members and set(members) <= selected):
+                    index = self._model.indexFromItem(item)
+                    model_selection.select(index, index.siblingAtColumn(len(COLUMNS) - 1))
+            selection.select(model_selection, QItemSelectionModel.SelectionFlag.ClearAndSelect)
             if reveal:
-                parent = item.parent()
-                while parent is not None:
-                    self._expanded.add(parent.data(_ID_ROLE))
-                    self._view.setExpanded(self._model.indexFromItem(parent), True)
-                    parent = parent.parent()
-            selection.setCurrentIndex(index, QItemSelectionModel.SelectionFlag.ClearAndSelect
-                                      | QItemSelectionModel.SelectionFlag.Rows)
-            if reveal:
-                self._view.scrollTo(index)
+                for key in keys:
+                    item = self._by_key.get(key)
+                    parent = item.parent() if item is not None else None
+                    while parent is not None:
+                        self._expanded.add(parent.data(_ID_ROLE))
+                        self._view.setExpanded(self._model.indexFromItem(parent), True)
+                        parent = parent.parent()
+                first = next((self.index_for_key(key) for key in keys if key in self._by_key), QModelIndex())
+                if first.isValid():
+                    selection.setCurrentIndex(first, QItemSelectionModel.SelectionFlag.NoUpdate)
+                    self._view.scrollTo(first)
 
     def _update_footer(self) -> None:
         vm = self._vm
@@ -378,10 +530,8 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
         notice = vm.outside_filter()
         self._notice.setText(notice or "")
         self._notice.setVisible(notice is not None)
-        key = self._visible_key()
+        key = vm.selection.active
         can = key is not None and vm.snapshot.spectrum(key) is not None
         self._inspect.setEnabled(can)
         # a disabled button says why in text, not only on hover
-        index = self._view.currentIndex()
-        on_set = index.isValid() and index.siblingAtColumn(0).data(_KIND_ROLE) == "set"
-        self._hint.setText(_HINT if can else _HINT_SET if on_set else _HINT_NONE)
+        self._hint.setText(_HINT if can else _HINT_NONE)

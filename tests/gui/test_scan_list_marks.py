@@ -160,15 +160,15 @@ def test_a_queue_update_rebuilds_once_and_keeps_selection_and_expansion(qtbot, w
     vm.snapshot_changed.connect(queue.changed)    # the controller listens to the list too: no loop may form
     rebuilds, shown = [], []
     vm.snapshot_changed.connect(lambda: rebuilds.append(1))
-    vm.display_requested.connect(shown.append)
+    vm.selection.changed.connect(shown.append)
     index = panel._model.indexFromItem(panel._by_id[f"set:{A}"])
     panel._view.expand(index)
-    vm.select(A04)
+    vm.select_keys((A04,))
     shown.clear()
     rebuilds.clear()
     queue.set_marks({A03: {"fast": "running"}})
     assert len(rebuilds) == 1 and shown == []
-    assert vm.current_key == A04 and panel._view.isExpanded(index)
+    assert vm.selection.active == A04 and panel._view.isExpanded(index)
     assert panel._view.currentIndex().siblingAtColumn(0).data(_KEY_ROLE) == A04
     queue.set_marks({A03: {"fast": "running"}})   # the same marks again: nothing to draw
     assert len(rebuilds) == 1

@@ -222,14 +222,14 @@ def test_example4_selection_and_inspect(qtbot, monkeypatch, make_ws):
     w = _window(qtbot, monkeypatch, LAPTOP, ws)
     vm = w.scan_list_vm
     displayed, inspected = [], []
-    vm.display_requested.connect(displayed.append)
+    vm.selection.changed.connect(displayed.append)
     vm.inspect_requested.connect(inspected.append)
 
     vm.select(key)
-    assert displayed == [key]                       # one emission: the set_active_key round trip adds none
+    assert len(displayed) == 1 and displayed[0].keys == (key,)
     assert w.active_units.key == key
     assert w.inspector_vm.current_unit == key
-    assert vm.current_key == key
+    assert vm.selection.active == key
     assert w.scan_inspector.isHidden()
 
     width_before = w._center_stack.width()
@@ -310,31 +310,29 @@ def _vm(monkeypatch, bl43_ws_readonly):
 
 def test_vm_select_follows_the_selection_rule(qtbot, monkeypatch, bl43_ws_readonly):
     vm, snap = _vm(monkeypatch, bl43_ws_readonly)
-    display, current = _Spy(vm.display_requested), _Spy(vm.current_changed)
-    fitted = snap.sets[2].spectra[0]                   # set A, a03: resolved, has a fit
-    unfitted = snap.sets[2].spectra[2]                 # set A, a05: not run, no fit
-    assert fitted.fit is not None and unfitted.fit is None
-
+    changes = _Spy(vm.selection.changed)
+    fitted = snap.sets[2].spectra[0]
+    unfitted = snap.sets[2].spectra[2]
     vm.select(fitted.key)
-    assert display.calls[-1][0] is fitted.fit
+    assert vm.selection.keys == (fitted.key,) and vm.selection.active == fitted.key
     vm.select(unfitted.key)
-    assert display.calls[-1] == (unfitted.key,)
-    vm.select("no:such:key")                           # a key the snapshot does not hold
-    assert display.calls[-1] == ("no:such:key",)
+    assert vm.selection.keys == (unfitted.key,)
+    vm.select("no:such:key")
+    assert vm.selection.keys == () and vm.selection.active is None
+    count = len(changes.calls)
     vm.select(None)
-    assert display.calls[-1] == (None,) and vm.current_key is None
-    assert [c[0] for c in current.calls][-1] is None
+    assert len(changes.calls) == count
 
 
-def test_vm_set_active_key_emits_current_changed_only_when_it_differs(qtbot, monkeypatch,
-                                                                       bl43_ws_readonly):
+def test_vm_set_active_key_moves_only_within_the_selection(qtbot, monkeypatch, bl43_ws_readonly):
     vm, snap = _vm(monkeypatch, bl43_ws_readonly)
-    key = snap.sets[2].spectra[1].key
-    display, current = _Spy(vm.display_requested), _Spy(vm.current_changed)
-    vm.set_active_key(key)
-    vm.set_active_key(key)
-    assert current.calls == [(key,)] and display.calls == []
-    assert vm.current_key == key
+    a, b = snap.sets[2].spectra[:2]
+    vm.select_keys((a.key, b.key))
+    current = _Spy(vm.selection.active_changed)
+    vm.set_active_key(b.key)
+    vm.set_active_key(b.key)
+    vm.set_active_key("not:selected")
+    assert current.calls == [(b.key,)] and vm.selection.keys == (a.key, b.key)
 
 
 def test_vm_rebind_keeps_a_current_key_that_still_exists_and_drops_one_that_does_not(
@@ -342,21 +340,21 @@ def test_vm_rebind_keeps_a_current_key_that_still_exists_and_drops_one_that_does
     vm, snap = _vm(monkeypatch, bl43_ws_readonly)
     key = snap.sets[2].spectra[1].key
     vm.select(key)
-    current, changed, display = (_Spy(vm.current_changed), _Spy(vm.snapshot_changed),
-                                 _Spy(vm.display_requested))
+    current, changed, display = (_Spy(vm.selection.active_changed), _Spy(vm.snapshot_changed),
+                                 _Spy(vm.selection.changed))
     vm.set_workspace(mw_mod._EmptyWorkspace())
-    assert vm.current_key == key and current.calls == [] and len(changed.calls) == 1
+    assert vm.selection.active == key and current.calls == [] and len(changed.calls) == 1
     monkeypatch.setattr("isar_gui.viewmodels.scan_list.scan_list", lambda ws, **_reads: ScanListSnapshot())
     vm.set_workspace(mw_mod._EmptyWorkspace())
-    assert vm.current_key is None and current.calls == [(None,)]
-    assert display.calls == []                         # a rebind never asks for the display
+    assert vm.selection.active is None and current.calls == [(None,)]
+    assert len(display.calls) == 1 and display.calls[0][0].origin == "refresh"
 
 
 def test_vm_background_update_emits_snapshot_changed_and_never_the_display(
         qtbot, monkeypatch, bl43_ws_readonly):
     vm, snap = _vm(monkeypatch, bl43_ws_readonly)
     vm.select(snap.sets[2].spectra[0].key)
-    changed, display = _Spy(vm.snapshot_changed), _Spy(vm.display_requested)
+    changed, display = _Spy(vm.snapshot_changed), _Spy(vm.selection.changed)
     vm.on_workspace_changed({"results"})
     assert len(changed.calls) == 1 and display.calls == []
 
@@ -365,7 +363,7 @@ def test_vm_inspect_selects_then_asks_for_the_inspector(qtbot, monkeypatch, bl43
     vm, snap = _vm(monkeypatch, bl43_ws_readonly)
     key = snap.sets[2].spectra[1].key
     order = []
-    vm.current_changed.connect(lambda k: order.append(("current", k)))
+    vm.selection.active_changed.connect(lambda k: order.append(("current", k)))
     vm.inspect_requested.connect(lambda k: order.append(("inspect", k)))
     vm.inspect(key)
     assert order == [("current", key), ("inspect", key)]
@@ -644,8 +642,7 @@ def test_stub_mounts_have_their_final_signatures():
                          (ProcessingPanel, ("run_requested",)),
                          (ProcessingRail, ("toggled",)),
                          (ExportController, ("started", "progress", "finished", "failed")),
-                         (ScanListViewModel, ("snapshot_changed", "display_requested",
-                                              "current_changed", "inspect_requested"))):
+                         (ScanListViewModel, ("snapshot_changed", "selection_changed", "inspect_requested"))):
         for name in signals:
             assert hasattr(cls, name), (cls.__name__, name)
     assert list(inspect.signature(ScanListPanel.__init__).parameters) == ["self", "vm", "parent"]

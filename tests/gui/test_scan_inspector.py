@@ -94,20 +94,15 @@ def _has_dot(field) -> bool:
 # ---------------------------------------------------------------------------
 # a scan-set row is not "nothing picked"
 # ---------------------------------------------------------------------------
-def test_a_picked_scan_set_row_is_summarised_in_the_open_inspector(qtbot, patched, bl43_ws):
+def test_a_picked_scan_set_selects_its_spectra_and_inspects_the_first(qtbot, patched, bl43_ws):
     vm, panel = _panel(qtbot, bl43_ws)
     set_row = patched.sets[0]
-    vm.select_set(set_row.key)
-    assert panel._message.isVisible() and not panel._body.isVisible()
-    text = panel._message.text()
-    assert f"Scan set {set_row.label}" in text and f"{len(set_row.spectra)} analyzer" in text
-    assert set_row.spectra[0].analyzer in text and "Files:" in text and "Temperature:" in text
-    assert panel._title.full_text() == f"Scan set {set_row.label}"
-    vm.select(A06)                                  # a spectrum ends the set's summary
+    vm.click(f"set:{set_row.key}")
+    assert vm.selection.keys == tuple(sp.key for sp in set_row.spectra)
+    assert panel._key == vm.selection.active == set_row.spectra[0].key
     assert panel._body.isVisible() and not panel._message.isVisible()
-    vm.select_set(set_row.key)
-    vm.set_focused.emit(None)                       # the set left the read: back to the plain hint
-    assert "Select an analyzer row" in panel._message.text()
+    vm.select(None)
+    assert panel._key is None and panel._message.isVisible()
 
 
 # ---------------------------------------------------------------------------

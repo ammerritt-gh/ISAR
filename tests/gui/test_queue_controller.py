@@ -102,8 +102,8 @@ class Rig:
 
     # ---- driving ----
     def select(self, *keys: str) -> None:
-        """What the scan list selects (the multi-select job provides the same names over its own selection)."""
-        self.vm.selected_keys = lambda: tuple(keys)           # type: ignore[method-assign]
+        """Use the real shared selection, as the scan-list and saved groups do."""
+        self.vm.select_keys(keys)
 
     def emit(self, *events: dict) -> None:
         assert self.ctrl._send({"op": "_emit", "lines": list(events)})
@@ -659,19 +659,20 @@ def test_the_selection_names_analyzers_by_scan_set_and_leaves_pooled_masters_out
     assert r.ctrl.view().fast == ()                            # selecting never queues anything
 
 
-def test_a_set_row_focus_empties_the_controllers_selection(rig):
+def test_a_set_row_click_gives_the_controller_all_analyzers(rig):
     r = rig()
     r.vm.select(A06)
-    r.vm.select_set(SET)
-    assert r.ctrl.selection() == qc.Selection((), "", 0)
+    r.vm.click(f"set:{SET}")
+    assert r.ctrl.selection().keys == tuple(sp.key for sp in r.snapshot.scan_set(SET).spectra)
+    assert r.ctrl.view().fast == ()
 
 
 def test_show_is_the_one_action_that_moves_the_selection(rig):
     r = rig()
     shown = []
-    r.vm.display_requested.connect(shown.append)
+    r.vm.selection.changed.connect(shown.append)
     r.ctrl.show(A07)
-    assert r.vm.current_key == A07 and len(shown) == 1
+    assert r.vm.selection.active == A07 and len(shown) == 1
 
 
 def test_the_controller_tells_its_views_when_anything_changes(rig):

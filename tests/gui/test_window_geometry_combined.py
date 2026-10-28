@@ -48,7 +48,7 @@ def _open_hardest_combination(qtbot, monkeypatch, tmp_path, *, processing_collap
 
 def _assert_usable(w, panel, processing_collapsed: bool):
     assert_frame_geometry(w, LAPTOP)
-    assert w.scan_list_vm.current_key == A03
+    assert w.scan_list_vm.selection.active == A03
     assert w._center_host.current_key == "scan"
 
     # the inspector is part of the left panel; the scan list keeps its minimum beside it

@@ -1,17 +1,8 @@
-"""ScanListViewModel -- the scan list's snapshot, current spectrum, selection rule and tree.
+"""Scan-list tree and input semantics over the window's single Selection.
 
-Holds the :class:`~isar.workspace_api.scan_list.ScanListSnapshot` of the open experiment (re-read on a
-bind and on a workspace change) and the stable key of the current spectrum. Identity is always a
-spectrum's unit key, never a position or a display label, so regrouping or a background update keeps
-the selection.
-
-The view model also turns the snapshot, the sort, the filter and the visible columns into a plain
-tree of :class:`Node`; the panel reconciles its items to that tree by node id. A change of sort,
-filter or columns emits ``snapshot_changed`` like any other rebuild.
-
-No feedback loops: ``set_workspace``, ``on_workspace_changed`` and ``set_active_key`` never emit
-``display_requested`` or ``inspect_requested``. Only :meth:`select` asks for the display, so a
-background refresh never moves the central page under the user.
+The tree is reconciled by stable node id. Its Qt selection model only mirrors
+Selection; filters never remove selected keys, and refreshes preserve the active
+spectrum while its key remains present.
 """
 from __future__ import annotations
 
@@ -22,12 +13,12 @@ from pathlib import Path
 from PySide6.QtCore import Signal
 
 from isar.workspace_api import ImportSummary
+from isar.workspace_api.spectra import NOT_JUDGED_TEXT, SpectraCache
 from isar.workspace_api.scan_list import (Fact, PooledRow, ScanListSnapshot, ScanSetRow, SpectrumRow,
                                           UnreadFile, natural_key, scan_list)
-from isar.workspace_api.spectra import SpectraCache
 from isar_gui import status_words
+from isar_gui.selection import ORIGIN_LIST, ORIGIN_OTHER, Selection
 from isar_gui.plain_words import drop_echo, plain_reason
-from isar_gui.selection import Selection
 from isar_gui.theme import DEEP, FAST, PARSED, QUEUE_STATES, Tone, status_tone, summary_tone
 from isar_gui.viewmodels.base import ViewModel
 
@@ -69,6 +60,8 @@ class Node:
     key: str | None                   # the selectable identity (spectrum or pooled key), else None
     cells: dict                       # column id -> Cell
     children: tuple["Node", ...] = ()
+    accessible_name: str = ""
+    accessible_description: str = ""
 
 
 # ---- cell formatting ----------------------------------------------------------------------
@@ -106,6 +99,9 @@ def _status_cell(status, column: str, mark: str | None = None) -> Cell:
     if stale:
         lines = "\n".join(f"{name}: {used} → {now}" for name, used, now in status.changed)
         tip = f"Inputs changed since this {column} pass:\n{lines}" + (f"\n{tip}")
+    if column == DEEP and status.stored and status.current is None:
+        plain += " · " + NOT_JUDGED_TEXT
+        tip = NOT_JUDGED_TEXT + "\n" + tip
     if mark is not None:       # the queue's word replaces the stored one, which moves to the hover
         word, tone, meaning = QUEUE_STATES[mark]
         return Cell(word, f"{meaning}. Stored {status_words.TITLES[column].lower()}: {plain}\n{tip}", tone)
@@ -182,19 +178,15 @@ def file_matches(terms, f: UnreadFile) -> bool:
 
 class ScanListViewModel(ViewModel):
     snapshot_changed = Signal()         # after every rebuild: bind, background update, sort/filter/columns
-    display_requested = Signal(object)  # FitView | str unit key | None: MainWindow._route_inspect's payload
-    current_changed = Signal(object)    # str key | None: the list's current spectrum or pooled row
     inspect_requested = Signal(str)     # open the inspector column on this key
-    set_focused = Signal(object)        # str set key | None: a scan-set row was picked (no spectrum is meant)
     selection_changed = Signal(tuple)   # tuple[str, ...]: the selected keys, list order (C-selection)
 
     def __init__(self, ws, parent=None) -> None:
         super().__init__(ws, parent)
         self._snapshot: ScanListSnapshot = scan_list(ws)
-        self.selection = Selection(parent=self)
+        self.selection = Selection(self)
         self.spectra_cache = SpectraCache()
-        self._current_key: str | None = None
-        self._focus_set: str | None = None    # the scan set whose row the user picked, until a spectrum is
+        self._anchor: str | None = None
         self._sort = "set"
         self._optional: set[str] = set()      # the optional columns the user switched on
         self._hidden: set[str] = set()        # result columns the user switched off: the auto rule leaves them off
@@ -204,30 +196,25 @@ class ScanListViewModel(ViewModel):
         self._queue = None
         self._marks: dict[str, dict[str, str]] = {}    # the queue's marks as the list last took them
         self._auto = self._auto_columns()
+        self.selection.set_order(self._order_keys)
+        self.selection.changed.connect(self._on_selection_changed)
 
     # ---- reads ---------------------------------------------------------------------------
     @property
     def snapshot(self) -> ScanListSnapshot:
         return self._snapshot
 
-    @property
-    def current_key(self) -> str | None:
-        return self._current_key
-
-    @property
-    def focus_set(self) -> str | None:
-        return self._focus_set
-
     def selected_keys(self) -> tuple[str, ...]:
-        """The selected spectrum or pooled keys, list order (C-selection). Today's one selection: the current
-        key, and none while a scan-set row is focused, so a panel never names a spectrum the list no longer
-        highlights."""
-        return () if self._current_key is None or self._focus_set is not None else (self._current_key,)
+        """Queue facade: the same immutable keys the plot and inspector use."""
+        return self.selection.keys
 
     def select_keys(self, keys) -> None:
-        """Select ``keys`` as a user click would (with ``select``'s signals). One selection for now: the first."""
-        keys = tuple(keys)
-        self.select(keys[0] if keys else None)
+        """Select and reveal keys requested by another panel, including queue Show."""
+        self.selection.set(keys, origin=ORIGIN_OTHER)
+
+    def _on_selection_changed(self, change) -> None:
+        if change.keys_changed:
+            self.selection_changed.emit(change.keys)
 
     def set_queue(self, controller) -> None:
         """The analysis queue controller whose marks the list shows; None shows none."""
@@ -246,9 +233,6 @@ class ScanListViewModel(ViewModel):
             self._marks = marks
             self._auto = self._auto_columns()
             self.snapshot_changed.emit()
-
-    def _emit_selection(self) -> None:
-        self.selection_changed.emit(self.selected_keys())
 
     @property
     def sort(self) -> str:
@@ -313,6 +297,7 @@ class ScanListViewModel(ViewModel):
         if sort in SORTS and sort != self._sort:
             self._sort = sort
             self.snapshot_changed.emit()
+            self.selection.resync()
 
     def set_filter(self, text: str) -> None:
         text = text or ""
@@ -344,12 +329,12 @@ class ScanListViewModel(ViewModel):
 
     # ---- the workspace changed -----------------------------------------------------------
     def set_workspace(self, ws) -> None:
-        """Rebind: re-read, keep ``current_key`` only if it still exists, emit ``snapshot_changed``."""
+        """Rebind and retain only selected keys still in the snapshot."""
         self._ws = ws
         self._reread()
 
     def on_workspace_changed(self, changed=None) -> None:
-        """Re-read after the facade refresh; emits ``snapshot_changed``; never ``display_requested``."""
+        """Re-read after the facade refresh without requesting a page change."""
         self._reread()
 
     def _reread(self) -> None:
@@ -359,57 +344,108 @@ class ScanListViewModel(ViewModel):
             "import_summary": intake.summary or _NO_SUMMARY}      # None (not read yet): no marks, no lists
         self._snapshot = scan_list(self._ws, **reads)
         self._auto = self._auto_columns()
-        cleared = self._current_key is not None and self._snapshot.spectrum(self._current_key) is None
-        if cleared:
-            self._current_key = None
-        lost_set = self._focus_set is not None and self._snapshot.scan_set(self._focus_set) is None
-        if lost_set:
-            self._focus_set = None
         self.snapshot_changed.emit()
-        if cleared:
-            self.current_changed.emit(None)
-        if lost_set:
-            self.set_focused.emit(None)
-        if cleared or lost_set:
-            self._emit_selection()
+        self.selection.resync()
 
     # ---- selection -----------------------------------------------------------------------
     def select(self, key: str | None) -> None:
-        """User selection: set current, emit ``current_changed`` and ``display_requested``.
-
-        A fitted spectrum hands its ``FitView`` to the display, any other key its unit key, and
-        ``None`` clears the display: today's rule of ``ScansViewModel.request_inspect``."""
-        self._current_key = key
-        self._focus_set = None
-        self.current_changed.emit(key)
-        self._emit_selection()
-        row = None if key is None else self._snapshot.spectrum(key)
-        fit = None if row is None else row.fit
-        self.display_requested.emit(key if fit is None else fit)
-
-    def select_set(self, set_key: str) -> None:
-        """The user picked a scan-set row: the inspector (when open) summarises the set. The current spectrum
-        and the display stay as they are; ``select`` of a spectrum ends this."""
-        if set_key != self._focus_set and self._snapshot.scan_set(set_key) is not None:
-            self._focus_set = set_key
-            self.set_focused.emit(set_key)
-            self._emit_selection()
+        self.selection.set(() if key is None else (key,), clicked=key, origin=ORIGIN_LIST)
 
     def inspect(self, key: str) -> None:
-        """Select ``key`` if it is not current, then ask for the inspector column."""
-        if key != self._current_key:
+        if self._snapshot.spectrum(key) is None:
+            return
+        if key not in self.selection.keys:
             self.select(key)
+        else:
+            self.selection.set_active(key)
         self.inspect_requested.emit(key)
 
     def set_active_key(self, key: str | None) -> None:
-        """The active unit changed elsewhere (``ActiveUnitController``): follow it, ``current_changed``
-        only, and only when it differs. A key the snapshot does not hold leaves the current one."""
-        if key == self._current_key or (key is not None and self._snapshot.spectrum(key) is None):
+        if key in self.selection.keys:
+            self.selection.set_active(key)
+
+    def _ordered_rows(self):
+        pairs = [(ss, sp) for ss in self._sorted_sets() for sp in ss.spectra]
+        if self._sort == "analyzer":
+            pairs.sort(key=lambda pair: (natural_key(pair[1].analyzer or _DASH),
+                                        natural_key(pair[0].label), pair[1].key))
+        return [sp for _ss, sp in pairs] + list(self._snapshot.pooled)
+
+    def _order_keys(self, keys) -> tuple[str, ...]:
+        wanted = set(keys)
+        return tuple(row.key for row in self._ordered_rows() if row.key in wanted)
+
+    @staticmethod
+    def _node_key(node_id: str | None) -> str | None:
+        if node_id and node_id.startswith(("spec:", "pool:")):
+            return node_id.split(":", 1)[1]
+        return None
+
+    def container_keys(self, node_id: str) -> tuple[str, ...]:
+        """Unfiltered membership, also used for the all/some/none mark."""
+        if node_id.startswith("set:"):
+            ss = self._snapshot.scan_set(node_id[4:])
+            return () if ss is None else tuple(sp.key for sp in ss.spectra)
+        if node_id.startswith("ana:"):
+            ana = node_id[4:]
+            return tuple(row.key for row in self._ordered_rows()
+                         if isinstance(row, SpectrumRow) and (row.analyzer or _DASH) == ana)
+        if node_id == "section:pooled":
+            return tuple(p.key for p in self._snapshot.pooled)
+        return ()
+
+    def click(self, node_id: str | None, *, ctrl=False, shift=False, visible=()) -> None:
+        """A select-zone gesture. A Shift range includes visible spectrum rows only."""
+        if node_id is None:
+            self._anchor = None
+            self.selection.clear(origin=ORIGIN_LIST)
             return
-        self._current_key = key
-        self._focus_set = None
-        self.current_changed.emit(key)
-        self._emit_selection()
+        key = self._node_key(node_id)
+        if key is None and not node_id.startswith(("set:", "ana:")):
+            return
+        visible = tuple(visible)
+        if shift and self._anchor in visible and node_id in visible:
+            first, last = sorted((visible.index(self._anchor), visible.index(node_id)))
+            keys = {k for ident in visible[first:last + 1] if (k := self._node_key(ident))}
+            if ctrl:
+                keys.update(self.selection.keys)
+        else:
+            self._anchor = node_id
+            keys = {key} if key is not None else set(self.container_keys(node_id))
+            if ctrl:
+                selected = set(self.selection.keys)
+                keys = selected - keys if keys <= selected else selected | keys
+        self.selection.set(keys, clicked=key, origin=ORIGIN_LIST)
+
+    def select_all_visible(self, visible) -> None:
+        self.selection.set((key for ident in visible if (key := self._node_key(ident))),
+                           origin=ORIGIN_LIST)
+
+    def container_presentation(self, node_id: str) -> tuple[str, str, str, str]:
+        """Text, accessible name, description, tooltip: one source for every mark."""
+        keys = self.container_keys(node_id)
+        total, selected = len(keys), len(set(keys).intersection(self.selection.keys))
+        tip_extra = ""
+        if node_id.startswith("set:"):
+            ss = self._snapshot.scan_set(node_id[4:])
+            label, kind, noun = ss.label, "Scan set", "analyzers"
+            if ss.summed:
+                tip_extra = ("\nsummed set: scans " + ", ".join(str(n) for n in ss.scan_numbers)
+                             if ss.scan_numbers else f"\nsummed set ({ss.n_merged} scans merged)"
+                             if ss.n_merged else "\nsummed set")
+        elif node_id.startswith("ana:"):
+            label, kind, noun = node_id[4:], "Analyzer", "scan sets"
+        else:
+            label, kind, noun = "Pooled", "", "spectra"
+        counted_noun = noun[:-1] if total == 1 and noun in ("analyzers", "scan sets") else noun
+        count = f"{selected} of {total} selected" if selected else f"{total} {counted_noun}"
+        text = f"{label} ({count})" if kind or selected else label
+        mark = f"{selected} of {total} selected" if selected else "none selected"
+        name = f"{kind} {label}, {total} {noun}, {mark}".lstrip()
+        description = ("The left edge opens or closes it. The rest of the row selects "
+                       f"its {total} {noun}; Ctrl-click adds or removes them.") if kind else (
+                           "The left edge opens or closes it. The selection stays unchanged.")
+        return text, name, description, label + "\n" + description + tip_extra
 
     # ---- what the filter lets through -----------------------------------------------------
     def _sorted_sets(self) -> list[ScanSetRow]:
@@ -439,15 +475,17 @@ class ScanListViewModel(ViewModel):
         return sum(len(spectra) for _ss, spectra in sets), self._snapshot.n_spectra
 
     def outside_filter(self) -> str | None:
-        """The one-line notice when the current spectrum does not pass the filter, else ``None``."""
-        key = self._current_key
-        row = None if key is None or not self.filter_active else self._snapshot.spectrum(key)
-        if row is None:
+        """Selected keys hidden by the filter remain selected and are named here."""
+        if not self.filter_active:
             return None
         sets, _files, pooled = self._visible()
-        if any(sp.key == key for _ss, spectra in sets for sp in spectra) or \
-                any(p.key == key for p in pooled):
+        visible = {sp.key for _ss, spectra in sets for sp in spectra} | {p.key for p in pooled}
+        missing = [key for key in self.selection.keys if key not in visible]
+        if not missing:
             return None
+        if len(missing) > 1:
+            return f"{len(missing)} selected spectra are outside the filter"
+        row = self._snapshot.spectrum(missing[0])
         if isinstance(row, PooledRow):
             name = row.label
         else:
@@ -465,22 +503,19 @@ class ScanListViewModel(ViewModel):
             nodes.append(Node("section:not_read", "section", None, {"scan": Cell("Files not read")},
                               tuple(self._file_node(f) for f in files)))
         if pooled:
-            nodes.append(Node("section:pooled", "section", None, {"scan": Cell("Pooled")},
-                              tuple(self._pooled_node(p, with_unit) for p in pooled)))
+            text, name, description, tip = self.container_presentation("section:pooled")
+            nodes.append(Node("section:pooled", "section", None, {"scan": Cell(text, tip)},
+                              tuple(self._pooled_node(p, with_unit) for p in pooled), name, description))
         return tuple(nodes)
 
     def _set_node(self, ss: ScanSetRow, spectra, with_unit: bool) -> Node:
-        tip = ss.label
-        if ss.summed:
-            tip += ("\nsummed set: scans " + ", ".join(str(n) for n in ss.scan_numbers)
-                    if ss.scan_numbers else
-                    f"\nsummed set ({ss.n_merged} scans merged)" if ss.n_merged else "\nsummed set")
+        text, name, description, tip = self.container_presentation(f"set:{ss.key}")
         n, unread = len(ss.spectra), len(ss.unread)
         parsed_tones = [status_tone(PARSED, sp.parsed.word) for sp in ss.spectra]
         if unread:
             parsed_tones.append(Tone.ERR)             # an unread member is an ERR
         cells = {
-            "scan": Cell(f"{ss.label} ({n} analyzer{'' if n == 1 else 's'})", tip),
+            "scan": Cell(text, tip),
             "T": _fact_cell(ss.temperature),
             "Q": Cell(""),
             "parsed": _summary_cell(ss.files_received - unread, ss.files_received, parsed_tones,
@@ -491,7 +526,7 @@ class ScanListViewModel(ViewModel):
             "file": Cell(""),
         }
         children = tuple(self._spectrum_node(sp, with_unit) for sp in spectra)
-        return Node(f"set:{ss.key}", "set", None, cells, children)
+        return Node(f"set:{ss.key}", "set", None, cells, children, name, description)
 
     def _spectrum_node(self, sp: SpectrumRow, with_unit: bool, ss: ScanSetRow | None = None) -> Node:
         """A spectrum row under its set (``ss`` is ``None``) or under its analyzer (``ss`` given)."""
@@ -526,8 +561,9 @@ class ScanListViewModel(ViewModel):
             n = len(all_sp)
             children = tuple(self._spectrum_node(sp, with_unit, ss) for ss, sp in
                              sorted(shown[ana], key=lambda p: (natural_key(p[0].label), p[1].key)))
+            text, name, description, tip = self.container_presentation(f"ana:{ana}")
             cells = {
-                "scan": Cell(f"{ana} ({n} scan set{'' if n == 1 else 's'})"),
+                "scan": Cell(text, tip),
                 "Q": Cell(""),
                 "parsed": _summary_cell(sum(sp.parsed.stored for sp in all_sp), n,
                                         [status_tone(PARSED, sp.parsed.word) for sp in all_sp],
@@ -535,7 +571,7 @@ class ScanListViewModel(ViewModel):
                 "fast": _coverage_cell(all_sp, FAST, self._current_map, self._marks, "spectra"),
                 "deep": _coverage_cell(all_sp, DEEP, self._current_map, self._marks, "spectra"),
             }
-            nodes.append(Node(f"ana:{ana}", "analyzer", None, cells, children))
+            nodes.append(Node(f"ana:{ana}", "analyzer", None, cells, children, name, description))
         return nodes
 
     @staticmethod
@@ -568,3 +604,4 @@ class ScanListViewModel(ViewModel):
             self._optional, self._sort, self._hidden = optional, sort, hidden
             self._auto = self._auto_columns()
             self.snapshot_changed.emit()
+            self.selection.resync()

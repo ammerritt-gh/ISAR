@@ -152,13 +152,13 @@ def test_the_mark_arrives_without_moving_selection_or_expansion(qtbot, ws_root):
     panel._view.collapse(panel._model.indexFromItem(panel._by_id[f"set:{B}"]))
     vm.select(A04)
     QApplication.processEvents()
-    before = (vm.current_key, set(panel._expanded), panel._view.isExpanded(index),
+    before = (vm.selection.active, set(panel._expanded), panel._view.isExpanded(index),
               panel._view.currentIndex().siblingAtColumn(0).data(_KEY_ROLE))
     shown = []
-    vm.display_requested.connect(shown.append)
+    vm.selection.changed.connect(shown.append)
     _save(qtbot, intake, 100)
     assert _marked(panel, f"spec:{A04}", "fast")
-    after = (vm.current_key, set(panel._expanded), panel._view.isExpanded(index),
+    after = (vm.selection.active, set(panel._expanded), panel._view.isExpanded(index),
              panel._view.currentIndex().siblingAtColumn(0).data(_KEY_ROLE))
     assert after == before and shown == []                      # the display is never asked to move
 

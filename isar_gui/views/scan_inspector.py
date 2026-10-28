@@ -87,17 +87,7 @@ def fact_text(fact: Fact) -> tuple[str, str]:
     return shown, shown
 
 
-def set_summary_text(set_row: ScanSetRow) -> str:
-    """What the inspector says when a scan-set row (not a spectrum) is picked: the set's name, its analyzers,
-    how many of its files were read and its temperature."""
-    n = len(set_row.spectra)
-    names = ", ".join(sp.analyzer or "—" for sp in set_row.spectra) or "none read"
-    read = max(set_row.files_received - len(set_row.unread), 0)
-    files = f"Files: {read} of {set_row.files_received} read" + (
-        f", {len(set_row.unread)} not read" if set_row.unread else "")
-    return "\n".join((f"Scan set {set_row.label}", f"{n} analyzer{'' if n == 1 else 's'}: {names}", files,
-                      f"Temperature: {fact_text(set_row.temperature)[0]}",
-                      "Select one of its analyzer rows in the list to inspect that analyzer's counts and facts."))
+
 
 
 def scan_numbers_text(set_row: ScanSetRow) -> str:
@@ -216,7 +206,6 @@ class ScanInspectorPanel(QWidget):
         self.setAcceptDrops(False)
         self._vm = vm
         self._key: str | None = None
-        self._set_key: str | None = None   # a scan-set row was picked: its summary stands in for a spectrum
         self._stale = False             # content changed while hidden: redraw when shown
         self._plot_vm: InspectorViewModel | None = None   # the panel's own: the centre's never moves
         self._fact_table: FactTable | None = None
@@ -282,8 +271,7 @@ class ScanInspectorPanel(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         vm.inspect_requested.connect(self.show_key)
-        vm.current_changed.connect(self._on_current_changed)
-        vm.set_focused.connect(self._on_set_focused)
+        vm.selection.active_changed.connect(self._on_current_changed)
         vm.snapshot_changed.connect(self._on_snapshot_changed)
         self._render()
 
@@ -321,20 +309,11 @@ class ScanInspectorPanel(QWidget):
     def show_key(self, key: str | None) -> None:
         """Show the facts of spectrum ``key`` (``None`` = nothing selected)."""
         self._key = key
-        self._set_key = None
-        self._render()
-
-    def _on_set_focused(self, set_key) -> None:
-        if self.isHidden():
-            return                      # showEvent follows the list's focus
-        self._set_key = set_key
-        if set_key is not None:
-            self._key = None
         self._render()
 
     def _on_current_changed(self, key) -> None:
-        # A None or a key that is not a spectrum or pooled master keeps what is shown.
-        if self.isHidden() or key is None or self._vm.snapshot.spectrum(key) is None:
+        if self.isHidden():
+            self._stale = True
             return
         self.show_key(key)
 
@@ -346,11 +325,9 @@ class ScanInspectorPanel(QWidget):
 
     def showEvent(self, event) -> None:  # noqa: N802 (Qt override)
         super().showEvent(event)
-        current, focus = self._vm.current_key, self._vm.focus_set
-        if focus is not None and focus != self._set_key:
-            self._key, self._set_key, self._stale = None, focus, True   # opened on a scan-set row: summarise it
-        elif focus is None and current is not None and current != self._key and self._vm.snapshot.spectrum(current):
-            self._key, self._set_key, self._stale = current, None, True   # opened without a key: follow the list
+        current = self._vm.selection.active
+        if current != self._key:
+            self._key, self._stale = current, True
         if self._stale:
             self._render()
 
@@ -361,10 +338,8 @@ class ScanInspectorPanel(QWidget):
         row = None if self._key is None else snapshot.spectrum(self._key)
         if row is None:
             self._set_table_unit(None)
-            set_row = None if self._set_key is None else snapshot.scan_set(self._set_key)
-            self._title.set_full_text("Scan inspector" if set_row is None else f"Scan set {set_row.label}")
-            self._message.setText(set_summary_text(set_row) if set_row is not None else
-                                  _NOTHING_PICKED if self._key is None else _NO_SPECTRUM)
+            self._title.set_full_text("Scan inspector")
+            self._message.setText(_NOTHING_PICKED if self._key is None else _NO_SPECTRUM)
             self._message.show()
             self._body.hide()
             return
