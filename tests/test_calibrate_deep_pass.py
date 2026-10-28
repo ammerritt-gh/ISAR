@@ -65,6 +65,18 @@ def slow_worker(job, connection):          # a __main__ function: spawn re-impor
     connection.close()
 
 
+def retry_event_worker(job, connection):
+    identity = dict(label="m", stage="accepted", job_seed=job["seed"], seed=job["seed"],
+                    settings=job["settings"], attempt=0)
+    connection.send(dict(event="attempt_started", **identity, started_monotonic=time.monotonic()))
+    time.sleep(.2)
+    connection.send(dict(event="attempt_completed", **identity, log_z=-2.0, wall_s=.2))
+    connection.send(dict(event="attempt_started", **{**identity, "attempt": 1, "seed": job["seed"] + 7919},
+                         started_monotonic=time.monotonic()))
+    time.sleep(5)
+    connection.close()
+
+
 def inner(artifacts: Path):
     sys.path.insert(0, str(REPO))
     spec = importlib.util.spec_from_file_location("calibrate_deep_pass", REPO / "tools" / "calibrate_deep_pass.py")
@@ -229,6 +241,15 @@ def inner(artifacts: Path):
         assert [r["error"] for r in rows] == [h.WALL_CAP] and len(queued) == 1
         assert time.monotonic() - started < 5
         print("spawned-process timeout and wall cap: passed")
+        h._worker = retry_event_worker
+        events = []
+        rows = h.run_jobs([{**slow(), "stage": "accepted", "production_retry": True}], workers=1,
+                          timeout_s=1.5, on_result=lambda row: None, on_attempt=events.append)
+        assert [r["event"] for r in events] == ["attempt_completed", "attempt_interrupted"], events
+        assert rows[0]["attempts"][0]["log_z"] == -2.0
+        assert rows[0]["interrupted_attempt"]["attempt"] == 1 and rows[0]["retry_count"] == 1
+        assert rows[0]["interrupted_attempt"]["n_like_calls"] is None
+        print("spawned production retry timeout retains the completed and interrupted attempts: passed")
     finally:
         h._worker = old_worker
 

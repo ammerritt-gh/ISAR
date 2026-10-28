@@ -52,9 +52,16 @@ It never selects or installs settings. At most 18 workers; the same per-run and 
 apply. Check shared-machine load before choosing the worker count.
 If the saved calibration or record is stale, --refresh-fast-pass explicitly rebuilds calibration
 on a copied card and regenerates the fast record using its saved fitting settings and hints.
-It requires --include-rwalk-baseline and a workspace source; the regenerated record is retained
+For an rslice screen it requires --include-rwalk-baseline and a workspace source; the regenerated record is retained
 in calibration.json metadata. Workspace files are never written. Regeneration precedes the
 sampler wall cap (as does --bench-case preparation).
+
+--production-retry-calibration measures final usable results from production run_until_clean:
+three explicit --model labels, nine new seeds per model at each of ACCEPTED and EXPLORATORY
+(54 jobs). Every completed and interrupted attempt is retained. The per-run timeout applies
+to each retry attempt; the invocation wall cap still bounds all retries together. Its report
+proposes conservative sigma values but installs nothing. This and the rslice screen use seed
+offsets distinct from the historical calibrate() sequence.
 
 Defaults: --workers 16 --run-timeout-s 3600 --wall-cap-s 7200
 --reference-live 1600 --reference-tolerance 0.5 --difference-max 2.0 --difference-target 1.0.
@@ -92,6 +99,9 @@ if str(REPO) not in sys.path:        # the checkout this tool sits in, also for 
     sys.path.insert(0, str(REPO))
 BENCH_SEED = 20261023            # count_bench's default --seed
 SEEDS = 3                        # per model and configuration (ruling)
+SCREEN_SEED_OFFSET = 100_000     # separate from the older calibrate() sequence
+RETRY_SEED_OFFSET = 200_000      # new seeds for production-retry calibration
+RETRY_SEEDS = 9
 SCREEN_LIVE = (128, 400)
 SCREEN_FACTORS = (1, 4)
 DLOGZ = 0.05
@@ -261,7 +271,9 @@ def _worker(job, connection):
     row = _base_row(job)
     started = time.perf_counter()
     try:
-        if job["engine"] == "ultranest":
+        if job.get("production_retry"):
+            row.update(_retry_worker(job, connection))
+        elif job["engine"] == "ultranest":
             row.update(_ultranest(job))
         else:
             deep_pass = _deep_pass()
@@ -292,12 +304,59 @@ def _worker(job, connection):
         connection.close()
 
 
-def run_jobs(jobs, *, workers, timeout_s, on_result, deadline=None, skipped=None):
+def _record_row(job, rec):
+    row = _base_row(job)
+    for key in ("seed", "log_z", "log_z_err", "information_h", "n_like_calls", "n_iter",
+                "lnl_max", "wall_s", "evidence_converged"):
+        row[key] = getattr(rec, key)
+    row.update(settings=dataclasses.asdict(rec.settings), suspect=list(rec.suspect),
+               status="ok" if rec.failure is None else "failed", error=rec.failure,
+               usable=rec.usable)
+    return row
+
+
+def _retry_worker(job, connection):
+    """Instrument only this child's run_nested; production owns the complete retry ladder."""
+    deep_pass = _deep_pass()
+    model = job["model"]
+    original = deep_pass.run_nested
+    completed = []
+
+    def attempt(label, problem, *, settings, seed, reference_lnl=None):
+        index = len(completed)
+        identity = dict(job_seed=job["seed"], attempt=index, label=label, stage=job["stage"],
+                        seed=seed, settings=dataclasses.asdict(settings))
+        connection.send(dict(event="attempt_started", **identity, started_monotonic=time.monotonic()))
+        rec = original(label, problem, settings=settings, seed=seed, reference_lnl=reference_lnl)
+        if rec.label != model.label or rec.ndim != model.ndim or rec.seed != seed or rec.settings != settings:
+            raise ValueError("RunRecord identity does not match production retry attempt")
+        completed.append(rec)
+        connection.send(dict(event="attempt_completed", **_record_row(job, rec),
+                             job_seed=job["seed"], attempt=index))
+        return rec
+
+    deep_pass.run_nested = attempt
+    try:
+        runs = deep_pass.run_until_clean(model.label, model.problem,
+                                        settings=deep_pass.SamplerSettings(**job["settings"]),
+                                        seed=job["seed"], reference_lnl=model.fastpass_lnl_opt)
+    finally:
+        deep_pass.run_nested = original
+    final = _record_row(job, runs[-1])
+    final.update(seed=job["seed"], final_seed=runs[-1].seed, initial_settings=job["settings"],
+                 retry_count=len(runs) - 1, final_wall_s=runs[-1].wall_s,
+                 wall_s=sum(r.wall_s for r in runs), total_like_calls=sum(r.n_like_calls for r in runs))
+    return final
+
+
+def run_jobs(jobs, *, workers, timeout_s, on_result, deadline=None, skipped=None, on_attempt=None):
     """One spawned process per run: independent RNG, no nested pool, killable timeout.
 
     ``on_result(row)`` may return more jobs to queue (the reference waits for the screen). After
     ``deadline`` (a time.monotonic() value) nothing starts, queued jobs go to ``skipped``, and a run
-    still in flight is killed and recorded with error "wall cap"."""
+    still in flight is killed and recorded with error "wall cap". Production-retry jobs send
+    attempt events: each start resets the per-attempt timeout; ``on_attempt`` persists completions
+    before the next attempt finishes. The invocation deadline never resets."""
     ctx = mp.get_context("spawn")
     pending, active, completed = deque(jobs), [], []
     try:
@@ -313,23 +372,46 @@ def run_jobs(jobs, *, workers, timeout_s, on_result, deadline=None, skipped=None
                 proc = ctx.Process(target=_worker, args=(job, writer))
                 proc.start()
                 writer.close()
-                active.append((proc, reader, job, time.monotonic()))
+                active.append(dict(proc=proc, reader=reader, job=job, start=time.monotonic(),
+                                   attempt_start=time.monotonic(), attempts=[], current=None))
             for item in active[:]:
-                proc, reader, job, start = item
-                expired = time.monotonic() - start >= timeout_s
+                proc, reader, job, start = (item[k] for k in ("proc", "reader", "job", "start"))
                 row = None
-                if reader.poll():
+                while reader.poll() and row is None:
                     try:
-                        row = reader.recv()
+                        message = reader.recv()
                     except EOFError:
                         row = _base_row(job)
                         row["error"] = "worker closed its result pipe without a record"
-                elif capped or expired or not proc.is_alive():
+                        break
+                    if message.get("event") == "attempt_started":
+                        item["current"] = message
+                        item["attempt_start"] = message["started_monotonic"]
+                    elif message.get("event") == "attempt_completed":
+                        item["attempts"].append(message)
+                        item["current"] = None
+                        if on_attempt is not None:
+                            on_attempt(message)
+                    else:
+                        row = message
+                expired = time.monotonic() - item["attempt_start"] >= timeout_s
+                if row is None and (capped or expired or not proc.is_alive()):
                     row = _base_row(job)
                     row.update(wall_s=time.monotonic() - start,
                                error=(WALL_CAP if capped else f"wall timeout after {timeout_s:g}s"
-                                      if expired else f"worker exited {proc.exitcode} without a record"))
+                                       if expired else f"worker exited {proc.exitcode} without a record"))
                 if row is not None:
+                    if job.get("production_retry"):
+                        row["attempts"] = item["attempts"]
+                        row.setdefault("retry_count", max(0, len(item["attempts"]) - 1))
+                        if item["current"] is not None:
+                            interrupted = dict(item["current"], event="attempt_interrupted", status="not_finished",
+                                               error=row.get("error"), log_z=None, lnl_max=None,
+                                               n_like_calls=None, wall_s=time.monotonic() - item["attempt_start"])
+                            row["interrupted_attempt"] = interrupted
+                            row["retry_count"] = interrupted["attempt"]
+                            if on_attempt is not None:
+                                on_attempt(interrupted)
                     proc.join(timeout=0.2)
                     if proc.is_alive():
                         proc.terminate()
@@ -344,7 +426,10 @@ def run_jobs(jobs, *, workers, timeout_s, on_result, deadline=None, skipped=None
             if active:
                 time.sleep(0.05)
     finally:
-        for proc, reader, _job, _start in active:
+        if pending and skipped is not None:
+            skipped.extend(pending)
+        for item in active:
+            proc, reader = item["proc"], item["reader"]
             if proc.is_alive():
                 proc.terminate()
             proc.join(timeout=2)
@@ -352,6 +437,19 @@ def run_jobs(jobs, *, workers, timeout_s, on_result, deadline=None, skipped=None
                 proc.kill()
                 proc.join(timeout=2)
             reader.close()
+            if item["job"].get("production_retry"):
+                row = _base_row(item["job"])
+                row.update(error="calibration invocation interrupted or failed",
+                           wall_s=time.monotonic() - item["start"], attempts=item["attempts"],
+                           retry_count=max(0, len(item["attempts"]) - 1))
+                if item["current"] is not None:
+                    interrupted = dict(item["current"], event="attempt_interrupted", status="not_finished",
+                                       error=row["error"], log_z=None, lnl_max=None, n_like_calls=None,
+                                       wall_s=time.monotonic() - item["attempt_start"])
+                    row.update(interrupted_attempt=interrupted, retry_count=interrupted["attempt"])
+                    if on_attempt is not None:
+                        _final_refresh(lambda: on_attempt(interrupted))
+                _final_refresh(lambda: on_result(row))
     return completed
 
 
@@ -608,6 +706,8 @@ def _reached(aim):
 
 
 def render_markdown(report):
+    if report.get("protocol") == "production_retry":
+        return _render_retry(report)
     if report.get("protocol") == "rslice_screen":
         return _render_screen(report)
     a = report.get("analysis") or {}
@@ -1015,7 +1115,7 @@ def rslice_screen(entries, *, labels, output, workers=16, run_timeout_s=3600, wa
     for model in entries:
         for sample, factor in configs:
             for _ in range(SEEDS):
-                next_seed = seed + len(jobs) + 1
+                next_seed = seed + SCREEN_SEED_OFFSET + len(jobs) + 1
                 if not 0 <= next_seed < 2**32:
                     raise ValueError("seed sequence exceeds uint32 range")
                 jobs.append(dict(model=model, stage="rslice_screen" if sample == "rslice" else "rwalk_baseline",
@@ -1066,6 +1166,137 @@ def rslice_screen(entries, *, labels, output, workers=16, run_timeout_s=3600, wa
         report.update(status="interrupted_or_failed", error=traceback.format_exc())
         raise
     finally:
+        _final_refresh(refresh)
+    return report
+
+
+# --------------------------------------------------------------------------- production-retry calibration
+def _final_usable(row):
+    return (row.get("usable") and row.get("evidence_converged") and not row.get("suspect")
+            and row.get("error") is None and finite(row.get("log_z")))
+
+
+def _retry_analysis(report):
+    from scipy.stats import chi2
+
+    groups = []
+    for stage in ("accepted", "exploratory"):
+        for model in report["core"]:
+            jobs = [r for r in report["runs"] if r["stage"] == stage and r["label"] == model["label"]]
+            usable = [r for r in jobs if _final_usable(r)]
+            values = [r["log_z"] for r in usable]
+            n = len(values)
+            sd = statistics.stdev(values) if n >= 2 else None
+            upper = sd * math.sqrt((n - 1) / chi2.ppf(.05, n - 1)) if sd is not None else None
+            groups.append(dict(stage=stage, label=model["label"], n_usable=n,
+                               n_jobs=len(jobs), complete=n == RETRY_SEEDS,
+                               seed_std=sd, upper_95=upper, log_z=values,
+                               spread=max(values) - min(values) if values else None,
+                               retries=sum(r.get("retry_count", 0) for r in jobs),
+                               mean_job_wall_s=statistics.mean([r["wall_s"] for r in jobs]) if jobs else None))
+    proposed = {}
+    for stage in ("accepted", "exploratory"):
+        selected = [g for g in groups if g["stage"] == stage]
+        proposed[stage] = (max(g["upper_95"] for g in selected)
+                           + (EXPLORATORY_EXTRA if stage == "exploratory" else 0.0)
+                           if all(g["complete"] for g in selected) else None)
+    return dict(groups=groups, proposed_sigma=proposed,
+                qualification="Final usable runs only; normal-seed approximation, one spectrum, provisional; no settings installed.")
+
+
+def _render_retry(report):
+    analysis = report.get("analysis") or {}
+    lines = ["# Deep-pass production-retry calibration", "", f"Status: {report['status']}; "
+             f"elapsed {report.get('elapsed_wall_s', 0):.1f} s; cap {report['wall_cap_s']:g} s.", "",
+             "Nine new seeds per model and settings level. Production run_until_clean owns retries. "
+             "Only final usable ln Z contributes to sample SD (ddof=1). The upper bound is "
+             "s sqrt((n-1)/chi2(0.05,n-1)); it assumes normal independent seed errors and does not establish accuracy.", ""]
+    lines += _table(["Level", "Model", "Usable", "SD", "95% upper", "Retries", "Mean job s"],
+                    [[g[k] for k in ("stage", "label", "n_usable", "seed_std", "upper_95", "retries", "mean_job_wall_s")]
+                     for g in analysis.get("groups", [])])
+    lines += ["", f"Proposed sigmas (report only): {analysis.get('proposed_sigma', {})}. "
+              "Exploratory adds 0.5 after the largest upper bound. Incomplete levels have no proposal.", "",
+              "## Every attempt", ""]
+    lines += _table(["Level", "Model", "Job seed", "Attempt", "Seed", "Live", "Factor", "ln Z", "Best ln L",
+                     "Calls", "Wall s", "Status", "Suspect / error"],
+                    [[r["stage"], r["label"], r["job_seed"], r["attempt"], r["seed"],
+                      r["settings"]["n_live"], r["settings"]["step_factor"], r.get("log_z"), r.get("lnl_max"),
+                      r.get("n_like_calls"), r.get("wall_s"), r.get("status"),
+                      "; ".join(r.get("suspect", [])) or r.get("error")]
+                     for r in report.get("attempts", [])])
+    lines += ["", f"Never started: {len(report.get('not_run', []))}; all job identities and final results are in calibration.json.", ""]
+    return "\n".join(lines)
+
+
+def retry_calibration(entries, *, labels, output, workers=16, run_timeout_s=3600, wall_cap_s=7200,
+                      seed=20261026, metadata=None):
+    """One bounded production-retry measurement: three models, two levels, nine new seeds each."""
+    by_label = {e.label: e for e in entries}
+    if len(labels) != 3 or len(set(labels)) != 3 or any(lb not in by_label for lb in labels):
+        raise ValueError("retry calibration needs exactly three distinct available --model labels")
+    if (not 1 <= workers <= 18 or workers != int(workers) or not finite(run_timeout_s)
+            or not 0 < run_timeout_s <= 3600 or not finite(wall_cap_s) or not 0 < wall_cap_s <= 7200):
+        raise ValueError("retry calibration permits 1-18 workers, per-attempt cap <=3600s and wall cap <=7200s")
+    entries = [by_label[lb] for lb in labels]
+    if any(e.ndim < 1 or not finite(e.fastpass_lnl_opt) or not finite(e.log_model_prior) for e in entries):
+        raise ValueError("retry models need sampled parameters and finite optimum and model prior")
+    deep_pass = _deep_pass()
+    configs = (("accepted", deep_pass.ACCEPTED), ("exploratory", deep_pass.EXPLORATORY))
+    jobs = []
+    for stage, settings in configs:
+        for model in entries:
+            for _ in range(RETRY_SEEDS):
+                next_seed = seed + RETRY_SEED_OFFSET + len(jobs) + 1
+                if not 0 <= next_seed + 7919 * deep_pass.MAX_RESTARTS < 2**32:
+                    raise ValueError("retry seed sequence exceeds uint32 range")
+                jobs.append(dict(model=model, stage=stage, seed=next_seed, engine="dynesty",
+                                 settings=dataclasses.asdict(settings), production_retry=True))
+    jobs.sort(key=lambda j: -j["settings"]["n_live"] * (j["model"].ndim + 20))
+    output = Path(output).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    if any((output / name).exists() for name in ("calibration.json", "calibration.md")):
+        raise FileExistsError("choose a fresh output folder; previous calibration is preserved")
+    start = time.monotonic()
+    report = dict(protocol="production_retry", status="running", started_utc=datetime.now(timezone.utc).isoformat(),
+                  output=str(output), metadata=metadata or {}, seed=seed, seed_offset=RETRY_SEED_OFFSET,
+                  run_timeout_s=run_timeout_s, wall_cap_s=wall_cap_s,
+                  machine=dict(platform=platform.platform(), logical_cpus=os.cpu_count(), workers=workers, threads_per_run=1),
+                  versions={p: importlib.metadata.version(p) for p in ("numpy", "scipy", "dynesty")},
+                  core=[dict(label=e.label, count=e.count, ndim=e.ndim, fastpass_ln_z=e.fastpass_ln_z,
+                             fastpass_lnl_opt=e.fastpass_lnl_opt, log_model_prior=e.log_model_prior) for e in entries],
+                  planned=[{**_base_row(j), "status": "planned"} for j in jobs], runs=[], attempts=[], not_run=[], analysis={})
+
+    def refresh():
+        report["analysis"] = _retry_analysis(report)
+        report["elapsed_wall_s"] = time.monotonic() - start
+        write_report(report, output)
+
+    def keep_attempt(row):
+        report["attempts"].append(row)
+        print(f"{row['stage']} {row['label']} job={row['job_seed']} attempt={row['attempt']} "
+              f"seed={row['seed']} {row['status']} lnZ={row.get('log_z')} wall={row.get('wall_s', 0):.1f}s", flush=True)
+        refresh()
+
+    def keep(row):
+        report["runs"].append(row)
+        refresh()
+
+    skipped = []
+    try:
+        refresh()
+        run_jobs(jobs, workers=workers, timeout_s=run_timeout_s, deadline=start + wall_cap_s,
+                 on_result=keep, on_attempt=keep_attempt, skipped=skipped)
+        report["not_run"] = [{**_base_row(j), "status": "not_started", "error": WALL_CAP} for j in skipped]
+        capped = bool(skipped) or any(r.get("error") == WALL_CAP for r in report["runs"])
+        complete = len(report["runs"]) == len(jobs) and all(_final_usable(r) for r in report["runs"])
+        report["status"] = "cut_by_wall_cap" if capped else "complete" if complete else "not_finished"
+    except BaseException:
+        report.update(status="interrupted_or_failed", error=traceback.format_exc())
+        raise
+    finally:
+        report["not_run"] = [{**_base_row(j), "status": "not_started",
+                              "error": WALL_CAP if report["status"] == "cut_by_wall_cap"
+                              else "calibration invocation interrupted or failed"} for j in skipped]
         _final_refresh(refresh)
     return report
 
@@ -1314,10 +1545,12 @@ def main():
     parser.add_argument("--bench-draw", type=int, default=0)
     parser.add_argument("--output", type=Path, help="a NEW folder for calibration.json and calibration.md")
     parser.add_argument("--refresh-fast-pass", action="store_true",
-                        help="explicitly rebuild workspace calibration and fast record in memory; requires a new rwalk baseline")
+                        help="explicitly rebuild workspace calibration and fast record in memory; rslice requires a new rwalk baseline")
     parser.add_argument("--rslice-screen", action="store_true",
                         help="report-only 400-live rslice factors 1,2, three seeds on three --model labels")
-    parser.add_argument("--model", action="append", default=[], help="exact model label; repeat three times for --rslice-screen")
+    parser.add_argument("--production-retry-calibration", action="store_true",
+                        help="report final usable production retries: three models, two levels, nine new seeds each")
+    parser.add_argument("--model", action="append", default=[], help="exact model label; repeat three times for either bounded protocol")
     parser.add_argument("--include-rwalk-baseline", action="store_true", help="also run rwalk 400x4, three seeds per selected model")
     parser.add_argument("--rwalk-baseline", type=Path, help="existing calibration.json with a matching rwalk 400x4 baseline")
     parser.add_argument("--workers", type=int, default=16)
@@ -1341,16 +1574,25 @@ def main():
             or (args.spectrum and not args.workspace):
         parser.error("--output and exactly one source are required: --workspace W --spectrum KEY, "
                      "or --bench-case NAME")
-    if args.refresh_fast_pass and (not args.rslice_screen or not args.workspace or args.bench_case
-                                   or not args.include_rwalk_baseline or args.rwalk_baseline):
-        parser.error("--refresh-fast-pass requires a workspace --rslice-screen and --include-rwalk-baseline")
+    if args.rslice_screen and args.production_retry_calibration:
+        parser.error("choose --rslice-screen or --production-retry-calibration")
+    if args.refresh_fast_pass and (not args.workspace or args.bench_case or args.rwalk_baseline
+                                   or not (args.production_retry_calibration
+                                           or args.rslice_screen and args.include_rwalk_baseline)):
+        parser.error("--refresh-fast-pass requires a workspace retry calibration or rslice screen with a new rwalk baseline")
     if args.include_rwalk_baseline and args.rwalk_baseline:
         parser.error("choose --include-rwalk-baseline or --rwalk-baseline, not both")
-    if args.rslice_screen:
+    if args.rslice_screen or args.production_retry_calibration:
         if len(args.model) != 3 or len(set(args.model)) != 3:
-            parser.error("--rslice-screen requires exactly three distinct --model labels")
+            parser.error("the bounded protocol requires exactly three distinct --model labels")
         if not 1 <= args.workers <= 18:
-            parser.error("--rslice-screen permits 1-18 workers")
+            parser.error("the bounded protocol permits 1-18 workers")
+        if args.production_retry_calibration and (args.include_rwalk_baseline or args.rwalk_baseline):
+            parser.error("retry calibration already includes both production settings levels")
+        if args.production_retry_calibration and (not finite(args.run_timeout_s) or
+                not 0 < args.run_timeout_s <= 3600 or not finite(args.wall_cap_s) or
+                not 0 < args.wall_cap_s <= 7200):
+            parser.error("retry calibration needs per-attempt cap <=3600s and invocation cap <=7200s")
     elif args.model or args.include_rwalk_baseline or args.rwalk_baseline:
         parser.error("--model and baseline options require --rslice-screen")
     if args.bench_case:
@@ -1359,6 +1601,12 @@ def main():
         loaded = load_workspace(args.workspace.resolve(), args.spectrum, args.detector,
                                 refresh_fast_pass=args.refresh_fast_pass)
     meta = loaded["metadata"]
+    if args.production_retry_calibration:
+        report = retry_calibration(loaded["entries"], labels=args.model, output=args.output,
+                                   workers=args.workers, run_timeout_s=args.run_timeout_s,
+                                   wall_cap_s=args.wall_cap_s, seed=args.seed, metadata=meta)
+        print(f"{report['status']}; {report['elapsed_wall_s']:.0f}s; report only; output: {args.output.resolve()}")
+        return 0
     if args.rslice_screen:
         report = rslice_screen(loaded["entries"], labels=args.model, output=args.output,
                                workers=args.workers, run_timeout_s=args.run_timeout_s,

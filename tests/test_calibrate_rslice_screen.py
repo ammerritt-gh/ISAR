@@ -110,6 +110,7 @@ def test_screen_plans_only_selected_models_and_reports_every_seed(
     assert len(jobs) == expected
     assert {j["model"].label for j in jobs} == set(LABELS)
     assert len({j["seed"] for j in jobs}) == expected
+    assert min(j["seed"] for j in jobs) > 20261026 + 100_000
     configs = {(j["settings"]["sample"], j["settings"]["n_live"],
                 j["settings"]["step_factor"]) for j in jobs}
     assert configs == ({("rslice", 400, 1), ("rslice", 400, 2)} |
@@ -353,3 +354,105 @@ def test_refresh_uses_saved_inputs_and_refuses_saved_conditions(harness, monkeyp
         assert seen["temperature"] == 300.0
         assert rec.facts["slit"]["value"] == "0.1x0.1" and rec.temperature.setpoint[0] == 100.0
     assert (tmp_path / store.ENTRIES).read_bytes() == before
+
+
+def test_retry_worker_uses_production_ladder_and_streams_attempts(harness, monkeypatch):
+    from isar.analyze import deep_pass
+
+    messages = []
+    model = entries()[0]
+    job = dict(model=model, stage="accepted", seed=123, engine="dynesty",
+               production_retry=True, settings=vars(deep_pass.ACCEPTED))
+
+    def nested(label, problem, *, settings, seed, reference_lnl):
+        return deep_pass.RunRecord(label, seed, settings, model.ndim, -5.0, .2, 10.0,
+                                   30, 20, -1.0, .1, reference_lnl,
+                                   suspect=("synthetic missed mode",) if seed == 123 else (),
+                                   evidence_converged=True)
+
+    monkeypatch.setattr(deep_pass, "run_nested", nested)
+    row = harness._retry_worker(job, SimpleNamespace(send=messages.append))
+    assert deep_pass.run_nested is nested
+    assert [m["event"] for m in messages] == ["attempt_started", "attempt_completed"] * 2
+    attempts = [m for m in messages if m["event"] == "attempt_completed"]
+    assert [m["seed"] for m in attempts] == [123, 123 + 7919]
+    assert [m["settings"]["step_factor"] for m in attempts] == [4, 8]
+    assert [m["usable"] for m in attempts] == [False, True]
+    assert row["seed"] == 123 and row["final_seed"] == 123 + 7919
+    assert row["retry_count"] == 1 and row["usable"] and row["total_like_calls"] == 60
+
+
+def test_retry_calibration_plans_54_jobs_and_uses_only_final_usable_values(harness, monkeypatch, tmp_path):
+    from scipy.stats import chi2
+    from isar.analyze import deep_pass
+    import math
+
+    seen = {}
+
+    def runner(jobs, *, on_result, on_attempt, **kwargs):
+        seen.update(jobs=jobs, **kwargs)
+        indices = {}
+        for job in jobs:
+            key = (job["stage"], job["model"].label)
+            index = indices.get(key, 0)
+            indices[key] = index + 1
+            # Each job failed once far below the optimum, then production recovered.
+            bad = {**harness._base_row(job), "event": "attempt_completed", "job_seed": job["seed"],
+                   "attempt": 0, "log_z": -1000.0, "suspect": ["missed mode"], "wall_s": 1.0}
+            on_attempt(bad)
+            good = {**harness._base_row(job), "status": "ok", "log_z": float(index), "usable": True,
+                    "retry_count": 1, "wall_s": 2.0, "evidence_converged": True}
+            on_attempt({**good, "event": "attempt_completed", "job_seed": job["seed"], "attempt": 1})
+            on_result(good)
+
+    monkeypatch.setattr(harness, "run_jobs", runner)
+    report = harness.retry_calibration(entries(), labels=LABELS, output=tmp_path)
+    jobs = seen["jobs"]
+    assert len(jobs) == 54 and len({j["seed"] for j in jobs}) == 54
+    assert min(j["seed"] for j in jobs) > 20261026 + 200_000
+    assert {j["stage"] for j in jobs} == {"accepted", "exploratory"}
+    for job in jobs:
+        assert job["settings"] == vars(getattr(deep_pass, job["stage"].upper()))
+    assert seen["timeout_s"] == 3600 and seen["workers"] <= 18 and seen["deadline"] is not None
+    assert report["status"] == "complete" and len(report["attempts"]) == 108
+    for group in report["analysis"]["groups"]:
+        assert group["n_usable"] == 9 and group["retries"] == 9
+        assert group["seed_std"] == pytest.approx(math.sqrt(7.5))
+        assert group["upper_95"] == pytest.approx(math.sqrt(7.5 * 8 / chi2.ppf(.05, 8)))
+    sigma = report["analysis"]["proposed_sigma"]
+    assert sigma["exploratory"] == pytest.approx(sigma["accepted"] + .5)
+    assert "installed" not in report
+
+
+def test_retry_incomplete_groups_never_propose_new_sigma(harness):
+    report = dict(core=[{"label": lb} for lb in LABELS], runs=[
+        dict(stage="accepted", label="m0", usable=False, log_z=-1000.0, wall_s=1.0, retry_count=2),
+        dict(stage="accepted", label="m0", usable=True, evidence_converged=True, log_z=-1.0, wall_s=1.0, retry_count=0),
+        dict(stage="accepted", label="m0", usable=True, evidence_converged=False, log_z=-20.0, wall_s=1.0, retry_count=0)])
+    analysis = harness._retry_analysis(report)
+    group = analysis["groups"][0]
+    assert group["n_jobs"] == 3 and group["n_usable"] == 1 and group["seed_std"] is None
+    assert analysis["proposed_sigma"] == {"accepted": None, "exploratory": None}
+
+
+@pytest.mark.parametrize("changes", [{"run_timeout_s": 3601}, {"wall_cap_s": 7201}, {"workers": 19}])
+def test_retry_refuses_excess_caps_before_sampling(harness, monkeypatch, tmp_path, changes):
+    monkeypatch.setattr(harness, "run_jobs", lambda *args, **kwargs: pytest.fail("sampled past protocol cap"))
+    with pytest.raises(ValueError, match="permits"):
+        harness.retry_calibration(entries(), labels=LABELS, output=tmp_path, **changes)
+
+
+def test_retry_cli_dispatches_without_automatic_model_selection(harness, monkeypatch, tmp_path):
+    called = {}
+    monkeypatch.setattr(harness, "load_workspace", lambda *args, **kwargs: {"entries": entries(), "metadata": META})
+    monkeypatch.setattr(harness, "core_set", lambda *args: pytest.fail("unexpected core selection"))
+
+    def retry(entries, **kwargs):
+        called.update(kwargs)
+        return {"status": "complete", "elapsed_wall_s": 0.0}
+
+    monkeypatch.setattr(harness, "retry_calibration", retry)
+    monkeypatch.setattr(sys, "argv", ["calibrate_deep_pass.py", "--workspace", str(tmp_path),
+                                     "--spectrum", "synthetic:1:a01", "--output", str(tmp_path / "out"),
+                                     "--production-retry-calibration", "--model", "m0", "--model", "m1", "--model", "m2"])
+    assert harness.main() == 0 and called["labels"] == LABELS
