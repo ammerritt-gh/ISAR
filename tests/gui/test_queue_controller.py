@@ -399,6 +399,59 @@ def test_a_silent_service_is_killed_after_the_quiet_time_and_the_unsaved_are_nam
     assert any("Not confirmed saved" in ln and "97 K a06" in ln for ln in r.lines)
 
 
+def test_a_hold_asked_while_stopping_waits_for_the_exit_and_runs_before_the_leave_goes_on(rig):
+    r = rig(cores=1)
+    r.select(A06)
+    r.ctrl.add_selection("fast")
+    r.wait_commands("start", 1)
+    order = []
+    r.ctrl.shutdown(lambda: order.append("leave"))
+    assert r.ctrl.view().service == "stopping"
+    r.ctrl.hold_writes(lambda: order.append("copy"))           # a Save copy pressed during the leave
+    assert order == []                                         # the service may still be saving: it waits
+    r.wait(lambda: order)
+    assert order == ["copy", "leave"]                          # the copy reads the folder before the reopen
+    r.ctrl.release_writes()
+
+
+def test_a_service_that_crashes_while_stopping_names_the_saves_it_never_confirmed(rig):
+    r = rig(cores=1)
+    r.select(A06)
+    r.ctrl.add_selection("fast")
+    iid = r.wait_commands("start", 1)[0]["item_id"]
+    r.emit(_result(iid, A06))                                  # handed over, never confirmed
+    r.wait(lambda: r.item(A06).status == "saving")
+    r.ctrl._send({"op": "_hang_on_shutdown"})
+    done = []
+    r.ctrl.shutdown(lambda: done.append(True))
+    r.ctrl._send({"op": "_exit", "code": 3})
+    r.wait(lambda: done)
+    assert any("Not confirmed saved" in ln and "97 K a06" in ln for ln in r.lines)
+
+
+def test_a_ready_after_a_shutdown_request_does_not_start_work_or_stall_the_leave(rig):
+    r = rig(cores=1)
+    r.select(A06)
+    r.ctrl.add_selection("fast")
+    assert r.ctrl.view().service == "starting"
+    done = []
+    r.ctrl.shutdown(lambda: done.append(True))                 # asked before the service said ready
+    r.wait(lambda: done)
+    assert done == [True] and r.commands("start") == [] and r.ctrl.view().service == "off"
+
+
+def test_a_pause_does_not_outlive_the_queue_it_was_made_on(rig):
+    r = rig(cores=1)
+    r.ctrl.pause()
+    done = []
+    r.ctrl.shutdown(lambda: done.append(True))                 # the queue is forgotten; the open then fails
+    r.wait(lambda: done)
+    assert not r.ctrl.view().paused
+    r.select(A06)
+    r.ctrl.add_selection("fast")
+    r.wait_commands("start", 1)
+
+
 # ---- worked example 6: cores a deep item cannot use --------------------------------------------------------
 def test_cores_a_deep_item_cannot_use_go_to_the_next_item(rig):
     r = rig(cores=4)

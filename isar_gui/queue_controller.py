@@ -812,6 +812,7 @@ class QueueController(QObject):
             self._queue.abandon_active("the analysis process was stopped")
             self._sync()
             self._service = "off"
+            self._release_hold_waiters()    # a copy asked for during the leave reads the folder before the reopen
             self._finish_shutdown()
             return
         reason = _CRASH.format(log=self._service_log)
@@ -835,7 +836,9 @@ class QueueController(QObject):
     def hold_writes(self, then: Callable[[], None]) -> None:
         """Keep the writer from saving until :meth:`release_writes`; ``then()`` once no save can start. Holds nest."""
         self._holds += 1
-        if self._service != "ready":     # no service (or not yet ready): nothing saves; the hold is sent after ready
+        if self._service == "stopping":  # the service still saves what it was handed: wait for its exit
+            self._hold_waiters.append(then)
+        elif self._service != "ready":   # no service (or not yet ready): nothing saves; the hold is sent after ready
             then()
         elif self._hold_confirmed:
             then()
