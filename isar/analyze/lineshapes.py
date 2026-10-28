@@ -19,7 +19,7 @@ Constants
 """
 
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cached_property, lru_cache
 
 import numpy as np
 from scipy import fft as sp_fft
@@ -143,6 +143,21 @@ class ResolutionConvolver:
     x_out: np.ndarray       # energies of the kept output nodes
     dx: float
 
+    @cached_property
+    def grid_squared(self):
+        return _frozen(self.grid ** 2)
+
+    @cached_property
+    def peak_geometry(self):
+        """Fixed output-grid geometry for peak heights and trapezoid areas."""
+        positive = _frozen(self.x_out >= 0.0)
+        energy = self.x_out[positive]
+        add_edge = energy.size == 0 or energy[0] > 0.0
+        if add_edge:
+            energy = np.concatenate(([0.0], energy))
+        return (positive, _frozen(energy), add_edge, _frozen(np.diff(self.x_out)),
+                _frozen(np.diff(energy)))
+
     def nodes(self, signal):
         """The convolution on ``self.x_out`` (one row per row of a stacked ``signal``), before
         interpolation."""
@@ -234,6 +249,12 @@ def bose_numerator(E, T):
         return np.where(E == 0.0, kT, safe / (-np.expm1(-safe / kT)))
 
 
+@lru_cache(maxsize=64)
+def _dho_grid_values(conv, T):
+    """Parameter-independent arrays, keyed by immutable convolution geometry and temperature."""
+    return conv.grid_squared, _frozen(bose_numerator(conv.grid, T))
+
+
 def _smooth_weight(narrowest_width, h):
     lo, hi = NARROW_GAMMA_STEPS[0] * h, NARROW_GAMMA_STEPS[1] * h
     if narrowest_width <= lo:
@@ -249,6 +270,14 @@ def _third_antiderivative(z):
     return 0.5 * z * z * (np.log(z) - 1.5)
 
 
+def _pole_average(z, h):
+    """B-spline mean of 1/z, sharing shifted antiderivative nodes on a uniform grid."""
+    extended = np.concatenate((z - 1.5 * h,
+                               [z[-1] - 0.5 * h, z[-1] + 0.5 * h, z[-1] + 1.5 * h]))
+    values = _third_antiderivative(extended)
+    return (values[3:] - 3.0 * values[2:-1] + 3.0 * values[1:-2] - values[:-3]) / h ** 3
+
+
 def _bose_numerator_at_pole(p, T):
     """``y`` continued analytically to the complex pole ``p``, so that ``(y(E) - y(p))/(E - p)`` is
     regular at the pole and the point-sampled remainder has no dip of width Gamma. An unknown
@@ -258,7 +287,7 @@ def _bose_numerator_at_pole(p, T):
     return p / (-np.expm1(-p / (KB * float(T))))
 
 
-def _unit_dho(grid, E0, damping, T):
+def _unit_dho(grid, E0, damping, T, *, _prepared=None):
     """The full DHO of paper Eq. 2 at A = 1 on the uniform ``grid``: ``s(E) = (E0/π)·4Γ·y(E) /
     ((E² − E0²)² + 4Γ²E²)`` by point samples, plus the area-preserving correction of each pole
     narrower than :data:`NARROW_GAMMA_STEPS` allows (see :func:`dho_signal`). A non-finite E0 or
@@ -268,7 +297,8 @@ def _unit_dho(grid, E0, damping, T):
     damping = max(float(damping), GAMMA_CLIP)
     h = float(grid[1] - grid[0])
     pref = (E0 / np.pi) * 4.0 * damping
-    s = pref * bose_numerator(grid, T) / ((grid ** 2 - E0 ** 2) ** 2 + 4.0 * damping ** 2 * grid ** 2)
+    squared, thermal = ((grid ** 2, bose_numerator(grid, T)) if _prepared is None else _prepared)
+    s = pref * thermal / ((squared - E0 ** 2) ** 2 + 4.0 * damping ** 2 * squared)
     r = np.sqrt(complex(E0 * E0 - damping * damping))
     floor = CRITICAL_NUDGE * max(damping, h)
     if abs(r) < floor:
@@ -288,9 +318,7 @@ def _unit_dho(grid, E0, damping, T):
     for j, p in enumerate(poles):
         residue = 1.0 / np.prod([p - q for k, q in enumerate(all_poles) if k != j])   # of 1/D
         z = grid[i0:i1] - p
-        average = (_third_antiderivative(z + 1.5 * h) - 3.0 * _third_antiderivative(z + 0.5 * h)
-                   + 3.0 * _third_antiderivative(z - 0.5 * h) - _third_antiderivative(z - 1.5 * h)
-                   ) / h ** 3                                          # B-spline mean of 1/(E-p)
+        average = _pole_average(z, h)
         correction += 2.0 * np.real(residue * _bose_numerator_at_pole(p, T) * (average - 1.0 / z))
     if T is None or not np.isfinite(T) or T <= 0:   # T -> 0+: the anti-Stokes side is exactly empty
         correction[grid[i0:i1] < 0.0] = 0.0
@@ -298,7 +326,7 @@ def _unit_dho(grid, E0, damping, T):
     return s
 
 
-def dho_signal(grid, phonon_energy, damping, phonon_amplitude, T, peak='stokes+astokes'):
+def dho_signal(grid, phonon_energy, damping, phonon_amplitude, T, peak='stokes+astokes', *, _prepared=None):
     """The unconvolved full DHO on ``grid`` (uniform, the convolver's) with intrinsic amplitude
     ``A = phonon_amplitude``: ``A·(E0/π)·4Γ·y(E)/((E²−E0²)²+4Γ²E²)`` with ``y = E/(−expm1(−E/kT))``
     (:func:`bose_numerator`) at every point, so the anti-Stokes side is the detailed-balance
@@ -311,7 +339,7 @@ def dho_signal(grid, phonon_energy, damping, phonon_amplitude, T, peak='stokes+a
     has_stokes, has_astokes = 'stokes' in peak_parts, 'astokes' in peak_parts
     if not (has_stokes or has_astokes):
         return np.zeros_like(grid)
-    signal = phonon_amplitude * _unit_dho(grid, phonon_energy, damping, T)
+    signal = phonon_amplitude * _unit_dho(grid, phonon_energy, damping, T, _prepared=_prepared)
     if has_stokes and has_astokes:
         return signal
     half = 0.5 * (grid == 0.0)
@@ -329,7 +357,7 @@ class UnitPeak:
     area_both: float    # convolved profile at A = 1, integrated over all E
 
 
-def unit_peak_of_nodes(conv, row, phonon_energy, damping):
+def unit_peak_of_nodes(conv, row, phonon_energy, damping, *, areas=True):
     """The :class:`UnitPeak` of one convolved ``row`` (``conv.nodes`` of an A = 1 signal).
 
     The height is the maximum of the whole row over E >= 0 (both sides: the anti-Stokes partner's
@@ -337,17 +365,17 @@ def unit_peak_of_nodes(conv, row, phonon_energy, damping):
     neighbours (O(dx^3), continuous as the maximum moves between nodes); at the E = 0 edge it is
     the row interpolated at E = 0. Areas are trapezoid sums of the same row. A zero or non-finite
     height raises ``ValueError`` naming E0 and Gamma, except for a non-finite E0 or Gamma (an
-    optimizer's NaN step), whose UnitPeak is NaN so the NaN reaches the cost."""
+    optimizer's NaN step), whose UnitPeak is NaN so the NaN reaches the cost. ``areas=False``
+    skips the area sums for likelihood-only callers and returns NaN area fields."""
     if not (np.isfinite(phonon_energy) and np.isfinite(damping)):
         nan = float("nan")
         return UnitPeak(nan, nan, nan, nan)
     x_out = conv.x_out
-    positive = x_out >= 0.0
-    energy = x_out[positive]
+    positive, energy, add_edge, output_steps, positive_steps = conv.peak_geometry
     values = row[positive]
-    if energy.size == 0 or energy[0] > 0.0:     # no node at E = 0: interpolate the edge in
+    if add_edge:                             # no node at E = 0: interpolate the edge in
         edge = float(np.interp(0.0, x_out, row))
-        energy, values = np.concatenate(([0.0], energy)), np.concatenate(([edge], values))
+        values = np.concatenate(([edge], values))
     i = int(np.argmax(values))
     height, position = float(values[i]), float(energy[i])
     if 0 < i < values.size - 1:
@@ -361,14 +389,17 @@ def unit_peak_of_nodes(conv, row, phonon_energy, damping):
     if not (np.isfinite(height) and height > 0.0):
         raise ValueError(f"DHO mode with E0={phonon_energy!r}, Gamma={damping!r} has no positive "
                          f"finite height (got {height!r})")
-    both = float(np.sum(0.5 * (row[1:] + row[:-1]) * np.diff(x_out)))
-    stokes = float(np.sum(0.5 * (values[1:] + values[:-1]) * np.diff(energy)))
+    if not areas:
+        return UnitPeak(height, position, float("nan"), float("nan"))
+    both = float(np.sum(0.5 * (row[1:] + row[:-1]) * output_steps))
+    stokes = float(np.sum(0.5 * (values[1:] + values[:-1]) * positive_steps))
     return UnitPeak(height, position, stokes, both)
 
 
 def unit_peak(conv, phonon_energy, damping, T, peak='stokes+astokes'):
     """``(row, UnitPeak)``: the convolved A = 1 mode on ``conv.x_out`` and its :class:`UnitPeak`."""
-    row = conv.nodes(dho_signal(conv.grid, phonon_energy, damping, 1.0, T, peak))
+    row = conv.nodes(dho_signal(conv.grid, phonon_energy, damping, 1.0, T, peak,
+                                _prepared=_dho_grid_values(conv, T)))
     return row, unit_peak_of_nodes(conv, row, phonon_energy, damping)
 
 

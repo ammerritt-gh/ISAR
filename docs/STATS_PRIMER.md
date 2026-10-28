@@ -866,6 +866,17 @@ settings: untrusted until calibration". **At four or more modes on spectra like 
 counts are numerically marginal at these settings**, and the next step is a method change (a follow-up job), not
 more tuning of these settings.
 
+**Evaluator work (2026-10-28).** A generated single-mode ACCEPTED run, profiled with cProfile,
+spent about 87% of sampler wall time inside the likelihood and 5% in the prior transform.
+That one case supports optimizing the evaluator; it does not attribute the stopped real run.
+Likelihood evaluation now skips unused peak-area integrations, prepares output-grid spacings,
+grid squares and Bose factors once per frozen convolver/context, and reuses the overlapping
+complex-log stencil on uniform grids. Ordered-prior groups are prepared once per frozen bundle.
+Public peak summaries still compute areas. Height-only and prepared-factor comparisons were
+bit-identical; the shared stencil changed synthetic log-likelihoods by at most 2.5e-7 nat in
+the paired benchmark. Floating-point changes can still change an optimizer or sampler path.
+Paired evaluator timings and their limits are recorded in [the speedup plan](plans/speedup.md).
+
 #### Deep-pass calibration (one pass, 2026-10-26)
 
 Report: `out\j6420291926ab\deep-calibration\a05\calibration.md` and `calibration.json` beside it (gitignored, main checkout; the

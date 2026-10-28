@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from isar.analyze.lineshapes import (Lorentzian, UnitPeak, Voigt, convolve_tabulated, dho_signal,
+from isar.analyze.lineshapes import (Lorentzian, UnitPeak, Voigt, _dho_grid_values, convolve_tabulated, dho_signal,
                                      resolution_convolver, unit_peak, unit_peak_of_nodes,
                                      voigt_area_for_height)
 
@@ -42,21 +42,23 @@ def _convolver(x, ctx):
     return resolution_convolver(x, ctx.gauss_fwhm, ctx.lorentz_fwhm, _curve(ctx))
 
 
-def phonon_unit_columns(x, ctx, modes, peaks):
+def phonon_unit_columns(x, ctx, modes, peaks, *, areas=True):
     """``(columns, unit_peaks)`` for DHO modes ``modes`` = ``[(E0, Gamma), …]`` with peak selectors
     ``peaks``, from ONE batched convolution: ``columns`` is ``(k, x.size)``, each row the mode's
     convolved profile at ``x - ctx.center`` divided by its height (the maximum over E >= 0, so the
     row's maximum is 1; no exposure), and ``unit_peaks`` each mode's :class:`UnitPeak`.
     :meth:`CompositeModel.evaluate`, :meth:`CompositeModel.basis` and the fast-pass adapter all
-    go through here."""
+    go through here. Likelihood-only callers pass ``areas=False`` to skip unused area sums."""
     x = np.asarray(x, dtype=float)
     if len(modes) == 0:
         return np.empty((0, x.size)), ()
     conv = _convolver(x, ctx)
-    signals = np.stack([dho_signal(conv.grid, e0, gamma, 1.0, ctx.T, peak)
+    prepared = _dho_grid_values(conv, ctx.T)
+    signals = np.stack([dho_signal(conv.grid, e0, gamma, 1.0, ctx.T, peak, _prepared=prepared)
                         for (e0, gamma), peak in zip(modes, peaks)])
     rows = conv.nodes(signals)
-    ups = tuple(unit_peak_of_nodes(conv, row, e0, gamma) for row, (e0, gamma) in zip(rows, modes))
+    ups = tuple(unit_peak_of_nodes(conv, row, e0, gamma, areas=areas)
+                for row, (e0, gamma) in zip(rows, modes))
     q = x - ctx.center
     cols = np.stack([np.interp(q, conv.x_out, row, left=0.0, right=0.0) / up.height
                      for row, up in zip(rows, ups)])
@@ -144,7 +146,8 @@ class PhononDHO(Component):
         return local["h"] * self.unit_columns(x, local, ctx)["h"]
 
     def unit_columns(self, x, nonlinear: dict, ctx) -> dict:
-        cols, _ = phonon_unit_columns(x, ctx, [(nonlinear["omega0"], nonlinear["Gamma"])], [self.peak])
+        cols, _ = phonon_unit_columns(x, ctx, [(nonlinear["omega0"], nonlinear["Gamma"])],
+                                      [self.peak], areas=False)
         return {"h": cols[0]}
 
     def unit_peak(self, nonlinear: dict, ctx) -> UnitPeak:
@@ -268,7 +271,7 @@ class CompositeModel:
         at = [i for i, c in enumerate(self.components) if isinstance(c, PhononDHO)]
         cols, _ = phonon_unit_columns(x, ctx, [(locals_[i]["omega0"], locals_[i]["Gamma"])
                                                for i in at],
-                                      [self.components[i].peak for i in at])
+                                      [self.components[i].peak for i in at], areas=False)
         return dict(zip(at, cols))
 
     def evaluate(self, x, theta, ctx) -> np.ndarray:

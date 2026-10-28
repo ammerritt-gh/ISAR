@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Callable
 
 import numpy as np
@@ -503,11 +504,24 @@ class PriorBundle:
         of that comparison: a delta mode (Γ hard-fixed, no width prior) and a finite-width mode
         are one ordered group, as :meth:`isar.analyze.prior.SpectrumPrior.ln_energies` has it (one
         k!, one ordered transform over every mode's ω₀). Groups of one are not ordered."""
+        return [g.tolist() for g in self._energy_group_indices]
+
+    @cached_property
+    def _energy_group_indices(self):
+        # The bundle is frozen; grouping depends on its priors, never on sampled values.
         groups = {}
         for i, p in enumerate(self.params):
             if p.name.endswith(".omega0") and p.kind == "flat":
                 groups.setdefault(self._mode_priors(i), []).append(i)
-        return [g for g in groups.values() if len(g) >= 2]
+        indices = tuple(np.asarray(g, dtype=int) for g in groups.values() if len(g) >= 2)
+        for group in indices:
+            group.flags.writeable = False
+        return indices
+
+    @cached_property
+    def _ungrouped_priors(self):
+        grouped = {i for group in self._energy_group_indices for i in group}
+        return tuple(p for i, p in enumerate(self.params) if i not in grouped)
 
     def _mode_priors(self, energy_index: int) -> tuple:
         """The density of every parameter prior of the mode whose energy is at ``energy_index``
@@ -525,10 +539,8 @@ class PriorBundle:
         :meth:`transform_ordered` is its sampler."""
         from isar.analyze.prior import ordered_energy_log_prior
 
-        groups = self._energy_groups()
-        grouped = {i for g in groups for i in g}
-        total = float(sum(p.logpdf(named_values[p.name])
-                          for i, p in enumerate(self.params) if i not in grouped))
+        groups = self._energy_group_indices
+        total = float(sum(p.logpdf(named_values[p.name]) for p in self._ungrouped_priors))
         for g in groups:
             first = self.params[g[0]]
             total += ordered_energy_log_prior(
@@ -544,7 +556,7 @@ class PriorBundle:
 
         u = np.asarray(u, dtype=float)
         out = np.array([p.ppf(v) for p, v in zip(self.params, u)], dtype=float)
-        for g in self._energy_groups():
+        for g in self._energy_group_indices:
             first = self.params[g[0]]
             out[g] = ordered_energy_transform(u[g], first.lo, first.hi)
         return out
