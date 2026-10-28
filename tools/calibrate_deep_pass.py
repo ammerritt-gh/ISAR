@@ -440,13 +440,33 @@ def run_jobs(jobs, *, workers, timeout_s, on_result, deadline=None, skipped=None
             if proc.is_alive():
                 proc.kill()
                 proc.join(timeout=2)
-            reader.close()
             if item["job"].get("production_retry"):
-                row = _base_row(item["job"])
-                row.update(error="calibration invocation interrupted or failed",
-                           wall_s=time.monotonic() - item["start"], attempts=item["attempts"],
-                           retry_count=max(0, len(item["attempts"]) - 1))
-                if item["current"] is not None:
+                # Another worker's callback may have failed before this pipe was polled. Drain
+                # the finished process's buffered records before classifying the last attempt.
+                finished = None
+                while reader.poll():
+                    try:
+                        message = reader.recv()
+                    except (EOFError, OSError):
+                        logging.getLogger(__name__).debug("Calibration pipe closed during cleanup", exc_info=True)
+                        break
+                    if message.get("event") == "attempt_started":
+                        item["current"] = message
+                        item["attempt_start"] = message["started_monotonic"]
+                    elif message.get("event") == "attempt_completed":
+                        item["attempts"].append(message)
+                        item["current"] = None
+                        if on_attempt is not None:
+                            _final_refresh(lambda: on_attempt(message))
+                    else:
+                        finished = message
+                        break
+                row = finished if finished is not None else dict(
+                    _base_row(item["job"]), error="calibration invocation interrupted or failed",
+                    wall_s=time.monotonic() - item["start"])
+                row["attempts"] = item["attempts"]
+                row.setdefault("retry_count", max(0, len(item["attempts"]) - 1))
+                if finished is None and item["current"] is not None:
                     interrupted = dict(item["current"], event="attempt_interrupted", status="not_finished",
                                        error=row["error"], log_z=None, lnl_max=None, n_like_calls=None,
                                        wall_s=time.monotonic() - item["attempt_start"])
@@ -454,6 +474,7 @@ def run_jobs(jobs, *, workers, timeout_s, on_result, deadline=None, skipped=None
                     if on_attempt is not None:
                         _final_refresh(lambda: on_attempt(interrupted))
                 _final_refresh(lambda: on_result(row))
+            reader.close()
     return completed
 
 

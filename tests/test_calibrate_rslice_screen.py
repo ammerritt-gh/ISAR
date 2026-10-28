@@ -404,6 +404,62 @@ def test_retry_worker_still_refuses_wrong_usable_dimensions(harness, monkeypatch
         harness._retry_worker(job, SimpleNamespace(send=lambda row: None))
 
 
+def test_retry_cleanup_drains_buffered_attempts_without_masking_failure(harness, monkeypatch):
+    from collections import deque
+
+    jobs = [dict(model=e, stage="accepted", seed=10 + i, engine="dynesty", production_retry=True,
+                 settings=harness._settings(400, 4)) for i, e in enumerate(entries()[:2])]
+    readers = []
+    for job in jobs:
+        identity = dict(label=job["model"].label, stage=job["stage"], job_seed=job["seed"],
+                        seed=job["seed"], settings=job["settings"], attempt=0)
+        messages = deque([dict(event="attempt_started", **identity, started_monotonic=harness.time.monotonic()),
+                          dict(event="attempt_completed", **identity, log_z=-2.0, wall_s=.1),
+                          dict(event="attempt_started", **{**identity, "attempt": 1, "seed": job["seed"] + 7919},
+                               started_monotonic=harness.time.monotonic())])
+        readers.append(SimpleNamespace(poll=lambda messages=messages: bool(messages),
+                                       recv=lambda messages=messages: messages.popleft(), close=lambda: None))
+    pipes = iter(readers)
+
+    class Process:
+        exitcode = 0
+
+        def __init__(self, **kwargs):
+            self.alive = True
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return self.alive
+
+        def terminate(self):
+            self.alive = False
+
+        kill = terminate
+
+        def join(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(harness.mp, "get_context", lambda method: SimpleNamespace(
+        Pipe=lambda **kwargs: (next(pipes), SimpleNamespace(close=lambda: None)), Process=Process))
+    events, results = [], []
+    original = RuntimeError("first report failure")
+
+    def receive(event):
+        events.append(event)
+        if len(events) == 1:
+            raise original
+
+    with pytest.raises(RuntimeError) as error:
+        harness.run_jobs(jobs, workers=2, timeout_s=60, on_result=results.append, on_attempt=receive)
+    assert error.value is original
+    assert {e["label"] for e in events if e["event"] == "attempt_completed"} == {"m0", "m1"}
+    interrupted = [e for e in events if e["event"] == "attempt_interrupted"]
+    assert len(interrupted) == 2 and all(e["attempt"] == 1 for e in interrupted)
+    assert len(results) == 2 and all(len(r["attempts"]) == 1 for r in results)
+
+
 def test_retry_calibration_plans_54_jobs_and_uses_only_final_usable_values(harness, monkeypatch, tmp_path):
     from scipy.stats import chi2
     from isar.analyze import deep_pass
