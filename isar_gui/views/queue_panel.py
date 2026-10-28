@@ -68,12 +68,13 @@ def progress_text(item, now: float) -> tuple[str, str]:
             where = "stage" if stage is None else f"stage {stage}"
             if stage is not None and stages is not None and stage < stages:
                 where += f" of {stages}"          # the last stage's length is known only when it starts
-            text = f"{where} · model {step} of {of}" if step is not None and of is not None else where
+            text = f"{where} · {step} of {of} models completed" if step is not None and of is not None else where
             if since:
-                text += f" · this model {since}"
-            tip = ("The deep pass works through its models stage by stage. \"This model\" is how long ISAR has "
-                   "been on the current step; a model taking far longer than the earlier ones may be stuck, and "
-                   "Stop ends it. The number of models in the last stage is known only when it starts.")
+                event = "stage started" if step == 0 else "last completion" if step is not None else "last update"
+                text += f" · since {event} {since}"
+            tip = ("The count shows models completed in this stage. Models can run at the same time. "
+                   "The timer shows time since the latest completion, or since the stage started before any "
+                   "model finishes. The number of models in the last stage is known only when it starts.")
             return text, tip
         text = "error bars" + (f" · {since}" if since else "")
         return text, "The deep pass has chosen its model and is fitting it once more to get the error bars."

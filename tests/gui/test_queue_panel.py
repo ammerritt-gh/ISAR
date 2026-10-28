@@ -154,8 +154,9 @@ def _p(pass_, phase, step=None, of=None, stage=None, stages=None):
 
 
 @pytest.mark.parametrize("kind, progress, since, expect", [
-    ("deep", _p("deep", "sampling", 4, 9, 2, 3), 180, "stage 2 of 3 · model 4 of 9 · this model 3:00"),
-    ("deep", _p("deep", "sampling", 1, 2, 3, 3), 5, "stage 3 · model 1 of 2 · this model 0:05"),
+    ("deep", _p("deep", "sampling", 0, 9, 1, 2), 5, "stage 1 of 2 · 0 of 9 models completed · since stage started 0:05"),
+    ("deep", _p("deep", "sampling", 4, 9, 1, 2), 180, "stage 1 of 2 · 4 of 9 models completed · since last completion 3:00"),
+    ("deep", _p("deep", "sampling", 1, 2, 2, 2), 5, "stage 2 · 1 of 2 models completed · since last completion 0:05"),
     ("deep", _p("deep", "errors"), 130, "error bars · 2:10"),
     ("fast", _p("fast", "ladder", 3, 5), 40, "trying 3 peaks (up to 5) · 0:40"),
     ("fast", _p("fast", "ladder", 1, 5), 4, "trying 1 peak (up to 5) · 0:04"),
@@ -184,7 +185,10 @@ def test_headings_counts_groups_and_each_running_items_progress_and_clock(qtbot)
     assert texts(p, "queue_fast_heading_counts") == ["4 running · 1 saving · 13 waiting"]
     assert texts(p, "queue_deep_heading_counts") == ["1 running · 1 waiting"]
     assert "97 K · 11 of 28 done" in texts(p, "queue_group")
-    assert "stage 2 of 3 · model 4 of 9 · this model 3:00" in texts(p, "queue_item_progress")
+    assert "stage 2 of 3 · 4 of 9 models completed · since last completion 3:00" in texts(p, "queue_item_progress")
+    deep_progress = next(w for w in p.findChildren(QLabel) if "models completed" in w.text())
+    assert "Models can run at the same time" in deep_progress.toolTip()
+    assert "since the stage started" in deep_progress.toolTip()
     assert "trying 3 peaks (up to 5) · 0:40" in texts(p, "queue_item_progress")
     assert "waits for this analyzer's fast pass" in texts(p, "queue_item_progress")
     assert "writing the result into the experiment folder" in texts(p, "queue_item_progress")
