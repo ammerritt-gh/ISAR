@@ -579,6 +579,8 @@ def _build(root: Path, stage: Path, progress) -> tuple:
             record["spectrum_axis"] = axis
         records.append(record)
         if progress is not None:
+            # Everything the analysis queue's results writer writes (ledger, card state, fit-input records) is
+            # read before the first progress call: the GUI releases its write hold there.
             progress(i, len(items))
 
     outcome_mod._replace_csv(stage / "modes.csv", MODES_COLUMNS, rows)

@@ -309,6 +309,21 @@ def test_export_reads_only(ws):
     assert (ws / "card.state.json").read_bytes() == state
 
 
+def test_the_ledger_is_read_before_the_first_progress_call(ws):
+    # The GUI's write hold ends at the first progress line, so a result saved then must not reach this export.
+    smaller = SessionState.load(ws / "session.json")
+    del smaller.scans["E:9:ana"]
+    calls = []
+
+    def progress(i, n):
+        if not calls:
+            smaller.save(ws / "session.json")       # the queue's writer lands a ledger without one spectrum
+        calls.append(i)
+    folder = export_mod.export_workspace(ws, now=NOW, progress=progress).folder
+    doc, rec, _rows = _read(folder)
+    assert set(rec) == {f"E:{n}:ana" for n in range(1, 10)} and len(calls) == 9
+
+
 def test_fit_provenance_survives_a_reingest(ws):
     # (j) a re-ingest with new content after the fit: the fit input stays h1, the data is h2
     w = Workspace.open(ws)

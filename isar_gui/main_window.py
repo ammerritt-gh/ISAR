@@ -288,6 +288,7 @@ class MainWindow(QMainWindow):
         self._center_stack.addWidget(self._empty_hint)   # stack index 0
         self._activity_kind: str | None = None   # the coordinator's last activity kind (ingest/drive/…)
         self._renaming = False        # True while a rename re-binds: the queue keeps its waiting items
+        self._export_hold = False     # an export holds the queue's writer until its first progress line
         self._inspector_width = _ARRANGEMENTS["laptop"].inspector   # remembered across open/close
         # Compact campaign-monitor mode (M3-1): the monitor is a per-binding stack page built
         # lazily on first toggle; the stash holds the full window state to restore on expand.
@@ -755,6 +756,9 @@ class MainWindow(QMainWindow):
         self._export.started.connect(lambda: self.intake.set_busy_reason("an export is running"))
         self._export.finished.connect(lambda _folder: self.intake.set_busy_reason(None))
         self._export.failed.connect(lambda _reason, _path: self.intake.set_busy_reason(None))
+        # The export has read what the queue's writer writes before its first progress line (isar.report.export).
+        for signal in (self._export.progress, self._export.finished, self._export.failed):
+            signal.connect(self._release_export_hold)
         self.processing_panel.run_requested.connect(lambda: self.start_analysis())
         self.processing_rail.toggled.connect(
             lambda: self.set_right_panel_collapsed(not self._right_panel_collapsed()))
@@ -1253,12 +1257,15 @@ class MainWindow(QMainWindow):
             self._say(f"Could not create the experiment folder in {experiments_root()}: {exc}")
 
     def _rename_refusal(self) -> str | None:
-        """Why *Rename* cannot run now, or ``None``: an engine command or an export is writing in the
-        folder, or the experiment's manifest names source files inside it (their absolute paths
-        would point at the old folder)."""
+        """Why *Rename* cannot run now, or ``None``: an engine command, an export or the analysis queue is
+        writing in the folder, or the experiment's manifest names source files inside it (their absolute
+        paths would point at the old folder)."""
         if self._operations.is_busy() or self._export.is_running():
             _available, _reason, strip_busy = self._availability()
             return strip_busy or "an engine command is running in the experiment"
+        busy = self._queue.writes_busy()
+        if busy is not None:
+            return busy
         if not self._empty and outside_references(self._ws).sources_inside:
             return ("this experiment holds its own source files; rename would leave ISAR unable to "
                     "find them")
@@ -1280,6 +1287,18 @@ class MainWindow(QMainWindow):
         name = RenameDialog.ask(old, None if self._empty else self._ws, self)
         if name is None:
             return
+        if self._queue.view().service not in ("off", "failed"):
+            # The idle analysis process keeps its log open in report/gui-runs/, which blocks the folder rename.
+            self._queue.shutdown(lambda: QTimer.singleShot(0, self, lambda: self._rename_to(old, name)))
+            self._say("Rename: stopping the idle analysis process first…")
+            return
+        self._rename_to(old, name)
+
+    def _rename_to(self, old: Path, name: str) -> None:
+        """The rename itself, once the dialog is answered and no analysis process holds the folder."""
+        if self._wsm.root() != old:
+            self._say("Rename cancelled: another experiment was opened meanwhile")
+            return
         # The dialog's event loop may have let a watched folder start an ingest meanwhile.
         refusal = self._rename_refusal()
         if refusal is not None:
@@ -1290,7 +1309,12 @@ class MainWindow(QMainWindow):
         self._stop_watch_bridge()
         self._folder_watcher.configure([], True, reset_binding=True)
         self.intake.wait_idle()                 # its reads hold files open in the folder (WinError 5)
-        if self._wsm.rename(name):
+        self._renaming = True                   # the re-bind keeps the queue's waiting items
+        try:
+            renamed = self._wsm.rename(name)
+        finally:
+            self._renaming = False
+        if renamed:
             new = self._wsm.root()
             if str(new) == str(old):           # the same name: nothing moved and nothing re-bound
                 self._start_watch_bridge()
@@ -1331,17 +1355,29 @@ class MainWindow(QMainWindow):
             QFileDialog.Option.DontConfirmOverwrite)
         if not dest:
             return
-        available, reason, _strip_busy = self._availability()
-        if not available:                       # the dialog's event loop may have let an ingest in
-            self._say(f"Save copy as… is unavailable: {reason}")
-            return
-        # The copy carries the latest watched folders and groups, not a stale snapshot.
-        self._flush_gui_store_if_pending()
-        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        # The queue's writer saves no result while the copy reads the folder; a result being saved finishes first.
+        self.statusBar().showMessage("Save copy as…: waiting for the result being saved to finish…")
+        self._queue.hold_writes(then=lambda: self._copy_held(root, dest))
+
+    def _copy_held(self, root: Path, dest: str) -> None:
+        """The copy itself, while the queue's writer is held; the hold is released whatever happens."""
         try:
-            copy = self._wsm.save_copy(dest)
+            if self._wsm.root() != root:
+                self._say("Save copy as… cancelled: another experiment was opened meanwhile")
+                return
+            available, reason, _strip_busy = self._availability()
+            if not available:                   # the dialog's event loop may have let an ingest in
+                self._say(f"Save copy as… is unavailable: {reason}")
+                return
+            # The copy carries the latest watched folders and groups, not a stale snapshot.
+            self._flush_gui_store_if_pending()
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                copy = self._wsm.save_copy(dest)
+            finally:
+                QApplication.restoreOverrideCursor()
         finally:
-            QApplication.restoreOverrideCursor()
+            self._queue.release_writes()
         if copy is None:
             reason = self._wsm.last_error() or "the folder must be empty and writable"
             self.output_bar.show_copy_failed(reason)
@@ -1376,8 +1412,25 @@ class MainWindow(QMainWindow):
         if not available:
             self.statusBar().showMessage(f"Export is unavailable: {reason}")
             return
-        if not self._export.start(Path(self._ws.root)):
+        if self._export_hold:
+            self.statusBar().showMessage("Export is already waiting for the result being saved to finish")
+            return
+        root = Path(self._ws.root)
+        self._export_hold = True    # the queue's writer saves nothing until the export has read the results
+        self._queue.hold_writes(then=lambda: self._start_held_export(root))
+        if self._export_hold and not self._export.is_running():
+            self.statusBar().showMessage("Export: waiting for the result being saved to finish…")
+
+    def _start_held_export(self, root: Path) -> None:
+        if not self._export.start(root):
+            self._release_export_hold()
             self.statusBar().showMessage("Export did not start")
+
+    def _release_export_hold(self, *_args) -> None:
+        """At the export's first progress line, its end or its failure, once: the queue's writer may save again."""
+        if self._export_hold:
+            self._export_hold = False
+            self._queue.release_writes()
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802 (Qt override)
         md = event.mimeData()

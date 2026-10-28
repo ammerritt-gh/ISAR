@@ -3,11 +3,17 @@
 The queue controller's own behaviour is in ``test_queue_controller.py``; the entry point's five routes and its
 greyed reasons are in ``test_run_entry.py``. This file holds what only the window does: it builds the one controller
 and hands it to the panel, the rail and the scan list, binds it to each experiment, feeds it arrivals, keeps the
-automatic switch with the experiment, holds its starts while a campaign runs, and owns the cores setting.
+automatic switch with the experiment, holds its starts while a campaign runs, and owns the cores setting. It also
+holds the folder flows: leaving asks first and stops the analysis process in order, Save copy and Export take the
+writer hold, Rename waits for the queue, a campaign is refused while the queue writes, and a saved result refreshes
+the shown analyzer only. Work is queued against the scripted stand-in service (``fake_analysis_service.py``).
 """
 from __future__ import annotations
 
+import json
 import os
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -17,13 +23,17 @@ from PySide6.QtWidgets import QInputDialog
 
 from isar.workspace_api import Workspace
 from isar_gui import main_window as mw_mod
-from isar_gui.commands import GuiIngestReport
+from isar_gui import queue_controller as qc
+from isar_gui.commands import DriveOptions, GuiIngestReport
 from isar_gui.gui_store import GuiStore
 from isar_gui.main_window import MainWindow
+from isar_gui.queue_controller import LeaveSummary
 from isar_gui.session import Session
+from isar_gui.views.rename_dialog import RenameDialog
 from synthetic_ws import scan_entry, write_session
 
 WAIT_MS = 15000
+FAKE = Path(__file__).with_name("fake_analysis_service.py")
 
 
 def _win(qtbot, root=None, session=None):
@@ -185,3 +195,120 @@ def test_start_analysis_asks_about_an_unsaved_card_draft_first_and_cancel_queues
     monkeypatch.setattr(w._queue, "fast_pass_all_ready", lambda: added.append(1))
     w.start_analysis()
     assert asked == ["start analysis"] and len(added) == queued
+
+
+# ---- the folder flows, against the stand-in service -------------------------------------------------------
+def _fake_service(monkeypatch, tmp_path) -> Path:
+    """Run the queue's service as the scripted stand-in; returns the file it records the commands in."""
+    record = tmp_path / "commands.jsonl"
+    record.write_text("", encoding="utf-8")
+    monkeypatch.setattr(qc, "_service_argv", lambda py, root, log: [
+        sys.executable, str(FAKE), "--workspace", str(root), "--log", str(log), "--record", str(record)])
+    return record
+
+
+def _commands(record: Path, op: str) -> list[dict]:
+    lines = [json.loads(ln) for ln in record.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    return [c for c in lines if c["op"] == op]
+
+
+def _emit(w, *events: dict) -> None:
+    assert w._queue._send({"op": "_emit", "lines": list(events)})
+
+
+def _forget_queue(w) -> None:
+    """Leave no process and no queued work behind: closing the window at teardown then asks nothing."""
+    w._queue._drop_service()
+    w._queue.bind(None, auto_fast=True)
+
+
+def _one_running(qtbot, w, record) -> dict:
+    """Cores 1, Fast-pass all ready: one item runs (its ``start`` command is returned), the rest wait."""
+    w._queue.set_cores(1)
+    qtbot.waitUntil(lambda: bool(w._queue.fast_all()[0]), timeout=WAIT_MS)
+    w.start_analysis()
+    qtbot.waitUntil(lambda: bool(_commands(record, "start")) and w._queue.view().n_running["fast"] == 1
+                    and any(i.started_at for g in w._queue.view().fast for i in g.items), timeout=WAIT_MS)
+    assert sum(w._queue.view().n_waiting.values()) >= 1
+    return _commands(record, "start")[0]
+
+
+def _finish(qtbot, w, start: dict) -> None:
+    """The running item's result is saved and its process is gone."""
+    iid, key = start["item_id"], start["unit_key"]
+    _emit(w, {"ev": "result", "item_id": iid, "unit_key": key, "pass": "fast", "status": "done", "reason": None,
+              "saving": True},
+          {"ev": "saved", "item_id": iid, "unit_key": key, "pass": "fast", "status": "done", "reason": None},
+          {"ev": "finished", "item_id": iid, "end": "completed", "reason": None})
+    qtbot.waitUntil(lambda: w._queue.writes_busy() is None, timeout=WAIT_MS)
+
+
+def test_a_copy_waits_for_the_writer_hold_and_releases_it_after(qtbot, monkeypatch, bl43_ws, tmp_path):
+    record = _fake_service(monkeypatch, tmp_path)
+    w = _win(qtbot, bl43_ws)
+    dest = tmp_path / "copies" / "kept"
+    monkeypatch.setattr(mw_mod.file_dialogs, "get_save_file_name", lambda *_a, **_k: (str(dest), ""))
+    try:
+        _one_running(qtbot, w, record)
+        w.save_copy_as()
+        qtbot.waitUntil(lambda: bool(_commands(record, "hold_writes")), timeout=WAIT_MS)
+        assert not dest.exists() and "waiting for the result being saved" in w.statusBar().currentMessage()
+        _emit(w, {"ev": "writes_held"})                                    # the writer has stopped between saves
+        qtbot.waitUntil(lambda: (dest / "card.policy.toml").is_file(), timeout=WAIT_MS)
+        qtbot.waitUntil(lambda: bool(_commands(record, "release_writes")), timeout=WAIT_MS)
+        assert w._queue._holds == 0 and w._queue.view().n_running["fast"] == 1
+    finally:
+        _forget_queue(w)
+
+
+def test_an_export_holds_the_writer_until_its_first_progress_line(qtbot, monkeypatch, bl43_ws):
+    w = _win(qtbot, bl43_ws)
+    started = []
+    monkeypatch.setattr(w._export, "start", lambda root: started.append(root) or True)
+    w.output_bar.export_requested.emit()
+    assert started == [bl43_ws] and w._queue._holds == 1                   # no process: the hold is immediate
+    w._export.progress.emit("Exporting: spectrum 1 of 3")
+    assert w._queue._holds == 0
+    w._export.progress.emit("Exporting: spectrum 2 of 3")                  # released once, never twice
+    w._export.finished.emit(bl43_ws)
+    assert w._queue._holds == 0 and not w._export_hold
+    monkeypatch.setattr(w._export, "start", lambda root: False)            # an export that does not start
+    w.output_bar.export_requested.emit()
+    assert w._queue._holds == 0 and w.statusBar().currentMessage() == "Export did not start"
+
+
+def test_rename_is_refused_while_an_item_runs_and_works_once_it_has_finished(
+        qtbot, monkeypatch, bl43_ws, tmp_path):
+    record = _fake_service(monkeypatch, tmp_path)
+    w = _win(qtbot, bl43_ws)
+    names = []
+    monkeypatch.setattr(RenameDialog, "ask", lambda root, ws=None, parent=None: names.append(root) or "renamed")
+    try:
+        start = _one_running(qtbot, w, record)
+        w.rename_experiment()
+        assert names == [] and "Rename refused: analysis is running: press Pause" in w.statusBar().currentMessage()
+        w._queue.pause()
+        _finish(qtbot, w, start)
+        w.rename_experiment()                                              # the idle process is stopped first
+        new = bl43_ws.parent / "renamed"
+        qtbot.waitUntil(lambda: w._wsm.root() == new, timeout=WAIT_MS)
+        assert _commands(record, "shutdown") and not bl43_ws.exists()
+    finally:
+        _forget_queue(w)
+
+
+def test_a_rename_keeps_the_waiting_items(qtbot, monkeypatch, bl43_ws):
+    w = _win(qtbot, bl43_ws)
+    monkeypatch.setattr(RenameDialog, "ask", lambda root, ws=None, parent=None: "renamed")
+    w._queue.pause()                                                       # nothing starts: no process
+    qtbot.waitUntil(lambda: bool(w._queue.fast_all()[0]), timeout=WAIT_MS)
+    w.start_analysis()
+    try:
+        qtbot.waitUntil(lambda: sum(w._queue.view().n_waiting.values()) > 0, timeout=WAIT_MS)
+        waiting = sum(w._queue.view().n_waiting.values())
+        assert w._queue.view().service == "off"
+        w.rename_experiment()
+        assert w._wsm.root() == bl43_ws.parent / "renamed"
+        assert sum(w._queue.view().n_waiting.values()) == waiting and w._queue.view().paused
+    finally:
+        _forget_queue(w)
