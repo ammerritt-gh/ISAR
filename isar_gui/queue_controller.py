@@ -214,6 +214,7 @@ class QueueController(QObject):
         self._hold_confirmed = False
         self._hold_waiters: list[Callable[[], None]] = []
         self._shutdown_waiters: list[Callable[[], None]] = []
+        self._silence_logged = False
         self._keep_on_shutdown = False      # the shutdown under way keeps the waiting items (a rename)
         self._silence = QTimer(self)
         self._silence.setSingleShot(True)
@@ -809,6 +810,9 @@ class QueueController(QObject):
         self._silence.stop()
         self._hold_sent = self._hold_confirmed = False
         if self._service == "stopping":
+            if code != 0 and not self._silence_logged:
+                self._log_unconfirmed("the analysis process ended while stopping")
+            self._silence_logged = False
             self._queue.abandon_active("the analysis process was stopped")
             self._sync()
             self._service = "off"
@@ -879,12 +883,15 @@ class QueueController(QObject):
     def _arm_silence(self) -> None:
         self._silence.start(int(_SHUTDOWN_SILENCE_S * 1000))
 
-    def _on_silence(self) -> None:
+    def _log_unconfirmed(self, why: str) -> None:
         unconfirmed = [rec.unit_key for rec in self._recs.values() if any(r.pending for r in rec.results.values())]
-        log.error("analysis process silent for %.0f s while stopping; killing it", _SHUTDOWN_SILENCE_S)
         if unconfirmed:
-            self.log_line.emit("Not confirmed saved when ISAR stopped waiting for the analysis process: "
-                               + self._grouped(unconfirmed))
+            self.log_line.emit(f"Not confirmed saved when {why}: " + self._grouped(unconfirmed))
+
+    def _on_silence(self) -> None:
+        log.error("analysis process silent for %.0f s while stopping; killing it", _SHUTDOWN_SILENCE_S)
+        self._log_unconfirmed("ISAR stopped waiting for the analysis process")
+        self._silence_logged = True         # its kill exits non-zero: the exit must not name them again
         if self._runner is not None:
             self._runner.kill_tree()
 
