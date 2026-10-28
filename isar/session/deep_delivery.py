@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import math
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 from isar.analyze import deep_pass, errors, loop
 from isar.analyze.progress import ProgressFn, emitter, relay
@@ -190,6 +190,10 @@ def deliver(fit: dict, ctx, request: DeepRequest, *, executor=None, refuse=None,
         log.warning("deep pass failed: %s: %s", type(exc).__name__, exc, exc_info=True)
         return _refused(request, f"deep pass failed ({type(exc).__name__}: {exc})"), None
 
+    if res.best_count == int(settings["mode_ceiling"]):
+        reason = "; ".join(filter(None, (res.search_limited, "deep winner at count ceiling")))
+        res = replace(res, complete=False, search_limited=reason,
+                      comparison_scope="partial (search limited)")
     cc = {**res.close_call, "close_call_p": close_call_p}
     trusted = deep_pass.CALIBRATION_STATUS.startswith("accepted")
     state = ("search_limited" if not res.complete

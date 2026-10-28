@@ -791,8 +791,10 @@ the result search limited.
 
 **Search limited.** The result is *search limited*, and its probabilities are labelled `partial (search
 limited)` rather than a full comparison, when the budget ended before a model ran or before a promotion could
-run, or when a model is still suspect after its restarts. The probabilities then cover only the models that
-have a usable ln Z. A contenders-only comparison is never shown as the full one.
+run, when a model is still suspect after its restarts, or when the deep pass's own winning
+count reaches the configured mode ceiling (even if the fast winner did not). The probabilities
+cover only models with usable ln Z inside the searched family. A contenders-only comparison,
+or a ceiling-winning comparison, is never shown as the full one.
 
 **The state.** `refused`, `search_limited`, `close_call` or `resolved`, checked in that order. `close_call` uses
 the fast pass's threshold: the preferred count carries less than 0.80 of the probability (the record's

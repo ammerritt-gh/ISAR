@@ -222,14 +222,16 @@ def test_deliver_end_to_end_at_tiny_settings(monkeypatch):
                         dataclasses.replace(deep_pass.EXPLORATORY, n_live=16))
     ctx, fit = _spectrum()
     # The ceiling-1 fast pass really is search limited (its best count is the ceiling), and the
-    # deep pass rightly inherits that as partial; this test is about staged coverage, so lift it.
+    # deep pass also qualifies its own ceiling winner, even if the fast limit is cleared.
     assert fit["fast_pass"]["search_limit_reason"] == "ceiling"
     fit = {"fast_pass": {**fit["fast_pass"], "search_limit_reason": ""}}
     record, timing = deep_delivery.deliver(fit, ctx, REQ)
     record = scan_delivery._finite_json(record)
     json.dumps(record, allow_nan=False)
     assert record["schema"] == deep_delivery.SCHEMA and record["state"] != "refused", record["reason"]
-    assert record["complete"] and record["comparison_scope"] == "full"
+    at_ceiling = record["best_count"] == fit["fast_pass"]["settings"]["mode_ceiling"]
+    assert record["complete"] is not at_ceiling
+    assert record["comparison_scope"] == ("partial (search limited)" if at_ceiling else "full")
     assert record["trusted"] is False and "untrusted" in record["reason"]
     assert {m["label"] for m in record["models"]} == {m["label"] for m in fit["fast_pass"]["models"]}
     assert abs(sum(record["count_probabilities"].values()) - 1.0) < 1e-9
