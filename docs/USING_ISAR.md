@@ -480,8 +480,8 @@ Raw can still show its counts if its energy axis is calibrated.
 
 No zero or curve is guessed: spectra that need an energy zero stay not drawn until a recorded calibration
 supplies it. Pooled masters are named as not drawn, not replaced by their member spectra. Missing data or monitor exposure is named in the not-drawn summary; an unavailable pass or curve is named on its spectrum trace. An older result whose exposure was not
-stored needs an analysis run before it can be shown in Normalised scale; when the source monitor is absent,
-read the data again with it present.
+stored needs its source files read again before it can be shown in Normalised scale; Raw can show the
+existing counts. If the source monitor itself is absent, read the data again with it present.
 
 A new Deep pass stores the actual chosen model manifest beside the chosen parameters, and Scan(s) evaluates
 that model for its curve. It does not use a guessed Fast-pass model to draw a Deep result. For older or

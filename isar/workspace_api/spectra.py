@@ -159,7 +159,7 @@ class SpectrumBundle:
         if not self.exposure_stored:
             reason = NotDrawn(
                 MONITOR_NOT_STORED,
-                "monitor not stored for this spectrum yet (the next analysis run stores it)")
+                "Monitor information is not stored for this spectrum. Read the source files again to enable Normalised display; Raw can show the existing counts.")
             return _empty_view(self, scale, ref, reason, _blocked_passes(self, reason))
         if monitor is None or not np.isfinite(monitor).any():
             reason = NotDrawn(NO_MONITOR, "no monitor recorded")
