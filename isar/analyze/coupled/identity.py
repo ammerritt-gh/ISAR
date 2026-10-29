@@ -246,7 +246,7 @@ def _close_flags(flags: dict) -> dict:
 
 
 def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, rings, snapshot_id,
-                  assignments, previous) -> IdentityResult:
+                  assignments, previous, energies) -> IdentityResult:
     """Resolve the display ids of one stage's spectra from all eligible neighbours at once.
 
     order: the stage's spectrum keys (any order; the result never depends on it).
@@ -257,6 +257,7 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
     snapshot_id: the stage's snapshot; every assignment must have been decided on it.
     assignments: stage key -> Assignment (C-snapshot). previous: key -> Held, the state frozen at the
         stage start (anchored: anchors, valid locks and earlier rings; simultaneous: every member).
+    energies: stage key -> the solved omega0 of each slot, in ``modes[key]`` order (the seam gate's only input).
 
     Support for a stage spectrum's slot is a linked held neighbour carrying the branch (or a dormant
     record of it) outside the stage; anchored, a ring-mate never supports (its matches are seams only).
@@ -464,8 +465,11 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
                           if status[r] == "new_branch" and ids[r] == new_branch_id(r[1], r[2]))
             if unsure:
                 seams.append({"link": pair, "issue": "identity_unresolved", "modes": unsure})
-            if born and {r[0] for r in born} == set(pair):
-                # two ring-mates each minted a branch: perhaps one branch under two ids; never merged here
+            tol = settings.q_tolerance_meV + settings.q_change_scale_meV
+            near = any(abs(energies[x[0]][x[2]] - energies[y[0]][y[2]]) <= tol
+                       for x in born for y in born if x[0] < y[0])
+            if born and {r[0] for r in born} == set(pair) and near:
+                # two ring-mates each minted a branch that could be one mode under two ids; never merged here
                 seams.append({"link": pair, "issue": "independent_births", "modes": born,
                               "ids": [ids[r] for r in born]})
                 _flag(flags, "seam_disagreement", set(pair), born, link=list(pair), issue="independent_births")

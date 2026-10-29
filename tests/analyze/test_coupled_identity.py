@@ -53,12 +53,14 @@ def link(a, b, kind="T"):
     return Link(kind=kind, a=a, b=b, step=1.0, dq=None)
 
 
-def run(stage, links, assignments, previous, *, mode="anchored", rings=None, sid="b:ring1", settings=S):
+def run(stage, links, assignments, previous, *, mode="anchored", rings=None, sid="b:ring1", settings=S,
+        energies=None):
     if mode == "anchored" and rings is None:
         rings = {k: 1 for k in stage}
+    energies = energies or {k: [10.0 + m for m in range(assignments[k].count)] for k in assignments}
     return ident.propagate_ids(stage, links, {k: refs(k, assignments[k].count) for k in assignments}, settings,
                                batch_mode=mode, rings=rings, snapshot_id=sid, assignments=assignments,
-                               previous=previous)
+                               previous=previous, energies=energies)
 
 
 # ---- 1. crossings, permutations, completion order ------------------------------------------------
@@ -245,6 +247,15 @@ def test_independent_births_across_a_seam_are_flagged_not_merged():
     assert r.seams == [{"link": ("a", "b"), "issue": "independent_births", "modes": born,
                         "ids": ["f_a#1", "f_b#1"]}]
     assert run(["a", "b"], links[::-1], dict(reversed(A.items())), previous) == r
+
+
+def test_births_far_apart_across_a_seam_are_not_a_disagreement():
+    # both ring-mates mint a branch, but 5 and 25 meV apart: nothing shows the two are one mode
+    A, previous, links = _ring()
+    A["a"] = asg("a", "b:ring1", ("p", None))
+    r = run(["a", "b"], links, A, previous, energies={"a": [10.0, 5.0], "b": [10.0, 25.0]})
+    assert [r.ids[x] for x in [("a", "f_a", 1), ("b", "f_b", 1)]] == ["f_a#1", "f_b#1"]
+    assert r.flags == {} and r.seams == []
 
 
 # ---- 6. identity and count bookkeeping ----------------------------------------------------------
