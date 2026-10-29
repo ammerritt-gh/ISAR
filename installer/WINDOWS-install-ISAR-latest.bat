@@ -158,10 +158,28 @@ echo Reason: %ERR%
 >>"%LOG%" echo(OUTCOME=%OUTCOME%
 if defined LOGFILE echo The log of this run: %LOGFILE%
 if defined YES goto finish_exit
+if "%OUTCOME%"=="failed" call :show_tail
+if "%OUTCOME%"=="failed" call :open_notepad
 echo.
 choice /C C /N /M "Press C to close this window."
 :finish_exit
 endlocal & exit /b %RC%
+
+:: The last lines of this run's log, for an attended failure. The log holds only this file's
+:: own short lines, so all of it is shown.
+:show_tail
+if not defined LOGFILE goto :eof
+echo.
+echo The last lines of the log:
+echo ----------------------------------------------------------------------------
+type "%LOGFILE%"
+echo ----------------------------------------------------------------------------
+goto :eof
+
+:open_notepad
+if not defined LOGFILE goto :eof
+start "" "%SystemRoot%\System32\notepad.exe" "%LOGFILE%"
+goto :eof
 
 :: STAMP (yyyyMMdd-HHmmss) and HEX (32 hex) from PowerShell, which writes them only in that form.
 :new_ids

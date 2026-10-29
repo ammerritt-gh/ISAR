@@ -1013,6 +1013,23 @@ def test_desktop_shortcut_replaces_only_one_that_opens_this_installation(tmp_pat
         assert desk.read_bytes() == before
 
 
+def test_latest_failure_shows_its_log_on_screen(tmp_path):
+    """Its own failure shows the log's lines (design item 5). Only the tail routine runs here: the
+    notepad call opens a window, so it is checked by position below."""
+    log = tmp_path / "install-latest.log"
+    log.write_text("".join(f"line {n}\r\n" for n in range(1, 6)), encoding="ascii")
+    body = [f'set "LOGFILE={log}"', "call :show_tail", "exit /b 0", *_label_block(_text(LATEST), "show_tail")]
+    rc, out = _run_snippet(tmp_path, body, _sandbox(tmp_path))
+    assert rc == 0 and "The last lines of the log:" in out and "line 5" in out, out
+
+
+def test_latest_opens_its_log_only_for_an_attended_failure():
+    lines = _code_lines(_text(LATEST))
+    text = "\n".join(lines)
+    assert text.index("if defined YES goto finish_exit") < text.index("call :open_notepad") < text.index("choice /C C")
+    assert 'if "%OUTCOME%"=="failed" call :show_tail' in text
+
+
 def test_latest_logs_an_outcome_after_the_release_installer_returns():
     """Static: the network path cannot run in a routine test. The line after the release installer's
     exit code is logged writes OUTCOME= before the script exits with that code."""
