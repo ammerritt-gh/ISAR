@@ -14,17 +14,22 @@ from isar.intake.settings import SaveResult
 from isar.intake.values import _Bad, _check_units, _given, _reason, _save, _targets
 
 
-def _has_fast(root, unit: str) -> bool:
-    """A stored fast solo fit: the ledger entry is ``fitted`` and carries its fast-pass record (file_fit's test)."""
+def _without_fast(root, units: Sequence[str]) -> list[str]:
+    """The units with no stored fast solo fit: the ledger entry is ``fitted`` and carries its fast-pass record
+    (file_fit's test). The session ledger is read once for all of them."""
     from isar.session.state import SessionState          # lazy: the intake side never loads isar.session otherwise
     from isar.session.workspace import SESSION_NAME
     try:
-        entry = SessionState.load(Path(root) / SESSION_NAME).get(unit)
+        session = SessionState.load(Path(root) / SESSION_NAME)
     except (OSError, ValueError) as exc:
         raise _Bad(f"the session ledger cannot be read ({exc})") from exc
-    if entry is None or entry.status != "fitted":
-        return False
-    return bool((entry.detectors.get(unit.rsplit(":", 1)[1]) or {}).get("fast_pass"))
+    out = []
+    for unit in units:
+        entry = session.get(unit)
+        det = entry.detectors.get(unit.rsplit(":", 1)[1]) if entry is not None and entry.status == "fitted" else None
+        if not (det or {}).get("fast_pass"):
+            out.append(unit)
+    return out
 
 
 def _refuse_if_locked(key: str):
@@ -56,9 +61,9 @@ def set_anchors(root, keys: Sequence[str], *, anchored: bool, reason: str | None
         if all((u in read_user(root).anchors) == anchored for u in units):
             return None, anchored                       # idempotent: already so, nothing is written
         if anchored:
-            for u in units:
-                if not _has_fast(root, u):
-                    raise _Bad(f"{u} has no stored fast fit")
+            missing = _without_fast(root, units)
+            if missing:
+                raise _Bad(f"{missing[0]} has no stored fast fit")
         return {"kind": "anchor", "declared": anchored, "targets": units, "reason": why}, anchored
     return _save(root, _given(keys), build, name=FILE)
 

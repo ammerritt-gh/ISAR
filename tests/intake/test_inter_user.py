@@ -62,6 +62,15 @@ def test_a_repeated_anchor_writes_nothing(root):
     assert _bytes(root) == before
 
 
+def test_setting_many_anchors_reads_the_ledger_once(root, monkeypatch):
+    """One save reads the session ledger once, not once per analyzer: the GUI thread writes it (C-gui-state)."""
+    loads = []
+    load = SessionState.load.__func__
+    monkeypatch.setattr(SessionState, "load", classmethod(lambda cls, path: loads.append(path) or load(cls, path)))
+    assert set_anchors(root, [A, B, "spec1:43:a03"], anchored=True).ok
+    assert len(loads) == 1
+
+
 def test_picks_and_locks_fold_latest_wins(root):
     assert pick_fit(root, A, "fast").ok                    # seq 1
     assert pick_fit(root, A, F1).ok                        # seq 2
