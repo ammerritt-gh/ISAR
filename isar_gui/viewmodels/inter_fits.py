@@ -59,6 +59,7 @@ def entry_tip(entry: FitEntry) -> str:
 
 
 VIEWED = "viewed"    # ``drawn`` default: the viewed fit is the one on the plot
+NOT_ON_PLOT = "This fit is not drawn now: set Fit to Fast (Offset layout with several spectra) to act on it."
 
 
 def bar_state(entries: Sequence[FitEntry] | None, viewed: str, *, drawn: str | None = VIEWED,
@@ -78,7 +79,8 @@ def bar_state(entries: Sequence[FitEntry] | None, viewed: str, *, drawn: str | N
         authoritative_off = lock_off = "This fit is not recorded for this spectrum."
         info = info_tip = ""
     else:
-        lock_off = None
+        on_plot = drawn == entry.fit_id    # the actions act on the viewed fit, so it must be the curve on show
+        lock_off = None if locked or on_plot else NOT_ON_PLOT
         if entry.authoritative:
             authoritative_off = "This fit is already the one ISAR uses for this spectrum."
         elif entry.stale:
@@ -86,7 +88,7 @@ def bar_state(entries: Sequence[FitEntry] | None, viewed: str, *, drawn: str | N
         elif locked:
             authoritative_off = f"Locked to {locked_fit}; unlock first."
         else:
-            authoritative_off = None
+            authoritative_off = None if on_plot else NOT_ON_PLOT
         info, info_tip = _info(entry, locked, drawn)
     return BarState(tuple(entries), viewed, locked, menu_off, authoritative_off,
                     "Unlock" if locked else "Lock this fit", lock_off, waterfall_off, waterfall_on, info, info_tip)
@@ -95,6 +97,8 @@ def bar_state(entries: Sequence[FitEntry] | None, viewed: str, *, drawn: str | N
 def _info(entry: FitEntry, locked: bool, drawn: str | None) -> tuple[str, str]:
     if drawn is None:    # the viewed fit is not on the plot, so no line may describe it as shown
         return "No fit is shown", "No fit is shown"
+    if drawn == "deep":
+        return "Showing the Deep solo fit", "Showing the Deep solo fit"
     parts = [f"Showing {entry.label}", "authoritative" if entry.authoritative else "not authoritative"]
     if locked:
         parts.append("locked")

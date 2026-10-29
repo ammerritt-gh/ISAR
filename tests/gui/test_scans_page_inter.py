@@ -298,3 +298,29 @@ def test_waterfall_cap_still_draws_the_fit_chosen_in_the_menu(setup, reads):
         state = page._drawn_state
         assert len(state.traces) == 10 and state.not_drawn_text.startswith("showing 10 of ")
         assert [t.identity for t in state.traces if t.active] == [label]
+
+
+def test_fit_deep_names_the_deep_solo_fit_and_offers_no_action_on_the_hidden_refit(setup, reads):
+    page, inter = setup
+    inter.histories[ONE_MODE] = make_history(_refit("r1", "ring 1"), _refit("r2", "ring 2", authoritative=True))
+    inter.overview = make_overview(by_key={ONE_MODE: _row(ONE_MODE, "r2")})
+    _select(page, ONE_MODE, active=ONE_MODE)
+    page.vm.choose_fit("r1")
+    page.vm.set_fit("deep")
+    drawn = _select(page, ONE_MODE, active=ONE_MODE)
+    assert page._drawn_state.inter.info == "Showing the Deep solo fit"
+    assert [c.style for c in drawn.curves if c.key == ONE_MODE and c.role == "total"] == ["dashed"]
+    assert not page.inter_bar.authoritative_button.isEnabled() and not page.inter_bar.lock_button.isEnabled()
+    assert "Fit to Fast" in page.inter_bar.lock_button.toolTip()
+    assert page.vm.make_authoritative() is None and inter.calls == []
+
+
+def test_overlay_draws_no_fit_so_the_bar_says_none(setup, reads):
+    page, inter = setup
+    inter.overview = make_overview(by_key={ONE_MODE: _row(ONE_MODE, "r2")})
+    inter.histories[ONE_MODE] = make_history(_refit("r2", "ring 2", authoritative=True))
+    page.vm.set_layout("overlay")
+    drawn = _select(page, ONE_MODE, TWO_MODE, active=ONE_MODE)
+    assert not any(c.key == ONE_MODE for c in drawn.curves)
+    assert page._drawn_state.inter.info == "No fit is shown"
+    assert not page.inter_bar.lock_button.isEnabled()
