@@ -121,6 +121,32 @@ Things that are wrong now, as opposed to things not yet built.
       **Acceptance:** the cause is found and the test passes unpinned, or it moves to `proofs/` with a
       justified expectation.
 
+- [ ] **DEFECT-12 — Parallel-only gate failures not fixed (2026-10-29).** Found while stabilising
+      `python -m pytest -n 16 --dist worksteal`. The cause of the worker crashes and of
+      `test_gutter_file_and_blank_clicks_and_hover` was found and fixed in `tests/gui/conftest.py`
+      (collections ran on xdist's receiver thread and freed Qt wrappers off-thread; a leaked Help
+      window swallowed `QTest.mouseMove`). What is left:
+      - `tests/report/test_campaign_diagnostic_sections.py::test_render_failed_becomes_a_defect`
+        failed in the earlier gate runs of 2026-10-29 but **did not fail in 18 whole-gate or
+        report+gui runs** here, before or after the fix, so no error text was captured and no cause
+        found. It stays in the gate unchanged. One guess, unconfirmed: the same off-thread
+        collection corrupting a matplotlib figure mid-render.
+      - `tests/gui/test_experiment.py::test_a_rename_waits_for_the_intake_worker_that_holds_a_file_in_the_folder`
+        (main at `c20e23d6`, and 5 more times here): `assert holding.wait(10)` is False; the intake
+        worker never reached the patched `current_passes` within 10 s.
+      - Window-geometry flakes: `tests/gui/test_scan_inspector.py::test_laptop_with_the_inspector_open_and_the_right_panel_expanded_fits`
+        (3 of about 14 gate runs; `AssertionError: the Log must start right of the left column`, after a
+        fixed `qtbot.wait(80)`), `test_many_metadata_rows_scroll_inside_the_panel_at_the_laptop_width`
+        (once), `tests/gui/test_window_frame.py::test_the_arrangement_is_the_same_before_and_after_the_first_data`
+        (once, before the fix).
+      - Seen once each in runs before the fix, probably the same crash: `tests/gui/test_shell.py::test_empty_start_window`
+        (worker crashed), `tests/gui/test_backends.py::test_apply_health_marks_reachable_http_error_amber` (worker crashed).
+      - Order-dependent, found by hand not in the gate: `tests/gui/test_fact_table.py` followed by
+        another GUI test raises `AttributeError: 'types.SimpleNamespace' object has no attribute
+        'fast_pass'` inside a Qt slot (a test leaves a widget whose timer still reads a stub workspace).
+      **Acceptance:** each item is either fixed at its shared state with a before/after run, or
+      recorded as understood and accepted.
+
 ---
 
 ## Validation gates
