@@ -3,17 +3,17 @@ rem Run ISAR's proofs: the checks that read the real facility data in real_data\
 rem Proofs are not tests - they never run in the routine suite. Double-click to run them all;
 rem a missing real file is an ERROR naming it, never a skip. Results show on screen only.
 rem
-rem   run-isar-proofs.bat          every proof except the sealed golden scenarios
-rem   run-isar-proofs.bat golden   ONLY the sealed golden scenarios (sets ISAR_GOLDEN=1);
+rem   tools\run-isar-proofs.bat          every proof except the sealed golden scenarios
+rem   tools\run-isar-proofs.bat golden   ONLY the sealed golden scenarios (sets ISAR_GOLDEN=1);
 rem                                run it only when you have named a golden gate run
-rem   run-isar-proofs.bat letacon   ONLY the le Tacon fast-pass proof (sets ISAR_LETACON=1): two
+rem   tools\run-isar-proofs.bat letacon   ONLY the le Tacon fast-pass proof (sets ISAR_LETACON=1): two
 rem                                28-spectrum batches plus the prior sensitivity check, one to two
 rem                                hours; results land in out\letacon_fast_pass\<timestamp>\
 rem
 rem Set MICROMAMBA_EXE to override the micromamba location, or ISAR_ENV to force an environment.
 rem The environment needs pytest (pip install -e ".[test]").
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 if defined MICROMAMBA_EXE (set "MM=%MICROMAMBA_EXE%") else (set "MM=%USERPROFILE%\AppData\Local\micromamba\micromamba.exe")
 
 rem Same environment choice as run-isar-gui.bat: 'isar', else the dev environment 'tavi-dev'.

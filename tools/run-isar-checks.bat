@@ -4,15 +4,15 @@ rem closed-loop worlds, end-to-end deliveries). They are not part of the routine
 rem purpose - before a release, when a change touches drive, scene or session delivery, or when
 rem asked. A failure here is a finding to file, not a blocker of the change that ran it.
 rem
-rem   run-isar-checks.bat          the full suite with the slow checks, 16 workers (~6 min);
+rem   tools\run-isar-checks.bat          the full suite with the slow checks, 16 workers (~6 min);
 rem                                stopped after 30 minutes
-rem   run-isar-checks.bat serial   the same, one process (~25 min): only after test-infrastructure
+rem   tools\run-isar-checks.bat serial   the same, one process (~25 min): only after test-infrastructure
 rem                                changes or when asked; stopped after 60 minutes
 rem
 rem Set MICROMAMBA_EXE to override the micromamba location, or ISAR_ENV to force an environment.
 rem The environment needs pytest, pytest-xdist and pytest-timeout (pip install -e ".[test,test-gui,gui]").
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 if defined MICROMAMBA_EXE (set "MM=%MICROMAMBA_EXE%") else (set "MM=%USERPROFILE%\AppData\Local\micromamba\micromamba.exe")
 
 rem Same environment choice as run-isar-gui.bat: 'isar', else the dev environment 'tavi-dev'.

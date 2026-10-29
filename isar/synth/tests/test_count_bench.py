@@ -1,7 +1,7 @@
 """Routine tests of the fast-pass benchmark (isar/synth/count_bench.py).
 
 Everything here runs on canned fast-pass records and a fake ``fit_observation``: no real fast-pass
-fit (the benchmark itself runs once, deliberately, from ``run-isar-count-bench.bat``). The real fits are
+fit (the benchmark itself runs once, deliberately, from ``tools/run-isar-count-bench.bat``). The real fits are
 the refit diagnostic's bounded refits. Figures are targets, never asserted (R15).
 """
 import csv

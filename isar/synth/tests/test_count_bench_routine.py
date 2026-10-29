@@ -2,7 +2,7 @@
 
 The other benchmark tests (``test_count_bench.py``) run canned records; this one keeps the real
 engine, the scoring and the writer in the routine suite with a single small case. The full run is
-deliberate (``run-isar-count-bench.bat``).
+deliberate (``tools/run-isar-count-bench.bat``).
 """
 import json
 

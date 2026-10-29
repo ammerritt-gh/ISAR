@@ -8,8 +8,8 @@ rem --mode development (the tuning streams) is for setting thresholds. --mode ev
 rem reports the figures on streams development never saw. Both are deliberate and slow: each spectrum is
 rem a full fast-pass fit. Estimates at 30 s a fit on 12 workers: development about 12 min, evaluation
 rem about 23 min. Shrink either with arguments, for example a quick look:
-rem   run-isar-count-bench.bat --mode development --named-draws 1 --random 4 --clean 2
-rem All options:  run-isar-count-bench.bat --help
+rem   tools\run-isar-count-bench.bat --mode development --named-draws 1 --random 4 --clean 2
+rem All options:  tools\run-isar-count-bench.bat --help
 rem
 rem Results go to out\count_bench\<timestamp>\: figures.json, cases.csv, true_peaks.csv, fitted_peaks.csv,
 rem records.jsonl, count_bench.log and gallery\page_NN.png (truth-versus-fit pages). The folder and the
@@ -18,7 +18,7 @@ rem 5400 s): no new spectrum starts in the last 300 s before it, and fits still 
 rem killed and the finished spectra are reported. Set MICROMAMBA_EXE to override the micromamba location,
 rem or ISAR_ENV to force an environment.
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 if defined MICROMAMBA_EXE (set "MM=%MICROMAMBA_EXE%") else (set "MM=%USERPROFILE%\AppData\Local\micromamba\micromamba.exe")
 
 rem Same environment choice as run-isar-gui.bat: 'isar', else the dev environment 'tavi-dev'.

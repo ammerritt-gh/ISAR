@@ -28,7 +28,7 @@ command that regenerates its evidence. Where a capability is not yet wired in, i
 
 ## Running the statistical checks
 
-The slow check (`--run-slow`, `run-isar-checks.bat`) includes real-fit integrations and
+The slow check (`--run-slow`, `tools\run-isar-checks.bat`) includes real-fit integrations and
 serial/parallel equivalence; the routine gate leaves those out, and both deselect tests marked
 `statistical` (a campaign also marked `slow` needs only `--run-statistical`). On the operator's
 explicit request, run the repeated-fit campaigns with:
@@ -559,7 +559,7 @@ Laplace evidence takes its prior from the same recipe (`SpectrumPrior`), as do b
 path's `PriorBundle` carries the same width density (`ResolvedPrior.kind = "softlog"`) and the same
 energy density (`"energy_ramp"`). `fit_one` runs the fast pass (§2.2) with the card's `max_modes` as
 its ceiling. Every sensitivity arm carries the energy penalty's defaults (no arm is added for it).
-The sensitivity check has run once, under recipe /5, on the 56 le Tacon spectra (`run-isar-proofs.bat letacon`; TODO.md FIT-4 has the totals).
+The sensitivity check has run once, under recipe /5, on the 56 le Tacon spectra (`tools\run-isar-proofs.bat letacon`; TODO.md FIT-4 has the totals).
 Most count decisions depend on the prior there; which arm to trust is the operator's call.
 
 **The delivery [Implemented].** `fit_one` runs the fast pass on every spectrum (§2.2) and records
@@ -831,14 +831,14 @@ They are aims, not gates.
   level `low` (0 of 38). It also fires on 7.1% of clean spectra, against its 5% setting.
 - The 60 s per-spectrum aim is not met (median 79 s). It is reported, not chased.
 - The reached figures come from synthetic spectra only. The real-data le Tacon proof
-  (`run-isar-proofs.bat letacon`) has run once; its comparison with the paper is a printout for the
+  (`tools\run-isar-proofs.bat letacon`) has run once; its comparison with the paper is a printout for the
   operator, not a figure here.
 
 **Running it.** `isar/synth/tests/test_count_bench_routine.py` runs one isolated peak through the
 real `fit_one` (one draw, ceiling 2 passed explicitly), in 2.3 s measured against a 5 s budget; it
 checks one outcome per should-find peak and that `records.jsonl` parses. The full run is on request
 and is not part of the routine suite: `python -m isar.synth.count_bench --mode evaluation` (the
-default) or `--mode development` to tune. `run-isar-count-bench.bat` wraps it, prints the output
+default) or `--mode development` to tune. `tools\run-isar-count-bench.bat` wraps it, prints the output
 folder and wall time, and reads `ISAR_COUNT_BENCH_MAX_SECONDS` (default 5400 s). Outputs go to
 `out\count_bench\<timestamp>\`: `figures.json`, `cases.csv`, `true_peaks.csv`, `fitted_peaks.csv`,
 `records.jsonl` and the truth-versus-fit galleries. The run outputs are gitignored, not committed.

@@ -33,16 +33,16 @@ area.
   `pytest-xdist>=3.5` (in the `[test]` extra).
 - **Proofs — checks against real data, run on purpose.** `proofs/` sits outside `testpaths`, so the
   routine suite never collects it. Run it on the **main checkout**, where the real data lives:
-  `python -m pytest proofs`, or double-click `run-isar-proofs.bat`. A missing real file or
+  `python -m pytest proofs`, or double-click `tools\run-isar-proofs.bat`. A missing real file or
   expectation file is an **error** naming it, never a skip. `setup-isar-env.bat` installs `.[gui]`
   only, so pytest in the `isar` environment comes from `pip install -e ".[test]"`. The `golden`
   marker (S12) = **sealed held-out real-data gates**, `proofs/test_golden_scenarios.py`: the repo
   carries only the generic runner; every expectation lives in gitignored
   `real_data/golden/<scenario>/scenario.json`, which is **never read, run, or consulted during
   development** — the gate runs only when the owner names it (`ISAR_GOLDEN=1`, or
-  `run-isar-proofs.bat golden`). The le Tacon fast-pass proof (`proofs/test_letacon_fast_pass.py`, one to
+  `tools\run-isar-proofs.bat golden`). The le Tacon fast-pass proof (`proofs/test_letacon_fast_pass.py`, one to
   two hours: two 28-spectrum batches and the prior sensitivity check) is gated the same way and runs
-  only on `ISAR_LETACON=1`, or `run-isar-proofs.bat letacon`.
+  only on `ISAR_LETACON=1`, or `tools\run-isar-proofs.bat letacon`.
   A job worktree runs a proof on the main checkout's data with `ISAR_REAL_DATA=<main checkout>\real_data` (read only).
 - **Data folders.** `real_data/` — gitignored, main checkout only: the real facility files, each
   proof's measured expectations in `<proof stem>.expect.json` beside its data, and the sealed
@@ -64,10 +64,10 @@ area.
   2. *The gate (~90 s):* `python -m pytest -n 16 --dist worksteal` — slow tests deselected by
      default; ~90 s on the 32-core box (measured 2026-10-29, 6214 tests). On a smaller box use
      `-n auto` instead of `-n 16`: a 4-core box thrashes at `-n 16`.
-  3. *Slow check (~6 min):* `run-isar-checks.bat`, i.e. `python -m pytest --run-slow -n 16
+  3. *Slow check (~6 min):* `tools\run-isar-checks.bat`, i.e. `python -m pytest --run-slow -n 16
      --dist worksteal` — before a release, when a change touches drive, scene or session
      delivery, or on the operator's request. One 219 s FCC battery test sets its wall time.
-  4. *Full serial check (~25 min):* `run-isar-checks.bat serial`, i.e. `python -m pytest
+  4. *Full serial check (~25 min):* `tools\run-isar-checks.bat serial`, i.e. `python -m pytest
      --run-slow` — only after test-infrastructure changes (conftest, fixtures, xdist settings) or
      on the operator's request: serial and parallel expose different ordering and shared-state bugs.
   A check reports; a failing check is a finding to file, not a blocker of the change that ran it.

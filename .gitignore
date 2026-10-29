@@ -13,7 +13,6 @@ env/
 # ISAR synthetic-harness outputs
 /out/
 /objective*.json
-!/objective_v16.json
 test_data/
 # Real facility data and everything derived from it (proofs read it; no test does). Anchored so tests/real_data/ stays tracked.
 /real_data/

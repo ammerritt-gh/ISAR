@@ -16,7 +16,8 @@ Q, and produces a report that says — per scan — *use this number*, *glance a
 this yourself*. It is fast feedback for steering an experiment, not the system of record for
 published numbers. Nothing is ever deleted; a human reviews everything afterward.
 
-> **Status: development.** The analysis pipeline is built and validated on real data from two very
+> **Status: prototype.** ISAR is shared with a small group of outside users and is still in
+> development; it is not a public release. The analysis pipeline is built and validated on real data from two very
 > different instruments (APS Sector-30 HERIX and ILL IN8). The `isar` CLI runs it end-to-end on new
 > data ([docs/USING_ISAR.md](docs/USING_ISAR.md)); one validation (the CLI/session equivalence gate
 > at M=200) is still pending. An autonomous driver (`isar drive`) closes the loop against a
@@ -28,6 +29,19 @@ published numbers. Nothing is ever deleted; a human reviews everything afterward
 >
 > **Per-capability status — Implemented / Partial / Planned — lives in one place:
 > [docs/ARCHITECTURE.md §15](docs/ARCHITECTURE.md). That table is the authority; this paragraph is orientation.**
+
+## Install and run
+
+On Windows, with no Python knowledge needed:
+
+1. Double-click **`setup-isar-env.bat`**. It fetches micromamba if needed, builds the `isar`
+   environment and installs ISAR into it. Run it again after updating ISAR.
+2. Double-click **`run-isar-gui.bat`** to open the GUI. Drag a workspace folder onto it to open
+   that workspace.
+
+ISAR does not install TAVI or McStas: campaigns against the simulated instrument need TAVI's own
+installer. The developer and validation launchers live in `tools/`; a normal user never needs
+them.
 
 ## The pipeline
 
@@ -107,6 +121,8 @@ docs/assets/      # the committed validation evidence the docs cite (derived onl
 real_data/        # real facility files (S30, IN8, ID28, BL43LXU) — LOCAL-ONLY, gitignored, main checkout only
 artificial_data/  # committed copies of facility files with every data number replaced (parser tests)
 proofs/           # checks that read real_data/, run on purpose (`python -m pytest proofs`); not tests
+resolution_curves/ # the measured BL43LXU resolution curves, the one measured data committed
+tools/            # developer scripts and launchers: slow checks, proofs, benchmarks
 tests/            # the routine suite — needs nothing outside git, no test reads real_data/
 out/              # working output (gitignored; run a docs/*_check.py to produce a report)
 ```
@@ -127,13 +143,13 @@ The bundle is derived evidence only — fit results, summary tables, and figures
 needs the `docs/*_check.py` scripts and the local-only `real_data/`, which is **not** committed, so
 a clean checkout can *see* this evidence but cannot reproduce it.
 
-## Setup
+## Developer setup
 
 Python ≥ 3.11. `pip install -e .` (test extras: `pip install -e .[test]`; run `python -m pytest
 -n 16 --dist worksteal` — about ninety seconds, slow tests left out by default (`--run-slow` or
-`run-isar-checks.bat` runs them on purpose), and it needs nothing outside git, so it runs in any
+`tools\run-isar-checks.bat` runs them on purpose), and it needs nothing outside git, so it runs in any
 checkout or worktree (the real-data checks are `proofs/`, run on purpose on the main checkout with
-`python -m pytest proofs` or `run-isar-proofs.bat`); `-n 16` is tuned for an idle 32-core box — on a smaller machine use
+`python -m pytest proofs` or `tools\run-isar-proofs.bat`); `-n 16` is tuned for an idle 32-core box — on a smaller machine use
 `-n auto`; drop `-n 16 --dist worksteal` to run serially when debugging). To also run
 the GUI tests under `tests/gui/`, install `pip install -e .[test,test-gui,gui]` (the `test-gui` extra is
 `pytest-qt`, kept out of the base `test` extra so it doesn't require a Qt binding). LLM features are

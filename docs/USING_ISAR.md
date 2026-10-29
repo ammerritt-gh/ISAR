@@ -984,7 +984,7 @@ Alerts on that choice and on the zeros:
 Held analyzers and scans are listed under "Held / declined" in the report, with their reason.
 
 To check the fast pass on the le Tacon CsV3Sb5 example set (batch times, the analyzer at the M point beside
-the published phonons, and how far the prior moves the counts), run `run-isar-proofs.bat letacon` from the
+the published phonons, and how far the prior moves the counts), run `tools\run-isar-proofs.bat letacon` from the
 main checkout. It takes one to two hours and writes its workspaces, logs and `summary.json` under
 `out\letacon_fast_pass\<timestamp>\`.
 

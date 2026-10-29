@@ -13,7 +13,7 @@ a pass). Set the variable only for an owner-named gate run:
 
     ISAR_GOLDEN=1 python -m pytest proofs/test_golden_scenarios.py -m golden -s
 
-or double-click ``run-isar-proofs.bat golden``.
+or double-click ``tools/run-isar-proofs.bat golden``.
 """
 import json
 import os

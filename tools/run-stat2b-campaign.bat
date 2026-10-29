@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d "%~dp0"
+cd /d "%~dp0.."
 
 set "MICROMAMBA=%USERPROFILE%\AppData\Local\micromamba\micromamba.exe"
 if not exist "%MICROMAMBA%" (

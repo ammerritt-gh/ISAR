@@ -35,6 +35,8 @@ packages = ["isar", "isar.synth", "isar.synth.stat2b", "isar.schema", "isar.pars
 # artifacts they overlay live under docs/campaigns/ and are NOT packaged, so the menu item still
 # needs a source checkout; without this entry it would fail even from one.
 "isar_gui" = ["resources/eig4-o41-authoritative/*", "resources/*.html"]   # the Help quick guide is read at runtime
+# The default σ-calibration artifact `isar drive` loads when no --calibration is given.
+"isar.drive.acquisition" = ["phonon_dft_deterministic.json"]
 
 [tool.pytest.ini_options]
 # Phase 1 lives under isar/synth/tests; Phase 2 (schema, parsers, synth_format) under tests/.
@@ -48,5 +50,5 @@ markers = [
     "statistical: repeated-fit calibration/bias campaigns; require --run-statistical",
     "slow: tests that run many fits; deselected unless --run-slow (the deliberate slow check)",
     "live: requires TAVI at 127.0.0.1:8642 or LLMM at 127.0.0.1:8766; explicit opt-in via ISAR_LIVE_TAVI=1 or ISAR_LIVE_LLMM=1",
-    "golden: sealed held-out real-data gates (S12) — run only when the owner names it (set ISAR_GOLDEN=1, or run-isar-proofs.bat golden; needs local real_data/golden/; proofs/, not tests)",
+    "golden: sealed held-out real-data gates (S12) — run only when the owner names it (set ISAR_GOLDEN=1, or tools/run-isar-proofs.bat golden; needs local real_data/golden/; proofs/, not tests)",
 ]

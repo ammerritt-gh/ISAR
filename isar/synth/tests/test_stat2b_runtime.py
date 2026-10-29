@@ -68,7 +68,7 @@ def test_parallel_runtime_refuses_unpinned_threads_or_missing_physical_cores(
 )
 def test_windows_launchers_pin_numerical_threads_before_python(launcher_name):
     repo_root = Path(__file__).resolve().parents[3]
-    text = (repo_root / launcher_name).read_text(encoding="utf-8")
+    text = (repo_root / "tools" / launcher_name).read_text(encoding="utf-8")
     python_offset = text.index("python -m isar.synth.stat2b")
 
     for name in campaign.THREAD_ENVIRONMENT_VARIABLES:
@@ -80,7 +80,7 @@ def test_windows_launchers_pin_numerical_threads_before_python(launcher_name):
 
 def test_campaign_launcher_persists_traceback_log():
     repo_root = Path(__file__).resolve().parents[3]
-    text = (repo_root / "run-stat2b-campaign.bat").read_text(encoding="utf-8")
+    text = (repo_root / "tools" / "run-stat2b-campaign.bat").read_text(encoding="utf-8")
 
     assert 'set "STAT2B_LOG=' in text
     assert '>> "%STAT2B_LOG%" 2>&1' in text

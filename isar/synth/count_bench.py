@@ -55,7 +55,7 @@ truth's first draw, a seeded sample of the random suite, then the spectra with a
 at most 48). The fitted curves are rebuilt from the record's peaks, which carries no curves.
 
 Run it deliberately: ``python -m isar.synth.count_bench --help`` or double-click
-``run-isar-count-bench.bat``. The routine suite runs canned records, a fake fit and the refit
+``tools/run-isar-count-bench.bat``. The routine suite runs canned records, a fake fit and the refit
 diagnostic's own small fits (``isar/synth/tests/test_count_bench.py``).
 """
 from __future__ import annotations

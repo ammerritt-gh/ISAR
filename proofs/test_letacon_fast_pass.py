@@ -1,7 +1,7 @@
 """PROOF (real data, run on purpose): the fast pass on the le Tacon BL43LXU CsV3Sb5 spectra.
 
 Gated like the golden proofs: the module is skipped unless ``ISAR_LETACON=1`` (it takes tens of
-minutes), so run it with ``run-isar-proofs.bat letacon`` or
+minutes), so run it with ``tools/run-isar-proofs.bat letacon`` or
 
     ISAR_LETACON=1 python -m pytest proofs/test_letacon_fast_pass.py -q -s
 
@@ -49,7 +49,7 @@ from isar.session.workspace import Workspace
 from proofs.conftest import REAL_DATA
 
 if os.environ.get("ISAR_LETACON") != "1":
-    pytest.skip("the le Tacon fast-pass proof runs only when named: run-isar-proofs.bat letacon "
+    pytest.skip("the le Tacon fast-pass proof runs only when named: tools/run-isar-proofs.bat letacon "
                 "(sets ISAR_LETACON=1)", allow_module_level=True)
 
 # pyproject's 900 s per-test timeout is the routine suite's guard; this proof runs for an hour and every
