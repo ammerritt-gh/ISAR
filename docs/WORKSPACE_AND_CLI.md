@@ -25,11 +25,18 @@ One directory per experiment (`isar/session/workspace.py`):
                       # intake_scans.json (BL43 import record: the file values of every scan read;
                       # machine-written, rebuilt by a re-import), fit_inputs.jsonl (what each pass
                       # used; append-only), fit_history.jsonl (every ledger entry a re-import or
-                      # refit replaced, kept in full; append-only)
+                      # refit replaced, kept in full; append-only), inter_spectra.jsonl (the index of
+                      # inter-spectra batches: starts, refits with their acceptance, stages, ends;
+                      # append-only, written once by `save_inter`)
+    inter_spectra/    # inter-spectra fitting
+      refits/         # <batch>.jsonl: what each refit came in with and out with, read by byte offset
+                      # (append-only; written before the index lines that point into it)
     scene/            # scene revisions: <digest>.json blobs + current.json pointer
   intake/             # BL43 intake records, ISAR-written only: settings.jsonl (experiment
                       # settings), entries.jsonl (user values and conditions; experiment-critical like
-                      # card.state.json, not deletable), .lock (held for one append)
+                      # card.state.json, not deletable), inter_spectra.jsonl (the user's anchors, picks,
+                      # locks and inter-spectra settings; append-only deltas, latest wins), .lock
+                      # (held for one append)
   .isar-write.lock    # the workspace write lock (below); empty, safe to leave in place
 ```
 
@@ -55,6 +62,16 @@ for it up to `WRITE_LOCK_TIMEOUT_S` (120 s, longer than a held copy of the folde
 nothing written. Readers never take it. `isar run`, `isar drive` and the campaign worker do not take it:
 do not run them on an experiment while the GUI queue is analysing it, or their whole-file saves can
 overwrite the queue's results (re-add the files to recover).
+
+A third writer, `isar.session.writer.save_inter`, stores inter-spectra fitting: under the same lock it
+appends a batch's refits (payload files first, then the index lines that point into them) and decides, at
+the moment of saving, whether each completed refit becomes the spectrum's authoritative fit. The decision
+reads the user's locks, picks and the inputs fingerprints now, and is stored with the refit; a refit that
+is declined stays in the log and stays selectable. Saving the same result twice writes nothing the second
+time. It never touches `session.json`, `results.csv` or a spectrum's fast solo fit, and it never writes an
+anchor, a pick, a lock or a setting: those are the user's, saved by the GUI through `isar.intake` and only
+read here. The read facade (`isar.workspace_api.inter_spectra`) and the export and report paths resolve the
+fit in use with one function, `isar.session.inter_spectra.authority`, so they cannot disagree.
 
 ### Values, conditions and what each fit used (BL43)
 

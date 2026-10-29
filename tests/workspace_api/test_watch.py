@@ -58,6 +58,25 @@ def test_appending_a_fit_inputs_line_fires_with_the_fit_inputs_name(make_ws):
     assert got["changed"] == {"fit_inputs"}
 
 
+@pytest.mark.parametrize("parts, name", [(("intake", "inter_spectra.jsonl"), "inter_user"),
+                                         (("report", "inter_spectra.jsonl"), "inter_log")])
+def test_the_inter_spectra_files_fire_with_their_own_names(make_ws, parts, name):
+    root = make_ws(rows=[{"scan": 1, "detector": "det"}])
+    (root / parts[0]).mkdir(exist_ok=True)
+    ws = Workspace.open(root)
+    got = {}
+    fired = threading.Event()
+
+    def cb(changed):
+        got["changed"] = set(changed)
+        fired.set()
+
+    with ws.watch(cb, debounce_ms=DEBOUNCE, poll_interval_s=POLL):
+        _append(root.joinpath(*parts), '{"kind": "x"}\n')
+        assert fired.wait(WAIT), "callback never fired"
+    assert got["changed"] == {name}
+
+
 def test_two_rapid_changes_coalesce(make_ws):
     # Wider than DEBOUNCE: under parallel load the poll thread can see the second write after a
     # 150 ms window has closed, which splits the burst into two callbacks.
