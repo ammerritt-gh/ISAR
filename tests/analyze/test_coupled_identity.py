@@ -342,3 +342,14 @@ def test_untriggered_assignment_keeps_its_own_ids_without_a_neighbour_carrying_t
     assert [r.ids[ref] for ref in refs("k", 2)] == ["fast:k#0", "fast:k#1"]
     assert [r.status[ref] for ref in refs("k", 2)] == ["matched", "matched"]
     assert r.flags == {}
+
+
+def test_a_confident_winner_with_a_close_rival_stays_confident():
+    # p = 0.86 >= 0.80 and a rival 1.8 nats behind: a close call goes to review, it does not make the slot ambiguous
+    A = held("A", "fA", [("p", 10.0), ("q", 12.0)])
+    a = asg("k", "b:ring1", ("p", "q"), cands=[(("p", "q"), 0.0), (("q", "p"), -1.8)])
+    r = run(["k"], [link("A", "k")], {"k": a}, {"A": A})
+    assert [r.ids[ref] for ref in refs("k", 2)] == ["p", "q"]
+    assert [r.status[ref] for ref in refs("k", 2)] == ["matched", "matched"]
+    assert r.flags == {}
+    assert r.alternatives["by_unit"]["k"]["close"]          # kept for review

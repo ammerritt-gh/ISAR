@@ -211,9 +211,10 @@ def _ref(node: tuple) -> ModeRef:
 def _slot_support(a, m: int, settings: InterSettings) -> tuple[bool, list[dict]]:
     """(confident, close alternatives) of slot m from the core's evaluated candidates at the chosen count.
 
-    Confident when the conditional mass of the chosen id at m reaches ``confidence`` and no candidate
-    within ``close_call_nats`` of the winner names another id there. A skipped stage is inherited: its
-    decision stands with its old scope, and no new weight is claimed for it."""
+    Confident when the conditional mass of the chosen id at m reaches ``confidence``. Candidates within
+    ``close_call_nats`` of the winner that name another id there are returned for review only, as in
+    the installed decision rule: a close call is not ambiguity by itself. A skipped stage is inherited:
+    its decision stands with its old scope, and no new weight is claimed for it."""
     if a.discrete == "skipped":
         return True, []
     cands = [c for c in a.candidates if c.get("count") == a.count and c.get("ln_z") is not None
@@ -226,7 +227,7 @@ def _slot_support(a, m: int, settings: InterSettings) -> tuple[bool, list[dict]]
     p = sum(wi for wi, c in zip(w, cands) if c["slots"][m] == a.slots[m]) / sum(w)
     close = [dict(c) for c in cands if c["ln_z"] >= win[0]["ln_z"] - settings.close_call_nats
              and c["slots"][m] != a.slots[m]]
-    return p >= settings.confidence and not close, close
+    return p >= settings.confidence, close
 
 
 def _flag(flags: dict, code: str, units, refs=(), **values) -> None:
