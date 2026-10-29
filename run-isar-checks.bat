@@ -10,7 +10,7 @@ rem   run-isar-checks.bat serial   the same, one process (~25 min): only after t
 rem                                changes or when asked; stopped after 60 minutes
 rem
 rem Set MICROMAMBA_EXE to override the micromamba location, or ISAR_ENV to force an environment.
-rem The environment needs pytest and pytest-xdist (pip install -e ".[test,test-gui,gui]").
+rem The environment needs pytest, pytest-xdist and pytest-timeout (pip install -e ".[test,test-gui,gui]").
 setlocal
 cd /d "%~dp0"
 if defined MICROMAMBA_EXE (set "MM=%MICROMAMBA_EXE%") else (set "MM=%USERPROFILE%\AppData\Local\micromamba\micromamba.exe")
@@ -22,7 +22,7 @@ if not defined ISAR_ENV (
 )
 
 rem Fail with the fix named, not with "No module named pytest" in a window that closes.
-"%MM%" run -n %ISAR_ENV% python -c "import pytest, xdist" >nul 2>&1
+"%MM%" run -n %ISAR_ENV% python -c "import pytest, xdist, pytest_timeout" >nul 2>&1
 if errorlevel 1 goto nopytest
 
 echo Started %DATE% %TIME%
@@ -47,7 +47,7 @@ exit /b %RC%
 
 :nopytest
 echo.
-echo ISAR's checks need pytest and pytest-xdist, and environment "%ISAR_ENV%" does not have them.
+echo ISAR's checks need pytest, pytest-xdist and pytest-timeout, and environment "%ISAR_ENV%" does not have them.
 echo To add them, run this from the repository folder, then double-click this file again:
 echo     "%MM%" run -n %ISAR_ENV% python -m pip install -e ".[test,test-gui,gui]"
 pause
