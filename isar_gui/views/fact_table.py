@@ -244,7 +244,7 @@ class FactTable(QWidget):
         row = self._fact_cells(r)
         row.tip = FILES_ONLY
         if r.used_value is None:      # no hkl in the files or the gpi file: the file's |Q|, as the scan list shows it
-            q = None if self._row is None else self._row.q
+            q = None if self._row is None else self._row.q_abs
             if q is not None and q.value is not None:
                 where = f", {q.source}" if q.source and q.source != "missing" else ""
                 row.files = (f"{_value_text(q.value, q.unit)}\n(|Q|{where})", NO_HKL)

@@ -14,25 +14,32 @@ from PySide6.QtCore import Signal
 
 from isar.workspace_api import ImportSummary
 from isar.workspace_api.spectra import NOT_JUDGED_TEXT, SpectraCache
-from isar.workspace_api.scan_list import (Fact, PooledRow, ScanListSnapshot, ScanSetRow, SpectrumRow,
+from isar.workspace_api.scan_list import (Fact, Mark, PooledRow, ScanListSnapshot, ScanSetRow, SpectrumRow,
                                           UnreadFile, natural_key, scan_list)
 from isar_gui import status_words
 from isar_gui.selection import ORIGIN_LIST, ORIGIN_OTHER, Selection
-from isar_gui.plain_words import drop_echo, plain_reason
+from isar_gui.plain_words import drop_echo, plain_reason, source_words
 from isar_gui.theme import DEEP, FAST, PARSED, QUEUE_STATES, Tone, status_tone, summary_tone
 from isar_gui.viewmodels.base import ViewModel
 
-COLUMNS = ("scan", "T", "Q", "parsed", "fast", "deep", "slit", "file")   # model order
-OPTIONAL_COLUMNS = ("fast", "deep", "slit", "file")                      # Columns ▾; the rest always show
+COLUMNS = ("scan", "T", "hkl", "absq", "gpi", "rf", "parsed", "fast", "deep", "slit", "file")   # model order
+OPTIONAL_COLUMNS = ("absq", "gpi", "rf", "fast", "deep", "slit", "file")   # Columns ▾; the rest always show
 RESULT_COLUMNS = ("fast", "deep")     # these switch on by themselves once that pass has a result or a queue mark
-TITLES = {"scan": "Scan", "T": "T", "Q": "Q", "parsed": "Parsed", "fast": "Fast pass",
-          "deep": "Deep pass", "slit": "Slit", "file": "File name"}
+SHOWN_BY_DEFAULT = ("gpi", "rf")      # on wherever the card has them (the facade says which); hiding one is remembered
+AUTO_COLUMNS = RESULT_COLUMNS + SHOWN_BY_DEFAULT
+TITLES = {"scan": "Scan", "T": "T", "hkl": "hkl", "absq": "|Q| (nm⁻¹)", "gpi": "gpi", "rf": "rf",
+          "parsed": "Parsed", "fast": "Fast pass", "deep": "Deep pass", "slit": "Slit", "file": "File name"}
 SORTS = ("set", "temperature", "analyzer")
 # What a column holds, as the header's hover (E1/E2: the result columns are another batch's).
 HEADER_TIPS = {
     "scan": "The scan set (one scan, one file per analyzer) and, under it, each analyzer's spectrum.",
     "T": "Sample temperature, as the files give it (or as you entered it).",
-    "Q": "Momentum transfer of the spectrum, in the units the file gives.",
+    "hkl": "(h, k, l) in r.l.u.; source in each cell's tooltip",
+    "absq": "|Q| as the analyzer's file gives it, in nm⁻¹. Blank where the file holds none.",
+    "gpi": ("Per analyzer: a check when an accepted gpi file gives its hkl, else a cross with the reason. "
+            "On a scan row, a check only when every analyzer is good."),
+    "rf": ("Per analyzer: a check when a resolution curve is in force for it, else a cross with the reason. "
+           "On a scan row, a check only when every analyzer is good."),
     "parsed": ("Whether ISAR read the file. On a scan set, files read of files received. 'no T' and 'no Q' mean "
                "the file was read but holds no temperature or no Q."),
     "slit": "Slit opening of the scan set, as the files give it (or as you entered it).",
@@ -52,6 +59,7 @@ class Cell:
     tooltip: str | None = None        # None: the view shows the text itself
     tone: Tone | None = None          # a status dot; None for plain text
     stale: bool = False               # the pass's inputs changed since it was made: the word is drawn in WARN
+    mark: Mark | None = None          # a gpi or rf cell: drawn as a check or a cross, its text the accessible name
 
 
 @dataclass(frozen=True)
@@ -91,6 +99,19 @@ def _fact_cell(fact: Fact, with_unit: bool = True) -> Cell:
     if text is None:                  # a missing value is a dash with its reason, never blank
         return Cell(_DASH, fact.reason or "not available")
     return Cell(text, f"{_fact_text(fact)} (from {fact.source})")
+
+
+def _hkl_cell(fact: Fact) -> Cell:
+    """The hkl in r.l.u. (the header says so); the tooltip names its source in the file's words."""
+    text = _fact_text(fact, with_unit=False)
+    if text is None:
+        return Cell(_DASH, fact.reason or "not available")
+    return Cell(text, f"{text} r.l.u. ({source_words(fact.source)})")
+
+
+def _mark_cell(mark: Mark | None) -> Cell:
+    """A gpi or rf cell: no text, the check or cross is drawn from the mark; its detail is the hover."""
+    return Cell("", mark.detail, mark=mark) if mark is not None else Cell("")
 
 
 def _status_cell(status, column: str, mark: str | None = None) -> Cell:
@@ -193,8 +214,8 @@ class ScanListViewModel(ViewModel):
         self._anchor: str | None = None
         self._sort = "set"
         self._optional: set[str] = set()      # the optional columns the user switched on
-        self._hidden: set[str] = set()        # result columns the user switched off: the auto rule leaves them off
-        self._auto: set[str] = set()          # result columns on because a result of that pass exists
+        self._hidden: set[str] = set()        # auto columns the user switched off: the auto rule leaves them off
+        self._auto: set[str] = set()          # auto columns on by themselves (a stored result, gpi or rf present)
         self._filter_text = ""
         self._intake = None
         self._queue = None
@@ -260,8 +281,13 @@ class ScanListViewModel(ViewModel):
         paths += [f.path for f in snap.files_not_read]
         return list(dict.fromkeys(str(Path(p).parent) for p in paths))
 
+    def column_present(self, column: str) -> bool:
+        """The gpi and rf columns exist only for the cards that read gpi files and tabulated curves."""
+        return {"gpi": self._snapshot.has_gpi, "rf": self._snapshot.has_rf}.get(column, True)
+
     def visible_columns(self) -> tuple[str, ...]:
-        return tuple(c for c in COLUMNS if c not in OPTIONAL_COLUMNS or c in self._optional or c in self._auto)
+        return tuple(c for c in COLUMNS if c not in OPTIONAL_COLUMNS
+                     or (self.column_present(c) and (c in self._optional or c in self._auto)))
 
     def layout_choices(self) -> tuple:
         """What the user chose about the layout; a change of it reveals the selection. A column a stored pass
@@ -269,20 +295,21 @@ class ScanListViewModel(ViewModel):
         return (self._sort, self._filter_text, frozenset(self._optional), frozenset(self._hidden), self._show_removed)
 
     def _auto_columns(self) -> set[str]:
-        """The result columns to show by themselves: a stored record of that pass exists or the queue marks one, and
-        the user has not switched the column off."""
+        """The columns to show by themselves: a result column while a stored record of its pass exists or the queue
+        marks one, and the gpi and rf columns wherever the card has them; none the user has switched off."""
         snap = self._snapshot
         rows = [sp for ss in snap.sets for sp in ss.spectra] + list(snap.pooled)
         queued = {p for mine in self._marks.values() for p in mine}
-        return {c for c in RESULT_COLUMNS if c not in self._hidden
-                and (c in queued or any(getattr(r, c).stored for r in rows))}
+        on = {c for c in RESULT_COLUMNS if c in queued or any(getattr(r, c).stored for r in rows)}
+        on |= {c for c in SHOWN_BY_DEFAULT if self.column_present(c)}
+        return {c for c in on if c not in self._hidden}
 
     def column_title(self, column: str) -> str:
-        """The header; ``Q`` and ``T`` carry their unit when every present value has the same one."""
-        if column in ("Q", "T"):
-            unit = self._common_q_unit() if column == "Q" else self._common_t_unit()
+        """The header; ``T`` carries its unit when every present value has the same one."""
+        if column == "T":
+            unit = self._common_t_unit()
             if unit:
-                return f"{column} ({unit})"
+                return f"T ({unit})"
         return TITLES[column]
 
     def header_tip(self, column: str) -> str:
@@ -291,12 +318,6 @@ class ScanListViewModel(ViewModel):
     def _common_t_unit(self) -> str | None:
         units = {ss.temperature.unit for ss in self._snapshot.sets if ss.temperature.value is not None}
         units |= {p.temperature.unit for p in self._snapshot.pooled if p.temperature.value is not None}
-        return next(iter(units)) if len(units) == 1 else None
-
-    def _common_q_unit(self) -> str | None:
-        qs = [sp.q for ss in self._snapshot.sets for sp in ss.spectra]
-        qs += [p.q for p in self._snapshot.pooled]
-        units = {q.unit for q in qs if q.value is not None}
         return next(iter(units)) if len(units) == 1 else None
 
     # ---- the view settings ---------------------------------------------------------------
@@ -313,7 +334,7 @@ class ScanListViewModel(ViewModel):
             self.snapshot_changed.emit()
 
     def set_column_visible(self, column: str, visible: bool) -> None:
-        if column in OPTIONAL_COLUMNS and visible != (column in self.visible_columns()):
+        if column in OPTIONAL_COLUMNS and self.column_present(column) and visible != (column in self.visible_columns()):
             if visible:
                 self._optional.add(column)
                 self._hidden.discard(column)
@@ -567,19 +588,18 @@ class ScanListViewModel(ViewModel):
     # ---- the tree ------------------------------------------------------------------------
     def tree(self) -> tuple[Node, ...]:
         sets, files, pooled = self._visible()
-        with_unit = self._common_q_unit() is None     # the header carries a shared unit
-        nodes = (self._analyzer_nodes(sets, with_unit) if self._sort == "analyzer"
-                 else [self._set_node(ss, spectra, with_unit) for ss, spectra in sets])
+        nodes = (self._analyzer_nodes(sets) if self._sort == "analyzer"
+                 else [self._set_node(ss, spectra) for ss, spectra in sets])
         if files:
             nodes.append(Node("section:not_read", "section", None, {"scan": Cell("Files not read")},
                               tuple(self._file_node(f) for f in files)))
         if pooled:
             text, name, description, tip = self.container_presentation("section:pooled")
             nodes.append(Node("section:pooled", "section", None, {"scan": Cell(text, tip)},
-                              tuple(self._pooled_node(p, with_unit) for p in pooled), name, description))
+                              tuple(self._pooled_node(p) for p in pooled), name, description))
         return tuple(nodes)
 
-    def _set_node(self, ss: ScanSetRow, spectra, with_unit: bool) -> Node:
+    def _set_node(self, ss: ScanSetRow, spectra) -> Node:
         text, name, description, tip = self.container_presentation(f"set:{ss.key}")
         n, unread = len(ss.spectra), len(ss.unread)
         parsed_tones = [status_tone(PARSED, sp.parsed.word) for sp in ss.spectra]
@@ -588,7 +608,10 @@ class ScanListViewModel(ViewModel):
         cells = {
             "scan": Cell(text, tip),
             "T": _fact_cell(ss.temperature),
-            "Q": Cell(""),
+            "hkl": Cell(""),
+            "absq": Cell(""),
+            "gpi": _mark_cell(ss.gpi),
+            "rf": _mark_cell(ss.rf),
             "parsed": _summary_cell(ss.files_received - unread, ss.files_received, parsed_tones,
                                     "files received were read"),
             "fast": _coverage_cell(ss.spectra, FAST, self._current_map, self._marks, "analyzers"),
@@ -596,10 +619,10 @@ class ScanListViewModel(ViewModel):
             "slit": _fact_cell(ss.slit),
             "file": Cell(""),
         }
-        children = tuple(self._spectrum_node(sp, with_unit) for sp in spectra)
+        children = tuple(self._spectrum_node(sp) for sp in spectra)
         return Node(f"set:{ss.key}", "set", None, cells, children, name, description)
 
-    def _spectrum_node(self, sp: SpectrumRow, with_unit: bool, ss: ScanSetRow | None = None) -> Node:
+    def _spectrum_node(self, sp: SpectrumRow, ss: ScanSetRow | None = None) -> Node:
         """A spectrum row under its set (``ss`` is ``None``) or under its analyzer (``ss`` given)."""
         mine = self._marks.get(sp.key, {})
         removed = sp.key in self._removed
@@ -610,7 +633,10 @@ class ScanListViewModel(ViewModel):
         cells = {
             "scan": scan,
             "T": _fact_cell(ss.temperature) if ss is not None else Cell(""),
-            "Q": _fact_cell(sp.q, with_unit),
+            "hkl": _hkl_cell(sp.q),
+            "absq": _fact_cell(sp.q_abs, with_unit=False),
+            "gpi": _mark_cell(sp.gpi),
+            "rf": _mark_cell(sp.rf),
             "parsed": _status_cell(sp.parsed, PARSED),
             "fast": _status_cell(sp.fast, FAST, mine.get(FAST)),
             "deep": _status_cell(sp.deep, DEEP, mine.get(DEEP)),
@@ -620,7 +646,7 @@ class ScanListViewModel(ViewModel):
         }
         return Node(f"spec:{sp.key}", "spectrum", sp.key, cells, removed=removed)
 
-    def _analyzer_nodes(self, sets, with_unit: bool) -> list[Node]:
+    def _analyzer_nodes(self, sets) -> list[Node]:
         """The analyzer flip: one top row per analyzer, every scan set's spectrum beneath it."""
         everything: dict[str, list] = {}          # unfiltered, so the summaries do not follow the filter
         for ss in self._snapshot.sets:
@@ -634,12 +660,13 @@ class ScanListViewModel(ViewModel):
         for ana in sorted(shown, key=natural_key):
             all_sp = everything[ana]
             n = len(all_sp)
-            children = tuple(self._spectrum_node(sp, with_unit, ss) for ss, sp in
+            children = tuple(self._spectrum_node(sp, ss) for ss, sp in
                              sorted(shown[ana], key=lambda p: (natural_key(p[0].label), p[1].key)))
             text, name, description, tip = self.container_presentation(f"ana:{ana}")
             cells = {
                 "scan": Cell(text, tip),
-                "Q": Cell(""),
+                "hkl": Cell(""),
+                "absq": Cell(""),
                 "parsed": _summary_cell(sum(sp.parsed.stored for sp in all_sp), n,
                                         [status_tone(PARSED, sp.parsed.word) for sp in all_sp],
                                         "spectra read"),
@@ -655,8 +682,9 @@ class ScanListViewModel(ViewModel):
                     {"scan": Cell(f"{f.name} · {plain_reason(f.reason)}", f"{f.path}\n{f.reason}", Tone.ERR)})
 
     @staticmethod
-    def _pooled_node(p: PooledRow, with_unit: bool) -> Node:
-        cells = {"scan": Cell(p.label), "T": _fact_cell(p.temperature), "Q": _fact_cell(p.q, with_unit),
+    def _pooled_node(p: PooledRow) -> Node:
+        cells = {"scan": Cell(p.label), "T": _fact_cell(p.temperature), "hkl": _hkl_cell(p.q),
+                 "gpi": _mark_cell(p.gpi), "rf": _mark_cell(p.rf),
                  "fast": _status_cell(p.fast, FAST), "deep": _status_cell(p.deep, DEEP)}
         return Node(f"pool:{p.key}", "pooled", p.key, cells)
 
@@ -664,7 +692,7 @@ class ScanListViewModel(ViewModel):
     def save_view_state(self, session) -> None:
         session.view_state[_STATE_KEY] = {
             "columns": [c for c in OPTIONAL_COLUMNS if c in self._optional], "sort": self._sort,
-            "hidden": [c for c in RESULT_COLUMNS if c in self._hidden],      # not the auto-on ones: per experiment
+            "hidden": [c for c in AUTO_COLUMNS if c in self._hidden],      # not the auto-on ones: per experiment
             "show_removed": self._show_removed}
 
     def load_view_state(self, session) -> None:
@@ -675,7 +703,7 @@ class ScanListViewModel(ViewModel):
         optional = {c for c in cols if c in OPTIONAL_COLUMNS} if isinstance(cols, list) else self._optional
         sort = st.get("sort") if st.get("sort") in SORTS else self._sort
         off = st.get("hidden")
-        hidden = {c for c in off if c in RESULT_COLUMNS} if isinstance(off, list) else self._hidden
+        hidden = {c for c in off if c in AUTO_COLUMNS} if isinstance(off, list) else self._hidden
         show = st.get("show_removed")
         show_removed = show if isinstance(show, bool) else self._show_removed
         if optional != self._optional or sort != self._sort or hidden != self._hidden or show_removed != self._show_removed:

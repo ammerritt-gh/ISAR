@@ -31,7 +31,7 @@ STAND_IN_TIP = ("The fit runs with a stand-in instead of a measured value. Enter
 # Where a file fact was read from (FactRow.file_source).
 _SOURCE = {"header": "from the header", "trailer": "from the trailer", "sidecar": "from the sidecar",
            "filename": "from the file name", "card": "from the card", "inferred": "inferred",
-           "gpi": "from the gpi file"}
+           "gpi": "from the gpi file", "file": "from the file", "members": "mean of the pool's members"}
 
 # The remedy of an attention group, as a sentence naming what to press or do (backend action id -> text).
 FIX_PHRASE = {

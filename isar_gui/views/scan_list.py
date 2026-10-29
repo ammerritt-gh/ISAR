@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLab
                                QToolTip, QWidget)
 
 from isar_gui.selection import ORIGIN_LIST, ORIGIN_REFRESH, ORIGIN_STEP
-from isar_gui.theme import TONE_COLOR, Tone, dot_icon
+from isar_gui.theme import TONE_COLOR, Tone, dot_icon, state_icon
 from isar_gui.viewmodels.scan_list import (COLUMNS, OPTIONAL_COLUMNS, SORTS, TITLES,
                                            ScanListViewModel)
 
@@ -29,6 +29,7 @@ _KIND_ROLE = Qt.ItemDataRole.UserRole + 2
 _TONE_ROLE = Qt.ItemDataRole.UserRole + 3     # what the item's dot was drawn for
 _STALE_ROLE = Qt.ItemDataRole.UserRole + 4    # whether the item's word was drawn as out of date
 _REMOVED_ROLE = Qt.ItemDataRole.UserRole + 5  # whether the item's row was drawn as removed (greyed)
+_GOOD_ROLE = Qt.ItemDataRole.UserRole + 6     # what the item's check or cross was drawn for, or None
 _SORT_LABELS = {"set": "By scan set", "temperature": "By temperature", "analyzer": "By analyzer"}
 _HINT = "Select an analyzer row, then double-click it or press Open inspector."
 _HINT_NONE = "Select an analyzer row, or a scan-set row for all its analyzers, to open the inspector."
@@ -434,6 +435,7 @@ class ScanListPanel(QWidget):           # acts through the VM; asks the window o
         vm = self._vm
         self._sort_actions[vm.sort].setChecked(True)
         for column, action in self._column_actions.items():
+            action.setVisible(vm.column_present(column))          # gpi and rf exist only for some cards
             action.setChecked(column in vm.visible_columns())
         self._removed_button.setChecked(vm.show_removed)
         if self._filter.text() != vm.filter_text:
@@ -487,14 +489,21 @@ class ScanListPanel(QWidget):           # acts through the VM; asks the window o
             text = cell.text if cell else ""
             tip = (cell.tooltip or cell.text) if cell else ""
             tone = cell.tone if cell else None
+            good = cell.mark.good if cell and cell.mark else None
             stale = bool(cell and cell.stale)
             if item.text() != text:
                 item.setText(text)
             if item.toolTip() != tip:
                 item.setToolTip(tip)
-            if item.data(_TONE_ROLE) != tone:
+            if item.data(_TONE_ROLE) != tone or item.data(_GOOD_ROLE) != good:
                 item.setData(tone, _TONE_ROLE)
-                item.setIcon(dot_icon(tone) if tone is not None else QIcon())
+                item.setData(good, _GOOD_ROLE)
+                item.setIcon(dot_icon(tone) if tone is not None else state_icon(good) if good is not None
+                             else QIcon())
+            if column != "scan":          # the scan cell's accessible name is the node's, set above
+                access = cell.mark.text if cell and cell.mark else None
+                if item.data(Qt.ItemDataRole.AccessibleTextRole) != access:
+                    item.setData(access, Qt.ItemDataRole.AccessibleTextRole)
             if bool(item.data(_STALE_ROLE)) != stale or bool(item.data(_REMOVED_ROLE)) != node.removed:
                 item.setData(stale, _STALE_ROLE)           # the out-of-date mark: the word in the warning colour
                 item.setData(node.removed, _REMOVED_ROLE)  # a removed scan: its row greyed

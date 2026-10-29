@@ -251,7 +251,7 @@ def test_q_counts_and_the_other_rows_have_no_action_and_the_files_column_nothing
     rig = Rig(qtbot, ft_ws, A03)
     assert rig.titles() == ["temperature", "slit", "q", "counts", "analyzer"]
     # no hkl in set A's files: the file's |Q| in nm^-1 with its source, and the hover that says what is missing
-    q = rig.vm.snapshot.spectrum(A03).q                    # the scan list's own |Q|, read from the same files
+    q = rig.vm.snapshot.spectrum(A03).q_abs               # the scan list's own |Q|, read from the same files
     assert rig.text("q", "files") == f"{q.value:g} nm⁻¹\n(|Q|, header)" and q.unit == "nm⁻¹"
     assert rig.cell("q", "files").toolTip() == NO_HKL == "no hkl in the files: campaign planning needs it"
     assert rig.cell("q", "used").toolTip() == NO_HKL
