@@ -108,9 +108,11 @@ def _no_window_outlives_its_test(_isolated_user_dirs, _no_live_health_probes):
     """
     yield
     from PySide6.QtWidgets import QApplication
+    from shiboken6 import isValid
 
     for window in QApplication.topLevelWidgets():
-        if window.isVisible():
+        # closing one window can delete a later one in the list (a child window), so look again
+        if isValid(window) and window.isVisible():
             window.close()
 
 
