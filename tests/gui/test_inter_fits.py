@@ -17,7 +17,8 @@ def _refit(fit_id, batch, stage, **overrides):
 
 
 def _history():
-    lost = FlagInfo("serious", 4.1, 2.9, 1.2, (FlagReason("branch_lost_mid_window", "serious", "branch B, 3.2 meV"),))
+    lost = FlagInfo("serious", 4.1, 2.9, 1.2, (FlagReason("branch_lost_mid_window", "serious", "branch B, 3.2 meV"),),
+                    flagged=True)
     return make_history(_refit("f1", B1, "ring 1"),
                         _refit("f2", B1, "ring 2", changed=False),
                         _refit("f3", B2, "sweep 3", authoritative=True, flag=lost))

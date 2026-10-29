@@ -27,7 +27,7 @@ INTER = ("anchor", "flag", "lock", "inter")
 
 
 def _flag(severity: str, code: str, detail: str = "") -> FlagInfo:
-    return FlagInfo(severity, 4.1, 2.9, 1.2, (FlagReason(code, severity, detail),))
+    return FlagInfo(severity, 4.1, 2.9, 1.2, (FlagReason(code, severity, detail),), flagged=True)
 
 
 def _row(key, *, fit_id="fast", label="Fast solo", source="fast", flag=None, locked=False, locked_fit_id=None,
@@ -255,3 +255,15 @@ def test_the_filter_words_find_flagged_anchored_and_locked_spectra(made):
     assert vm.counts()[0] == 1
     vm.set_filter("locked")
     assert vm.counts()[0] == 1
+
+
+def test_a_fit_present_but_not_flagged_is_no_flag_cell_count_or_filter_hit(made):
+    """A refit whose only reason is the warn note release_fit_failed carries FlagInfo with flagged=False."""
+    panel, vm, inter = made
+    note = FlagInfo("warn", None, None, None, (FlagReason("release_fit_failed", "warn", ""),), flagged=False)
+    _publish(inter, revision="2", anchors=(A[3],), rows=[_row(A[4], flag=note)])
+    assert _cell(panel, f"spec:{A[4]}", "flag").text() == ""
+    assert _cell(panel, f"set:{KEY_A}", "flag").text() == ""
+    assert "flag" not in vm.visible_columns()
+    vm.set_filter("flagged")
+    assert vm.counts()[0] == 0

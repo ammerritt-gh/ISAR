@@ -241,6 +241,32 @@ def test_a_preview_that_finishes_after_a_newer_request_is_dropped(qtbot, state, 
     assert state.preview_for(a) is None
 
 
+def test_a_preview_that_raises_is_reported_and_a_later_request_retries(qtbot, state, overview, monkeypatch, tmp_path):
+    failing = {"on": True}
+    asked = []
+
+    def preview(root, req):
+        asked.append(req)
+        if failing["on"]:
+            raise ValueError("the fit log is unreadable")
+        return make_preview(line="1 anchor")
+
+    monkeypatch.setattr(reads, "batch_preview", preview)
+    state.bind(tmp_path)
+    qtbot.waitUntil(lambda: state.revision == "1", timeout=5000)
+    failed = []
+    state.preview_failed.connect(failed.append)
+    req = BatchRequest(kind="anchored", direction="q", anchors=(KEY,), selection=())
+    state.request_preview(req)
+    qtbot.waitUntil(lambda: failed == [req], timeout=5000)
+    assert state.preview_error_for(req) == "preview: ValueError: the fit log is unreadable"
+    assert ("preview", req) not in state._loading and state.preview_for(req) is None
+    failing["on"] = False
+    state.request_preview(req)
+    qtbot.waitUntil(lambda: state.preview_for(req) is not None, timeout=5000)
+    assert asked == [req, req]
+
+
 def test_a_refresh_calls_no_writer(qtbot, state, overview, monkeypatch, tmp_path):
     writes = []
     for name in ("set_anchors", "pick_fit", "set_lock", "save_settings"):

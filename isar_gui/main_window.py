@@ -93,6 +93,7 @@ from isar_gui.viewmodels import (
 )
 from isar_gui.viewmodels.campaign import CampaignViewModel
 from isar_gui.viewmodels.intake import IntakeState
+from isar_gui.viewmodels.inter_state import InterState
 from isar_gui.viewmodels.sandbox import SandboxViewModel
 from isar_gui.viewmodels.scan_list import ScanListViewModel
 from isar_gui.views.campaign_dock import CampaignDock
@@ -109,6 +110,7 @@ from isar_gui.views.experiment_strip import ExperimentStrip
 from isar_gui.views.files_dock import FilesDock
 from isar_gui.views.files_strip import FilesStrip
 from isar_gui.views.heatmap_pane import HeatmapPane
+from isar_gui.views.inter_settings_dialog import InterSettingsDialog
 from isar_gui.views.output_bar import OutputBar
 from isar_gui.views.processing_panel import ProcessingPanel, ProcessingRail
 from isar_gui.views.readiness_line import ReadinessLine
@@ -240,6 +242,8 @@ _ACTIVITY_VERBS = {"ingest": "Ingesting", "drive": "Campaign running", "compile"
                    "export": "Exporting"}
 _CORES_TIP = ("How many processor cores ISAR may use for analysis. A lower number takes effect as running "
               "analyzers finish; a deep pass that is already running keeps its cores until you stop it.")
+_INTER_SETTINGS_TIP = ("Penalties and tolerances for inter-spectra batches. They belong to this experiment; a batch "
+                       "records the settings it used, so a change affects only batches started afterwards.")
 
 
 def _sentence(text: str) -> str:
@@ -264,27 +268,43 @@ def _are(n: int, noun: str = "") -> str:
 
 def _leave_text(s, when: str) -> str:
     """What leaving the experiment now loses (design step 17), from the queue's ``LeaveSummary``."""
+    # The queue counts batches inside running and waiting; the analyzer files are what is left over.
+    n_run, n_wait = s.n_running - s.n_batches, s.n_waiting - s.n_batches_waiting
+    mixed = bool(s.n_batches or s.n_batches_waiting)       # then "analyzers" is said in full, never "are waiting" alone
     said = []
-    if s.n_running:
-        running = f"{_are(s.n_running, 'analyzer')} running"
+    if n_run:
+        running = f"{_are(n_run, 'analyzer')} running"
         if s.n_running_deep:
             minutes = int((s.longest_deep_s or 0.0) // 60)
             running += (f" (one deep pass, {minutes} min in)" if s.n_running_deep == 1
                         else f" ({s.n_running_deep} deep passes, the longest {minutes} min in)")
         said.append(running)
-    if s.n_waiting:
-        said.append(f"{_are(s.n_waiting) if s.n_running else _are(s.n_waiting, 'analyzer')} waiting")
+    if s.n_batches:
+        said.append(f"{_are(s.n_batches, 'inter-spectra batch')} running")
+    if n_wait:
+        said.append(f"{_are(n_wait) if n_run and not mixed else _are(n_wait, 'analyzer')} waiting")
+    if s.n_batches_waiting:
+        said.append(f"{_are(s.n_batches_waiting, 'inter-spectra batch')} waiting")
     if s.n_saving:
         said.append(f"{_are(s.n_saving, 'finished result')} being saved")
     text = (", ".join(said[:-1]) + " and " + said[-1] if len(said) > 1 else said[0]) + "."
     lost = []
-    if s.n_running:
-        lost.append("stops the running analyzer, discarding its work" if s.n_running == 1
+    if n_run:
+        lost.append("stops the running analyzer, discarding its work" if n_run == 1
                     else "stops the running analyzers, discarding their work")
-    if s.n_waiting:
+    if n_wait:
         lost.append("forgets the waiting ones")
     if lost:
         text += " Leaving " + (", and ".join(lost) if len(lost) > 1 else lost[0]) + "."
+    batch_lost = []
+    if s.n_batches:
+        batch_lost.append("stops the running batch after its current ring or sweep, keeping what it saved"
+                          if s.n_batches == 1 else
+                          "stops the running batches after their current rings or sweeps, keeping what they saved")
+    if s.n_batches_waiting:
+        batch_lost.append("forgets the waiting batch" if s.n_batches_waiting == 1 else "forgets the waiting batches")
+    if batch_lost:
+        text += " Leaving " + (", and ".join(batch_lost) if len(batch_lost) > 1 else batch_lost[0]) + "."
     if s.n_saving:
         text += f" Every finished result is saved {when}."
     return text
@@ -445,6 +465,8 @@ class MainWindow(QMainWindow):
         self.log_dock = LogDock(self)
         # The one Qt-side holder of the intake reads and writers (stage two); every intake panel reads it.
         self.intake = IntakeState(self)
+        # The inter-spectra state: one per window, beside the intake it writes through.
+        self.inter = InterState(self.intake, self)
         self._build_frame()
         self._bind_workspace(ws)
         self._bound = True
@@ -458,6 +480,7 @@ class MainWindow(QMainWindow):
         # exists, so the saved layout (or the default for this screen) is applied once and nothing
         # re-arranges when the first data arrives.
         self.scan_list_vm.load_view_state(self._session)
+        self.processing_panel.inter_box.load_view_state(self._session)
         self._restore_layout()
         self._sync_workspace_actions()
         QTimer.singleShot(0, self, self._surface_session_security_warnings)
@@ -578,6 +601,7 @@ class MainWindow(QMainWindow):
         self.scan_list_vm.set_workspace(self._ws)
         self.experiment_strip.set_experiment(root)
         self.intake.bind(root)
+        self.inter.bind(root)
         self._queue.bind(root, auto_fast=True if self._gui_store is None else self._gui_store.auto_fast_pass(),
                          keep_waiting=self._renaming)
         self.files_strip.bind(self.files_vm, root is not None)   # experiment_open
@@ -641,6 +665,7 @@ class MainWindow(QMainWindow):
         restore the persisted view + auto-follow, and make it the visible central page."""
         host = CenterHost(self)
         self.scans_page = ScansPage(self.scan_list_vm, self._ws, parent=self)
+        self.scans_page.set_inter(self.inter)
         host.add_page("scan", "Scan(s)", self.scans_page)
         host.add_page(
             "plane", "Plane (q, E)",
@@ -719,6 +744,7 @@ class MainWindow(QMainWindow):
         self.selection.active_changed.connect(self._on_selection_active)
         self.selection.changed.connect(self._on_selection_changed)
         self.scan_list_vm.set_intake(self.intake)
+        self.scan_list_vm.set_inter(self.inter)
         self.intake.changed.connect(lambda: self.scan_list_vm.on_workspace_changed(None))
         self.intake.worker_changed.connect(lambda: self.scan_list_vm.on_workspace_changed(None))
         self.setup_section = SetupSection(self.intake)
@@ -748,12 +774,14 @@ class MainWindow(QMainWindow):
                              if self._operations.has_campaign() else None),
             resolve_draft=self._resolve_dirty_card, show_scan=self._raise_inspector_if_auto, parent=self)
         self.processing_panel.set_controller(self._queue)
+        self.processing_panel.set_inter(self.inter, self.scan_list_vm)
         self.processing_rail.set_controller(self._queue)
         self.scan_list_vm.set_queue(self._queue)
         self._queue.log_line.connect(self.log)
         self._queue.auto_fast_changed.connect(self._on_auto_fast_changed)
         self._queue.changed.connect(self._push_run_row)
         self._queue.results_saved.connect(self._on_results_saved)
+        self._queue.results_saved.connect(lambda _keys: self.inter.reload())   # a batch's saves change its fits
         self._operations.set_writer_guard(self._campaign_refusal)
 
         self._group_shortcuts = []
@@ -841,6 +869,7 @@ class MainWindow(QMainWindow):
         for changed in (self.intake.changed, self.intake.worker_changed, self.scan_list_vm.snapshot_changed):
             changed.connect(self._push_run_row)
         self.intake.saved.connect(self.log)
+        self.inter.saved.connect(self.log)
         self.files_strip.paths_dropped.connect(self._on_paths_dropped)
         self.files_strip.log_message.connect(self.log)
         self._folder_watcher.status_changed.connect(self.files_strip.set_watch_status)
@@ -867,6 +896,7 @@ class MainWindow(QMainWindow):
         for signal in (self._export.progress, self._export.finished, self._export.failed):
             signal.connect(self._release_export_hold)
         self.processing_panel.run_requested.connect(lambda: self.start_analysis())
+        self.processing_panel.batch_requested.connect(self.start_inter_batch)
         self.processing_rail.toggled.connect(
             lambda: self.set_right_panel_collapsed(not self._right_panel_collapsed()))
         self._refresh_recents_menu()
@@ -1338,6 +1368,9 @@ class MainWindow(QMainWindow):
         for action in (self._new_workspace_menu_action, self._open_workspace_menu_action):
             action.setEnabled(not busy)
         self._rename_menu_action.setEnabled(self._wsm.root() is not None and not busy)
+        bound = self._wsm.root() is not None
+        self._inter_settings_action.setEnabled(bound)
+        self._inter_settings_action.setToolTip(_INTER_SETTINGS_TIP if bound else "Open an experiment first.")
         available, reason, strip_busy = self._availability()
         self._save_copy_menu_action.setEnabled(available)
         self.output_bar.set_available(available, available, reason)
@@ -1456,6 +1489,7 @@ class MainWindow(QMainWindow):
         self._stop_watch_bridge()
         self._folder_watcher.configure([], True, reset_binding=True)
         self.intake.wait_idle()                 # its reads hold files open in the folder (WinError 5)
+        self.inter.wait_idle()                  # the inter-spectra reads hold files open in it too
         self._renaming = True                   # the re-bind keeps the queue's waiting items
         try:
             renamed = self._wsm.rename(name)
@@ -1950,6 +1984,18 @@ class MainWindow(QMainWindow):
             return
         self._queue.fast_pass_all_ready()
 
+    def start_inter_batch(self, req) -> None:
+        """The Processing dock's batch Start. The queue re-reads the preview and refuses what cannot run now; a refusal
+        is said here, an accepted batch is logged by the queue."""
+        if not self._resolve_dirty_card("start an inter-spectra batch"):
+            return
+        ok, message = self._queue.start_inter_batch(req)
+        if not ok:
+            self._say(message)
+
+    def _open_inter_settings(self) -> None:
+        InterSettingsDialog(self.inter, self).exec()
+
     # ---- Config menu: machine-level settings (TAVI's form) --------------------
     def _init_config_menu(self) -> None:
         menu = self.menuBar().addMenu("&Config")
@@ -1957,6 +2003,8 @@ class MainWindow(QMainWindow):
         self._cores_action.setToolTip(_CORES_TIP)
         menu.setToolTipsVisible(True)
         self._cores_action.triggered.connect(self._ask_cores)
+        self._inter_settings_action = menu.addAction("Inter-spectra fitting settings…")
+        self._inter_settings_action.triggered.connect(self._open_inter_settings)
         scans_menu = menu.addMenu("Scan(s)")
         scans_menu.setToolTipsVisible(True)
         self._scans_display_actions = {}
@@ -2822,6 +2870,7 @@ class MainWindow(QMainWindow):
             self.scans_page.save_view_state(self._session)
         self.scan_list_vm.save_view_state(self._session)
         self._session.view_state["attention_list"] = {"expanded": self.attention_list.is_expanded()}
+        self.processing_panel.inter_box.save_view_state(self._session)
         # Persist the central view switcher (current page + auto-follow) alongside the other
         # view-state writes; restored on the next ready bind (default: Scan page, auto-follow on).
         if self._center_host is not None:

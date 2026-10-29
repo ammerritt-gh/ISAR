@@ -14,7 +14,8 @@ def _refit(fit_id, batch_id, batch_label, stage, **overrides):
 
 
 def _history():
-    lost = FlagInfo("serious", 4.1, 2.9, 1.2, (FlagReason("branch_lost_mid_window", "serious", "branch B, 3.2 meV"),))
+    lost = FlagInfo("serious", 4.1, 2.9, 1.2, (FlagReason("branch_lost_mid_window", "serious", "branch B, 3.2 meV"),),
+                    flagged=True)
     return make_history(_refit("f1", "b1", "Batch 1", "ring 1"),
                         _refit("f2", "b1", "Batch 1", "ring 2", changed=False),
                         _refit("f3", "b2", "Batch 2", "sweep 3", authoritative=True, flag=lost))
@@ -87,6 +88,13 @@ def test_info_line_is_elided_with_the_full_text_on_hover(qtbot):
     assert bar.info.full_text() == state.info
     assert bar.info.text() != state.info and bar.info.text().endswith("…")
     assert "not seen here" in bar.info.toolTip()
+
+
+def test_the_info_line_says_flagged_only_for_a_fit_on_the_review_list(qtbot):
+    note = FlagInfo("warn", None, None, None, (FlagReason("release_fit_failed", "warn", ""),), flagged=False)
+    bar = _bar(qtbot, bar_state(make_history(_refit("f1", "b1", "Batch 1", "ring 1", flag=note)), "f1"))
+    assert bar.info.full_text().startswith("Showing Batch 1 · ring 1")
+    assert "flagged" not in bar.info.full_text()
 
 
 def test_waterfall_reads_its_state_and_emits_only_on_a_user_click(qtbot):

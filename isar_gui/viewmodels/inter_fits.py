@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from isar.workspace_api.inter_spectra import FitEntry
+from isar.workspace_api.inter_spectra import FitEntry, is_flagged
 from isar_gui.inter_words import CONDITIONAL_ERRORS, ERRORS_UNAVAILABLE, SEVERITY_WORDS, reason_sentence
 
 
@@ -104,7 +104,7 @@ def _info(entry: FitEntry, locked: bool, drawn: str | None) -> tuple[str, str]:
         parts.append("locked")
     if entry.stale:
         parts.append("stale")
-    if entry.flag is not None:
+    if is_flagged(entry.flag):
         parts.append(f"flagged {SEVERITY_WORDS[entry.flag.severity]}")
     if not entry.errors_available:
         parts.append(ERRORS_UNAVAILABLE)

@@ -9,6 +9,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from gui.inter_helpers import assert_described
 from isar.workspace_api import Workspace
 from isar_gui.main_window import MainWindow
 from isar_gui.session import Session
@@ -57,6 +58,15 @@ def test_the_greyed_entry_point_says_why_beside_the_button_and_on_hover(qtbot, m
     panel.set_run_state(True, "Fast-pass all ready (4)", "")
     assert panel._run.isEnabled() and panel._run.full_text() == "Fast-pass all ready (4)" and panel._reason.isHidden()
     assert "fast pass" in panel._run.toolTip()
+
+
+def test_the_inter_spectra_starts_say_why_they_are_greyed_in_their_own_text(qtbot):
+    w = _win(qtbot)                                          # no experiment
+    box = w.processing_panel.inter_box
+    assert not box._start_anchored.isEnabled() and not box._start_simultaneous.isEnabled()
+    assert box._start_anchored.toolTip() == "Open an experiment first." == box._anchored_reason.text()
+    assert not box._anchored_reason.isHidden()
+    assert_described(box)                                    # every control in the box names itself and says what it does
 
 
 def test_the_experiment_strip_names_its_buttons_and_shows_why_rename_is_off(qtbot, tmp_path):

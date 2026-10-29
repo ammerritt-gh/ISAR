@@ -59,8 +59,8 @@ def qview(fast=(), deep=(), finished=(), **kw):
         return sum(1 for g in groups for i in g.items if i.status == state)
 
     base = dict(bound=True, fast=tuple(fast), deep=tuple(deep), finished=tuple(finished),
-                n_running={"fast": count(fast, "running"), "deep": count(deep, "running")},
-                n_waiting={"fast": count(fast, "waiting"), "deep": count(deep, "waiting")},
+                n_running={"fast": count(fast, "running"), "deep": count(deep, "running"), "inter": 0},
+                n_waiting={"fast": count(fast, "waiting"), "deep": count(deep, "waiting"), "inter": 0},
                 n_saving=count(fast, "saving") + count(deep, "saving"), n_look=0, paused=False, blocked=None,
                 cores=14, cores_in_use=5, service="ready", service_error=None)
     base.update(kw)
@@ -335,7 +335,8 @@ def test_the_footer_names_the_cores_menu_entry_as_the_menu_reads(qtbot):
 
 
 def test_the_paused_blocked_and_failed_banners(qtbot):
-    p = panel(qtbot, Stub(qview(paused=True, n_running={"fast": 2, "deep": 0}, n_waiting={"fast": 16, "deep": 0})))
+    p = panel(qtbot, Stub(qview(paused=True, n_running={"fast": 2, "deep": 0, "inter": 0},
+                                n_waiting={"fast": 16, "deep": 0, "inter": 0})))
     assert texts(p, "queue_banner_text") == ["Paused. 2 analyzers finishing; nothing new starts; 16 waiting."]
     blocked = panel(qtbot, Stub(qview(blocked="a campaign is running in this experiment")))
     assert texts(blocked, "queue_banner_text") == [
@@ -408,11 +409,12 @@ def test_the_rail_says_what_is_happening_and_what_needs_a_look(qtbot):
     qtbot.addWidget(rail)
     rail.set_controller(stub)
     assert rail.text() == "Processing ‹ · 1 running"
-    stub.set(qview(n_running={"fast": 5, "deep": 0}, n_waiting={"fast": 14, "deep": 0}, n_look=2))
+    stub.set(qview(n_running={"fast": 5, "deep": 0, "inter": 0}, n_waiting={"fast": 14, "deep": 0, "inter": 0},
+                   n_look=2))
     rail.refresh()
     assert rail.text() == "Processing ‹ · 5 running · 14 waiting · 2 need a look"
     assert "2 need a look" in rail.accessibleName() and "2 need a look" in rail.toolTip()
-    stub.set(qview(paused=True, n_waiting={"fast": 14, "deep": 0}, n_look=1))
+    stub.set(qview(paused=True, n_waiting={"fast": 14, "deep": 0, "inter": 0}, n_look=1))
     rail.refresh()
     assert rail.text() == "Processing ‹ · Paused · 14 waiting · 1 needs a look"
     stub.set(qview())

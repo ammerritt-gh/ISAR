@@ -16,7 +16,7 @@ from isar.workspace_api import ImportSummary
 from isar.workspace_api.spectra import NOT_JUDGED_TEXT, SpectraCache
 from isar.workspace_api.scan_list import (Fact, PooledRow, ScanListSnapshot, ScanSetRow, SpectrumRow,
                                           UnreadFile, natural_key, scan_list)
-from isar.workspace_api.inter_spectra import SpectrumInter
+from isar.workspace_api.inter_spectra import SpectrumInter, is_flagged
 from isar_gui import status_words
 from isar_gui.inter_words import COLUMN_TIPS, COLUMN_TITLES, SEVERITY_WORDS, reason_sentence
 from isar_gui.selection import ORIGIN_LIST, ORIGIN_OTHER, Selection
@@ -164,7 +164,7 @@ def _anchor_cell(anchored: bool) -> Cell:
 
 
 def _flag_cell(row: SpectrumInter | None) -> Cell:
-    if row is None or row.flag is None:
+    if row is None or not is_flagged(row.flag):
         return Cell("")
     flag = row.flag
     head = (f"Score {_score(flag.score)}: cost of coupling {_score(flag.cost_of_coupling)} plus the largest link "
@@ -334,7 +334,7 @@ class ScanListViewModel(ViewModel):
         row = self._inter_row(key)
         words = ["anchor"] if key in self._anchored() else []
         if row is not None:
-            words += (["flagged"] if row.flag is not None else []) + (["locked"] if row.locked else [])
+            words += (["flagged"] if is_flagged(row.flag) else []) + (["locked"] if row.locked else [])
             words += [row.label] if row.in_use else []
         return words
 
@@ -389,7 +389,7 @@ class ScanListViewModel(ViewModel):
                 and (c in queued or any(getattr(r, c).stored for r in rows))}
         anchored = self._anchored()
         states = [i for i in (self._inter_row(r.key) for r in rows) if i is not None]
-        lit = {"anchor": any(r.key in anchored for r in rows), "flag": any(s.flag is not None for s in states),
+        lit = {"anchor": any(r.key in anchored for r in rows), "flag": any(is_flagged(s.flag) for s in states),
                "lock": any(s.locked for s in states), "inter": any(s.in_use for s in states)}
         return auto | {c for c in INTER_COLUMNS if lit[c] and c not in self._hidden}
 
@@ -747,7 +747,7 @@ class ScanListViewModel(ViewModel):
         anchored = self._anchored()
         rows = [self._inter_row(sp.key) for sp in spectra]
         n = len(spectra)
-        severities = [r.flag.severity for r in rows if r is not None and r.flag is not None]
+        severities = [r.flag.severity for r in rows if r is not None and is_flagged(r.flag)]
         return {
             "anchor": _count_cell(sum(sp.key in anchored for sp in spectra), n, "are anchors"),
             "flag": _count_cell(len(severities), n, "are flagged for review",

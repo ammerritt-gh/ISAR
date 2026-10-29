@@ -155,7 +155,10 @@ class ScansPageViewModel(ViewModel):
         self.inter = inter
         if inter is not None:
             inter.changed.connect(self.refreshed)
-            inter.history_ready.connect(lambda _key: self.refreshed.emit())
+            inter.history_ready.connect(self._on_history_ready)   # a bound slot: Qt drops it with this page
+        self.refreshed.emit()
+
+    def _on_history_ready(self, _key):
         self.refreshed.emit()
 
     def choose_fit(self, fit_id):
