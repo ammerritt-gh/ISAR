@@ -434,3 +434,14 @@ def test_only_exchangeable_unmatched_modes_get_the_factorial():
     assert both._ln_exch(both.model(variant, (1,))) == 0.0                             # a delta and a DHO: none
     one = R._Labelled(spec.ctx, spec.fs, spec.slot_objects(("b1", None)), structures=STRUCT)
     assert one._ln_exch(one.model(variant, ())) == 0.0                                 # one unmatched: none
+
+
+def test_a_split_has_no_fast_comparison_without_a_one_to_one_partner():
+    true = [(8.0, 0.3, 30.0), (10.0, 0.3, 30.0)]
+    solo = [(9.0, 1.0, 4.0)]
+    snap = t_pair(spectrum(true, scale=0.08, seed=5), solo, ["fast:y#0"], true, ["b1", "b2"])
+    r = R.refit(replace(snap, fast=held("y", solo, ["fast:y#0"], T=200.0)), stage="both")
+    assert r.assignment.count == 2 and "neighbour_supported_split" in codes(r)
+    assert "linewidth_change" not in codes(r) and "overdamped_entry" not in codes(r)
+    assert r.delta_fast["omega0"] == {} and r.delta_fast["count"] == 1
+

@@ -882,21 +882,18 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
 
 
 def _fast_modes(fast: Held, ids, energy, *, exact_only: bool) -> dict[str, HeldMode]:
-    """Result branch id -> the fast solo's mode it descends from: the same id, else (the solo carries its
-    own ``fast:<unit>#i`` ids) the nearest free mode in energy, one-to-one."""
+    """Result branch id -> the fast solo's mode it descends from, one-to-one only: the same id, else (the
+    solo carries its own ``fast:<unit>#i`` ids) the same index when the count is unchanged. After a split
+    or merge the modes without a partner have no fast comparison."""
     by_id = {md.branch: md for md in fast.modes}
     out = {b: by_id[b] for b in ids if b in by_id}
-    if exact_only:
+    if exact_only or len(ids) != len(fast.modes):
         return out
-    free = [md for md in fast.modes if md.branch not in out]
-    pairs = sorted((abs(energy[m] - md.omega0), m, j) for m, b in enumerate(ids) if b not in out
-                   for j, md in enumerate(free))
-    done_m, done_j = set(), set()
-    for _d, m, j in pairs:
-        if m not in done_m and j not in done_j:
-            done_m.add(m)
-            done_j.add(j)
-            out[ids[m]] = free[j]
+    used = {md.branch for md in out.values()}
+    order = sorted(range(len(ids)), key=lambda m: energy[m])    # the solo's modes are in energy order
+    for m, md in zip(order, fast.modes):
+        if ids[m] not in out and md.branch not in used:
+            out[ids[m]] = md
     return out
 
 
