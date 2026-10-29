@@ -2,8 +2,8 @@
 amplitude rule; widths and energies declared), the v4 recipe as the legacy arm, and the mode
 energies ordered once."""
 import dataclasses
-import itertools
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -129,10 +129,14 @@ def test_unknown_parameter_is_refused():
 
 
 def test_provenance_records_the_empirical_bayes_quantity():
-    # re-pin (recipe /5): the provenance names the data-derived max count, as the ruling requires
+    # re-pin (recipe /6): the provenance names the data-derived max count, as the ruling requires,
+    # and the near-zero energy penalty it placed, in meV and at the resolution FWHM it read
     p = prior.recipe_provenance(_ctx(exposure_scale=np.ones(81), exposure_reference=2.0e5,
                                      exposure_source="time"))
-    assert p["version"] == prior.PRIOR_RECIPE_VERSION == "isar.mode-prior-recipe/5"
+    assert p["version"] == prior.PRIOR_RECIPE_VERSION == "isar.mode-prior-recipe/6"
+    assert p["energy_penalty"] == {"lo": EPS_OMEGA0, "hi": 10.0, "start": 1.0, "end": 0.25,
+                                   "ceiling": 7.5, "corner": 0.05, "fwhm_meV": 1.0}
+    assert p["settings"]["energy_ramp_ceiling"] == 7.5
     assert p["empirical_bayes"] is True and p["empirical_quantity"] == "max_count"
     assert p["max_count"] == 100.0 and p["height_hi"] == pytest.approx(120.0)
     assert p["settings"] == dataclasses.asdict(prior.PriorSettings())
@@ -144,59 +148,163 @@ def test_provenance_records_the_empirical_bayes_quantity():
     assert legacy["height_hi"] == pytest.approx(prior.AMPLITUDE_SCALE_PER_SECOND * 2.0e5)
 
 
-# --------------------------------------------------------------------------- ordered energies
-def _ordered_cells(n, lo, hi, m):
-    """Midpoint cells of [lo, hi]^n inside the ordered region e_1 < ... < e_n, with the share of
-    each cell that lies inside it (a cell whose indices tie in a run of k is 1/k! inside)."""
-    mids = lo + (np.arange(m) + 0.5) * (hi - lo) / m
-    cell = ((hi - lo) / m) ** n
-    for idx in itertools.combinations_with_replacement(range(m), n):
-        share = 1.0
-        for _, run in itertools.groupby(idx):
-            share /= math.factorial(len(list(run)))
-        yield tuple(mids[i] for i in idx), cell * share
+# --------------------------------------------------------------------------- the energy density
+def _ep(w, lo=EPS_OMEGA0, hi=20.0, **kw):
+    return prior.energy_prior(lo, hi, w, prior.PriorSettings(**kw))
 
 
-def test_ordered_prior_is_normalised_on_the_ordered_region():
-    lo, hi = -2.0, 5.0
-    for n, m in ((1, 1), (2, 120), (3, 40)):
-        total = sum(math.exp(prior.ordered_energy_log_prior(p, lo, hi)) * w
-                    for p, w in _ordered_cells(n, lo, hi, m))
-        assert total == pytest.approx(1.0, rel=1e-9)
+def _breakpoints(ep):
+    return [x for x in (ep.end - ep.corner, ep.end + ep.corner, ep.start - ep.corner,
+                        ep.start + ep.corner) if ep.lo < x < ep.hi]
+
+
+WINDOWS = ((1.0, EPS_OMEGA0, 20.0), (1.5, EPS_OMEGA0, 20.0), (0.8, EPS_OMEGA0, 0.9))
+
+
+def test_energy_prior_worked_examples():
+    # C-energy-prior's table (adaptive quadrature at planning): 0 at and above 1 FWHM, 10 nats per
+    # FWHM down to a 7.5-nat ceiling at 1/4 FWHM, each corner rounded over 0.05 FWHM.
+    ep = _ep(1.0)
+    assert [ep.penalty(e) for e in (0.1, 0.25, 0.5, 0.75, 1.0, 1.5)] == \
+        pytest.approx([7.5, 7.375, 5.0, 2.5, 0.125, 0.0], abs=1e-12)
+    assert ep.penalty(-3.0) == pytest.approx(7.5) and ep.penalty(40.0) == 0.0     # any real e
+    assert ep.ln_z == pytest.approx(2.9494946237, abs=1e-8)
+    assert ep.log_pdf(0.5) == pytest.approx(-7.94949462, abs=1e-8)
+    assert ep.log_pdf(1.5) == pytest.approx(-2.94949462, abs=1e-8)
+    assert list(ep.cdf([0.25, 0.5, 1.0])) == pytest.approx([7.2744e-6, 3.97334e-5, 5.1480102e-3],
+                                                          abs=1e-10)
+    assert prior.ordered_energy_log_prior([5, 9], ep) == pytest.approx(-5.20584207, abs=1e-8)
+    assert prior.ordered_energy_log_prior([0.5, 5], ep) == pytest.approx(-10.20584207, abs=1e-8)
+    wide = _ep(1.5)
+    assert wide.ln_z == pytest.approx(2.9255485675, abs=1e-8)
+    assert wide.log_pdf(0.75) == pytest.approx(-7.92554857, abs=1e-8)
+    short = _ep(0.8, hi=0.9)                                    # the window ends inside the ramp
+    assert short.ln_z == pytest.approx(-1.7313780752, abs=1e-8)
+    assert short.log_pdf(0.8) == pytest.approx(1.60637808, abs=1e-8)
+    assert float(short.cdf(0.4)) == pytest.approx(3.4280258e-3, abs=1e-10)
+    assert ep.log_pdf(EPS_OMEGA0 / 2) == ep.log_pdf(20.01) == -math.inf
+    assert ep.spec() == {"lo": EPS_OMEGA0, "hi": 20.0, "start": 1.0, "end": 0.25, "ceiling": 7.5,
+                         "corner": 0.05}
+
+
+def test_flat_energy_prior_is_recipe_5():
+    lo, hi = EPS_OMEGA0, 20.0
+    for ep in (prior.EnergyPrior.flat(lo, hi), _ep(1.0, energy_ramp_ceiling=0.0)):
+        for n in range(4):
+            e = list(np.linspace(1.0, 9.0, n))
+            assert prior.ordered_energy_log_prior(e, ep) == \
+                pytest.approx(math.lgamma(n + 1) - n * math.log(hi - lo), abs=1e-12)
+        u = np.array([0.0, 0.3, 1.0])
+        assert prior.ordered_energy_transform(u, ep) == \
+            pytest.approx(prior.ordered_energy_transform(u, prior.EnergyPrior.flat(lo, hi)))
+
+
+def test_the_ramp_is_validated():
+    with pytest.raises(ValueError):
+        prior.PriorSettings(energy_ramp_ceiling=-1.0)
+    with pytest.raises(ValueError):
+        prior.PriorSettings(energy_ramp_end_fwhm=0.05)          # end - corner must stay above 0
+    with pytest.raises(ValueError):
+        prior.PriorSettings(energy_ramp_start_fwhm=0.3)         # start - end < 2 corner
+    prior.PriorSettings(energy_ramp_ceiling=0.0, energy_ramp_corner_fwhm=0.0)   # off: not read
+    with pytest.raises(ValueError):
+        prior.energy_prior(EPS_OMEGA0, 20.0, 0.0, prior.PriorSettings())
+    with pytest.raises(ValueError):
+        prior.EnergyPrior(2.0, 1.0, 1.0, 0.25, 7.5, 0.05)
+
+
+def test_energy_density_is_normalised_on_each_window():
+    from scipy import integrate
+    for w, lo, hi in WINDOWS:
+        ep = _ep(w, lo, hi)
+        total = integrate.quad(lambda e: math.exp(ep.log_pdf(e)), lo, hi, points=_breakpoints(ep),
+                               epsabs=1e-13, epsrel=1e-13, limit=200)[0]
+        assert total == pytest.approx(1.0, abs=1e-10)
+    # N = 2: N! g(e1) g(e2) integrates to 1 over the ordered region e1 < e2 of a 3 meV window
+    ep = _ep(1.5, hi=3.0)
+    total = integrate.dblquad(
+        lambda e1, e2: math.exp(prior.ordered_energy_log_prior([e1, e2], ep)),
+        ep.lo, ep.hi, lambda e2: ep.lo, lambda e2: e2, epsabs=1e-11, epsrel=1e-11)[0]
+    assert total == pytest.approx(1.0, abs=1e-8)
+
+
+def test_cdf_and_ppf_invert_each_other():
+    for w, lo, hi in WINDOWS:
+        ep = _ep(w, lo, hi)
+        corners = [np.linspace(k - ep.corner, k + ep.corner, 401) for k in (ep.end, ep.start)]
+        e = np.clip(np.concatenate([np.linspace(lo, hi, 4001), *corners, [lo, hi]]), lo, hi)
+        assert np.max(np.abs(ep.ppf(ep.cdf(e)) - e)) <= 1e-10
+        u = np.concatenate([np.linspace(0.0, 1.0, 4001), *(ep.cdf(c) for c in corners),
+                            [0.0, 1e-15, 1.0 - 1e-15, 1.0]])
+        assert np.max(np.abs(ep.cdf(ep.ppf(u)) - u)) <= 1e-12
+        assert ep.ppf(0.0) == lo and ep.ppf(1.0) == hi
+
+
+def test_ordered_transform_samples_the_penalised_density():
+    from scipy import special, stats
+    ep = _ep(1.5, hi=3.0)                     # the ramp (below 1.5 meV) holds 9% of the mass
+    assert 0.05 < float(ep.cdf(ep.start)) < 0.5
+    flat = prior.EnergyPrior.flat(ep.lo, ep.hi)
+    rng = np.random.default_rng(11)
+    for n in (1, 3):
+        draws = np.array([prior.ordered_energy_transform(u, ep) for u in rng.random((20000, n))])
+        assert np.all(np.diff(draws, axis=1) >= 0.0) and draws.min() >= ep.lo
+        for k in range(1, n + 1):             # the k-th order statistic of n draws from g
+            law = lambda x, k=k, d=ep: special.betainc(k, n - k + 1, d.cdf(x))
+            assert stats.kstest(draws[:, k - 1], law).pvalue > 1e-3, (n, k)
+        # the test can fail: the same draws are far from the unpenalised law
+        unpenalised = lambda x, d=flat: special.betainc(1, n, d.cdf(x))
+        assert stats.kstest(draws[:, 0], unpenalised).pvalue < 1e-6
 
 
 def test_ordered_prior_counts_swapped_labels_once():
-    # The labelled flat prior is 1/W^N; the ordered density is N!/W^N: the factor appears once.
-    lo, hi = 0.0, 4.0
+    # The labelled prior is prod g(E_i); the ordered one is N! prod g(E_i): the factor appears once.
+    ep = _ep(1.0, hi=4.0)
     e = [0.5, 1.5, 3.0]
-    flat = -3 * math.log(hi - lo)
-    assert prior.ordered_energy_log_prior(e, lo, hi) == pytest.approx(flat + math.log(6.0))
+    labelled = sum(ep.log_pdf(v) for v in e)
+    assert prior.ordered_energy_log_prior(e, ep) == pytest.approx(labelled + math.log(6.0))
     for perm in ((0, 2, 1), (1, 0, 2), (2, 1, 0), (1, 2, 0), (2, 0, 1)):
-        assert prior.ordered_energy_log_prior([e[i] for i in perm], lo, hi) == \
-            prior.ordered_energy_log_prior(e, lo, hi)
+        assert prior.ordered_energy_log_prior([e[i] for i in perm], ep) == \
+            prior.ordered_energy_log_prior(e, ep)
+    assert prior.ordered_energy_log_prior([], ep) == 0.0
 
 
 def test_ordered_prior_outside_the_window_is_impossible():
-    assert prior.ordered_energy_log_prior([0.5, 4.5], 0.0, 4.0) == -math.inf
-    assert prior.ordered_energy_log_prior([-0.1, 1.0], 0.0, 4.0) == -math.inf
-
-
-def test_ordered_transform_gives_sorted_order_statistics():
-    rng = np.random.default_rng(7)
-    n, lo, hi = 3, -1.0, 3.0
-    draws = np.array([prior.ordered_energy_transform(u, lo, hi) for u in rng.random((20000, n))])
-    assert np.all(np.diff(draws, axis=1) >= 0.0) and draws.min() >= lo and draws.max() <= hi
-    # order statistics of n uniforms on [lo, hi]: E[e_(i)] = lo + (hi - lo) i / (n + 1)
-    expect = lo + (hi - lo) * np.arange(1, n + 1) / (n + 1)
-    assert draws.mean(axis=0) == pytest.approx(expect, abs=0.03)
-    # and the joint law matches the ordered density: P(e_(1) > t) = ((hi - t)/(hi - lo))^n
-    t = 0.5
-    assert (draws[:, 0] > t).mean() == pytest.approx(((hi - t) / (hi - lo)) ** n, abs=0.01)
+    ep = prior.EnergyPrior.flat(0.0, 4.0)
+    assert prior.ordered_energy_log_prior([0.5, 4.5], ep) == -math.inf
+    assert prior.ordered_energy_log_prior([-0.1, 1.0], ep) == -math.inf
 
 
 def test_ordered_transform_endpoints():
-    assert prior.ordered_energy_transform([0.0, 0.0], 1.0, 3.0) == pytest.approx([1.0, 1.0])
-    assert prior.ordered_energy_transform([1.0, 1.0], 1.0, 3.0) == pytest.approx([3.0, 3.0])
+    ep = _ep(1.0, lo=EPS_OMEGA0, hi=3.0)
+    assert prior.ordered_energy_transform([0.0, 0.0], ep) == pytest.approx([EPS_OMEGA0] * 2)
+    assert prior.ordered_energy_transform([1.0, 1.0], ep) == pytest.approx([3.0, 3.0])
+
+
+def test_laplace_is_accurate_for_a_well_determined_energy_in_the_ramp():
+    # Measured limit (STATS_PRIMER 2.1): a Gaussian likelihood times the penalised prior is not a
+    # Gaussian, so the fast pass's Laplace evidence errs for a poorly determined low mode (up to
+    # about 1.7 nats at sd = 1 FWHM). Asserted here only where it is promised: sd <= 0.05 FWHM
+    # agrees with quadrature to 0.05 nats across the ramp, corners included.
+    from scipy import integrate, optimize
+    ep = _ep(1.0)
+    pts = _breakpoints(ep)
+    for s in (0.02, 0.05):
+        for m in np.linspace(0.1, 1.5, 57):
+            f = lambda e: 0.5 * ((e - m) / s) ** 2 - ep.log_pdf(e)
+            grid = np.linspace(ep.lo, m + 10 * s + 2.0, 4001)
+            k = int(np.argmin([f(e) for e in grid]))
+            mode = optimize.minimize_scalar(f, bounds=(grid[max(k - 1, 0)], grid[k + 1]),
+                                            method="bounded", options={"xatol": 1e-12}).x
+            lap = prior.laplace_log_evidence(lambda t: f(t[0]), [mode], [ep.lo], [ep.hi])
+            a, b = max(ep.lo, m - 12 * s), m + 12 * s
+            inside = sorted(p for p in pts + [m] if a < p < b)
+            with warnings.catch_warnings():   # quad's roundoff note on the near-delta case
+                warnings.simplefilter("ignore", integrate.IntegrationWarning)
+                exact = math.log(integrate.quad(lambda e: math.exp(-f(e)), a, b, points=inside,
+                                                epsabs=0, epsrel=1e-11, limit=400)[0])
+            assert lap.status in ("ok", "ok_boundary")
+            assert abs(exact - lap.ln_z) <= 0.05, (s, m)
 
 
 # --------------------------------------------------------------------------- model-level ordering
@@ -238,7 +346,7 @@ def test_bundle_ordered_logpdf_adds_the_factorial_once_and_ignores_labels():
 
 def test_both_ordered_lanes_share_the_recipe_window():
     # Laplace (logpdf_ordered) and nested sampling (transform_ordered) must share the window the
-    # recipe bounds, [EPS_OMEGA0, x_max], so the N!/W^N normalisation is the same in each lane.
+    # recipe bounds, [EPS_OMEGA0, x_max], so the N! prod g normalisation is the same in each lane.
     names, bundle = _two_mode_bundle()
     top = 10.0
     i1, i2 = names.index("phonon.omega0"), names.index("phonon2.omega0")
@@ -256,8 +364,8 @@ def test_both_ordered_lanes_share_the_recipe_window():
 
 
 def test_bundle_ordered_transform_is_the_ordered_prior_and_keeps_the_evidence():
-    # A swap-symmetric likelihood has the same evidence under the flat labelled prior and under
-    # the ordered one: the sampler for the ordered prior must not lose or double any mass.
+    # A swap-symmetric likelihood has the same evidence under the labelled prior and under the
+    # ordered one: the sampler for the ordered prior must not lose or double any mass.
     names, bundle = _two_mode_bundle()
     i1, i2 = names.index("phonon.omega0"), names.index("phonon2.omega0")
     g = lambda e: np.exp(-0.5 * ((e - 2.0) / 0.5) ** 2) + np.exp(-0.5 * ((e - 6.0) / 0.5) ** 2)
@@ -265,12 +373,30 @@ def test_bundle_ordered_transform_is_the_ordered_prior_and_keeps_the_evidence():
     u = rng.random((40000, len(names)))
     ordered = np.array([bundle.transform_ordered(row) for row in u])
     assert np.all(ordered[:, i1] <= ordered[:, i2])
-    lo = np.array([p.lo for p in bundle.params])
-    hi = np.array([p.hi for p in bundle.params])
-    flat = lo + u * (hi - lo)
+    labelled = np.array([[p.ppf(v) for p, v in zip(bundle.params, row)] for row in u])
     z_ordered = (g(ordered[:, i1]) * g(ordered[:, i2])).mean()
-    z_flat = (g(flat[:, i1]) * g(flat[:, i2])).mean()
-    assert z_ordered == pytest.approx(z_flat, rel=0.06)
+    z_labelled = (g(labelled[:, i1]) * g(labelled[:, i2])).mean()
+    assert z_ordered == pytest.approx(z_labelled, rel=0.06)
+
+
+def test_the_bundle_and_the_fast_pass_price_one_prior():
+    # The deep pass and the campaign path (PriorBundle) and the fast pass (SpectrumPrior) must give
+    # the same log prior, the near-zero penalty included, or their evidences differ by a constant.
+    from isar.analyze import catalogue
+    comp = CompositeModel([PhononDHO(), PhononDHO(prefix="phonon2"), Elastic(),
+                           ConstantBackground()])
+    ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor",
+               gauss_fwhm=1.3)
+    names = comp.param_names()
+    bundle = catalogue.resolve_priors(comp, ctx, prior.mode_bounds(names, ctx))
+    sp = prior.resolve_prior_for(ctx)
+    omega = [p for p in bundle.params if p.name.endswith(".omega0")]
+    assert {(p.kind, p.origin) for p in omega} == {("energy_ramp", "default_energy")}
+    assert all(p.energy == sp.energy for p in omega)
+    for e1, e2 in ((0.4, 6.0), (1.2, 1.31), (7.0, 2.0)):
+        theta = dict(zip(names, [e1, 0.3, 50.0, e2, 0.4, 30.0, 80.0, 5.0]))
+        want = sp.ln_prior([(e1, 0.3, 50.0), (e2, 0.4, 30.0)], 80.0, 5.0)
+        assert bundle.logpdf_ordered(theta) == pytest.approx(want, abs=1e-10)
 
 
 def test_bundle_leaves_an_informative_energy_prior_alone():

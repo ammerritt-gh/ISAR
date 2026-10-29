@@ -1,6 +1,6 @@
-"""Prior recipe v5 (S1U3): every density is normalised, the k! normalisation of the ordered
-energies is right in the Laplace path, and the box-rule Laplace evidence prices a Gaussian that
-spreads beyond the prior's support (C-prior worked examples 1-8)."""
+"""Prior recipe v5 (S1U3), with recipe /6's penalised energies: every density is normalised, the
+k! normalisation of the ordered energies is right in the Laplace path, and the box-rule Laplace
+evidence prices a Gaussian that spreads beyond the prior's support (C-prior worked examples 1-8)."""
 import math
 
 import numpy as np
@@ -19,11 +19,13 @@ def test_every_arm_density_is_normalised_on_its_support():
     for name, s in SENSITIVITY_ARMS.items():
         if s.legacy_v4:
             continue
-        sp = resolve_prior([0, 3, 250, 7], np.linspace(-16, 20, 50), s)
+        sp = resolve_prior([0, 3, 250, 7], np.linspace(-16, 20, 50), s, fwhm=1.0)
         zw = quad(lambda g: math.exp(sp.ln_width(g)), 0, s.width_cap, limit=200)[0]
         zh = quad(lambda h: math.exp(sp.ln_height(h)), 0, sp.height_hi)[0]
         zb = quad(lambda b: math.exp(sp.ln_background(b)), 0, sp.background_hi)[0]
-        for z in (zw, zh, zb):
+        ze = quad(lambda e: math.exp(sp.ln_energies([e])), sp.e_lo, sp.e_hi,
+                  points=[0.2, 0.3, 0.95, 1.05], limit=200)[0]      # the penalty's breakpoints
+        for z in (zw, zh, zb, ze):
             assert z == pytest.approx(1.0, abs=1e-8), name
 
 
@@ -46,39 +48,40 @@ def test_legacy_arm_is_the_v4_recipe_in_the_height_coordinate():
     v5 = prior.resolve_prior_for(ctx).provenance()
     assert v5["empirical_bayes"] is True and v5["empirical_quantity"] == "max_count"
     with pytest.raises(ValueError, match="v4_height_hi"):             # counts alone cannot give it
-        resolve_prior([5.0], [1.0], PriorSettings(legacy_v4=True)).height_hi
+        resolve_prior([5.0], [1.0], PriorSettings(legacy_v4=True), fwhm=1.0).height_hi
 
 
 # --------------------------------------------------------------------------- worked examples 1-4
 def test_ex1_resolved_prior_values():
-    sp = resolve_prior([0, 3, 250, 7], np.linspace(-16, 20, 50))
+    sp = resolve_prior([0, 3, 250, 7], np.linspace(-16, 20, 50), fwhm=1.0)
     assert sp.max_count == 250 and sp.height_hi == pytest.approx(300.0) and sp.background_hi == 250
     assert sp.ln_height(100) == pytest.approx(-math.log(300.0))
     assert sp.ln_width(0) == pytest.approx(0.4867, abs=1e-4)
-    assert sp.ln_energies([5, 9, 14]) == pytest.approx(-7.1953, abs=1e-4)
+    # recipe /6: ln 3! - 3 ln Z, Z = 19.096 the penalised normaliser (/5: ln 3! - 3 ln W = -7.1953)
+    assert sp.ln_energies([5, 9, 14]) == pytest.approx(-7.0567, abs=1e-4)
 
 
 def test_ex2_max_count_is_at_the_reference_exposure():
-    sp = resolve_prior([10, 200], [1, 5], exposure_scale=[1, 0.8])
+    sp = resolve_prior([10, 200], [1, 5], fwhm=1.0, exposure_scale=[1, 0.8])
     assert sp.max_count == pytest.approx(250.0)
     with pytest.raises(ValueError, match="no finite counts"):
-        resolve_prior([np.nan, np.nan], [1, 5])
+        resolve_prior([np.nan, np.nan], [1, 5], fwhm=1.0)
     with pytest.raises(ValueError, match="no positive energy"):
-        resolve_prior([1, 2], [-5.0, -1.0])
+        resolve_prior([1, 2], [-5.0, -1.0], fwhm=1.0)
 
 
 def test_ex3_margin_arms_differ_by_the_stated_nats():
     e = np.linspace(-16, 20, 50)
     counts = [0, 3, 250, 7]
-    r, m3, m105 = (resolve_prior(counts, e, SENSITIVITY_ARMS[a]) for a in ("recipe", "margin_3",
-                                                                          "margin_1.05"))
+    r, m3, m105 = (resolve_prior(counts, e, SENSITIVITY_ARMS[a], fwhm=1.0)
+                   for a in ("recipe", "margin_3", "margin_1.05"))
     assert m3.ln_height(100) - r.ln_height(100) == pytest.approx(-math.log(3 / 1.2))
     assert m105.ln_height(100) - m3.ln_height(100) == pytest.approx(math.log(3 / 1.05))
     assert math.log(3 / 1.05) == pytest.approx(1.050, abs=1e-3)       # design 2.4's figure
 
 
 def test_ex4_a_delta_mode_carries_no_width_factor():
-    sp = resolve_prior([0, 3, 250, 7], np.linspace(-16, 20, 50))
+    sp = resolve_prior([0, 3, 250, 7], np.linspace(-16, 20, 50), fwhm=1.0)
     assert sp.ln_prior([(9.0, None, 100.0)], None, None) == pytest.approx(
         sp.ln_energies([9.0]) + sp.ln_height(100.0))
     assert sp.ln_prior([(9.0, 0.5, 100.0)], None, None) == pytest.approx(
@@ -107,9 +110,9 @@ def test_ex8_ordered_energy_prior_carries_k_factorial():
         mu = model(e1, e2)
         return float(np.sum(counts * np.log(mu) - mu - gammaln(counts + 1)))
 
-    sp = resolve_prior(counts, x, PriorSettings(energy_floor=w_lo, energy_cap=w_hi))
-    width = sp.e_hi - sp.e_lo
-    # brute force over the unordered square with flat 1/W^2 (both label copies included)
+    sp = resolve_prior(counts, x, PriorSettings(energy_floor=w_lo, energy_cap=w_hi), fwhm=1.0)
+    # brute force over the unordered square with the labelled prior g(e1) g(e2), g the penalised
+    # energy density (both label copies included)
     g = np.linspace(w_lo, w_hi, 1601)
     d = g[1] - g[0]
     g2 = h_true[1] * np.exp(-0.5 * (x[None, :] - g[:, None]) ** 2)
@@ -118,7 +121,9 @@ def test_ex8_ordered_energy_prior_carries_k_factorial():
         mu = b + h_true[0] * np.exp(-0.5 * (x - e1) ** 2) + g2
         ll[i] = np.sum(counts * np.log(mu) - mu, axis=1)
     ll -= np.sum(gammaln(counts + 1))
-    ln_z_grid = float(logsumexp(ll) + 2 * math.log(d) - 2 * math.log(width))
+    lg = np.array([sp.energy.log_pdf(e) for e in g])
+    ll += lg[:, None] + lg[None, :]
+    ln_z_grid = float(logsumexp(ll) + 2 * math.log(d))
     from scipy.optimize import minimize
     nlp = lambda th: -(ln_l(th[0], th[1]) + sp.ln_energies(th))
     th = minimize(nlp, [6.05, 11.95], method="Nelder-Mead",
@@ -126,8 +131,8 @@ def test_ex8_ordered_energy_prior_carries_k_factorial():
     lr = laplace_log_evidence(nlp, th, [w_lo, w_lo], [w_hi, w_hi])
     ln_z_no_kfact = lr.ln_z - math.log(2)
     assert lr.status == "ok"
-    assert lr.ln_z == pytest.approx(ln_z_grid, abs=0.02)             # -237.3786 vs -237.3789
-    assert abs(ln_z_no_kfact - ln_z_grid) > 0.6                      # -238.0720: k! is not optional
+    assert lr.ln_z == pytest.approx(ln_z_grid, abs=0.02)             # -237.2865 vs -237.2862
+    assert abs(ln_z_no_kfact - ln_z_grid) > 0.6                      # -237.9796: k! is not optional
 
 
 # --------------------------------------------------------------------------- the box rule
