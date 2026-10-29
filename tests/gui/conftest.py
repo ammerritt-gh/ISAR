@@ -95,6 +95,44 @@ def _collector_back_after_each_test():
 
 
 @pytest.fixture(autouse=True)
+def _collect_on_the_main_thread_only(request):
+    """No cyclic collection runs off the main thread while a GUI test runs.
+
+    A collection runs on whichever thread allocates when the threshold trips, and it finalizes
+    unreachable PySide6 wrappers there; a Qt object destroyed off the GUI thread corrupts the heap
+    ("Windows fatal exception: code 0xc0000374" / access violation, in whatever test happens to be
+    running). Under xdist every worker has the execnet receiver thread, which allocates on each
+    message, so the gate lost a worker about one run in two; measured with a ``gc.callbacks`` probe
+    over ``tests/gui -n 16``: collections started on execnet's ``Dummy-N`` threads (and, rarely, a
+    watchdog observer thread). Serial runs have no such thread, hence "parallel only". Production
+    covers its own threads with ``collector_guard``; this does the same for the harness's.
+
+    So the collector is off for the test and runs once on the main thread at the end, after the
+    windows are closed. A module that tests the collector itself sets ``COLLECTOR_UNDER_TEST = True``.
+    """
+    import gc
+
+    from isar_gui import collector_guard
+
+    if getattr(request.module, "COLLECTOR_UNDER_TEST", False):
+        yield
+        return
+
+    class Held:      # stands in for a thread, so collector_guard composes this hold with the GUI's own
+        alive = True
+
+        def is_alive(self):
+            return self.alive
+
+    held = Held()
+    collector_guard.hold(held)
+    yield
+    gc.collect()
+    held.alive = False
+    collector_guard.release()      # back on only when no GUI thread is still held
+
+
+@pytest.fixture(autouse=True)
 def _no_window_outlives_its_test(_isolated_user_dirs, _no_live_health_probes):
     """Close every top-level window a test left shown.
 

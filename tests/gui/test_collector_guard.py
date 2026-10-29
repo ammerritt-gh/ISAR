@@ -12,6 +12,8 @@ import pytest
 from isar import sandbox_api
 from isar_gui import collector_guard, health
 
+COLLECTOR_UNDER_TEST = True          # tests/gui/conftest.py keeps the collector off for other tests
+
 
 @pytest.fixture
 def collector_on():

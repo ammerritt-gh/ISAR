@@ -20,6 +20,8 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+COLLECTOR_UNDER_TEST = True          # tests/gui/conftest.py keeps the collector off for other tests
+
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QDialog, QFileDialog, QPushButton
 
