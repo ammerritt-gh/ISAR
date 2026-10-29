@@ -445,3 +445,14 @@ def test_a_split_has_no_fast_comparison_without_a_one_to_one_partner():
     assert "linewidth_change" not in codes(r) and "overdamped_entry" not in codes(r)
     assert r.delta_fast["omega0"] == {} and r.delta_fast["count"] == 1
 
+
+def test_the_objective_reported_includes_the_soft_constraint_once():
+    soft = ParamConstraints(soft={"phonon.omega0": (8.6, 0.1)})
+    modes = [(8.0, 0.4, 40.0)]
+    r = R.refit(t_pair(spectrum(modes, seed=8, constraints=soft), modes, ["b1"], modes, ["b1"]), stage="both")
+    assert r.status in ("accepted", "unchanged")
+    z = ((r.energies["b1"] - 8.6) / 0.1) ** 2
+    assert z > 1.0                                              # the pull is live
+    # the block's J is D + every penalty + the soft square; unary must carry the square, not drop it
+    assert r.unary >= z - 1e-9
+    assert r.J == pytest.approx(r.D + sum(r.P.values()) + r.unary, rel=1e-9, abs=1e-9)

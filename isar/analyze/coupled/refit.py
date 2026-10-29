@@ -791,7 +791,8 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
 
     # objective breakdown at the solution
     D, J = eng.cost(model, theta), eng.J(model, theta)
-    P, U, unary = {}, {}, 0.0
+    P, U = {}, {}
+    unary = sum(((theta[i] - mu) / sd) ** 2 for i, mu, sd in model.soft)   # J counts the soft squares once
     for tid, p, _sign in eng.penalty_terms(model, theta):
         if tid.startswith(("entry:", "ramp:")):
             unary += p
