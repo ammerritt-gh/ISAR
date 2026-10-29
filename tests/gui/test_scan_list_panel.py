@@ -162,7 +162,7 @@ def test_default_and_optional_columns(qtbot, monkeypatch, sample):
 def test_a_missing_value_is_a_dash_with_its_reason(qtbot, monkeypatch, sample):
     panel, vm, _ = _make(qtbot, monkeypatch, sample)
     hkl = _model_item(panel, f"spec:{A[5]}", "hkl")
-    assert hkl.text() == "—" and hkl.toolTip() == "no hkl in the file"
+    assert hkl.text() == "" and hkl.toolTip() == "no hkl in the file"
     absq = _model_item(panel, f"spec:{A[5]}", "absq")
     assert absq.text() == "—" and absq.toolTip() == "not in the file"
     assert _model_item(panel, f"spec:{A[5]}", "parsed").text() == "no Q"

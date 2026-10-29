@@ -104,8 +104,8 @@ def _fact_cell(fact: Fact, with_unit: bool = True) -> Cell:
 def _hkl_cell(fact: Fact) -> Cell:
     """The hkl in r.l.u. (the header says so); the tooltip names its source in the file's words."""
     text = _fact_text(fact, with_unit=False)
-    if text is None:
-        return Cell(_DASH, fact.reason or "not available")
+    if text is None:                  # no hkl is blank, the reason on the hover (the design's rule)
+        return Cell("", fact.reason or "not available")
     return Cell(text, f"{text} r.l.u. ({source_words(fact.source)})")
 
 

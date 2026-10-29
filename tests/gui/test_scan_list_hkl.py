@@ -110,7 +110,7 @@ def test_a_rejected_gpi_file_blanks_every_hkl_and_crosses_every_analyzer_and_the
     ss, spectra = _rows(vm)
     for sp in spectra.values():
         hkl = _item(panel, f"spec:{sp.key}", "hkl")
-        assert hkl.text() == "—" and hkl.toolTip() == sp.q.reason
+        assert hkl.text() == "" and hkl.toolTip() == sp.q.reason
         gpi = _item(panel, f"spec:{sp.key}", "gpi")
         assert _is(gpi, False) and gpi.data(ACCESS) == "gpi: not used"
     assert _is(_item(panel, f"set:{ss.key}", "gpi"), False)
@@ -165,7 +165,7 @@ def test_a_pool_of_agreeing_members_shows_their_mean_and_one_whose_members_diffe
 
     vm, panel = _panel(qtbot, _tavi(tmp_path / "differ", member_q=((2.0, 0.0, 0.0), (2.0, 0.5, 0.0))))
     pool = _item(panel, "pool:tavi:900:det", "hkl")
-    assert pool.text() == "—" and pool.toolTip() == "the members' hkl differ"
+    assert pool.text() == "" and pool.toolTip() == "the members' hkl differ"
     assert _item(panel, "spec:tavi:12:det", "hkl").text() == "2, 0.5, 0"    # each member keeps its own
 
 
