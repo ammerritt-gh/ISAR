@@ -17,7 +17,7 @@ from pathlib import Path
 from isar.analyze import gold as gold_mod
 from isar.report import fit_figures
 from isar.report.findings import FindingsDoc
-from isar.session.inter_spectra import authority, records as inter_records
+from isar.session.inter_spectra import authority
 from isar.workspace_api.inter_spectra import inter_overview, is_flagged
 
 
@@ -47,9 +47,7 @@ def _triage_rows(session, card, workspace):
             if a is None or a.line is None:
                 rows.append((e.scan_number, det, e.status, oc, label, None))
                 continue
-            overlay = (inter_records.read_payload(workspace.root, a.line) or {}).get("overlay") or {}
-            # the solo fit's interval and prior do not describe the refit; the overlay's own interval, if any, does
-            drawn = {**a.outcome, "interval": overlay.get("interval"), "prior_used": None}
+            drawn = {**a.outcome, "prior_used": None}           # the solo prior does not describe the refit
             flagged = e.scan_id in ov and is_flagged(ov[e.scan_id].flag)
             rows.append((e.scan_number, det, e.status, drawn, label,
                          "flagged" if flagged else fit_figures.INTER_FIT_DISPOSITION))

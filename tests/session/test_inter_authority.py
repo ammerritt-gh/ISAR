@@ -186,6 +186,14 @@ def test_solo_verdict_keys_are_real_fitoutcome_fields_and_none_leaks():
     assert out["detector_id"] == "solo-detector_id" and solo["verdict"] == "solo-verdict"   # the rest kept; input intact
 
 
+def test_an_overlay_key_it_lacks_is_none_never_the_solo_fits_value():
+    solo = {"interval": [4.8, 5.0, 5.2], "best_label": "solo label", "omega0": 4.9, "fast_pass": {"state": "x"}}
+    out = authority.overlay_outcome(solo, {"omega0": 3.5})                  # no interval, no best_label
+    assert out["omega0"] == 3.5
+    assert out["interval"] is None and out["best_label"] is None and out["fast_pass"] is None
+    assert solo["interval"] == [4.8, 5.0, 5.2]                              # input intact
+
+
 # ---------------------------------------------------------------------------
 # effective(), on the fixture workspace
 # ---------------------------------------------------------------------------
