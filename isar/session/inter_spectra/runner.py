@@ -371,7 +371,7 @@ class _Run:
             for k in set(spec.members) - scope:
                 self.not_reached[k] = "unknown to the import record"
         qc = q_provider.q_coordinates(self.root, scope)        # a module attribute: a timing tool may supply its own
-        self.epochs = {**{scan: src for scan, (_cell, src) in qc.lattices.items()},
+        self.epochs = {**{scan: label for scan, (_cell, label) in qc.lattices.items()},
                        **{k.rsplit(":", 1)[0]: why for k, why in qc.reasons.items()
                           if why not in ("no accepted hkl", "unknown spectrum")}}
         self.graph = build_graph(ns.nodes, ns, scope=scope, kinds=kinds, grid=grid_for(frozen.card.policy.plugin),

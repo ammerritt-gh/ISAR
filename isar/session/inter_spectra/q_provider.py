@@ -30,7 +30,7 @@ class QPoint:
 class QCoordinates:
     points: dict[str, QPoint]                    # spectrum key -> point; only spectra with an accepted hkl
     reasons: dict[str, str]                      # every requested key without a point -> why
-    lattices: dict[str, tuple[tuple[float, float, float, float, float, float], str]]   # scan -> ((a, b, c, alpha, beta, gamma), epoch source)
+    lattices: dict[str, tuple[tuple[float, float, float, float, float, float], str]]   # scan -> ((a, b, c, alpha, beta, gamma), "lattice epoch v<version>")
 
 
 def _cell(epoch: dict) -> tuple[float, float, float, float, float, float] | None:
@@ -82,10 +82,11 @@ def q_coordinates(root, keys: Collection[str]) -> QCoordinates:
             if ep is not None and cell is None:
                 log.warning("q provider: the lattice epoch of %s is not a valid cell (%s); its spectra get no q",
                             scan, ep.get("lattice"))
-            scan_epoch[scan] = (ep, cell)
+            label = None if ep is None else f"lattice epoch v{ep.get('version')}"
+            scan_epoch[scan] = (ep, cell, label)
             if cell is not None:
-                lattices[scan] = (cell, ep.get("source"))
-        ep, cell = scan_epoch[scan]
+                lattices[scan] = (cell, label)
+        ep, cell, label = scan_epoch[scan]
         if ep is not None and cell is None:
             reasons[key] = INVALID_CELL
             continue
@@ -102,6 +103,6 @@ def q_coordinates(root, keys: Collection[str]) -> QCoordinates:
         cart = epoch = None
         if cell is not None:
             cart = tuple(hkl_to_q(SampleState(*cell), *q)["q_inv_angstrom"])
-            epoch = f"lattice epoch v{ep.get('version')}"
+            epoch = label
         points[key] = QPoint(hkl=tuple(float(x) for x in q), source=source, cart=cart, epoch=epoch)
     return QCoordinates(points=points, reasons=reasons, lattices=lattices)

@@ -38,7 +38,7 @@ def test_a_cubic_epoch_gives_the_true_reciprocal_spacing(tmp_path):
     step = math.dist(qc.points[f"{scan}:a03"].cart, qc.points[f"{scan}:a04"].cart)
     assert step == pytest.approx(0.1 * 2 * math.pi / 4)                    # 0.1571 1/A
     assert qc.points[f"{scan}:a04"].epoch == "lattice epoch v1"
-    assert qc.lattices == {scan: ((4.0, 4.0, 4.0, 90.0, 90.0, 90.0), "test")}
+    assert qc.lattices == {scan: ((4.0, 4.0, 4.0, 90.0, 90.0, 90.0), "lattice epoch v1")}
 
 
 def test_a_hexagonal_epoch_gives_spacings_in_the_ratio_root_three(tmp_path):
@@ -82,3 +82,13 @@ def test_each_scan_takes_the_epoch_in_force_for_its_own_scan(tmp_path):
         step = math.dist(qc.points[f"{scan}:a03"].cart, qc.points[f"{scan}:a04"].cart)
         assert step == pytest.approx(0.1 * 2 * math.pi / a)
         assert qc.points[f"{scan}:a04"].epoch == f"lattice epoch v{version}"
+        assert qc.lattices[scan][1] == f"lattice epoch v{version}"
+
+
+def test_an_epoch_without_a_source_still_names_its_version(tmp_path):
+    root = workspace_with_gpi(tmp_path, {STEM: HKL})
+    ep = epoch(3, a=4.0)
+    del ep["source"]
+    set_epochs(root, ep)
+    qc = q_coordinates(root, spectrum_keys(root))
+    assert [label for _cell, label in qc.lattices.values()] == ["lattice epoch v3"]
