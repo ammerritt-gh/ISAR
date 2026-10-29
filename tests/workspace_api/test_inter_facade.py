@@ -61,7 +61,7 @@ def _refit(unit, fit, h, *, status="accepted", flag=None, why=None, cond=(), ove
                         if overlay else None}}
 
 
-def save(root, batch, refits, *, stage="ring", index=1, seams=(), end=None, start=True):
+def save(root, batch, refits, *, stage="ring", index=1, seams=(), end=None, start=True, drift=None):
     """Start (optionally), one stage and (optionally) the end of a batch, through the real writer."""
     body = {"batch_kind": "anchored", "scope": {"direction": "q", "members": sorted({r["unit"] for r in refits})},
             "anchors": [], "rings": {}, "seams": [], "settings": {"version": 1, "values": {}}, "preview": "t",
@@ -74,7 +74,7 @@ def save(root, batch, refits, *, stage="ring", index=1, seams=(), end=None, star
     if end:
         payloads.append(_payload(batch, "end", {"state": end, "reason": "sweep cap" if end == "did_not_settle" else None,
                                                 "done": len(refits), "failed": 0, "not_reached": [], "rings_done": 1,
-                                                "sweeps": None, "rounds": None, "timing": {}}))
+                                                "sweeps": None, "rounds": None, "timing": {}, "drift": drift}))
     out = writer.save_inter(root, payloads)
     assert all(isinstance(v, dict) for v in out), out
     return out
@@ -138,6 +138,23 @@ def test_a_batch_that_did_not_settle_flags_its_refits_serious_and_ends_the_summa
     o = inter_overview(root)
     assert [(r.code, r.severity) for r in o.by_key[k1].flag.reasons] == [("did_not_settle", "serious")]
     assert o.by_key[k1].label == "Batch 1 · sweep 3" and o.batches[0].status == "did_not_settle"
+
+
+def test_a_cumulative_drift_flags_the_drifting_spectra_only(root):
+    """The batch end's drift report (the runner's drift_report over the final fits) reaches the flag of each
+    spectrum on a flagged segment, flagged on its own; a spectrum on an unflagged segment gets nothing."""
+    k1, k2 = spectrum_keys(root)[:2]
+    h = _hashes(root, [k1, k2])
+    drift = {"segments": [{"analyzer": "s|a03", "branch": "p", "units": [k1, "other"], "flagged": True,
+                           "dE": 4.0, "dT": 100.0, "U": 96.0},
+                          {"analyzer": "s|a04", "branch": "q", "units": [k2, "other"], "flagged": False,
+                           "dE": 0.1, "dT": 100.0, "U": 0.1}],
+             "flags": {"t_drift_cumulative": {"severity": "warn", "units": [k1, "other"], "ids": [], "values": []}}}
+    save(root, B1, [_refit(k1, F1, h[k1]), _refit(k2, F2, h[k2])], stage="sweep", end="settled", drift=drift)
+    o = inter_overview(root)
+    (reason,) = o.by_key[k1].flag.reasons
+    assert (reason.code, reason.severity) == ("t_drift_cumulative", "warn") and "+4.00 meV over 100 K" in reason.detail
+    assert o.by_key[k1].flag.flagged and o.by_key[k2].flag is None
 
 
 def test_a_flag_shows_the_two_parts_of_its_score(root):

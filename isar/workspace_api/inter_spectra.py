@@ -171,7 +171,8 @@ def _load(root, only: str | None = None) -> _Ctx:
 
 def _added_reasons(log: records.InterLog, stages: Mapping[tuple, list], line: records.RefitLine) -> list[FlagReason]:
     """The reasons the facade adds on its own, whatever the refit's score: a seam disagreement its ring or sweep
-    measured, and a batch that did not settle. Each puts the refit on the review list."""
+    measured, a batch that did not settle, and a cumulative T drift its batch's end measured along a branch
+    through this spectrum. Each puts the refit on the review list."""
     out = []
     for st in stages.get((line.batch, line.stage, line.index), ()):
         for seam in st.seams:
@@ -181,6 +182,13 @@ def _added_reasons(log: records.InterLog, stages: Mapping[tuple, list], line: re
     info = log.batches.get(line.batch)
     if info is not None and info.end and info.end.get("state") == "did_not_settle":
         out.append(FlagReason("did_not_settle", "serious", info.end.get("reason") or ""))
+    drift = ((info.end or {}).get("drift") if info is not None else None) or {}
+    segs = [s for s in drift.get("segments") or () if s.get("flagged") and line.unit in (s.get("units") or ())]
+    if segs:
+        sev = ((drift.get("flags") or {}).get("t_drift_cumulative") or {}).get("severity", "warn")
+        out.append(FlagReason("t_drift_cumulative", sev, "; ".join(
+            f"branch {s.get('branch')}: {s.get('dE', 0.0):+.2f} meV over {s.get('dT', 0.0):.0f} K (U {s.get('U', 0.0):.3g})"
+            for s in segs)))
     return out
 
 

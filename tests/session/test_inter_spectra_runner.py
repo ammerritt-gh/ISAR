@@ -296,6 +296,19 @@ def test_a_simultaneous_batch_settles_gauss_seidel_on_one_frozen_stage_1(tmp_pat
     assert bench.end().status == "done"
 
 
+def test_a_cumulative_drift_reaches_the_drifting_spectra_flags(tmp_path):
+    """x, y, z hold 4, 6 and 9 meV on one branch from 100 to 200 K (the keep toy never moves them): the end's
+    drift report flags the segment, and the read facade shows t_drift_cumulative on each of the three."""
+    from isar.workspace_api.inter_spectra import inter_overview
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"},) * 3)
+    spec = _simultaneous(ws, (x, y, z))
+    end = Bench(ws).run(spec).batches[spec.batch_id].end
+    assert end["drift"]["flags"]["t_drift_cumulative"]["units"] == sorted((x, y, z))
+    o = inter_overview(ws)
+    for u in (x, y, z):
+        assert "t_drift_cumulative" in [r.code for r in o.by_key[u].flag.reasons] and o.by_key[u].flag.flagged
+
+
 def test_a_batch_that_cannot_settle_ends_at_the_cap_and_keeps_its_results(tmp_path):
     ws, x, y, z = _chain(tmp_path, ({"toy": "oscillate"}, {"toy": "keep"}, {"toy": "keep"}))
     assert inter_values.save_settings(ws, {"sweep_cap": 4}).ok
