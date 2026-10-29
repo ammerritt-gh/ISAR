@@ -642,13 +642,15 @@ def case_latest(ctx: Ctx):
         raise Skip("a release exists; the latest installer is tested after the first release")
     latest = ctx.copy_script("WINDOWS-install-ISAR-latest.bat")
     prof = Profile(ctx.root / SPACED / "latest")
+    # Windows PowerShell writes this cache for any -NonInteractive run; nothing broader is ignored.
+    ps_cache = os.path.join("AppData", "Local", "Microsoft", "Windows", "PowerShell", "StartupProfileData-NonInteractive")
     before = sha_tree(prof.home)
     res = ctx.script(prof, latest, ["/yes"], "latest")
     expect(res, 2, None)
     if "release" not in res.text.lower():
         raise Fail("the end screen does not say that no release exists")
-    after = {k: v for k, v in sha_tree(prof.home).items() if "ISAR" + os.sep + "logs" not in k and "ISAR-logs" not in k}
-    assert_unchanged({k: v for k, v in before.items() if "ISAR-logs" not in k}, after, "the temporary profile")
+    after = {k: v for k, v in sha_tree(prof.home).items() if "ISAR" + os.sep + "logs" not in k and "ISAR-logs" not in k and k != ps_cache}
+    assert_unchanged({k: v for k, v in before.items() if "ISAR-logs" not in k and k != ps_cache}, after, "the temporary profile")
 
 
 CASES = [("refuse-paths", case_refuse_paths), ("fresh", case_fresh), ("launcher", case_launcher),
