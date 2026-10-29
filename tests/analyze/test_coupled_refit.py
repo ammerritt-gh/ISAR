@@ -360,6 +360,17 @@ def test_the_prior_cap_is_an_entry_edge_only_where_it_is_the_observation_edge():
     assert edge.entry.B(edge.hi) == 0.0 and edge.d_edge(edge.hi) == 0.0
 
 
+def test_a_near_tied_exchange_prices_but_a_clear_association_stays_skipped():
+    own = [(9.0, 0.4, 40.0), (9.4, 0.4, 40.0)]
+    near = t_pair(spectrum(own, seed=3), own, ["b1", "b2"], [(9.1, 0.4, 40.0), (9.3, 0.4, 40.0)], ["b1", "b2"])
+    spec = R._Spec(near)                              # the incoming association is the cheapest; the exchange is not far
+    assert spec.triggers == ("c:close_association",) and spec.counts == (2,)
+    assert R.assign_jobs(near)[0] is None
+    apart = [(9.0, 0.4, 40.0), (14.0, 0.4, 40.0)]
+    clear = t_pair(spectrum(apart, seed=3), apart, ["b1", "b2"], [(9.1, 0.4, 40.0), (13.9, 0.4, 40.0)], ["b1", "b2"])
+    assert R._Spec(clear).triggers == () and R.assign_jobs(clear)[0].discrete == "skipped"
+
+
 def test_only_exchangeable_unmatched_modes_get_the_factorial():
     two = [(5.0, 0.4, 40.0), (12.0, 0.4, 40.0)]
     spec = R._Spec(t_pair(spectrum(two, seed=3), two, ["fast:y#0", "fast:y#1"], [(8.0, 0.4, 40.0)], ["b1"]))

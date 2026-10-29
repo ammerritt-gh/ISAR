@@ -286,11 +286,19 @@ class _Spec:
             return None
         return {int(k): float(v) for k, v in probs.items() if v is not None}
 
-    def _cheapest_at_incoming(self):
+    def _association_gap(self) -> float:
+        """Cheapest other association's cost minus the incoming one's (deviance): negative when another is
+        cheaper, within ``2 * close_call_nats`` when it is a close call (match_link's orders carry the
+        exchanged ones), -inf when the incoming identity is invalid (ambiguous)."""
+        s = self.snap.settings
         local = self._obs([(m.omega0, m.gamma, m.height) for m in self.own.modes])
         out = match_link(local, self.pool, lambda m, b: self.cost(local[m].omega0, b), incoming=self.incoming,
-                         keep=1, close=0.0)
-        return min(out["proposals"], key=lambda p: (p["cost"], p["source"] != "incoming"))["slots"]
+                         keep=s.composition_limit, close=s.close_call_nats)
+        inc = next((p for p in out["proposals"] if p["source"] == "incoming"), None)
+        if inc is None:
+            return -math.inf
+        others = [o["cost"] for p in out["proposals"] for o in p["orders"] if tuple(o["slots"]) != self.incoming]
+        return min(others, default=math.inf) - inc["cost"]
 
     def _trigger_filter(self):
         s, trig, counts = self.snap.settings, [], {self.n0}
@@ -303,9 +311,12 @@ class _Spec:
         if any(self.d_edge(self.own.modes[m].omega0) >= self.band for m in unsupported):
             trig.append("b:unmatched_mid_window")
             b_fired = True
-        if self.pool and self.n0 and tuple(self._cheapest_at_incoming()) != self.incoming:
+        gap = self._association_gap() if self.pool and self.n0 else math.inf
+        if gap < 0:
             trig.append("b:association_differs")
             b_fired = True
+        elif gap <= 2.0 * s.close_call_nats:          # deviance window of identity.match_link
+            trig.append("c:close_association")
         U = [cc.mismatch(f, self.u(f, md.omega0)) for md, b in zip(self.own.modes, self.incoming) if b
              for f in self.factors.get(b, ())]
         if max(U, default=0.0) >= s.flag_threshold:
