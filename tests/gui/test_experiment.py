@@ -300,7 +300,9 @@ def test_a_rename_waits_for_the_intake_worker_that_holds_a_file_in_the_folder(qt
         return {}
     monkeypatch.setattr(intake_mod, "current_passes", slow_current_passes)
     w.intake.reload()
-    assert holding.wait(10)
+    # Pump events: a first worker still running makes reload's start only from the poll timer, which a
+    # blocking Event.wait would starve.
+    qtbot.waitUntil(holding.is_set, timeout=10000)
     _answer_rename(monkeypatch, "renamed")
 
     w.rename_experiment()

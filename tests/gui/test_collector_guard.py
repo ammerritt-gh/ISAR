@@ -12,6 +12,8 @@ import pytest
 from isar import sandbox_api
 from isar_gui import collector_guard, health
 
+pytestmark = pytest.mark.collector_under_test
+
 
 @pytest.fixture
 def collector_on():
