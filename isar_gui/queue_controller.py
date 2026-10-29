@@ -822,7 +822,9 @@ class QueueController(QObject):
 
     def _ev_result(self, ev: dict) -> None:
         pass_kind, saving = ev["pass"], bool(ev.get("saving"))
-        if self._queue.on_result(ev["item_id"], pass_kind, ev["status"], ev.get("reason"), saving=saving):
+        end_record = ev.get("event") == "end"
+        if self._queue.on_result(ev["item_id"], pass_kind, ev["status"], ev.get("reason"), saving=saving,
+                                 end_record=end_record):
             rec = self._recs[ev["item_id"]]
             if pass_kind == "inter":
                 rec.saves.append(_Result(saving))

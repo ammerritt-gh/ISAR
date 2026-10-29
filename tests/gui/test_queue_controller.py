@@ -155,9 +155,9 @@ def rig(qtbot, monkeypatch, tmp_path):
 A06, A07, A08, A09 = (unit(SET, f"a{n:02d}") for n in (6, 7, 8, 9))
 
 
-def _result(iid, key, pass_kind="fast", status="done", reason=None, saving=True):
+def _result(iid, key, pass_kind="fast", status="done", reason=None, saving=True, event=None):
     return {"ev": "result", "item_id": iid, "unit_key": key, "pass": pass_kind, "status": status,
-            "reason": reason, "saving": saving}
+            "reason": reason, "saving": saving, "event": event}
 
 
 def _saved(iid, key, pass_kind="fast", status="done", reason=None):
@@ -852,9 +852,22 @@ def test_batch_progress_and_each_saved_ring_reach_the_view_and_the_results_saved
     r.emit(_batch_saved(iid, key, (A06, A07)))
     r.wait(lambda: r.saved)
     assert r.saved == [(A06, A07)] and r.ctrl.view().batches[0].status == "running"
+    r.emit(_result(iid, key, "inter", event="end"), _batch_saved(iid, key, ()))   # the end record, saved
     r.emit(_finished(iid))
     r.wait(lambda: r.ctrl.view().batches[0].status == "done")
     assert r.lines[-1] == "Batch finished: Batch 1 (anchored): 2 refitted, 0 failed, 1 not reached"
+
+
+def test_a_batch_whose_process_ends_without_an_end_record_settles_failed_though_its_rings_were_saved(rig, monkeypatch):
+    r = rig(cores=2)
+    _start_batch(r, monkeypatch)
+    (start,) = r.wait_commands("start", 1)
+    iid, key = start["item_id"], start["unit_key"]
+    r.emit(_result(iid, key, "inter", event="stage"), _batch_saved(iid, key, (A06, A07)))
+    r.wait(lambda: r.saved)
+    r.emit(_finished(iid))
+    r.wait(lambda: r.ctrl.view().batches[0].status == "failed")
+    assert r.ctrl.view().batches[0].reason == "the batch ended without an end record"
 
 
 def test_a_stopped_batch_keeps_its_saved_rings_says_what_it_kept_and_never_settles_done(rig, monkeypatch):

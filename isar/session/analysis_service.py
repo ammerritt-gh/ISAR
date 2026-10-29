@@ -32,7 +32,7 @@ Events (stdout, one JSON object per line, flushed per line)::
     {"ev": "started", "item_id", "pid"}
     {"ev": "cores", "item_id", "cores"}        deep only: the item keeps these, the rest are free now
     {"ev": "progress", "item_id", "t", **the C-progress dict}       t: seconds since "started"
-    {"ev": "result", "item_id", "unit_key", "pass", "status", "reason", "saving"}
+    {"ev": "result", "item_id", "unit_key", "pass", "status", "reason", "saving"}     inter adds "event": start|stage|end
     {"ev": "saved", "item_id", "unit_key", "pass", "status", "reason"}     inter adds "keys", "refused"
     {"ev": "save_failed", "item_id", "unit_key", "pass", "error"}
     {"ev": "finished", "item_id", "end": "completed"|"stopped"|"failed", "reason"}
@@ -675,8 +675,11 @@ class _Service:
             if payload is not None:
                 self.writer.put(_Job(item.item_id, item.unit_key, "attempt", status, None, payload))
             return
-        self.emit({"ev": "result", "item_id": item.item_id, "unit_key": item.unit_key, "pass": r.get("pass_kind"),
-                   "status": status, "reason": r.get("reason"), "saving": payload is not None})
+        ev = {"ev": "result", "item_id": item.item_id, "unit_key": item.unit_key, "pass": r.get("pass_kind"),
+              "status": status, "reason": r.get("reason"), "saving": payload is not None}
+        if item.pass_kind == "inter":   # the batch payload's event: start, stage or end
+            ev["event"] = None if payload is None else payload.get("event")
+        self.emit(ev)
         if payload is not None:         # after the result event, so its "saved" can only follow it
             job = _Job(item.item_id, item.unit_key, r.get("pass_kind"), status, r.get("reason"), payload)
             if item.pass_kind == "inter":

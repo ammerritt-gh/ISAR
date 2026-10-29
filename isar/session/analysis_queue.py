@@ -88,12 +88,13 @@ class QueueSnapshot:
 class _Result:
     """One result the item's process sent for one pass, and what became of its save."""
 
-    __slots__ = ("status", "reason", "saving", "saved", "error")
+    __slots__ = ("status", "reason", "saving", "end_record", "saved", "error")
 
-    def __init__(self, status: str, reason: str | None, saving: bool) -> None:
+    def __init__(self, status: str, reason: str | None, saving: bool, end_record: bool = False) -> None:
         self.status = status
         self.reason = reason
         self.saving = saving
+        self.end_record = end_record     # a batch's end payload: its verdict settles the batch
         self.saved: bool | None = None   # None until the writer answers (only meaningful if saving)
         self.error: str | None = None
 
@@ -296,7 +297,7 @@ class AnalysisQueue:
         return True
 
     def on_result(self, item_id: str, pass_kind: PassKind, status: str, reason: str | None,
-                  *, saving: bool) -> bool:
+                  *, saving: bool, end_record: bool = False) -> bool:
         if pass_kind not in _RESULT_PASSES:
             raise ValueError(f"unknown pass {pass_kind!r}")
         if status not in _RESULT_STATUSES:
@@ -305,7 +306,7 @@ class AnalysisQueue:
         if it.state != "running":
             return False
         if pass_kind == "inter":
-            it.saves.append(_Result(status, reason, saving))
+            it.saves.append(_Result(status, reason, saving, end_record))
         else:
             it.results[pass_kind] = _Result(status, reason, saving)
         return True
@@ -387,8 +388,8 @@ class AnalysisQueue:
             self._set_settled(it, "failed", "the fitting process ended without a result")
 
     def _settle_batch(self, it: _Item) -> None:
-        """A batch settles on a failed save first, then a user stop, then a process failure, else on its
-        last ring's verdict."""
+        """A batch settles on a failed save first, then a user stop, then a process failure, else on its end
+        record's verdict; a process that ends without one has failed, however many rings it saved."""
         failed = next((r for r in it.saves if r.saving and r.saved is False), None)
         last = it.saves[-1] if it.saves else None
         if failed is not None:
@@ -397,10 +398,12 @@ class AnalysisQueue:
             self._set_settled(it, "stopped", "stopped by the user; completed rings/sweeps are kept")
         elif it.end == "failed":
             self._set_settled(it, "failed", it.end_reason or "the fitting process failed")
-        elif last is not None:
+        elif last is None:
+            self._set_settled(it, "failed", "the fitting process ended without a result")
+        elif last.end_record:
             self._set_settled(it, last.status, last.reason)
         else:
-            self._set_settled(it, "failed", "the fitting process ended without a result")
+            self._set_settled(it, "failed", "the batch ended without an end record")
 
     # -- settings and views --------------------------------------------------------------------
 

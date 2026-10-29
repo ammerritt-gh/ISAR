@@ -371,12 +371,22 @@ def test_batch_results_accumulate_and_settle_after_every_save():
     assert q.on_saved("q1", "inter")
     assert state(q, "q1").state == "running"                       # the process still runs between rings
     assert q.on_saved("q1", "inter")
-    q.on_result("q1", "inter", "done_warning", "1 spectrum not reached", saving=True)   # ring 3
+    q.on_result("q1", "inter", "done_warning", "1 spectrum not reached", saving=True, end_record=True)   # ring 3, the end
     q.on_finished("q1", "completed", None)
     assert state(q, "q1").state == "saving"
     assert q.on_saved("q1", "inter")
     v = q.snapshot().finished[0]
     assert (v.state, v.reason, v.saved_passes) == ("done_warning", "1 spectrum not reached", frozenset({"inter"}))
+
+
+def test_a_batch_that_completes_without_an_end_record_settles_failed_not_on_its_last_ring():
+    q = AnalysisQueue(4)
+    q.add_inter("b1", ["A"])
+    q.next_starts()                                                # q1
+    q.on_result("q1", "inter", "done", None, saving=True)          # ring 1 saved, then the process ends
+    q.on_saved("q1", "inter")
+    q.on_finished("q1", "completed", None)
+    assert (state(q, "q1").state, state(q, "q1").reason) == ("failed", "the batch ended without an end record")
 
 
 def test_stopped_or_failed_batch_with_saved_rings_does_not_settle_done():

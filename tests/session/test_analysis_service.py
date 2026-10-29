@@ -668,6 +668,7 @@ def test_inter_ack_round_trip_gives_each_result_its_own_verdict_after_its_save(i
     failed = [e for e in svc.of("q1") if e["ev"] == "save_failed"]
     assert [e["error"] for e in failed] == ["the fake disk is full"]
     assert [e["ev"] for e in svc.of("q1")].count("result") == 5
+    assert [e["event"] for e in svc.of("q1") if e["ev"] == "result"] == ["start", "stage", "stage", "stage", "end"]
     assert [e for e in svc.of("q1") if e["ev"] == "progress"][0]["stage"] == "ring"
     assert svc.shutdown() == 0
 
