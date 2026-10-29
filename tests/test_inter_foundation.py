@@ -97,7 +97,7 @@ CONTRACT = (
     ("isar.intake.inter_spectra", "InterUser", ["anchors", "picks", "locks", "settings", "max_seq", "damaged"]),
     ("isar.workspace_api.inter_spectra", "FlagReason", ["code", "severity", "detail"]),
     ("isar.workspace_api.inter_spectra", "FlagInfo",
-     ["severity", "score", "cost_of_coupling", "link_mismatch", "reasons"]),
+     ["severity", "score", "cost_of_coupling", "link_mismatch", "reasons", "flagged"]),
     ("isar.workspace_api.inter_spectra", "SpectrumInter",
      ["key", "fit_id", "in_use", "source", "label", "flag", "locked", "locked_fit_id", "lock_stale", "stale",
       "stale_text"]),
