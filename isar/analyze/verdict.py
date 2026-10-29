@@ -82,6 +82,22 @@ def _residual_structured(pull, *, z: float = RUNS_Z) -> bool:
     return bool((runs - mu) / np.sqrt(var) <= -z)
 
 
+def _reductions(hyp):
+    """Every structure ``hyp`` reduces to by dropping any subset of its elastic, QE and background
+    components: the fast pass's on-demand reduced models, built the same way."""
+    from isar.analyze.loop import without_component
+
+    out = []
+    for drop in (("elastic",), ("qe",), ("bg",), ("elastic", "qe"), ("elastic", "bg"),
+                 ("qe", "bg"), ("elastic", "qe", "bg")):
+        red = hyp
+        for prefix in drop:
+            red = None if red is None else without_component(red, prefix)
+        if red is not None:
+            out.append(red)
+    return out
+
+
 def _fitted_model(label, params, ctx):
     """The winning structure evaluated on ``ctx.x_used`` (counts space), rebuilt from its ``label`` +
     fitted ``params``. Spans BOTH the 1-mode and 2-mode enumerations: a winning 2-mode label
@@ -92,14 +108,12 @@ def _fitted_model(label, params, ctx):
 
     hyps = {h.label: h for h in (*enumerate_phonon_structures(ctx), *enumerate_phonon_multimode(ctx))}
     hyp = hyps.get(label)
-    if hyp is None and "bg.BG" not in (params or {}):
-        # A background-free degenerate twin (loop.without_background): the enumerated structure
-        # that, less its background, carries exactly these parameters.
-        from isar.analyze.loop import without_background
-
+    if hyp is None:
+        # An on-demand reduced model (no elastic line, QE or background) is not enumerated: it is
+        # the reduction of an enumerated structure carrying exactly these parameters.
         names = set(params or ())
-        hyp = next((twin for base in hyps.values() for twin in [without_background(base)]
-                    if twin is not None and set(twin.build().param_names()) == names), None)
+        hyp = next((red for base in hyps.values() for red in _reductions(base)
+                    if set(red.build().param_names()) == names), None)
     if hyp is None:
         return None
     comp = hyp.build()
@@ -375,6 +389,7 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None,
     can no longer show as a fork, and hard rule 5 lets only a clean single answer into the
     dispersion prior."""
     from isar.analyze import confidence as _confidence
+    from isar.analyze.phonon import central_qe_admissible
 
     def conf(win):
         return _confidence.compute_confidence(win, ctx, selection, prior=prior)
@@ -432,7 +447,12 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None,
     #     detection-power split, constant 0.0); `elastic+bg` is the positive scan-local
     #     `elastic_only` claim — categorically humble (capped computed confidence), never region
     #     exclusion. A significant descriptor peak the null leaves unexplained outranks both.
-    if win.label in ("bg", "elastic+bg", "elastic"):   # "elastic": elastic+bg's background-free twin
+    # The named nulls, and on BL43LXU any mode-free winner (its elastic line and QE are not in those
+    # labels). Off BL43LXU the label set alone decides: a card-declared quasi-elastic winner (qe+bg)
+    # has no mode either, and keeps its own route.
+    tokens = set(str(win.label).split("@", 1)[0].split("+"))
+    if win.label in ("bg", "elastic+bg", "elastic") or (
+            central_qe_admissible(ctx) and win.n_modes == 0):   # "elastic": elastic+bg's twin
         if unmatched:
             return _signal_unmodeled(unmatched, reasons + ["phonon-less winner leaves descriptor "
                                                            "peak(s) unexplained"], descriptor)
@@ -443,11 +463,16 @@ def classify(results, ctx, selection, *, prior=None, descriptor=None,
             if v is not None:
                 return v
         dp = detection_power(ctx, prior, win) if _prior_expects_phonon(prior, ctx) else None
-        claim_elastic = win.label != "bg" and _elastic_significant(selection)
+        claim_elastic = "elastic" in tokens and _elastic_significant(selection)
         if not claim_elastic:
-            base = ("background alone won selection" if win.label == "bg" else
-                    "elastic+bg won selection without established significance over "
-                    "background (insignificant or missing LRT vs bg)")
+            if not tokens & {"elastic", "qe"}:
+                base = "background alone won selection"
+            elif tokens <= {"elastic", "bg"}:
+                base = ("elastic+bg won selection without established significance over "
+                        "background (insignificant or missing LRT vs bg)")
+            else:
+                base = (f"{win.label} won selection without established significance over "
+                        "background (insignificant or missing LRT vs bg)")
             if dp is None:
                 return ScanVerdict("no_signal", 0.0, reasons=reasons + [base])
             if dp["detectable"] is True:
