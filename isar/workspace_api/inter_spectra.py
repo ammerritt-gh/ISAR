@@ -21,8 +21,8 @@ from isar.session.inter_spectra.authority import Stale
 from isar.session.inter_spectra.graph import anchored_scope, build_graph
 from isar.session.inter_spectra.layout import grid_for
 from isar.session.inter_spectra.nodes import read_nodes
-from isar.session.inter_spectra.preview import preview_anchored, preview_simultaneous
-from isar.session.inter_spectra.q_provider import q_coordinates
+from isar.session.inter_spectra.preview import Q_NO_LAYOUT, preview_anchored, preview_simultaneous
+from isar.session.inter_spectra.q_provider import INVALID_CELL, q_coordinates
 from isar.session.inter_spectra.records import ELIGIBLE
 from isar.session.inter_spectra.rings import plan_anchored
 from isar.session.inter_spectra.schedule import plan_simultaneous
@@ -345,6 +345,16 @@ def fit_view_of(ws, unit: str, fit: str = "authoritative") -> FitView | None:
     return fit_view_and_label(ws, unit, fit)[0]
 
 
+def _no_q_points(grid, qc) -> str:
+    """Why a q batch has no point at all: the instrument has no analyzer layout, a scan's epoch is not a cell, or no
+    analyzer has an accepted hkl."""
+    if grid is None:
+        return Q_NO_LAYOUT
+    if INVALID_CELL in qc.reasons.values():
+        return INVALID_CELL
+    return NO_Q
+
+
 def batch_preview(root, req: BatchRequest) -> BatchPreview:
     """What a batch would do, before Start. A pure read over the graph of S1U4 and the q provider."""
     root = Path(root)
@@ -381,5 +391,5 @@ def batch_preview(root, req: BatchRequest) -> BatchPreview:
         notes.append(f"{why}: {n} spectra")
     can_start, reason = pv.can_start, pv.blocked
     if req.kind == "anchored" and req.direction == "q" and not qc.points:
-        can_start, reason = False, NO_Q
+        can_start, reason = False, _no_q_points(grid, qc)
     return BatchPreview(can_start, None if can_start else reason, tuple(sorted(scope)), pv.text, (*pv.notes, *notes))

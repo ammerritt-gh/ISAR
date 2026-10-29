@@ -21,6 +21,20 @@ class Preview:
 
 _DIRECTION_WORDS = {"q": "q", "T": "T", "qT": "q and T"}
 
+# why no q-link joins the selection, as the preview names it (from the graph's reasons; C-preview)
+Q_NO_HKL = "no analyzer of the scan has an accepted hkl"
+Q_NO_LAYOUT = "this instrument has no analyzer layout"
+Q_NO_PARTNER = "no analyzer with an accepted hkl has an adjacent partner in the selection"
+
+
+def _q_cause(g: LinkGraph) -> str:
+    why = {w for v in g.unlinked.values() for w in v}
+    if "q: no analyzer layout for this instrument" in why:
+        return Q_NO_LAYOUT
+    if "q: no accepted hkl" in why:
+        return Q_NO_HKL
+    return Q_NO_PARTNER
+
 
 def _n(count: int, one: str, many: str) -> str:
     return f"{count} {one if count == 1 else many}"
@@ -35,7 +49,7 @@ def preview_anchored(g: LinkGraph, plan: AnchoredPlan, direction: Direction) -> 
     no_q = not any(l.kind == "q" for l in g.links)
     notes = list(g.notes)
     if direction == "qT" and no_q:
-        notes.append("q-links unavailable: no accepted hkl; spreading in T only")
+        notes.append(f"q-links unavailable: {_q_cause(g)}; spreading in T only")
     notes += _tally(Counter(plan.not_reached.values()))
     if plan.ignored_anchors:
         notes.append(f"{_n(len(plan.ignored_anchors), 'anchor', 'anchors')} ignored: "
@@ -52,8 +66,8 @@ def preview_anchored(g: LinkGraph, plan: AnchoredPlan, direction: Direction) -> 
     elif not plan.anchors:
         blocked = "no anchor can be used: " + "; ".join(sorted(set(plan.ignored_anchors.values())))
     elif n_refit == 0:
-        if direction == "q" and no_q and any("q: no accepted hkl" in v for v in g.unlinked.values()):
-            cause = "spreading in q needs each analyzer's accepted hkl, none is accepted for this scan"
+        if direction == "q" and no_q:
+            cause = _q_cause(g)
         elif plan.not_reached:
             cause = sorted(set(plan.not_reached.values()))[0]
         else:

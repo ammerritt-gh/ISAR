@@ -20,6 +20,26 @@ class SimultaneousPlan:
     not_coupled: dict[str, str]                      # selected keys that take no part -> reason
 
 
+def _alone(g: LinkGraph, k: str) -> str:
+    """Why an eligible selected spectrum forms no term: its q-linked set has no curvature term, or it lacks an hkl."""
+    if g.links_of(k, frozenset({"q"})):
+        seen, stack = {k}, [k]                       # the q-connected set k belongs to
+        while stack:
+            x = stack.pop()
+            for link in g.links_of(x, frozenset({"q"})):
+                y = link.b if link.a == x else link.a
+                if y not in seen:
+                    seen.add(y)
+                    stack.append(y)
+        return "its q-linked set has no curvature term" + (" (two spectra)" if len(seen) == 2 else "")
+    why = g.unlinked.get(k, ())
+    if "q: no analyzer layout for this instrument" in why:
+        return "this instrument has no analyzer layout"
+    if "q: no accepted hkl" in why:
+        return "no accepted hkl for its analyzer"
+    return "no neighbour in the selection"
+
+
 def plan_simultaneous(g: LinkGraph, locks: Collection[str]) -> SimultaneousPlan:
     order = {k: i for i, k in enumerate(g.nodes)}
     locked = {k for k in locks if k in g.nodes}
@@ -35,7 +55,7 @@ def plan_simultaneous(g: LinkGraph, locks: Collection[str]) -> SimultaneousPlan:
     for k, n in g.nodes.items():
         if k in free_set or k in locked:
             continue
-        not_coupled[k] = "no neighbour in the selection" if n.eligible else f"ineligible: {n.reason or 'not eligible'}"
+        not_coupled[k] = _alone(g, k) if n.eligible else f"ineligible: {n.reason or 'not eligible'}"
 
     # two free spectra conflict when a term holds both; a refit reads every other member of its terms
     sets = {s: set(terms_of[s]) for s in free}
