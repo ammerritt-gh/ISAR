@@ -400,3 +400,31 @@ def test_a_name_value_file_replaces_its_numbers_but_not_its_structure(tmp_path):
     cols = {c["name"]: c["tokens"] for c in truth["scans"][0]["data_columns"]}
     assert cols["analeff[]"] == [b[i].split()[-1] for i in sorted(changed) if b[i].startswith("analeff")]
     assert "cal_factor" in cols and "ano[]" not in cols
+
+
+# ---------------------------------------------------------------------------
+# gnuplot macro `gpi.<set>` (BL43LXU): names and settings kept, every other number replaced
+# ---------------------------------------------------------------------------
+def test_a_gpi_macro_keeps_its_names_and_settings_and_replaces_every_other_number(tmp_path):
+    from intake_fixtures import write_gpi
+    from isar.intake.gpi import read_gpi
+    src = write_gpi(tmp_path / "data", "Smp_100K_0p5_0p5_3", q_nm={"a03": 10.0, "a04": 11.46},
+                    hkl={"a03": (0.5, 0.5, 3.0), "a04": (0.5, 0.5, 3.5)}, slit=(40, 40))
+    src.write_text(src.read_text(encoding="utf-8") + "ysf9 = 9.e9\n", encoding="utf-8", newline="\n")
+    copy, truth = _make(src, tmp_path / "out")
+    a, b = src.read_text(encoding="utf-8").splitlines(), copy.read_text(encoding="utf-8").splitlines()
+    kept = re.compile(r"\s*(problem_name1|agaph|agapv|sarf_name|resolution_name)\s*=")
+    assert len(a) == len(b)
+    for x, y in zip(a, b):
+        assert re.sub(r"\d", "#", x) == re.sub(r"\d", "#", y)     # layout, names and widths kept
+        if kept.match(x):
+            assert x == y                                         # the names and settings kept
+        elif re.search(r"\d", x):
+            assert x != y                                         # every other number changed
+    real, copied = read_gpi(src), read_gpi(copy)
+    assert (copied.problem_name, copied.slit, copied.sarf_name) == (real.problem_name, "40x40", real.sarf_name)
+    assert set(copied.hkl) == {"a03", "a04"} and copied.unread == ()
+    tok = re.search(r'Q_a03 = " ([\d.]+)/nm"', copy.read_text(encoding="utf-8"))[1]
+    assert next(c["tokens"] for c in truth["scans"][0]["data_columns"] if c["name"] == "Q_a03") == [tok]
+    sci = re.search(r"ysf9 = \d\.e(\d)$", copy.read_text(encoding="utf-8"), re.M)
+    assert sci and sci[1] != "9"                                  # a scientific exponent changes too

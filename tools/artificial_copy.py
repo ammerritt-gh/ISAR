@@ -42,6 +42,12 @@ Two things differ from the SPEC/numor rules above:
   * the check against ISAR's parser is the plugin's own readers (`sp8_bl43.read_member`, `read_var`)
     for the analyzer, Ba122 and `.var` files, and a structural comparison (same lines, same token
     shapes) for the SARF curve and `.gpi`, whose reader arrives in a later slice.
+
+A gnuplot macro `gpi.<set>` (the BL43LXU per-set file beside the data) is read as text: every number is
+replaced at its width (an assignment's value, the digits of quoted text and of comments), except the values
+of `agaph`, `agapv`, `sarf_name`, `resolution_name` and `problem_name1` (settings and names, not measurements).
+Identifiers such as `hkl_a03` stay, so the analyzer numbers still match the data files. The check is ISAR's
+own `read_gpi` on both files: the same fields read, the same layout.
 """
 from __future__ import annotations
 
@@ -616,6 +622,132 @@ def build_keyval(lines: list[bytes], found: list, rng: random.Random) -> tuple[b
 
 
 # ---------------------------------------------------------------------------
+# gnuplot macro `gpi.<set>` (BL43LXU): the names and settings kept, every other number replaced
+# ---------------------------------------------------------------------------
+MACRO_KEEP = frozenset({"agaph", "agapv", "sarf_name", "resolution_name", "problem_name1"})
+_MACRO_ASSIGN = re.compile(r"\s*([A-Za-z_]\w*)\s*=(?!=)")
+_MACRO_QUOTED = re.compile(r"('[^']*'|\"[^\"]*\")")          # split keeps the quotes as the odd parts
+_MACRO_QTEXT = re.compile(r"\d+(?:\.\d+)?")
+_MACRO_CODE = re.compile(r"([A-Za-z_]\w*)|([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)")
+_MACRO_IDENT = re.compile(r"[A-Za-z_]\w*")
+_MACRO_RUN = re.compile(r"\d+")
+
+
+def _outside_quotes(text: str, marks: str):
+    """Indexes of the `marks` characters outside quotes: the reader's cut rule (`#` comment, `;` statement)."""
+    quote = None
+    for i, ch in enumerate(text):
+        if quote:
+            quote = None if ch == quote else quote
+        elif ch in "'\"":
+            quote = ch
+        elif ch in marks:
+            yield i
+
+
+def _draw_number(tok: str, rng: random.Random) -> str:
+    """A number token replaced at its width and sign style. `_draw_free` keeps a scientific exponent as
+    written, so the exponent is redrawn here inside its own digits."""
+    sh = parse_token(tok.encode("ascii"))
+    new = _draw_free([tok.encode("ascii")], rng, False)[0].decode("ascii")
+    if not sh.mark:
+        return new
+    width = len(sh.exp)
+    lo = -(10 ** width - 1) if sh.esign else 0
+    hi = -1 if sh.esign == b"-" else 10 ** width - 1
+    e = rng.choice([x for x in range(lo, hi + 1) if x != _exp10(sh)])
+    sign = "-" if e < 0 else "+" if sh.esign else ""
+    return new[:len(new) - len(sh.esign) - width] + sign + str(abs(e)).zfill(width)
+
+
+def build_macro(lines: list[bytes], rng: random.Random) -> tuple[bytes, list, list]:
+    """(copy bytes, [(line, stem, token)], [(stem, tokens, forced)]) for a gnuplot macro.
+
+    Each line is cut the way the reader cuts it: a `#` comment outside quotes, then `;`-separated
+    statements. A statement assigning a kept name is copied; in every other statement each number is
+    replaced at its width (an assignment's value, the digits of quoted text), in a comment each digit run.
+    Identifiers are never touched. A stem is the statement's first word, `comment` for comment text.
+    """
+    found: list = []
+    written: dict[str, list[bytes]] = {}
+
+    def record(n: int, stem: str, tok: str) -> str:
+        found.append((n, stem, tok.encode("ascii")))
+        written.setdefault(stem, []).append(tok.encode("ascii"))
+        return tok
+
+    def draw(n: int, stem: str, tok: str) -> str:
+        return record(n, stem, _draw_number(tok, rng))
+
+    def scramble(n: int, run: str) -> str:
+        new = run
+        while new == run:
+            new = "".join(rng.choice("0123456789") for _ in run)
+        return record(n, "comment", new)
+
+    out = []
+    for n, raw in enumerate(lines, 1):
+        body = raw.rstrip(b"\r\n")
+        text = body.decode("latin-1")              # one character per byte: non-ASCII passes through
+        cut = next(_outside_quotes(text, "#"), len(text))
+        code, comment = text[:cut], text[cut:]
+        cuts = [-1, *_outside_quotes(code, ";"), len(code)]
+        stmts = []
+        for a, b in zip(cuts, cuts[1:]):
+            stmt = code[a + 1:b]
+            head = _MACRO_ASSIGN.match(stmt)
+            if head and head[1] in MACRO_KEEP:
+                stmts.append(stmt)
+                continue
+            first = _MACRO_IDENT.search(stmt)
+            stem = first[0] if first else "code"
+            parts = _MACRO_QUOTED.split(stmt)
+            for k in range(1, len(parts), 2):
+                parts[k] = _MACRO_QTEXT.sub(lambda m: draw(n, stem, m[0]), parts[k])
+            for k in range(0, len(parts), 2):
+                parts[k] = _MACRO_CODE.sub(lambda m: m[1] or draw(n, stem, m[2]), parts[k])
+            stmts.append("".join(parts))
+        new = ";".join(stmts) + _MACRO_RUN.sub(lambda m: scramble(n, m[0]), comment)
+        if re.sub(r"\d", "#", new) != re.sub(r"\d", "#", text):
+            raise Refuse(f"internal: line {n} changed beyond its numbers")
+        out.append(new.encode("latin-1") + raw[len(body):])
+    return b"".join(out), found, [(stem, toks, False) for stem, toks in written.items()]
+
+
+def snapshot_macro(path: Path) -> dict:
+    """A gnuplot macro as ISAR's reader sees it: each line with its digits masked (layout and kept names are
+    compared, numbers are not), and which fields read, by name only (never a number)."""
+    from isar.intake.gpi import read_gpi
+    try:
+        m = read_gpi(path)
+    except Exception as exc:
+        raise Refuse(f"ISAR's reader could not read {path.name}: {type(exc).__name__}: {exc}") from exc
+    lines = [re.sub(r"\d", "#", x.decode("latin-1")) for x in path.read_bytes().splitlines()]
+    return dict(header=None, blocks=[dict(lines=lines)], records=[dict(
+        problem_name=m.problem_name, slit=m.slit, sarf_name=m.sarf_name,
+        hkl={k: v is not None for k, v in m.hkl.items()},
+        q_nm={k: v is not None for k, v in m.q_nm.items()},
+        unread=[re.match(r"line \d+: (\w+)", u)[1] for u in m.unread])])
+
+
+def _macro_copy(src: Path, out_dir: Path, target: Path, truth_path: Path, seed: int) -> tuple[Path, Path]:
+    copy, found, written = build_macro(src.read_bytes().splitlines(keepends=True), random.Random(seed))
+    with tempfile.TemporaryDirectory(prefix="artificial_copy_") as tmp:    # never the output folder
+        probe = Path(tmp) / src.name
+        probe.write_bytes(copy)
+        problems = compare(snapshot_macro(src), snapshot_macro(probe), "gpi", None)
+    if problems:
+        raise Refuse("the copy does not parse like the real file; nothing written:\n  "
+                     + "\n  ".join(problems))
+    truth = build_truth_keyval("gnuplot_macro", src.name, seed, found, written)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(copy)
+    with open(truth_path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(truth, separators=(", ", ": ")) + "\n")
+    return target, truth_path
+
+
+# ---------------------------------------------------------------------------
 # Parse real and copy with ISAR's own parser and compare
 # ---------------------------------------------------------------------------
 def _multiword(name: str):
@@ -816,6 +948,8 @@ def classify(src: Path) -> tuple[str | None, str]:
     everything else by the registry, like the parsers themselves."""
     if src.suffix.lower() in KEYVAL:
         return None, "keyval"
+    if src.name.lower().startswith("gpi."):           # a gnuplot macro: read as text, see build_macro
+        return None, "macro"
     if src.name.lower().startswith("sarf_") and not src.suffix:
         return None, "table"
     try:
@@ -841,6 +975,8 @@ def make_copy(src, out_dir, scans: str | None = None, seed: int = 1) -> tuple[Pa
     if target == src or target.exists() or truth_path.exists():
         raise Refuse(f"{target} (or its truth file) already exists; the tool never overwrites")
     name, kind = classify(src)
+    if kind == "macro":
+        return _macro_copy(src, out_dir, target, truth_path, seed)
     if kind in ("numor", "table", "keyval") and scans:
         log.warning("--scans ignored: a %s is kept whole", kind)
 
