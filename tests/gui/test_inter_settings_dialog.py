@@ -177,6 +177,14 @@ def test_a_refused_save_keeps_the_dialog_open_and_shows_the_reason(qtbot):
     assert dlg.result() == REJECTED
 
 
+def test_a_float_box_shows_a_permitted_value_exactly(qtbot):
+    # The table allows any sweep tolerance above 0 up to 1, so 0.0001 is permitted and must show as itself.
+    dlg, _ = _dialog(qtbot, sweep_tol_meV=0.0001)
+    box = _editor(dlg, "sweep_tol_meV")
+    assert box.minimum() == 0.0001
+    assert box.value() == 0.0001
+
+
 def test_an_unknown_kind_raises(qtbot):
     with pytest.raises(ValueError, match="bool"):
         _widget_for(dataclasses.replace(SETTING_DEFS[0], kind="bool"))

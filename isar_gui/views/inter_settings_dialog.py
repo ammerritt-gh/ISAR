@@ -6,6 +6,8 @@ its reason. Cancel and close write nothing.
 """
 from __future__ import annotations
 
+import math
+
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
                                QLabel, QLineEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget)
 
@@ -13,7 +15,7 @@ from isar.analyze.coupled.settings import SETTING_DEFS, SettingDef
 from isar_gui.theme import TONE_COLOR, Tone
 from isar_gui.viewmodels.inter_settings import LABELS, Row, changes, default_text, rows
 
-_DECIMALS = 3   # shown decimals of a float setting; a strict minimum (the table's "> 0") is one step above 0
+_MIN_DECIMALS = 3   # the fewest decimals a float box shows; _decimals() adds more where a span needs them
 _TIPS = {False: "A starting value from the developers' tests on synthetic data; not yet checked against your data.",
          True: "Calibrated on synthetic tracks, not on real data; not yet checked against your data."}
 _WARN = f"color: {TONE_COLOR[Tone.WARN]};"
@@ -37,13 +39,20 @@ class _IntBox(_NoWheel, QSpinBox):
     pass
 
 
+def _decimals(d: SettingDef) -> int:
+    """Shown decimals of a float setting: a ten-thousandth of its span, never fewer than three.
+    shortcut: a stored value finer than that displays rounded; upgrade if a setting needs finer steps."""
+    return max(_MIN_DECIMALS, math.ceil(4 - math.log10(d.maximum - d.minimum)))
+
+
 def _widget_for(d: SettingDef) -> QWidget:
     """The editor for one setting. The table carries float, int and choice; anything else is a bug and raises."""
     suffix = f" {d.unit}" if d.unit else ""
     if d.kind == "float":
         box = _FloatBox()
-        box.setDecimals(_DECIMALS)
-        box.setRange(d.minimum + (10 ** -_DECIMALS if d.strict_minimum else 0), d.maximum)
+        places = _decimals(d)
+        box.setDecimals(places)
+        box.setRange(d.minimum + (10 ** -places if d.strict_minimum else 0), d.maximum)
         box.setSingleStep(0.1)
         box.setSuffix(suffix)
         return box
