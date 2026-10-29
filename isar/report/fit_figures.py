@@ -14,6 +14,7 @@ _DISPOSITION_COLOR = {
     "flagged": "#e08a00",
     "reject": "#cc3333",
     "abstain": "#999999",
+    "inter-spectra": "#7b3fb0",     # a refit in use (C-authority): its disposition, not the solo fit's
 }
 
 
