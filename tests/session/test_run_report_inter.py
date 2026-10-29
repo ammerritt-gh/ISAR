@@ -14,7 +14,7 @@ import isar
 from inter_fixtures import build_inter_workspace, spectrum_keys
 from isar.intake import inputs, inter_values, scans as intake_scans, store, values
 from isar.intake.inter_spectra import read_user
-from isar.report import run_report
+from isar.report import fit_figures, run_report
 from isar.schema.card import load_state
 from isar.session import writer
 from isar.session.inter_spectra import records
@@ -107,6 +107,18 @@ def test_a_refit_in_use_is_its_triage_row_with_its_label_and_flag(ws_root):
     assert row["ω₀"] != solo["ω₀"]
     assert row["conf"] == "—" and "conditional" in md                              # the refit's error is conditional
     assert (ws_root / "report" / "figures" / "dispersion.png").exists()
+
+
+def test_the_dispersion_figure_draws_an_unflagged_refit_row(ws_root, monkeypatch):
+    k1 = spectrum_keys(ws_root)[0]
+    _save_ring(ws_root, "b000000000001", [(F1, k1)])                           # unflagged: "inter-spectra fit"
+    drawn = []
+    real = fit_figures.dispersion_figure
+    monkeypatch.setattr(fit_figures, "dispersion_figure", lambda outcomes, **kw: drawn.append(outcomes) or real(outcomes, **kw))
+    _write(ws_root)
+    refit = [o for o in drawn[0] if o.get("omega0") == OVERLAY["omega0"]]
+    assert len(refit) == 1 and refit[0]["disposition"] == "inter-spectra fit"
+    assert refit[0]["disposition"] in fit_figures._DISPOSITION_COLOR           # the figure has a colour for it
 
 
 def _solo_interval(unit):

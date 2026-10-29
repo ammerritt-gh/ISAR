@@ -52,7 +52,7 @@ def _triage_rows(session, card, workspace):
             drawn = {**a.outcome, "interval": overlay.get("interval"), "prior_used": None}
             flagged = e.scan_id in ov and ov[e.scan_id].flag is not None
             rows.append((e.scan_number, det, e.status, drawn, label,
-                         "flagged" if flagged else "inter-spectra fit"))
+                         "flagged" if flagged else fit_figures.INTER_FIT_DISPOSITION))
     return rows
 
 
