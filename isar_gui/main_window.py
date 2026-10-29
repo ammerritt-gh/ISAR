@@ -110,6 +110,7 @@ from isar_gui.views.experiment_strip import ExperimentStrip
 from isar_gui.views.files_dock import FilesDock
 from isar_gui.views.files_strip import FilesStrip
 from isar_gui.views.heatmap_pane import HeatmapPane
+from isar_gui.views.inter_settings_dialog import InterSettingsDialog
 from isar_gui.views.output_bar import OutputBar
 from isar_gui.views.processing_panel import ProcessingPanel, ProcessingRail
 from isar_gui.views.readiness_line import ReadinessLine
@@ -241,6 +242,8 @@ _ACTIVITY_VERBS = {"ingest": "Ingesting", "drive": "Campaign running", "compile"
                    "export": "Exporting"}
 _CORES_TIP = ("How many processor cores ISAR may use for analysis. A lower number takes effect as running "
               "analyzers finish; a deep pass that is already running keeps its cores until you stop it.")
+_INTER_SETTINGS_TIP = ("Penalties and tolerances for inter-spectra batches. They belong to this experiment; a batch "
+                       "records the settings it used, so a change affects only batches started afterwards.")
 
 
 def _sentence(text: str) -> str:
@@ -893,6 +896,7 @@ class MainWindow(QMainWindow):
         for signal in (self._export.progress, self._export.finished, self._export.failed):
             signal.connect(self._release_export_hold)
         self.processing_panel.run_requested.connect(lambda: self.start_analysis())
+        self.processing_panel.batch_requested.connect(self.start_inter_batch)
         self.processing_rail.toggled.connect(
             lambda: self.set_right_panel_collapsed(not self._right_panel_collapsed()))
         self._refresh_recents_menu()
@@ -1364,6 +1368,9 @@ class MainWindow(QMainWindow):
         for action in (self._new_workspace_menu_action, self._open_workspace_menu_action):
             action.setEnabled(not busy)
         self._rename_menu_action.setEnabled(self._wsm.root() is not None and not busy)
+        bound = self._wsm.root() is not None
+        self._inter_settings_action.setEnabled(bound)
+        self._inter_settings_action.setToolTip(_INTER_SETTINGS_TIP if bound else "Open an experiment first.")
         available, reason, strip_busy = self._availability()
         self._save_copy_menu_action.setEnabled(available)
         self.output_bar.set_available(available, available, reason)
@@ -1977,6 +1984,18 @@ class MainWindow(QMainWindow):
             return
         self._queue.fast_pass_all_ready()
 
+    def start_inter_batch(self, req) -> None:
+        """The Processing dock's batch Start. The queue re-reads the preview and refuses what cannot run now; a refusal
+        is said here, an accepted batch is logged by the queue."""
+        if not self._resolve_dirty_card("start an inter-spectra batch"):
+            return
+        ok, message = self._queue.start_inter_batch(req)
+        if not ok:
+            self._say(message)
+
+    def _open_inter_settings(self) -> None:
+        InterSettingsDialog(self.inter, self).exec()
+
     # ---- Config menu: machine-level settings (TAVI's form) --------------------
     def _init_config_menu(self) -> None:
         menu = self.menuBar().addMenu("&Config")
@@ -1984,6 +2003,8 @@ class MainWindow(QMainWindow):
         self._cores_action.setToolTip(_CORES_TIP)
         menu.setToolTipsVisible(True)
         self._cores_action.triggered.connect(self._ask_cores)
+        self._inter_settings_action = menu.addAction("Inter-spectra fitting settings…")
+        self._inter_settings_action.triggered.connect(self._open_inter_settings)
         scans_menu = menu.addMenu("Scan(s)")
         scans_menu.setToolTipsVisible(True)
         self._scans_display_actions = {}
