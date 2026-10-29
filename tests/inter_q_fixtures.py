@@ -55,6 +55,6 @@ def spectrum_keys(root: Path) -> list[str]:
 
 
 def scan_number(root: Path, scan: str) -> str:
-    """The scan's ``scan_number`` as the epoch's ``scan_ref`` is compared (``str``), read from the ledger."""
+    """The scan's ``scan_number`` as the epoch's ``scan_ref`` is written and compared (six digits), from the ledger."""
     _card, session = Workspace.open(root).load()
-    return str(next(e.scan_number for k, e in session.scans.items() if k.rsplit(":", 1)[0] == scan))
+    return f"{next(e.scan_number for k, e in session.scans.items() if k.rsplit(':', 1)[0] == scan):06d}"

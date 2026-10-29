@@ -10,6 +10,7 @@ import pytest
 import isar
 from inter_q_fixtures import epoch, scan_number, set_epochs, spectrum_keys, workspace_with_gpi
 from isar.session.inter_spectra.q_provider import q_coordinates
+from isar.session.workspace import Workspace
 
 REPO = Path(__file__).resolve().parents[3]
 STEM = "Smp_100K_0p5_0p5_3_A"            # the BL43 set layout: its file-name hkl is nominal, so an analyzer's hkl is gpi's alone
@@ -92,3 +93,22 @@ def test_an_epoch_without_a_source_still_names_its_version(tmp_path):
     set_epochs(root, ep)
     qc = q_coordinates(root, spectrum_keys(root))
     assert [label for _cell, label in qc.lattices.values()] == ["lattice epoch v3"]
+
+
+def set_scan_numbers(root, numbers: dict[str, int]) -> None:
+    """Renumber the ledger's scans (scan key -> scan_number): the fixture's numbers are timestamps."""
+    card, session = Workspace.open(root).load()
+    for key, entry in session.scans.items():
+        entry.scan_number = numbers[key.rsplit(":", 1)[0]]
+    Workspace.open(root).save(card, session)
+
+
+def test_scan_numbers_are_compared_as_fixed_width_refs(tmp_path):
+    along = {"a03": (0.0, 0.0, 0.0), "a04": (0.1, 0.0, 0.0), "a05": None}
+    root = workspace_with_gpi(tmp_path, {"Smp_100K_0p5_0p5_3_A": along, "Smp_200K_0p5_0p5_3_B": along})
+    keys = spectrum_keys(root)
+    first, second = dict.fromkeys(k.rsplit(":", 1)[0] for k in keys)
+    set_scan_numbers(root, {first: 9, second: 150})
+    set_epochs(root, epoch(1, a=4.0), epoch(2, a=5.0, scan_ref="000100"))
+    qc = q_coordinates(root, keys)
+    assert [qc.points[f"{s}:a04"].epoch for s in (first, second)] == ["lattice epoch v1", "lattice epoch v2"]

@@ -78,7 +78,7 @@ def q_coordinates(root, keys: Collection[str]) -> QCoordinates:
             continue
         scan, det = key.rsplit(":", 1)
         if scan not in scan_epoch:
-            ep = resolve_epoch(epochs, scan_ref=str(entry.scan_number))
+            ep = resolve_epoch(epochs, scan_ref=f"{entry.scan_number:06d}")    # epochs.py: fixed-width refs, 6 digits as its examples
             cell = None if ep is None else _cell(ep)
             if ep is not None and cell is None:
                 log.warning("q provider: the lattice epoch of %s is not a valid cell (%s); its spectra get no q",
