@@ -34,11 +34,13 @@ def test_statistical_campaign_requires_opt_in(pytester, args, passed, deselected
 
 
 @pytest.mark.parametrize("args,passed,deselected", [
-    ((), 1, 1),
-    (("--run-slow",), 2, 0),
+    ((), 1, 2),
+    (("--run-slow",), 2, 1),
+    (("--run-statistical", "-m", "statistical"), 1, 2),
 ])
 def test_slow_check_requires_opt_in(pytester, args, passed, deselected):
-    # The routine gate leaves the slow checks out; --run-slow brings them back.
+    # The routine gate leaves the slow checks out; --run-slow brings them back. A campaign marked
+    # both statistical and slow answers to --run-statistical alone.
     source = Path(__file__).resolve().parents[1] / "conftest.py"
     with source.open(encoding="utf-8", newline="") as stream:
         pytester.makeconftest(stream.read())
@@ -51,6 +53,11 @@ def test_slow_check_requires_opt_in(pytester, args, passed, deselected):
 
         @pytest.mark.slow
         def test_check():
+            pass
+
+        @pytest.mark.statistical
+        @pytest.mark.slow
+        def test_campaign():
             pass
     """)
     result = pytester.runpytest_subprocess(*args, timeout=30)

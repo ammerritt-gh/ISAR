@@ -116,7 +116,13 @@ def pytest_unconfigure(config):
 
 
 # Marker -> the option that opts it in. Without the option its tests are deselected, even when named.
+# The first marker an item carries governs it: a statistical campaign (also marked slow) needs only
+# --run-statistical.
 _OPT_IN = {"statistical": "--run-statistical", "slow": "--run-slow"}
+
+
+def _opt_in_option(item):
+    return next((option for marker, option in _OPT_IN.items() if item.get_closest_marker(marker)), None)
 
 
 def pytest_addoption(parser):
@@ -129,10 +135,10 @@ def pytest_addoption(parser):
 def pytest_collection_modifyitems(config, items):
     """Statistical campaigns and slow checks never run as an accidental side effect of a suite
     run; what is left is the routine gate (operator ruling 2026-10-29)."""
-    for marker, option in _OPT_IN.items():
-        if config.getoption(option):
-            continue
-        dropped = [item for item in items if item.get_closest_marker(marker)]
-        if dropped:
-            items[:] = [item for item in items if not item.get_closest_marker(marker)]
-            config.hook.pytest_deselected(items=dropped)
+    kept, dropped = [], []
+    for item in items:
+        option = _opt_in_option(item)
+        (dropped if option and not config.getoption(option) else kept).append(item)
+    if dropped:
+        items[:] = kept
+        config.hook.pytest_deselected(items=dropped)
