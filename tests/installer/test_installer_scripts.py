@@ -789,3 +789,153 @@ def test_latest_refuses_switches_it_does_not_take(tmp_path, args, says):
     assert not any(ln.startswith(("GET ", "RUNNING ")) for ln in lines), (args, lines)
     assert any(ln.startswith("REASON: ") and says in ln for ln in lines), (args, lines[-3:])
     assert not list(Path(env["TEMP"]).glob("isar-latest-*")), "the working folder was left behind"
+
+
+# ---------------------------------------------------------------- repair batch 1 (S1U5 review findings)
+
+def _label_block(text, name):
+    """The lines from label :name to the next blank line (the engine's labelled sections have none inside)."""
+    lines = text.splitlines()
+    out = []
+    for ln in lines[lines.index(":" + name):]:
+        if not ln.strip():
+            break
+        out.append(ln)
+    return out
+
+
+def _run_snippet(tmp_path, body, env):
+    bat = tmp_path / "snippet.bat"
+    bat.write_bytes(("@echo off\r\nsetlocal DisableDelayedExpansion\r\n" + "\r\n".join(body) + "\r\n").encode("ascii"))
+    return run_bat(bat, env=env)
+
+
+def mm_create_offenders(text):
+    """Every micromamba create runs with --no-shortcuts and with USERPROFILE moved (call :mm_profile_on the line before)."""
+    lines = _code_lines(text)
+    bad = []
+    for i, ln in enumerate(lines):
+        if re.search(r'"%MM_EXE%"\s+create\b', ln):
+            if "--no-shortcuts" not in ln:
+                bad.append(("no --no-shortcuts", ln))
+            if lines[i - 1].strip() != "call :mm_profile_on":
+                bad.append(("profile not moved", ln))
+    return bad
+
+
+def test_every_engine_micromamba_create_is_shortcut_free_and_off_the_real_profile():
+    text = _text(ENGINE)
+    assert len(re.findall(r'"%MM_EXE%"\s+create\b', text)) == 2  # the build and the --download-only preflight
+    assert not mm_create_offenders(text), mm_create_offenders(text)
+    assert mm_create_offenders('"%MM_EXE%" create -y --no-rc -r "%B%" -p "%P%" -f "%L%"')
+    assert mm_create_offenders('call :mm_profile_on\r\n"%MM_EXE%" create -y --no-rc -r "%B%" -p "%P%" -f "%L%"')
+    assert not mm_create_offenders('call :mm_profile_on\r\n"%MM_EXE%" create -y --no-shortcuts -r "%B%" -p "%P%"')
+
+
+def test_engine_profile_move_is_undone_and_leaves_the_real_profile_alone(tmp_path):
+    env = _sandbox(tmp_path)
+    real = str(tmp_path / "real profile")
+    env["USERPROFILE"] = real
+    text = _text(ENGINE)
+    body = ['set "WORK=%TEMP%\\w"', 'mkdir "%WORK%"', "call :mm_profile_on", "echo ON=%USERPROFILE%",
+            "call :mm_profile_off", "echo OFF=%USERPROFILE%", "exit /b 0", *_label_block(text, "mm_profile_on"),
+            *_label_block(text, "mm_profile_off")]
+    rc, out = _run_snippet(tmp_path, body, env)
+    on = re.search(r"^ON=(.*?)\r?$", out, re.M)
+    assert rc == 0 and on, out
+    assert on.group(1).startswith(env["TEMP"]) and on.group(1).endswith("mm-profile"), out
+    assert f"OFF={real}" in out, out
+
+
+def test_make_lock_keeps_micromamba_off_the_real_profile(tmp_path, monkeypatch):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("make_lock", REPO / "tools" / "installer" / "make_lock.py")
+    ml = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ml)
+    calls = []
+
+    def fake_run(args, env=None, **kw):
+        calls.append((list(args), dict(env or {})))
+        return subprocess.CompletedProcess(args, 0, b"# platform: win-64\n@EXPLICIT\nhttps://x/y.conda#abc\n", b"")
+
+    monkeypatch.setattr(ml.subprocess, "run", fake_run)
+    monkeypatch.setattr(ml, "LOCK", tmp_path / "out.lock")
+    fake_mm = tmp_path / "micromamba.exe"
+    fake_mm.write_bytes(b"")
+    monkeypatch.setattr("sys.argv", ["make_lock.py", "--micromamba", str(fake_mm)])
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "real profile"))
+    ml.main()
+    create = [(a, e) for a, e in calls if "create" in a]
+    assert len(create) == 1
+    args, env = create[0]
+    prefix = Path(args[args.index("-p") + 1])
+    assert "--no-shortcuts" in args
+    assert Path(env["USERPROFILE"]).parent == prefix.parent, env.get("USERPROFILE")  # inside the scratch folder
+
+
+def preflight_fetch_offenders(text):
+    """A failed fetch into the kept source stops the update (PF_FAIL) before anything is removed."""
+    lines = _code_lines("\n".join(_label_block(text, "preflight_kept")))
+    i = next(n for n, ln in enumerate(lines) if "fetch -q --depth 1 origin" in ln)
+    m = re.match(r"if errorlevel 1 goto (\w+)$", lines[i + 1].strip())
+    if not m:
+        return ["the fetch is not followed by a jump on failure: " + lines[i + 1]]
+    after = lines[lines.index(":" + m.group(1)) + 1:]
+    return [] if 'set "PF_FAIL=yes"' in after[:5] else ["the failure path does not set PF_FAIL"]
+
+
+def test_failed_fetch_in_same_folder_preflight_stops_before_removal():
+    text = _text(ENGINE)
+    assert not preflight_fetch_offenders(text), preflight_fetch_offenders(text)
+    assert preflight_fetch_offenders(text.replace("if errorlevel 1 goto preflight_kept_fetchfail",
+                                                  'if errorlevel 1 >>"%LOG%" echo([WARN] later'))
+    assert preflight_fetch_offenders(text.replace('set "PF_FAIL=yes"\r\nset "ERR=the new version', 'set "ERR=the new version'))
+
+
+def test_workspace_scan_reaches_paths_past_260_characters():
+    """Static: LongPathsEnabled=1 here lets the unprefixed scan pass, so this cannot be a behaviour test.
+    The scan roots at a \\\\?\\ path and strips it from what it reports and compares."""
+    text = _text(ENGINE)
+    scan = "\n".join(_label_block(text, "workspace_gate"))
+    assert "$r='\\\\?\\'+[IO.Path]::Combine($b,$t)" in scan
+    assert "[IO.Directory]::Exists($r)" in scan and "New-Object IO.DirectoryInfo($r)" in scan
+    assert "$e.FullName.Substring(4)" in scan and "$e.DirectoryName.Substring(4)" in scan
+
+
+def _lnk_target(lnk):
+    ps = "(New-Object -ComObject WScript.Shell).CreateShortcut($env:T_LNK).TargetPath"
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True,
+                       env={**os.environ, "T_LNK": str(lnk)})
+    return r.stdout.strip()
+
+
+@pytest.mark.parametrize("existing,replaced", [(None, True), ("same", True), ("other", False)])
+def test_desktop_shortcut_replaces_only_one_that_opens_this_installation(tmp_path, existing, replaced):
+    env = _sandbox(tmp_path)
+    base = _plain(tmp_path) / "b"
+    base.mkdir()
+    _shortcut(base / "ISAR Launcher.lnk", base / "ISAR-Launcher.bat")
+    target = {"same": base / "ISAR-Launcher.bat", "other": tmp_path / "other" / "ISAR-Launcher.bat"}.get(existing)
+    desk = Path(env["ISAR_TEST_DESKTOP"]) / "ISAR Launcher.lnk"
+    if target:
+        _shortcut(desk, target)
+        before = desk.read_bytes()
+    body = ['set "DESKTOP=yes"', f'set "BASE={base}"', 'set "WORK=%TEMP%"', 'set "LOG=%TEMP%\\snip.log"',
+            "call :desktop_copy", "exit /b 0", *_label_block(_text(ENGINE), "desktop_copy")]
+    rc, out = _run_snippet(tmp_path, body, env)
+    assert rc == 0 and desk.exists(), out
+    assert (_lnk_target(desk) == str(base / "ISAR-Launcher.bat")) == replaced, out
+    assert ("KEPT" in out) == (not replaced), out
+    if existing == "other":
+        assert desk.read_bytes() == before
+
+
+def test_latest_logs_an_outcome_after_the_release_installer_returns():
+    """Static: the network path cannot run in a routine test. The line after the release installer's
+    exit code is logged writes OUTCOME= before the script exits with that code."""
+    lines = _code_lines(_text(LATEST))
+    i = next(n for n, ln in enumerate(lines) if "RELEASE INSTALLER EXIT" in ln)
+    tail = "\n".join(lines[i:i + 8])
+    j = tail.index("OUTCOME=%OUTCOME%")
+    assert j < tail.index("exit /b %RC%")
+    assert 'if "%RC%"=="0" set "OUTCOME=installed"' in tail and 'set "OUTCOME=failed"' in tail

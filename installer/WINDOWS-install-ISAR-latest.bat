@@ -94,6 +94,10 @@ echo.
 call "%ENGINE%" %*
 set "RC=%ERRORLEVEL%"
 >>"%LOG%" echo(RELEASE INSTALLER EXIT=%RC%
+set "OUTCOME=failed"
+if "%RC%"=="0" set "OUTCOME=installed"
+if "%RC%"=="2" set "OUTCOME=refused"
+>>"%LOG%" echo(OUTCOME=%OUTCOME%
 cd /d "%SystemRoot%" 2>nul
 rd /s /q "%WORK%" 2>nul
 endlocal & exit /b %RC%

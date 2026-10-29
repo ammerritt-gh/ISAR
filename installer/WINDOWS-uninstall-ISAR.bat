@@ -1229,13 +1229,31 @@ if not "%MATCH%"=="yes" set "GH_CODE=000"
 >>"%LOG%" echo(HTTP %GH_CODE%
 goto :eof
 
+:: micromamba writes the prefix into %USERPROFILE%\.conda\environments.txt and
+:: conda-forge's git adds a Start Menu shortcut, and neither can be switched
+:: off (micromamba 2.5.0 has no register_envs setting; --no-shortcuts is
+:: passed too). So every create runs with USERPROFILE moved into the working
+:: folder, which is removed at the end: the real profile is never touched.
+:mm_profile_on
+set "PROFILE_KEEP=%USERPROFILE%"
+set "USERPROFILE=%WORK%\mm-profile"
+mkdir "%USERPROFILE%" 2>nul
+goto :eof
+:mm_profile_off
+set "USERPROFILE=%PROFILE_KEEP%"
+set "PROFILE_KEEP="
+goto :eof
+
 :: The environment from the lock copy kept beside the launcher (C-lock), into
 :: the installation's own root prefix and package cache. Sets ERR on failure.
 :create_env
 set "ERR="
-"%MM_EXE%" create -y --no-rc -r "%BASE%\mamba" -p "%BASE%\env" -f "%BASE%\launcher\isar-win-64.lock" >>"%LOG%" 2>&1 <nul
+call :mm_profile_on
+"%MM_EXE%" create -y --no-rc --no-shortcuts -r "%BASE%\mamba" -p "%BASE%\env" -f "%BASE%\launcher\isar-win-64.lock" >>"%LOG%" 2>&1 <nul
+set "MM_RC=%ERRORLEVEL%"
+call :mm_profile_off
 set "ERR=the Python environment could not be built; check the internet connection and the free disk space, then try again"
-if errorlevel 1 goto :eof
+if not "%MM_RC%"=="0" goto :eof
 if not exist "%BASE%\env\python.exe" goto :eof
 set "ERR="
 goto :eof
@@ -1357,8 +1375,10 @@ set "ERR=the package lock could not be placed in %BASE%\mamba"
 if not exist "%PF_LOCK%" goto :eof
 set "MM_EXE=%WORK%\micromamba.exe"
 if exist "%PF_PREFIX%\" rd /s /q "\\?\%PF_PREFIX%" 2>nul
-"%MM_EXE%" create -y --no-rc --download-only -r "%BASE%\mamba" -p "%PF_PREFIX%" -f "%PF_LOCK%" >>"%LOG%" 2>&1 <nul
+call :mm_profile_on
+"%MM_EXE%" create -y --no-rc --no-shortcuts --download-only -r "%BASE%\mamba" -p "%PF_PREFIX%" -f "%PF_LOCK%" >>"%LOG%" 2>&1 <nul
 set "PF_RC=%ERRORLEVEL%"
+call :mm_profile_off
 if exist "%PF_PREFIX%\" rd /s /q "\\?\%PF_PREFIX%" 2>nul
 del /f /q "%PF_LOCK%" >nul 2>nul
 set "ERR=the packages could not all be downloaded and checked; check the internet connection and the free disk space, then try again"
@@ -1373,8 +1393,14 @@ call :git_env
 if errorlevel 1 goto preflight_kept_nogit
 echo   Downloading commit %COMMIT:~0,8% into the kept copy of ISAR's source.
 "%GIT%" -c core.longpaths=true -C "%BASE%\app" fetch -q --depth 1 origin %COMMIT% >>"%LOG%" 2>&1 <nul
-if errorlevel 1 >>"%LOG%" echo([WARN] the kept source could not fetch the commit now; it is fetched after the rebuild
+if errorlevel 1 goto preflight_kept_fetchfail
 set "PATH=%SYS_PATH%"
+goto :eof
+:preflight_kept_fetchfail
+set "PATH=%SYS_PATH%"
+>>"%LOG%" echo([FAIL] the kept source could not fetch the commit; nothing has been removed
+set "PF_FAIL=yes"
+set "ERR=the new version of ISAR's source could not be downloaded; nothing was changed and the installation still works. Check the internet connection, then try again"
 goto :eof
 :preflight_kept_nogit
 >>"%LOG%" echo(The old environment's git does not run; the source is fetched after the rebuild.
@@ -1454,7 +1480,7 @@ if not "%DESKTOP%"=="yes" goto :eof
 if not exist "%BASE%\ISAR Launcher.lnk" goto :eof
 set "PSI_A=%BASE%\ISAR Launcher.lnk"
 del /f /q "%WORK%\desk.txt" >nul 2>nul
-powershell -NoProfile -NonInteractive -Command "try { $d=$env:ISAR_TEST_DESKTOP; if (-not $d) { $d=[Environment]::GetFolderPath('Desktop') }; if (-not $d) { throw 'Windows reports no Desktop folder' }; $t=[IO.Path]::Combine($d,'ISAR Launcher.lnk'); Copy-Item -LiteralPath $env:PSI_A -Destination $t -Force -ErrorAction Stop; 'OK A copy of the ISAR Launcher shortcut is on the Desktop: ' + $t } catch { 'FAIL The shortcut could not be copied to the Desktop: ' + $_.Exception.Message }" > "%WORK%\desk.txt" 2>nul <nul
+powershell -NoProfile -NonInteractive -Command "try { $d=$env:ISAR_TEST_DESKTOP; if (-not $d) { $d=[Environment]::GetFolderPath('Desktop') }; if (-not $d) { throw 'Windows reports no Desktop folder' }; $t=[IO.Path]::Combine($d,'ISAR Launcher.lnk'); $w=New-Object -ComObject WScript.Shell; if ([IO.File]::Exists($t)) { $o=$w.CreateShortcut($t).TargetPath; $m=$w.CreateShortcut($env:PSI_A).TargetPath; if ($o -ine $m) { 'KEPT The Desktop already has an ISAR Launcher shortcut that opens ' + $o + ', not this installation; it was left as it is. This installation opens from ' + $env:PSI_A; return } }; Copy-Item -LiteralPath $env:PSI_A -Destination $t -Force -ErrorAction Stop; 'OK A copy of the ISAR Launcher shortcut is on the Desktop: ' + $t } catch { 'FAIL The shortcut could not be copied to the Desktop: ' + $_.Exception.Message }" > "%WORK%\desk.txt" 2>nul <nul
 type "%WORK%\desk.txt" 2>nul
 >>"%LOG%" type "%WORK%\desk.txt"
 goto :eof
@@ -1742,7 +1768,7 @@ set "PSI_B=%WS_TARGETS%"
 set "PSI_C=%GB%\tracked-workspace-markers.txt"
 set "PSI_D=%WORK%\ws_found.txt"
 del /f /q "%WORK%\ws.txt" "%PSI_D%" >nul 2>nul
-powershell -NoProfile -NonInteractive -Command "try { $b=$env:PSI_A; $skip=@{}; if ([IO.File]::Exists($env:PSI_C)) { foreach ($l in [IO.File]::ReadAllLines($env:PSI_C)) { if ($l) { $skip[[IO.Path]::Combine($b,'app',$l).ToLowerInvariant()]=1 } } }; $found=New-Object Collections.Generic.List[string]; $link=''; $rp=[IO.FileAttributes]::ReparsePoint; foreach ($t in $env:PSI_B.Split('*')) { $r=[IO.Path]::Combine($b,$t); if (-not [IO.Directory]::Exists($r)) { continue }; $ri=New-Object IO.DirectoryInfo($r); if ($ri.Attributes -band $rp) { $link=$t; break }; $st=New-Object Collections.Stack; $st.Push($ri); while ($st.Count) { $d=$st.Pop(); foreach ($e in $d.EnumerateFileSystemInfos()) { if ($e.Attributes -band [IO.FileAttributes]::Directory) { if (-not ($e.Attributes -band $rp)) { $st.Push($e) } } elseif ($e.Name -ieq 'card.policy.toml' -or $e.Name -ieq 'gui.state.json') { if (-not $skip.ContainsKey($e.FullName.ToLowerInvariant())) { if (-not $found.Contains($e.DirectoryName)) { $found.Add($e.DirectoryName) } } } } } }; if ($link) { 'LINK ' + $link } else { $o=@(foreach ($f in $found) { 'WORKSPACE_FOUND=' + $f }); [IO.File]::WriteAllLines($env:PSI_D, [string[]]$o, (New-Object Text.UTF8Encoding $false)); 'SCAN ' + $found.Count } } catch { 'ERROR ' + $_.Exception.Message }" > "%WORK%\ws.txt" 2>nul <nul
+powershell -NoProfile -NonInteractive -Command "try { $b=$env:PSI_A; $skip=@{}; if ([IO.File]::Exists($env:PSI_C)) { foreach ($l in [IO.File]::ReadAllLines($env:PSI_C)) { if ($l) { $skip[[IO.Path]::Combine($b,'app',$l).ToLowerInvariant()]=1 } } }; $found=New-Object Collections.Generic.List[string]; $link=''; $rp=[IO.FileAttributes]::ReparsePoint; foreach ($t in $env:PSI_B.Split('*')) { $r='\\?\'+[IO.Path]::Combine($b,$t); if (-not [IO.Directory]::Exists($r)) { continue }; $ri=New-Object IO.DirectoryInfo($r); if ($ri.Attributes -band $rp) { $link=$t; break }; $st=New-Object Collections.Stack; $st.Push($ri); while ($st.Count) { $d=$st.Pop(); foreach ($e in $d.EnumerateFileSystemInfos()) { if ($e.Attributes -band [IO.FileAttributes]::Directory) { if (-not ($e.Attributes -band $rp)) { $st.Push($e) } } elseif ($e.Name -ieq 'card.policy.toml' -or $e.Name -ieq 'gui.state.json') { if (-not $skip.ContainsKey($e.FullName.Substring(4).ToLowerInvariant())) { $dn=$e.DirectoryName.Substring(4); if (-not $found.Contains($dn)) { $found.Add($dn) } } } } } }; if ($link) { 'LINK ' + $link } else { $o=@(foreach ($f in $found) { 'WORKSPACE_FOUND=' + $f }); [IO.File]::WriteAllLines($env:PSI_D, [string[]]$o, (New-Object Text.UTF8Encoding $false)); 'SCAN ' + $found.Count } } catch { 'ERROR ' + $_.Exception.Message }" > "%WORK%\ws.txt" 2>nul <nul
 >>"%LOG%" echo(Workspace scan in %GB% of %WS_TARGETS%:
 >>"%LOG%" type "%WORK%\ws.txt"
 findstr /b /l /c:"SCAN 0" "%WORK%\ws.txt" >nul 2>nul

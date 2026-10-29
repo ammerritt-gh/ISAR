@@ -32,13 +32,17 @@ SPECS = [
 CALL_TIMEOUT_S = 1800  # per micromamba call; a stalled download ends the run, it does not hang it
 
 
-def _clean_env():
+def _clean_env(profile):
     # Conda and mamba settings must not leak into the solve (the developer's rc files and variables).
-    return {k: v for k, v in os.environ.items() if not k.upper().startswith(("CONDA", "MAMBA"))}
+    # USERPROFILE moves into the scratch folder: micromamba cannot be told not to register the prefix
+    # in %USERPROFILE%\.conda\environments.txt, nor conda-forge's git not to add a Start Menu shortcut.
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("CONDA", "MAMBA"))}
+    env["USERPROFILE"] = str(profile)
+    return env
 
 
-def _run(args):
-    proc = subprocess.run(args, env=_clean_env(), capture_output=True, timeout=CALL_TIMEOUT_S)
+def _run(args, profile):
+    proc = subprocess.run(args, env=_clean_env(profile), capture_output=True, timeout=CALL_TIMEOUT_S)
     if proc.returncode != 0:
         tail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()[-15:]
         sys.exit("micromamba failed (exit %d):\n%s" % (proc.returncode, "\n".join(tail)))
@@ -64,9 +68,10 @@ def main():
     root, prefix = scratch / "mamba", scratch / "env"
     started = time.monotonic()
     try:
-        _run([mm, "create", "-y", "--no-rc", "--override-channels", "-c", "conda-forge",
-              "-r", str(root), "-p", str(prefix), *SPECS])
-        export = _run([mm, "env", "export", "--explicit", "--no-rc", "-r", str(root), "-p", str(prefix)])
+        _run([mm, "create", "-y", "--no-rc", "--no-shortcuts", "--override-channels", "-c", "conda-forge",
+              "-r", str(root), "-p", str(prefix), *SPECS], scratch / "profile")
+        export = _run([mm, "env", "export", "--explicit", "--no-rc", "-r", str(root), "-p", str(prefix)],
+                      scratch / "profile")
     finally:
         _remove(scratch)
 
