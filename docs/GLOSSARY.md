@@ -43,7 +43,8 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   whose elastic line is not significant. It is labelled `pipeline_zero` in the alerts; ISAR never
   assumes a zero of 0.0 on an uncalibrated axis.
 - **setting ladder** — how ISAR picks a scan's analyzer-slit setting, and so its resolution curve. A
-  slit the files or the user give is kept (a clearly better slit only raises `slit_mismatch`). With
+  slit the files, an accepted gpi file or the user give is kept (a clearly better slit only raises
+  `slit_mismatch`). With
   none, the slit whose curves best fit the elastic lines is used (`slit_inferred`), and
   `slit_ambiguous` says the runner-up is nearly as good.
 - **Voigt** — a Gaussian convolved with a Lorentzian; ISAR's instrument-resolution shape.
@@ -236,7 +237,8 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **held** — a scan ISAR is not ready to fit (most often `held_for_calibration`: no energy zero
   measured yet). Held scans are re-examined automatically on every later run; ISAR never guesses
   the missing piece.
-- **fact source** — where a scan's or spectrum's value came from: `header` (a `# key value` line in the
+- **fact source** — where a scan's or spectrum's value came from: `gpi` (an accepted gpi file, see *gpi file*),
+  `header` (a `# key value` line in the
   file, or its trailing `#Q=`/`#T=` line when no leading header gives it), `trailer` (a trailing line
   that disagrees with the leading header, kept as a conflict), `sidecar` (a beamline file beside the
   data, such as `.var`), `filename`, `inferred` (ISAR derived it) or `missing`. The first found wins in
@@ -245,7 +247,8 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   *File and user values disagree* item on the needs-attention list, naming the field and both values;
   the user value is the one used.
 - **Q rung** — how a spectrum's momentum transfer Q was obtained, best first: rung 1, the analyzer's
-  own HKL from the file; rung 2, computed from the sample angles and orientation (planned); rung 3,
+  own HKL from the file or an accepted gpi file; rung 2, computed from the sample angles and orientation (planned);
+  rung 3,
   computed from the arm-centre HKL and labelled approximate (planned); rung 4, no Q (`q = None`). The
   spectrum is still identified by its scan and analyzer, with or without Q.
 - **dispersion prior** — the running ω(Q) expectation ISAR builds from its own resolved fits
@@ -261,6 +264,11 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   (with its *fact source*) against the value you saved for that scan. A user value wins and is what the
   fit uses; saving the file value again withdraws it. A later save supersedes an earlier one, nothing is
   erased, and a value saved for one scan touches no other. The two disagree when both exist and differ.
+- **gpi file** (SPring-8 BL43LXU) — the beamline's hand-edited gnuplot macro `gpi_files/gpi.<scan set>` beside
+  the data. It gives each analyzer's HKL (its Q), the analyzer slit and the resolution curve set (`sarf_name`).
+  ISAR takes any of it only when its Q magnitudes agree with the data's `#Q=` values; otherwise nothing from
+  that file is used. Not the same as a SARF curve's own `.gpi` summary, the file beside each curve in `rf/` that
+  gives its widths. See USING_ISAR's *gpi files beside the scans*.
 - **condition** — a declaration about a scan or an analyzer rather than a number: an **excluded scan**
   (left out of every fit), a **dead analyzer** (left out of one scan), or **counts accepted** (below).
   Saved with an optional reason, and reversed by saving it again as not declared.

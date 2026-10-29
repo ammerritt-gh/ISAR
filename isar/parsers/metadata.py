@@ -18,8 +18,9 @@ from isar.schema.scan import Flag
 log = logging.getLogger(__name__)
 
 # Fact precedence, first found wins (the design's ladder); `inferred` and `missing` are not sources.
-# "trailer" is a file's trailing `#` lines, ranked just after its own header.
-PRECEDENCE = ("header", "trailer", "sidecar", "filename", "card")
+# "trailer" is a file's trailing `#` lines, ranked just after its own header. "gpi" is the beamline's
+# per-set gpi macro beside the data (isar.intake.gpi), ranked first (the effective-slit order).
+PRECEDENCE = ("gpi", "header", "trailer", "sidecar", "filename", "card")
 
 # Header keys whose values are numbers; every other key is kept as text.
 _HEADER_KINDS = {

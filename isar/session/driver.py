@@ -289,16 +289,21 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
             read = intake_store.read_all(workspace.root, intake_store.ENTRIES)
             index = intake_inputs.index_entries(read.entries, lines=read.lines)
             ctx_lines += intake_inputs.damage_lines(workspace.root, read=read, index=index)
-            scan_in = {k: intake_inputs.scan_inputs(rows[k], index) for k in rows}
-            run_start_eff = {k: intake_inputs.apply(parsed_by_key[k], scan_in[k]) for k in rows}
 
         # tabulated_elastic: the slit ladder and per-detector elastic zero, from the measurements
         # themselves (state-only; the policy file is never touched). Other methods: no lines. The run
-        # calibrates and fits with the one curve snapshot its check loaded.
+        # calibrates and fits with the one curve snapshot its check loaded. The gpi check runs after the
+        # curve check (which discovers rf/), so a named curve set resolves against the folder just found.
         loaded = None
+        gpi_entries: dict = {}
         if not master_certification:
             check_lines, loaded = _curve_check_lines(workspace.root, card, data_paths)
             ctx_lines += check_lines
+            if intake:
+                gpi_lines, gpi_entries = _gpi_check_lines(workspace.root, card, data_paths, rows)
+                ctx_lines += gpi_lines
+                scan_in = {k: intake_inputs.scan_inputs(rows[k], index, gpi_entries.get(k)) for k in rows}
+                run_start_eff = {k: intake_inputs.apply(parsed_by_key[k], scan_in[k]) for k in rows}
             if loaded is None and (card.policy.calibration or {}).get("method") == "tabulated_elastic":
                 loaded = curves.load_curves(*curves.resolution_location(card, workspace.root)[:2])
             cal_records = ([run_start_eff[k] for k in rows if scan_in[k].excluded is None] if intake
@@ -383,7 +388,8 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
     # --- Pass 1: split fresh scan-detectors (to fit) from carried ones, preserving report order. ---
     # BL43: every unit of the run's scans is a candidate; its scan's start point decides carry or fit
     # against the inputs frozen there (a save before a queued scan's turn is used). The task's record is
-    # the run-start effective record; Q comes from the parsed spectrum (a dead analyzer exists only there).
+    # the run-start effective record; Q is the import row's in force (an accepted gpi HKL, else the file's:
+    # a dead analyzer, present only in the parsed record, still has its row), else the parsed spectrum's.
     from isar.session.state import canonical_hash
     tasks = []          # (rec, det, q, T, sample, scan_id, chash, ghash, seed)
     plan = []           # ordered: ("carry", scan, outcome) | ("task", scan, det, task_idx)
@@ -397,7 +403,11 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
             sp = rec.spectra[det]
             # No Q (rung 4) and no temperature stay None downstream; neither is ever replaced by a
             # stand-in value that a guideline, a prior or a pool could then match.
-            q = [float(v) for v in sp.q] if sp.q is not None else None
+            if intake:
+                q = intake_inputs.analyzer_q(rows[_scan_key(rec)], scan_in[_scan_key(rec)], det)[0]
+                q = None if q is None else [float(v) for v in q]
+            else:
+                q = [float(v) for v in sp.q] if sp.q is not None else None
             T = unit_data.scan_temperature(fit_rec)
             sample = _sample_of(fit_rec, card)
             scan_id = f"{rec.experiment_id}:{scan}:{det}"
@@ -522,7 +532,7 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
             session=session,
             is_fresh=lambda prev, det, **kw: _unit_is_fresh(prev, det, force=force, deep_pass=deep_pass, **kw),
             write_stub=lambda task: _write_stub(workspace, card, task), loaded=loaded,
-            checkpoint=checkpoint_store)
+            checkpoint=checkpoint_store, gpi=gpi_entries)
     try:
         with timer.stage("fit_scans", n_tasks=len(tasks), use_pool=use_pool,
                          boot_workers=boot_workers, scan_workers=scan_workers,
@@ -1138,6 +1148,18 @@ def _curve_check_lines(root, card, data_paths) -> tuple[list[str], "curves.Loade
         log.exception("resolution curves: check failed")
         return [f"resolution curves: check failed ({type(exc).__name__}: {exc})"], None
     return ([], None) if got is None else (got[0].lines(), got[1])
+
+
+def _gpi_check_lines(root, card, data_paths, rows: dict) -> tuple[list[str], dict]:
+    """The run's gpi check (``isar.intake.gpi``) over every imported scan, this run's rows as just parsed, as
+    context lines, and its entries by scan key ({} when the check failed: no gpi value is used)."""
+    from isar.intake import gpi
+    try:
+        check = gpi.check_gpi(root, card, data_paths, by="run", rows={**intake_scans.read_scans(root), **rows})
+    except Exception as exc:  # noqa: BLE001 — a failed check is one context line; the run goes on without gpi values
+        log.exception("gpi files: check failed")
+        return [f"gpi files: check failed ({type(exc).__name__}: {exc}); no gpi value is used"], {}
+    return ([], {}) if check is None else (check.lines(), dict(check.scans))
 
 
 def _split_csv(s):

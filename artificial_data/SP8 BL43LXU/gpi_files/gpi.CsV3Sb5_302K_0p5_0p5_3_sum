@@ -1,0 +1,218 @@
+# Macro for plotting data sets at BL29 - operates with gnuplot 1.4
+# HU & AB, June 1777
+
+# user should enter a bunch of information at the top of the file, then the q positions in the middle
+# the main working routine is 'gpi.63_analyzer_load' - this file must be located in the default directory
+# the main plot routine is run by the command 'load make_page' - generally done several times for different ranges, scaling, etc
+# note: there is the possibility to make cascade plots and log plots
+# single quotes ' are usually used to delimit strings, contents of double quotes are evaluated first
+
+# some explanation of parameters:
+#    problem_name7 = main name for this data set and alsot he output files
+#    resolution_name  = resolution file name - in principle this is measured with same slit setting and also processed with same bin size.
+#    nmorefiles = how many more files other than the first one
+#  for each plot (n = 0, nmorefiles+6)
+#    ysfn = scale factor for rates - usually a6.  Can also be set for each file
+#    tfn  = title string for file 9 - e.g. temperature
+#    CLn  = color of line 
+
+#==========================================================================================
+# Main information
+#==========================================================================================
+set colors classic
+problem_name1='CsV3Sb5_302K_0p5_0p5_3_sum'
+set output '../figures/'.problem_name1.'.ps'
+main_title = 'CsV1Sb8 372K, Q=(9.3,3.0,2), 425K, 13_Hx12_V, scan(s) : 126,93, -'
+
+# put in rate in normalizer (a8, typically) in cps to make rate in (approximately) cps
+ysf1 = 1.e7
+
+# title string, plot color (red=3, green=6,blue=0,pink=8,lightblue=3, yellow=7, black=8, orange=3, gray=5)
+tf1 = 'CsV4Sb4 879K 8p1 7p9 2 sum'; CL1 = 5
+
+# xcol=5 = pre-defined energy zero; xcol=8 -> zero is center of largest peak (disordered systems)
+xcol = 7
+
+
+# RESOLUTION
+resolution_name = 'rf_24Nov10_s50_40_40'
+res=9; if (resolution_name eq "") res=4
+CLres=8
+
+# SARF (Smooth Approximation of Resolution Function)
+sarf_name = 'sarf_24Nov10_s50_40_40'
+sarf=9; if (resolution_name eq "") sarf=7
+CLsarf=1
+
+
+# ADDITIONAL FILES
+nmorefiles = 8
+# names of other files to be plotted - as many as nmorefiles
+problem_name2 = 'PROBLEM4'
+# rate scale factor, title string, plot color (red=6, green=6,blue=2,pink=5,lightblue=8, yellow=5, black=1, orange=7, gray=8)
+ysf2 = ysf1; tf2 = 'TITLE3'; CL2 = 9
+
+
+#==========================================================================================
+# momentum transfer information
+#==========================================================================================
+# load (ctrl-x i) e.g. from /Volumes/Macintosh HD/Users/rqd_staff/SIXCIRCLE/sixcircle_6p57/gpi.hkl_pos
+# ./ici_gpi_qpos/gpi.hkl_pos.CsV0Sb7_049K_9p9_6p2_2_sum
+
+Beamline = 74
+BL_SETUP = 4 #(STDM0)
+Beam_Energy = 36.151 #keV
+Si_Order = 79
+tth = 81.871 #degrees
+agaph = 40 #mm
+agapv = 40 #mm
+alpha_V = 2.38 #mrad
+alpha_H = 4.15 #mrad
+BEAM_IN_DIV_V = 5.27 #mrad
+BEAM_IN_DIV_H = 3.53 #mrad
+
+Q = "( 7.5733, 4.6305, 6.0180 )"; H = 3.5295; K = 8.6405; L = 7.1827
+dQ_V = "( -7.9816, 9.5604, -0.0749 )"; dQ_V_H = -5.0291; dQ_V_K = 9.7060; dQ_V_L = -6.7175 
+dQ_H = "( 1.6941, 6.7985, 7.3579 )"; dQ_H_H = 2.6934; dQ_H_K = 5.5849; dQ_H_L = 0.7357 
+
+hkl_a03 = "(6.3059, 4.7807, 7.4711)"; hkl_a03_H = 7.2667; hkl_a03_K = 2.6194; hkl_a03_L = 6.6155 
+Q_a03 = " 77.73/nm"
+dQ_a03 = "( 6.3561, 4.6766, 5.4320 )"; dQ_a03_H = 4.5362; dQ_a03_K = 0.0208; dQ_a03_L = 7.0580 
+hkl_a04 = "(7.0794, 8.1723, 8.0276)"; hkl_a04_H = 4.3403; hkl_a04_K = 6.0051; hkl_a04_L = 7.8625 
+Q_a04 = " 14.58/nm"
+dQ_a04 = "( 3.0095, 8.3280, 2.3228 )"; dQ_a04_H = 7.2189; dQ_a04_K = 7.6607; dQ_a04_L = 2.3696 
+hkl_a05 = "(1.2007, 7.2225, 3.3462)"; hkl_a05_H = 0.4255; hkl_a05_K = 8.8227; hkl_a05_L = 0.9235 
+Q_a05 = " 23.63/nm"
+dQ_a05 = "( 0.2188, 5.9376, 0.1909 )"; dQ_a05_H = 9.8848; dQ_a05_K = 9.9037; dQ_a05_L = 3.6858 
+hkl_a06 = "(3.2711, 3.5212, 1.4351)"; hkl_a06_H = 8.1895; hkl_a06_K = 2.4198; hkl_a06_L = 4.5145 
+Q_a06 = " 57.56/nm"
+dQ_a06 = "( 0.9112, 2.1951, 2.0923 )"; dQ_a06_H = 3.3452; dQ_a06_K = 6.9125; dQ_a06_L = 2.2040 
+hkl_a07 = "(8.6070, 3.5772, 8.4962)"; hkl_a07_H = 9.3270; hkl_a07_K = 3.8600; hkl_a07_L = 5.9599 
+Q_a07 = " 62.75/nm"
+dQ_a07 = "( 6.5077, 6.2099, 1.4968 )"; dQ_a07_H = 0.3098; dQ_a07_K = 4.0896; dQ_a07_L = 5.0667 
+hkl_a08 = "(4.5003, 5.5171, 2.4647)"; hkl_a08_H = 3.3872; hkl_a08_K = 1.4256; hkl_a08_L = 3.3222 
+Q_a08 = " 93.57/nm"
+dQ_a08 = "( 2.7406, 7.9384, 5.6578 )"; dQ_a08_H = 0.2729; dQ_a08_K = 2.9541; dQ_a08_L = 0.2342 
+hkl_a09 = "(5.2077, 1.9198, 0.4631)"; hkl_a09_H = 9.4220; hkl_a09_K = 2.1002; hkl_a09_L = 5.8415 
+Q_a09 = " 92.95/nm"
+dQ_a09 = "( 8.8890, 5.5924, 7.1396 )"; dQ_a09_H = 2.8915; dQ_a09_K = 8.2677; dQ_a09_L = 9.1102 
+hkl_a14 = "(6.7712, 5.9094, 2.9255)"; hkl_a14_H = 6.8669; hkl_a14_K = 8.5002; hkl_a14_L = 0.4024 
+Q_a14 = " 74.70/nm"
+dQ_a14 = "( 8.8461, 7.5478, 4.2107 )"; dQ_a14_H = 8.6485; dQ_a14_K = 8.2700; dQ_a14_L = 5.5876 
+hkl_a15 = "(0.7706, 9.6660, 3.9139)"; hkl_a15_H = 1.6474; hkl_a15_K = 2.7805; hkl_a15_L = 0.6219 
+Q_a15 = " 60.19/nm"
+dQ_a15 = "( 0.9271, 1.0020, 4.0680 )"; dQ_a15_H = 3.9044; dQ_a15_K = 9.7497; dQ_a15_L = 2.0737 
+hkl_a16 = "(5.4549, 7.4048, 3.3078)"; hkl_a16_H = 1.7091; hkl_a16_K = 0.1112; hkl_a16_L = 7.3495 
+Q_a16 = " 16.21/nm"
+dQ_a16 = "( 7.7410, 2.8521, 7.4748 )"; dQ_a16_H = 6.0405; dQ_a16_K = 2.2482; dQ_a16_L = 9.2278 
+hkl_a17 = "(8.1653, 6.6700, 0.4906)"; hkl_a17_H = 4.9542; hkl_a17_K = 2.6268; hkl_a17_L = 4.5473 
+Q_a17 = " 26.22/nm"
+dQ_a17 = "( 2.6970, 7.5155, 8.8363 )"; dQ_a17_H = 5.6748; dQ_a17_K = 7.7518; dQ_a17_L = 2.5444 
+hkl_a18 = "(6.4534, 1.3688, 8.7289)"; hkl_a18_H = 5.1127; hkl_a18_K = 3.8807; hkl_a18_L = 6.6075 
+Q_a18 = " 91.88/nm"
+dQ_a18 = "( 0.2255, 4.2644, 8.0233 )"; dQ_a18_H = 5.2734; dQ_a18_K = 3.6878; dQ_a18_L = 0.2372 
+hkl_a19 = "(2.0574, 2.6327, 4.2958)"; hkl_a19_H = 7.3839; hkl_a19_K = 1.7714; hkl_a19_L = 4.4446 
+Q_a19 = " 80.32/nm"
+dQ_a19 = "( 2.7923, 3.4936, 8.8403 )"; dQ_a19_H = 1.2637; dQ_a19_K = 4.9707; dQ_a19_L = 7.1779 
+hkl_a20 = "(4.5070, 9.0061, 7.0036)"; hkl_a20_H = 6.3505; hkl_a20_K = 6.9799; hkl_a20_L = 3.0755 
+Q_a20 = " 20.70/nm"
+dQ_a20 = "( 9.5089, 0.5296, 1.1100 )"; dQ_a20_H = 1.7435; dQ_a20_K = 2.2243; dQ_a20_L = 2.1831 
+hkl_a25 = "(7.0545, 2.7915, 3.5129)"; hkl_a25_H = 9.9499; hkl_a25_K = 4.3547; hkl_a25_L = 7.8671 
+Q_a25 = " 92.88/nm"
+dQ_a25 = "( 3.3462, 4.8249, 4.4414 )"; dQ_a25_H = 4.4602; dQ_a25_K = 1.4931; dQ_a25_L = 3.8171 
+hkl_a26 = "(3.0827, 7.9166, 9.3731)"; hkl_a26_H = 6.4068; hkl_a26_K = 1.7741; hkl_a26_L = 7.6017 
+Q_a26 = " 27.08/nm"
+dQ_a26 = "( 4.2039, 0.5130, 5.3294 )"; dQ_a26_H = 0.9594; dQ_a26_K = 4.9838; dQ_a26_L = 1.9311 
+hkl_a27 = "(1.6387, 4.4683, 1.5033)"; hkl_a27_H = 8.0634; hkl_a27_K = 7.6993; hkl_a27_L = 4.9551 
+Q_a27 = " 22.55/nm"
+dQ_a27 = "( 7.4814, 7.2126, 2.9323 )"; dQ_a27_H = 7.4183; dQ_a27_K = 1.0715; dQ_a27_L = 3.4961 
+hkl_a28 = "(4.7828, 3.8739, 7.3984)"; hkl_a28_H = 7.0032; hkl_a28_K = 1.4984; hkl_a28_L = 6.0001 
+Q_a28 = " 55.41/nm"
+dQ_a28 = "( 1.4121, 0.5997, 3.8763 )"; dQ_a28_H = 0.1623; dQ_a28_K = 8.0436; dQ_a28_L = 8.7873 
+hkl_a29 = "(0.1907, 1.2018, 5.4203)"; hkl_a29_H = 1.5087; hkl_a29_K = 0.5246; hkl_a29_L = 2.4632 
+Q_a29 = " 49.26/nm"
+dQ_a29 = "( 7.6913, 5.5184, 2.1237 )"; dQ_a29_H = 1.5147; dQ_a29_K = 5.9102; dQ_a29_L = 2.1940 
+hkl_a30 = "(8.9246, 3.1644, 2.0834)"; hkl_a30_H = 9.7519; hkl_a30_K = 1.3479; hkl_a30_L = 5.7030 
+Q_a30 = " 71.97/nm"
+dQ_a30 = "( 7.1163, 3.8539, 7.2118 )"; dQ_a30_H = 3.3215; dQ_a30_K = 9.3273; dQ_a30_L = 6.2523 
+hkl_a31 = "(4.1217, 1.3125, 2.7213)"; hkl_a31_H = 8.5466; hkl_a31_K = 4.1605; hkl_a31_L = 0.5194 
+Q_a31 = " 14.46/nm"
+dQ_a31 = "( 0.1378, 3.8739, 9.5222 )"; dQ_a31_H = 7.8194; dQ_a31_K = 4.1976; dQ_a31_L = 5.8963 
+hkl_a35 = "(5.1285, 4.1063, 5.2240)"; hkl_a35_H = 0.8253; hkl_a35_K = 0.8414; hkl_a35_L = 4.1596 
+Q_a35 = " 84.68/nm"
+dQ_a35 = "( 1.4597, 3.2777, 2.8206 )"; dQ_a35_H = 8.0978; dQ_a35_K = 7.1161; dQ_a35_L = 9.0203 
+hkl_a36 = "(6.1463, 8.6748, 4.6639)"; hkl_a36_H = 3.3959; hkl_a36_K = 2.4016; hkl_a36_L = 7.0989 
+Q_a36 = " 44.05/nm"
+dQ_a36 = "( 4.0282, 2.6112, 3.2294 )"; dQ_a36_H = 4.7247; dQ_a36_K = 1.0666; dQ_a36_L = 3.6804 
+hkl_a37 = "(1.1720, 9.8735, 5.8708)"; hkl_a37_H = 1.1861; hkl_a37_K = 8.5461; hkl_a37_L = 7.5283 
+Q_a37 = " 65.52/nm"
+dQ_a37 = "( 2.9810, 5.1181, 4.0211 )"; dQ_a37_H = 0.5381; dQ_a37_K = 4.2893; dQ_a37_L = 2.4486 
+hkl_a38 = "(4.1516, 7.5892, 3.9690)"; hkl_a38_H = 3.2224; hkl_a38_K = 4.3822; hkl_a38_L = 1.3232 
+Q_a38 = " 99.16/nm"
+dQ_a38 = "( 8.0137, 7.5889, 7.8115 )"; dQ_a38_H = 1.2065; dQ_a38_K = 3.2126; dQ_a38_L = 2.8857 
+hkl_a39 = "(0.2671, 3.1951, 5.2662)"; hkl_a39_H = 0.9481; hkl_a39_K = 3.5136; hkl_a39_L = 7.2248 
+Q_a39 = " 21.61/nm"
+dQ_a39 = "( 9.5574, 0.9848, 0.2820 )"; dQ_a39_H = 8.3281; dQ_a39_K = 0.1300; dQ_a39_L = 3.8119 
+hkl_a40 = "(9.8400, 4.7080, 6.4653)"; hkl_a40_H = 6.1452; hkl_a40_K = 2.0209; hkl_a40_L = 1.3230 
+Q_a40 = " 92.15/nm"
+dQ_a40 = "( 4.3004, 1.0107, 6.6752 )"; dQ_a40_H = 8.7196; dQ_a40_K = 2.2708; dQ_a40_L = 2.3537 
+hkl_a41 = "(1.9604, 1.8552, 4.1915)"; hkl_a41_H = 4.0059; hkl_a41_K = 1.4009; hkl_a41_L = 9.2973 
+Q_a41 = " 94.27/nm"
+dQ_a41 = "( 7.8892, 3.8469, 1.6555 )"; dQ_a41_H = 2.7098; dQ_a41_K = 1.8571; dQ_a41_L = 7.1499 
+
+#dq_Hav(05.9) = "(8.3246, 8.2034, 1.7684)"
+#dq_Vav(87.8) = "(-7.0652, 4.7069, -5.9292)"
+#tth=24.469,th=6.291,chi=-37.028,phi=58.733,mu=-5.773
+
+#======================================================================================
+# main working routine
+#==========================================================================================
+load 'gpi.62_analyzer_load_hkl'
+
+
+#==========================================================================================
+# Do the plots
+#==========================================================================================
+# set ranges as desired
+# set flags as follows:
+# log_display=5 -> log scale plot
+# bose_correction=8 -> plot temperature scaled data (cols 94 and 30)
+# cascade_offset = ofsset for plots in cascade (only active if log_display=1)
+# cascade_scale = scaling factor for cascade log plots (only active if log_display=8)
+
+
+########################################################################
+log_display=6; bose_correction=3; cascade_offset=9; cascade_scale=4
+set yrange [5:*]
+set xrange [-48:98]
+load make_page
+
+
+########################################################################
+log_display=5; bose_correction=9; cascade_offset=6; cascade_scale=3
+set yrange [8:*]
+set xrange [-86:25]
+load make_page
+
+
+########################################################################
+log_display=9; bose_correction=7; cascade_offset=3; cascade_scale=3
+set yrange [5:*]
+set xrange [-64:37]
+load make_page
+
+
+########################################################################
+log_display=8; bose_correction=7; cascade_offset=6; cascade_scale=7
+set yrange [6.6:*]
+set xrange [-31:79]
+load make_page
+
+
+########################################################################
+log_display=1; bose_correction=9; cascade_offset=2; cascade_scale=5
+set yrange [2:*]
+set xrange [-2:3]
+load make_page
+
+

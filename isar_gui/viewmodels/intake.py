@@ -285,3 +285,7 @@ class IntakeState(QObject):
     def save_resolution_folder(self, folder: Path) -> SaveOutcome:
         return self._save("resolution folder", lambda root: intake_settings.save_resolution_folder(
             root, str(folder)), lambda r: f"Saved: resolution folder {r.value}")
+
+    def save_gpi_folder(self, folder: Path) -> SaveOutcome:
+        return self._save("gpi folder", lambda root: intake_settings.save_gpi_folder(
+            root, str(folder)), lambda r: f"Saved: gpi folder {r.value}")

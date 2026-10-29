@@ -25,8 +25,8 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
                                QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
-from isar_gui.plain_words import (STAND_IN_MARK, STAND_IN_TIP, affects, fix_sentence, group_title, plain_hold,
-                                  stand_in)
+from isar_gui.plain_words import (KIND_FIX, STAND_IN_MARK, STAND_IN_TIP, affects, fix_sentence, group_title,
+                                  plain_hold, stand_in)
 from isar_gui.theme import TONE_COLOR, Tone
 from isar_gui.views.elided_label import ElidedButton, ElidedLabel
 from isar_gui.views.setup_section import LOCATE_LONG, LOCATE_TIP, RUN_TEXT, RUN_TIP
@@ -69,6 +69,12 @@ _TITLE_TIPS = {
     "q_missing": "Without Q the campaign planner cannot place this scan; the fit is not affected.",
     "calibration_pending": ("Analysis calibrates these scan sets (energy zero and resolution) when it starts; "
                             "until then they are held and no energy zero is assumed."),
+    "gpi_rejected": ("The gpi file's |Q| does not match the #Q= value of every data file it covers (or one is "
+                     "missing), so nothing from it is used: no Q, slit or curve set for these scan sets."),
+    "gpi_curves_dropped": ("The gpi file names a resolution curve set, but the slit you entered is not that set's "
+                           "slit, so your slit chooses the curves for these scan sets."),
+    "gpi_folder_changed": ("The gpi folder was changed; the values from its files stay set aside until the data is "
+                           "read again or the analysis starts."),
 }
 _HEADER_TIP = ("Things missing or unreadable that stop or weaken the analysis. Open a group to see which "
                "scan sets or analyzers, then fix it there.")
@@ -539,7 +545,7 @@ class AttentionList(QWidget):
         else:
             foot = None
         fix = g.action if g.action in _FIX_BUTTONS else None
-        phrase = fix_sentence(g.action)
+        phrase = KIND_FIX.get(g.kind) or fix_sentence(g.action)
         quiet = " · ".join(p for p in (f"Affects: {affects(g.uses)}" if g.uses else "",
                                        f"Fix: {phrase}" if phrase else "") if p)
         rows, plain, scans = [], [], []
