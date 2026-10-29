@@ -186,7 +186,8 @@ up per model.
 - **Eyeball (findable artifact):** `python -m isar.reduce.adjudicate_eyeball` → writes a live report +
   audit to `out/adjudication_eyeball/`; prints `recall / destructive / schema_adherence`. Point at the
   cloud model with `ISAR_LLM_MODEL=nanogpt/deepseek/deepseek-v4-flash`.
-- **Gated bake-off test:** `tests/real_data/test_adjudicate_bakeoff.py` (marked `slow`; auto-skips when
+- **Gated bake-off test:** `tests/real_data/test_adjudicate_bakeoff.py` (marked `slow` and `live`, so it
+  needs `--run-slow` as well as `ISAR_LIVE_LLMM=1`; auto-skips when
   LLMM is unreachable) runs local-9B-vs-cloud and asserts the local 9B is non-destructive when
   serviceable.
 

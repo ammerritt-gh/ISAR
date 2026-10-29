@@ -27,7 +27,8 @@ area.
   (`pyproject.toml`). **The routine suite needs nothing outside git** — no test reads `real_data/`
   (hard rule 10), so it passes in any worktree or fresh checkout. `live` needs a running TAVI at
   `127.0.0.1:8642` and opts in through `ISAR_LIVE_TAVI=1` (`ISAR_LIVE_LLMM=1` for the LLMM test);
-  a live run must report **passed**, not skipped — a skipped live test is a failure to investigate.
+  a live run must report **passed**, not skipped — a skipped live test is a failure to investigate
+  (a live test also marked `slow`, such as the LLMM bake-off, needs `--run-slow` too).
   `isar/synth/tests/` = Phase-1 synthetic core; `tests/` = Phase 2+. Parallel runs need
   `pytest-xdist>=3.5` (in the `[test]` extra).
 - **Proofs — checks against real data, run on purpose.** `proofs/` sits outside `testpaths`, so the

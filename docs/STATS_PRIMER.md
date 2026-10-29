@@ -28,8 +28,9 @@ command that regenerates its evidence. Where a capability is not yet wired in, i
 
 ## Running the statistical checks
 
-Ordinary full validation (serial or parallel) includes real-fit integrations and
-serial/parallel equivalence, but deselects tests marked `statistical`. On the operator's
+The slow check (`--run-slow`, `run-isar-checks.bat`) includes real-fit integrations and
+serial/parallel equivalence; the routine gate leaves those out, and both deselect tests marked
+`statistical` (a campaign also marked `slow` needs only `--run-statistical`). On the operator's
 explicit request, run the repeated-fit campaigns with:
 
 ```bat
