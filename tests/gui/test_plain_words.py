@@ -49,6 +49,14 @@ def test_a_result_cells_tooltip_says_the_word_once():
     assert _status_cell(Status("not run", False), DEEP).tooltip.splitlines()[0] == "not run"   # the word is its own
 
 
+def test_every_stored_hkl_source_has_a_plain_source_word():
+    from isar.schema.scan import Q_SOURCE_RUNG
+    for word in (*Q_SOURCE_RUNG, "file"):                  # "none" is a missing hkl: it never shows a source
+        if word != "none":
+            assert pw.source_words(word) != word, word
+    assert pw.source_words("reported") == "reported in the file"
+
+
 def test_a_status_word_is_not_said_twice():
     assert pw.drop_echo("resolved", "resolved: count 1 (P 0.91)") == "count 1 (P 0.91)"
     assert pw.drop_echo("held", "no energy zero") == "no energy zero" and pw.drop_echo("held", None) is None
