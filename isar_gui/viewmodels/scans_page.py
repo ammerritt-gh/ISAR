@@ -400,6 +400,7 @@ class ScansPageViewModel(ViewModel):
             refit = fit_id != 'fast'
             # an in-use refit is the spectrum's fit, so it draws in the fast slot even at Fit None
             shown = 'fast' if refit and fit_pass == 'none' else fit_pass
+            refit = refit and shown == 'fast'    # Deep draws the solo deep fit, never the refit
             if shown != 'none' and common['view'] != 'overlay':
                 result = scaled.passes[shown]
                 summary = bundle.summaries[shown]

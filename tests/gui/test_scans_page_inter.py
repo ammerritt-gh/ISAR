@@ -246,3 +246,15 @@ def test_a_fresh_page_draws_the_authoritative_refit_at_the_default_fit(qtbot, sc
     assert drawn.curves_header == "Curves · Inter-spectra fits"
     text = next(line.text for line in drawn.legend if line.entry == ONE_MODE)
     assert "Batch 1 · ring 2" in text and CONDITIONAL_ERRORS in text
+
+
+def test_the_legend_names_the_deep_curve_when_fit_is_deep(setup, reads):
+    page, inter = setup
+    inter.overview = make_overview(by_key={ONE_MODE: _row(ONE_MODE, "r2")})
+    inter.histories[ONE_MODE] = make_history(_refit("r2", "ring 2", authoritative=True))
+    page.vm.set_fit("deep")
+    drawn = _select(page, ONE_MODE, active=ONE_MODE)
+    assert page._drawn_state.traces[0].curves
+    text = next(line.text for line in drawn.legend if line.entry == ONE_MODE)
+    assert "Batch 1 · ring 2" not in text and CONDITIONAL_ERRORS not in text
+    assert drawn.curves_header.startswith("Curves · Deep")    # the fixture's deep fit is untrusted
