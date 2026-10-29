@@ -464,13 +464,14 @@ def test_timing_is_reported_never_asserted(anchored_run, simultaneous_run, ws, o
                 if isinstance(came_out.get("timing"), dict):
                     timings.append(came_out["timing"])
         view = {"wall_s": b.end["timing"]["wall_s"], "rings": b.end.get("rings_done"), "sweeps": b.end.get("sweeps"),
-                "refit_timings": timings}
+                "refit_timings": timings, "timing": b.end["timing"]}
         rep = chk.timing_report(view, fast_round, cores=BATCH_WORKERS, target_s=TARGET_S)
         rep["segments"] = b.segments
         reports[b.label] = rep
         print(f"\n{b.label}: wall {rep['wall_s']:.1f} s, {rep['refits']} refits, rings {rep['rings']}, "
               f"sweeps {rep['sweeps']}, cores {rep['cores']}, fast round {fast_round} s")
         print(f"  split (core s): {({k: round(v, 1) for k, v in rep['split_core_s'].items()})}")
+        print(f"  serial wall (s, main process): {({k: round(v, 1) for k, v in rep['serial_wall_s'].items()})}")
         print(f"  per refit: {rep['refit_total_s']}")
         print(f"  projection {rep['projection_s']} s: {rep['verdict']}")
     RESULTS["timing"] = reports

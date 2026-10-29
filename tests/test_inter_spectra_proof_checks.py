@@ -121,12 +121,18 @@ def _refit(each):
     return {"assign_s": each, "likelihood_s": each, "continuous_s": each, "uncertainty_s": each, "release_s": each}
 
 
-def test_timing_splits_sum_to_the_wall_and_projects_against_the_target():
-    view = {"wall_s": 100.0, "rings": 2, "sweeps": None, "refit_timings": [_refit(2.0)] * 4}
+RUNNER = {"prepare_s": 1.0, "assign_s": 3.0, "ship_s": 0.5, "save_s": 1.5, "likelihood_s": 6.0,
+          "continuous_s": 8.0, "uncertainty_s": 4.0, "release_s": 2.0}
+
+
+def test_timing_split_takes_the_runners_pricing_and_stage_time():
+    view = {"wall_s": 100.0, "rings": 2, "sweeps": None, "refit_timings": [_refit(2.0)] * 4, "timing": RUNNER}
     rep = chk.timing_report(view, 50.0, cores=2, target_s=1800.0)
     assert rep["refits"] == 4 and rep["rings"] == 2
-    assert rep["split_core_s"]["continuous_s"] == 8.0
-    assert rep["split_core_s"]["remainder_core_s"] == 100.0 * 2 - 4 * 5 * 2.0
+    # the stage-1 pricing (likelihood_s) is in the core split, not left as remainder
+    assert rep["split_core_s"]["likelihood_s"] == 6.0 and rep["split_core_s"]["continuous_s"] == 8.0
+    assert rep["split_core_s"]["remainder_core_s"] == 100.0 * 2 - (6.0 + 8.0 + 4.0 + 2.0)
+    assert rep["serial_wall_s"] == {"prepare_s": 1.0, "assign_s": 3.0, "ship_s": 0.5, "save_s": 1.5}
     assert rep["refit_total_s"] == {"median": 10.0, "p90": 10.0, "max": 10.0}
     assert rep["projection_s"] == 10.0 * 4 / 2 and rep["verdict"] == "under the target"
     # twice the target: over, named as a target and not a limit

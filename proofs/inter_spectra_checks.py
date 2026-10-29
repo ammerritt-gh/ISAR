@@ -17,6 +17,8 @@ from isar.session.inter_spectra.records import Flag
 
 SYMBOL = {"serious": "!", "warn": "?", "info": "i"}
 COST_KEYS = ("assign_s", "likelihood_s", "continuous_s", "uncertainty_s", "release_s")
+RUN_CORE_KEYS = ("likelihood_s", "continuous_s", "uncertainty_s", "release_s")     # pool core-seconds, runner block
+RUN_SERIAL_KEYS = ("prepare_s", "assign_s", "ship_s", "save_s")                   # main-process wall seconds
 
 
 @dataclass(frozen=True)
@@ -96,18 +98,22 @@ def accounting_ok(progress: Mapping[str, int]) -> Verdict:
 
 
 def timing_report(batch_view: Mapping, fast_round_s: float | None, cores: int, target_s: float = 1800.0) -> dict:
-    """The batch's timing (ED8). ``batch_view``: ``wall_s``, ``rings``, ``sweeps`` and ``refit_timings``, the core's
-    timing dict of each refit. Sums are core-seconds; ``remainder_core_s`` is wall x cores less the sums (preparing,
-    shipping, saving, idle workers). Projection: mean refit x refits / cores, against ``target_s``, a target and
-    never a limit."""
+    """The batch's timing (ED8). ``batch_view``: ``wall_s``, ``rings``, ``sweeps``, ``refit_timings`` (each refit's
+    timing dict, for the spread) and ``timing``, the runner's own block, which carries the stage-1 pricing the refit
+    dicts do not. The split's core-seconds are the pool's; the main process's wall seconds sit beside them, not in
+    the sum (``assign_s`` wall includes the pool's pricing). ``remainder_core_s`` is wall x cores less the core sums
+    (preparing, shipping, saving, idle workers). Projection: mean refit x refits / cores, against ``target_s``, a
+    target and never a limit."""
     cores = max(1, int(cores))
     refits = list(batch_view.get("refit_timings") or [])
+    run = batch_view.get("timing") or {}
     wall = float(batch_view.get("wall_s") or 0.0)
-    sums = {k: sum(float(t.get(k, 0.0)) for t in refits) for k in COST_KEYS}
+    core = {k: float(run.get(k, 0.0)) for k in RUN_CORE_KEYS}
     totals = [sum(float(t.get(k, 0.0)) for k in COST_KEYS) for t in refits]
     report = {"wall_s": wall, "refits": len(refits), "rings": batch_view.get("rings"),
               "sweeps": batch_view.get("sweeps"), "cores": cores, "fast_round_s": fast_round_s,
-              "split_core_s": {**sums, "remainder_core_s": wall * cores - sum(sums.values())},
+              "split_core_s": {**core, "remainder_core_s": wall * cores - sum(core.values())},
+              "serial_wall_s": {k: float(run.get(k, 0.0)) for k in RUN_SERIAL_KEYS},
               "refit_total_s": None, "projection_s": None, "target_s": target_s, "verdict": None}
     if totals:
         ordered = sorted(totals)
