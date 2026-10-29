@@ -3,7 +3,8 @@
 The panel shows what the :class:`~isar_gui.queue_controller.QueueController` reports and sends the user's
 actions back to it; it computes and fits nothing. From the top: the switch that fast-passes new scans as they
 arrive, the selection with the two add buttons, a banner when the queue is paused or cannot start, the fast and
-the deep queue (each under its scan-set headings), the Finished list, and a footer with Pause or Resume. Only
+the deep queue (each under its scan-set headings), the inter-spectra batches (one row each, named by its start
+time), the Finished list, and a footer with Pause or Resume. Only
 the queue part scrolls; the switch, the selection and the add buttons stay in view.
 
 The threshold for every line here is a reader who knows inelastic scattering and the beamtime but has never
@@ -41,6 +42,23 @@ _DEEP_TIP = ("Deep passes: the slower, sampled fit for a spectrum whose fast pas
 _FINISHED_TIP = ("What has finished since you opened this experiment: one line per scan set and pass, then each "
                  "analyzer that needs a look (held, failed, stopped or done with a warning) and each finished deep "
                  "pass. The saved results themselves are in the scan list.")
+_BATCHES_TIP = ("Inter-spectra batches: a second pass that refits spectra against their neighbours, started from the "
+                "Inter-spectra fitting box in the Processing dock. Each batch is one row, runs on its own, and can be "
+                "stopped on its own.")
+_BATCH_WAIT_TIP = "Waits for the fast passes of its spectra; it starts when cores free up."
+_BATCH_STOP_TIP = ("Stops this batch now and frees its cores. It asks nothing: the rings or sweeps already saved are "
+                   "kept, and spectra not reached keep their current fits.")
+_BATCH_COUNTS_TIP = ("done: spectra whose refit was saved in this batch. failed: spectra whose latest attempt failed, "
+                     "was rejected or could not be saved. not reached: spectra never attempted. Anchors and locked "
+                     "spectra are kept as they are and are not counted. Counts are current: a spectrum that failed "
+                     "and then succeeded counts as done.")
+_RING_TIP = ("A ring is one step further from the anchors; it is refitted only against the anchors and the rings "
+             "before it.")
+_SWEEP_TIP = ("A sweep refits every spectrum once against its neighbours; sweeps repeat until the batch settles or "
+              "reaches its cap.")
+_BATCH_STAGE = {"prepare": "preparing", "plan": "planning"}
+_BATCH_ENDED = ("done", "done_warning", "failed", "stopped")
+_DIRECTION_WORDS = {"q": "spread in q", "T": "spread in T", "qT": "spread in q and T"}
 
 
 def fmt_elapsed(seconds: float) -> str:
@@ -95,6 +113,53 @@ def progress_text(item, now: float) -> tuple[str, str]:
     tip = ("The fast pass tries one peak count after another, up to a ceiling; it may stop before the ceiling. "
            "The time is how long ISAR has been on this step.")
     return text, tip
+
+
+def _work_words(files: int, batches: int) -> str:
+    """"2 analyzers", "1 batch", or "2 analyzers and 1 batch"; zero analyzers is named only when nothing else is."""
+    words = [f"{files} {_plural(files, 'analyzer', 'analyzers')}"] if files or not batches else []
+    if batches:
+        words.append(f"{batches} {_plural(batches, 'batch', 'batches')}")
+    return " and ".join(words)
+
+
+def _batch_title(batch) -> str:
+    """The batch's start time, its kind and direction, and its scope; never a per-window number."""
+    what = batch.kind + (f", {_DIRECTION_WORDS[batch.direction]}" if batch.kind == "anchored" else "")
+    return f"{batch.label} · {what} · {batch.n_total} spectra"
+
+
+def batch_progress_text(batch, now: float) -> tuple[str, str]:
+    """(the progress line of a batch, its hover): the stage it is in, then the counts. The hover says what each count
+    means and why any spectrum was not reached. ``batch.progress`` is the engine's latest step, as received."""
+    if batch.progress is None and batch.status not in _BATCH_ENDED:
+        return "starting", "ISAR has started this batch and has not reported a step yet."
+    p = batch.progress or {}
+    counts = [f"{p.get('done', 0)} of {batch.n_total} done"]
+    if p.get("failed"):
+        counts.append(f"{p['failed']} failed")
+    if p.get("not_reached"):
+        counts.append(f"{p['not_reached']} not reached")
+    tips = [_BATCH_COUNTS_TIP]
+    if batch.not_reached_reasons:
+        tips.append("Not reached, by reason: " + ", ".join(f"{n} {why}" for why, n in batch.not_reached_reasons) + ".")
+    if batch.status in _BATCH_ENDED:
+        return " · ".join(counts), " ".join(tips)
+    stage, index, of = p.get("stage"), p.get("index"), p.get("of")
+    if stage == "ring":
+        where = f"ring {index} of {of}" if of is not None else f"ring {index}"
+        tips.insert(0, _RING_TIP)
+    elif stage == "sweep":
+        where = f"sweep {index} (up to {of})" if of is not None else f"sweep {index}"
+        tips.insert(0, _SWEEP_TIP)
+    else:
+        where = _BATCH_STAGE.get(stage, "starting")
+    text = " · ".join([where, *counts])
+    step = batch.step_started_at
+    if batch.status == "running" and step is not None:
+        text += f" · {fmt_elapsed(now - step)}"
+        tips.append("The time is since ISAR last reported a step.")
+    return text, " ".join(tips)
 
 
 def rail_status(view) -> tuple[str, str]:
@@ -182,6 +247,7 @@ class QueuePanel(QWidget):
         self._controller = None
         self._expanded: set[tuple[str, str]] = set()      # (queue, scan set) groups shown in full
         self._live: dict[str, tuple[QLabel, QLabel, object]] = {}   # item_id -> (progress, elapsed, ItemView)
+        self._live_batches: dict[str, tuple[QLabel, QLabel, object]] = {}   # the same, for running batches
         self._shape: object = object()            # what the rows were last built from (see _signature)
         self._tick = QTimer(self)
         self._tick.setInterval(1000)
@@ -312,6 +378,10 @@ class QueuePanel(QWidget):
                 return
         self._controller.stop(item.item_id)
 
+    def _stop_batch(self, batch) -> None:
+        if self._controller is not None:                  # asks nothing: the saved rings and sweeps are kept
+            self._controller.stop(batch.item_id)
+
     def _show(self, item) -> None:
         if self._controller is not None:
             self._controller.show(item.unit_key)
@@ -377,8 +447,8 @@ class QueuePanel(QWidget):
         if view is not None and view.service == "failed" and view.service_error:
             lines.append(view.service_error)
         if view is not None and view.paused:
-            busy = sum(view.n_running.values()) + view.n_saving
-            lines.append(f"Paused. {busy} {_plural(busy, 'analyzer', 'analyzers')} finishing; nothing new starts; "
+            busy = view.n_running["fast"] + view.n_running["deep"] + view.n_saving  # n_saving includes a batch's save
+            lines.append(f"Paused. {_work_words(busy, view.n_running['inter'])} finishing; nothing new starts; "
                          f"{sum(view.n_waiting.values())} waiting.")
         elif view is not None and view.blocked:
             lines.append(f"Waiting: {view.blocked}. Nothing starts until it ends.")
@@ -391,9 +461,9 @@ class QueuePanel(QWidget):
         if not bound:
             text, tip = "No experiment open", "Open an experiment to use the analysis queue."
         else:
-            running = sum(view.n_running.values())
-            text = (f"{running} {_plural(running, 'analyzer', 'analyzers')} running on {view.cores_in_use} "
-                    f"{_plural(view.cores_in_use, 'core', 'cores')}" if running else "Nothing running")
+            files, batches = view.n_running["fast"] + view.n_running["deep"], view.n_running["inter"]
+            text = (f"{_work_words(files, batches)} running on {view.cores_in_use} "
+                    f"{_plural(view.cores_in_use, 'core', 'cores')}" if files or batches else "Nothing running")
             if view.n_saving:
                 text += f" · {view.n_saving} saving"
             tip = (f"{view.cores_in_use} of the {view.cores} cores ISAR may use are busy. Change the limit under "
@@ -423,8 +493,9 @@ class QueuePanel(QWidget):
 
         finished = tuple((g.set_key, g.set_label, g.pass_kind, tuple(g.counts.items()), items(g.look))
                          for g in view.finished)
+        batches = tuple((b.item_id, b.status, b.reason) for b in view.batches)
         return (queue(view.fast), queue(view.deep), finished, frozenset(self._expanded),
-                _currentness.deep_calibration_note())
+                _currentness.deep_calibration_note(), batches)
 
     def _queues(self, view) -> None:
         self._expanded &= {(kind, g.set_key) for kind, groups in (("fast", view.fast), ("deep", view.deep))
@@ -433,8 +504,10 @@ class QueuePanel(QWidget):
         if shape == self._shape:
             if shape is not None:                 # swap in the newer progress; the tick and this call redraw it
                 fresh = {i.item_id: i for groups in (view.fast, view.deep) for g in groups for i in g.items}
-                for iid, (progress, elapsed, old) in list(self._live.items()):
-                    self._live[iid] = (progress, elapsed, fresh.get(iid, old))
+                fresh_batches = {b.item_id: b for b in view.batches}
+                for live, newer in ((self._live, fresh), (self._live_batches, fresh_batches)):
+                    for iid, (progress, elapsed, old) in list(live.items()):
+                        live[iid] = (progress, elapsed, newer.get(iid, old))
                 self._tick_labels()
             return
         self._shape = shape
@@ -447,10 +520,12 @@ class QueuePanel(QWidget):
                 part.setParent(None)
                 part.deleteLater()
         self._live.clear()
+        self._live_batches.clear()
         now = _now()
         if view is not None and view.bound:
             self._queue("fast", "Fast queue", _FAST_TIP, view.fast, view, now)
             self._queue("deep", "Deep queue", _DEEP_TIP, view.deep, view, now)
+            self._batches(view, now)
             self._finished(view, now)
         else:
             self._rows.addWidget(_label("Nothing queued: no experiment is open.",
@@ -461,9 +536,9 @@ class QueuePanel(QWidget):
         bar.setValue(keep)
         self._keep = keep
         self._restore.start()
-        if self._live and not self._tick.isActive():
+        if (self._live or self._live_batches) and not self._tick.isActive():
             self._tick.start()
-        elif not self._live:
+        elif not (self._live or self._live_batches):
             self._tick.stop()
 
     def _heading(self, text: str, tip: str, counts: str, counts_tip: str, name: str) -> QWidget:
@@ -581,6 +656,61 @@ class QueuePanel(QWidget):
                 grid.addWidget(show, 0, 4)
         return row
 
+    def _batches(self, view, now: float) -> None:
+        if not view.batches:                       # no section and no empty heading in a window with no batches
+            return
+        running, waiting = view.n_running["inter"], view.n_waiting["inter"]
+        parts = ([f"{running} running"] if running else []) + ([f"{waiting} waiting"] if waiting else [])
+        self._rows.addWidget(self._heading(
+            "Inter-spectra batches", _BATCHES_TIP, " · ".join(parts) or "nothing running",
+            "How many batches are running or waiting. Each batch is one row: its progress, and its outcome once it "
+            "has finished.", "queue_inter_heading"))
+        for batch in view.batches:
+            self._rows.addWidget(self._batch_row(batch, now))
+
+    def _batch_row(self, batch, now: float) -> QWidget:
+        word, tone, meaning = QUEUE_STATES[batch.status]
+        row = QWidget()
+        row.setObjectName(f"queue_batch_{batch.item_id}")
+        grid = QGridLayout(row)
+        grid.setContentsMargins(8, 0, 0, 0)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(0)
+        dot = QLabel()
+        dot.setPixmap(dot_icon(tone).pixmap(10, 10))      # a dot and a word, never colour alone
+        dot.setToolTip(f"{word}: {meaning}")
+        grid.addWidget(dot, 0, 0)
+        grid.addWidget(_label(_batch_title(batch),
+                              "The batch's start time, its kind and direction, and how many spectra it covers. An "
+                              "anchored batch grows out from its anchors ring by ring; a simultaneous batch refits its "
+                              "selection together.", name="queue_batch_title"), 0, 1)
+        grid.addWidget(_label(word, f"{word}: {meaning}", wrap=False, name="queue_batch_word"), 0, 2)
+        grid.setColumnStretch(1, 1)
+        if batch.status == "waiting":
+            text, tip = batch.reason or "waiting", _BATCH_WAIT_TIP
+        else:
+            text, tip = batch_progress_text(batch, now)
+        progress = _label(text, tip, name="queue_batch_progress")
+        grid.addWidget(progress, 1, 1, 1, 4)
+        if batch.status == "running":
+            elapsed = _label("", "How long this batch has been running, in total.", wrap=False)
+            grid.addWidget(elapsed, 0, 3, Qt.AlignmentFlag.AlignRight)
+            stop = _button("■ Stop", _BATCH_STOP_TIP, "queue_batch_stop", tool=True)
+            stop.setAccessibleName(f"Stop {batch.label}")
+            stop.clicked.connect(lambda _=False, b=batch: self._stop_batch(b))
+            grid.addWidget(stop, 0, 4)
+            self._live_batches[batch.item_id] = (progress, elapsed, batch)
+            self._set_elapsed(elapsed, batch, now)
+        elif batch.status == "waiting":
+            remove = _button("✕ Remove", "Takes this batch out of the queue. It asks nothing; the Start button in "
+                             "the Processing dock queues it again.", "queue_batch_remove", tool=True)
+            remove.setAccessibleName(f"Remove {batch.label} from the queue")
+            remove.clicked.connect(lambda _=False, b=batch: self._remove(b))
+            grid.addWidget(remove, 0, 4)
+        if batch.reason and batch.status != "waiting":
+            grid.addWidget(_label(batch.reason, f"Why this batch is {word}.", name="queue_batch_reason"), 2, 1, 1, 4)
+        return row
+
     def _stop_button(self, item, what: str):
         button = _button("■ Stop", (f"Stops {what} now and frees its cores; other items carry on. "
                                          + ("It asks first, because the work done so far is discarded. Its fast-pass "
@@ -597,12 +727,13 @@ class QueuePanel(QWidget):
 
     def _tick_labels(self) -> None:
         now = _now()
-        for progress, elapsed, item in self._live.values():
-            text, tip = progress_text(item, now)
-            progress.setText(text)
-            if progress.toolTip() != tip:
-                progress.setToolTip(tip)
-            self._set_elapsed(elapsed, item, now)
+        for live, text_of in ((self._live, progress_text), (self._live_batches, batch_progress_text)):
+            for progress, elapsed, item in live.values():
+                text, tip = text_of(item, now)
+                progress.setText(text)
+                if progress.toolTip() != tip:
+                    progress.setToolTip(tip)
+                self._set_elapsed(elapsed, item, now)
 
     def _finished(self, view, now: float) -> None:
         head = self._heading("Finished", _FINISHED_TIP, "", _FINISHED_TIP, "queue_finished_heading")
