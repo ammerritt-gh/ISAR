@@ -546,6 +546,7 @@ def test_repair_stops_before_removing_anything(tmp_path, case):
 
 # ---------------------------------------------------------------- Uninstall, replacement and relocation
 
+UNINSTALLER = INSTALLER / "WINDOWS-uninstall-ISAR.bat"
 PAYLOAD = [".isar-install-root", "INSTALL_INFO.txt", "ISAR-Launcher.bat", "ISAR Launcher.lnk", "launcher",
            "tracked-workspace-markers.txt", "micromamba", "mamba", "env", "app"]
 
@@ -603,6 +604,8 @@ def _no_leftovers(env):
     assert not left, f"working or hand-off folders left in TEMP: {left}"
 
 
+def test_standalone_uninstaller_is_the_engine_byte_for_byte():
+    assert UNINSTALLER.read_bytes() == ENGINE.read_bytes()
 
 
 @pytest.mark.parametrize("delete_profile", ["no", "yes"])
@@ -686,6 +689,30 @@ def test_uninstall_stops_before_removing_anything(tmp_path, case):
     assert (tmp_path / "outside-target" / "keep.txt").exists()
 
 
+def test_standalone_uninstaller_finds_the_installation_from_the_locator(tmp_path):
+    """Under its own name, with no /dir and the launcher folder gone, it takes the base from the
+    locator and uninstalls under the same rules; it refuses /repair and /ref."""
+    env = _sandbox(tmp_path)
+    base = full_fake(_plain(tmp_path) / "b", tmp_path)
+    shutil.rmtree(base / "launcher")
+    loc = _locator(env, base)
+    downloads = tmp_path / "Down loads"
+    downloads.mkdir()
+    uninst = downloads / "WINDOWS-uninstall-ISAR.bat"
+    uninst.write_bytes(UNINSTALLER.read_bytes())
+    other = tmp_path / "other" / "ISAR-Launcher.bat"  # a Desktop shortcut of the same name, not this installation's
+    _shortcut(Path(env["ISAR_TEST_DESKTOP"]) / "ISAR Launcher.lnk", other)
+    before = _tree(base)
+    for refused in (["/repair", "/dir", str(base), "/yes"], ["/ref", "main", "/yes"]):
+        rc, out = run_bat(uninst, *refused, env=env)
+        assert rc == 2 and "only uninstalls" in out, (refused, out)
+    assert _tree(base) == before
+    rc, out = run_bat(uninst, "/yes", env=env)
+    _log, lines = _last_log(env, "uninstall")
+    assert rc == 0 and lines[-1] == "OUTCOME=uninstalled", (out, lines[-6:])
+    assert not base.exists() and not loc.exists(), out
+    assert (tmp_path / "outside-target" / "keep.txt").exists()
+    assert (Path(env["ISAR_TEST_DESKTOP"]) / "ISAR Launcher.lnk").exists(), "another installation's shortcut went"
 
 
 def test_uninstall_after_an_interruption_finishes_the_job(tmp_path):
