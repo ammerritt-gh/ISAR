@@ -506,6 +506,7 @@ class MainWindow(QMainWindow):
         self.scans_vm.inspect_requested.connect(self._route_inspect)
         self.scans_vm.groups_changed.connect(self._on_groups_changed)
         self.scans_vm.store_dirty.connect(self._on_groups_changed)
+        self.scans_vm.set_intake(self.intake)
         # The campaign feed/status VM: event-log ticks fan out to it in _on_workspace_changed;
         # process liveness arrives via the window's stable drive slots (wired once in __init__ —
         # the coordinator outlives bindings, so per-bind lambdas would accumulate and dangle).
@@ -882,12 +883,12 @@ class MainWindow(QMainWindow):
         return key if ss is None else ss.label
 
     def _locate_resolution_folder(self) -> None:
-        """*Choose curves folder…* (setup line, attention list, readiness list): the one route; a refused save is
+        """*Resolution curves (rf)…* (setup line, attention list, readiness list): the one route; a refused save is
         shown in the setup section (and, like every save, in the Log)."""
         self.setup_section.show_save_outcome(locate_resolution_folder(self, self.intake))
 
     def _locate_gpi_folder(self) -> None:
-        """*Choose gpi folder…* on the setup line: the one route that saves a gpi folder the user picks; a refused
+        """*gpi files…* on the setup line: the one route that saves a gpi folder the user picks; a refused
         save is shown in the setup section (and, like every save, in the Log)."""
         self.setup_section.show_save_outcome(locate_gpi_folder(self, self.intake))
 
