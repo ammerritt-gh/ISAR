@@ -1111,3 +1111,20 @@ def test_source_clears_a_git_lock_left_by_an_interrupted_checkout(tmp_path):
     assert rc == 0 and re.search(r"^ERR=\r?$", out, re.M), out
     assert not (app / ".git" / "index.lock").exists()
     assert (app / "my-notes.txt").read_text(encoding="utf-8") == "the user's\n"
+
+
+def test_source_adds_the_missing_origin_before_it_fetches(tmp_path):
+    """An install killed between git init and the remote's creation leaves a repository with no origin; the
+    rerun adds it rather than refusing forever. The fetch goes to a closed local port: nothing leaves the machine."""
+    git = _git()
+    env = _sandbox(tmp_path)
+    env["HTTPS_PROXY"] = env["HTTP_PROXY"] = "http://127.0.0.1:9"
+    base = _plain(tmp_path) / "b"
+    app = base / "app"
+    app.mkdir(parents=True)
+    subprocess.run([git, "init", "-q", str(app)], check=True)
+    rc, out = _run_snippet(tmp_path, _get_source_body(base, git, "89abcdef" * 5), env)
+    gh_repo = re.search(r'(?m)^set "GH_REPO=([^"]+)"', _text(ENGINE)).group(1)
+    url = subprocess.run([git, "-C", str(app), "remote", "get-url", "origin"], capture_output=True, text=True).stdout
+    assert rc == 0 and url.strip() == f"https://github.com/{gh_repo}.git", (url, out)
+    assert "could not download" in out, out

@@ -1316,6 +1316,14 @@ goto source_fetch
 :source_have_repo
 >>"%LOG%" echo(Reusing the git checkout kept in %APP%
 call :clear_git_locks
+"%GIT%" -c core.longpaths=true -C "%APP%" remote get-url origin >>"%LOG%" 2>&1 <nul
+if not errorlevel 1 goto source_have_origin
+:: An install stopped between git init and the remote's creation leaves none.
+"%GIT%" -c core.longpaths=true -C "%APP%" remote add origin "https://github.com/%GH_REPO%.git" >>"%LOG%" 2>&1 <nul
+if not errorlevel 1 goto source_have_origin
+set "ERR=git could not add the ISAR remote"
+goto :eof
+:source_have_origin
 "%GIT%" -c core.longpaths=true -C "%APP%" cat-file -e "%COMMIT%^{commit}" >>"%LOG%" 2>&1 <nul
 if not errorlevel 1 goto source_fetched
 :source_fetch
