@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import tomllib
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -372,3 +373,40 @@ def test_launcher_start_without_an_environment_says_repair_and_logs(tmp_path):
     assert len(launch) == 10
     newest = max(launch, key=lambda p: p.stat().st_mtime)
     assert "pythonw.exe is missing" in newest.read_text(encoding="utf-8", errors="replace")
+
+
+# ---------------------------------------------------------------- Repair and Collect diagnostics
+
+COLLECTOR = INSTALLER / "launchers" / "collect-diagnostics.bat"
+
+
+def _launcher_copies(base):
+    (base / "launcher").mkdir(exist_ok=True)
+    (base / "ISAR-Launcher.bat").write_bytes(LAUNCHER.read_bytes())
+    (base / "launcher" / "WINDOWS-install-ISAR.bat").write_bytes(ENGINE.read_bytes())
+    (base / "launcher" / "collect-diagnostics.bat").write_bytes(COLLECTOR.read_bytes())
+
+
+def test_collect_diagnostics_works_with_the_environment_gone(tmp_path):
+    env = _sandbox(tmp_path)
+    base = fake_install(_plain(tmp_path) / "b")
+    _launcher_copies(base)
+    local, roaming = Path(env["LOCALAPPDATA"]), Path(env["APPDATA"])
+    (local / "ISAR" / "logs").mkdir(parents=True)
+    (local / "ISAR" / "logs" / "install-20261029-120000-0a1b2c3d.log").write_text("STEP=env-create failed\n")
+    (local / "ISAR" / "install-record.txt").write_text(f"ISAR_BASE={base}\n")
+    (roaming / "isar_gui").mkdir()
+    (roaming / "isar_gui" / "isar-gui.log").write_text("gui log\n")
+    rc, out = run_bat(base / "ISAR-Launcher.bat", "diagnostics", "/yes", env=env)
+    assert rc == 0, out
+    zips = list((local / "ISAR" / "diagnostics").glob("isar-diagnostics-*.zip"))
+    assert len(zips) == 1 and zips[0].name in out, out
+    with zipfile.ZipFile(zips[0]) as z:
+        names = {n.replace("\\", "/").rsplit("/", 1)[-1]: n for n in z.namelist()}
+        summary = z.read(names["summary.txt"]).decode("oem")
+    for want in ("INSTALL_INFO.txt", ".isar-install-root", "install-record.txt", "isar-gui.log",
+                 "install-20261029-120000-0a1b2c3d.log"):
+        assert want in names, (want, sorted(names))
+    assert "env\\python.exe: missing" in summary, summary
+    assert not list(Path(env["TEMP"]).glob("isar-diagnostics-*")), "the staging folder was left behind"
+
