@@ -1065,3 +1065,49 @@ def test_running_recheck_after_closing_isar_clears_the_refusal(tmp_path):
     rc, out = _run_snippet(tmp_path, [*head, 'set "GATE=refuse"', 'set "ERR=ISAR was running"', "call :running_again",
                                       "echo GATE=%GATE%", "echo ERR=%ERR%", "exit /b 0", *gate], env)
     assert rc == 0 and "GATE=ok" in out and re.search(r"^ERR=\r?$", out, re.M), out
+
+
+# ---------------------------------------------------------------- repair batch 2 (interrupted installs)
+
+def _git():
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("needs git on PATH")
+    return git
+
+
+def _get_source_body(base, git, commit):
+    """The source step's real :get_source and :git_env, with the environment's git swapped for the one on PATH
+    and the workspace-marker and hex helpers stubbed (they need the whole installer, not this check)."""
+    text = _text(ENGINE)
+    block = _label_block(text, "get_source")
+    swapped = [ln.replace('set "GIT=%BASE%\\env\\Library\\bin\\git.exe"', f'set "GIT={git}"') for ln in block]
+    assert swapped != block, "the environment's git line moved"
+    gh_repo = re.search(r'(?m)^set "GH_REPO=([^"]+)"', text).group(1)
+    return [f'set "BASE={base}"', 'set "WORK=%TEMP%"', 'set "LOG=%TEMP%\\snip.log"', f'set "COMMIT={commit}"',
+            f'set "GH_REPO={gh_repo}"', "call :get_source", "echo ERR=%ERR%", "exit /b 0", *swapped,
+            *_label_block(text, "git_env"), *_label_block(text, "clear_git_locks"), ":env_path", "goto :eof",
+            ":write_markers", "goto :eof", ":match_hex", 'set "MATCH=yes"', "goto :eof"]
+
+
+def test_source_clears_a_git_lock_left_by_an_interrupted_checkout(tmp_path):
+    """An interrupted checkout leaves app\\.git\\index.lock, and every later checkout failed on it. The source
+    step removes git's lock files before it checks out; the user's own files stay."""
+    git = _git()
+    env = _sandbox(tmp_path)
+    base = _plain(tmp_path) / "b"
+    app = base / "app"
+    app.mkdir(parents=True)
+    ident = ["-c", "user.name=test", "-c", "user.email=test@example.invalid"]
+    subprocess.run([git, "init", "-q", str(app)], check=True)
+    (app / "isar.txt").write_text("source\n", encoding="utf-8")
+    (app / "my-notes.txt").write_text("the user's\n", encoding="utf-8")
+    subprocess.run([git, "-C", str(app), "add", "isar.txt"], check=True)
+    subprocess.run([git, "-C", str(app), *ident, "commit", "-q", "-m", "source"], check=True)
+    commit = subprocess.run([git, "-C", str(app), "rev-parse", "HEAD"], capture_output=True, text=True,
+                            check=True).stdout.strip()
+    (app / ".git" / "index.lock").write_bytes(b"")
+    rc, out = _run_snippet(tmp_path, _get_source_body(base, git, commit), env)
+    assert rc == 0 and re.search(r"^ERR=\r?$", out, re.M), out
+    assert not (app / ".git" / "index.lock").exists()
+    assert (app / "my-notes.txt").read_text(encoding="utf-8") == "the user's\n"

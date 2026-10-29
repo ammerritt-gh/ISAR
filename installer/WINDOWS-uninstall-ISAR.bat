@@ -1315,6 +1315,7 @@ if errorlevel 1 goto :eof
 goto source_fetch
 :source_have_repo
 >>"%LOG%" echo(Reusing the git checkout kept in %APP%
+call :clear_git_locks
 "%GIT%" -c core.longpaths=true -C "%APP%" cat-file -e "%COMMIT%^{commit}" >>"%LOG%" 2>&1 <nul
 if not errorlevel 1 goto source_fetched
 :source_fetch
@@ -1335,6 +1336,17 @@ set "ERR=the checked-out source is not at commit %COMMIT%"
 if not "%MATCH%"=="yes" goto :eof
 if not "%HEAD_NOW%"=="%COMMIT%" goto :eof
 set "ERR="
+goto :eof
+
+:: An interrupted git run leaves a lock file, and every later checkout fails on
+:: it. Reached only after the ownership proof and the running check, so the locks
+:: are the installation's own.
+:clear_git_locks
+for /r "%APP%\.git" %%L in (*.lock) do call :clear_one_lock "%%L"
+goto :eof
+:clear_one_lock
+>>"%LOG%" echo(Removing a stale git lock left by an earlier run: %~1
+del /f /q "%~1" >nul 2>nul
 goto :eof
 
 :: <base>\tracked-workspace-markers.txt: the files at this commit that look like
