@@ -86,15 +86,16 @@ def match_link(local: Sequence[ModeObs], branches: Sequence[str], proposal_costs
     forbids. A held branch absent locally costs nothing more. ``branches`` is deduplicated: duplicate
     observations of one branch are one assignable branch. ``incoming`` is the incoming slots tuple
     (branch or None per local mode) relative to ``branches``. ``keep=None`` ranks every composition
-    (full search). ``close`` is the settings' ``close_call_nats``.
+    (full search). ``close`` is the settings' ``close_call_nats`` in nats; the window is ``2 * close``.
 
     Returns ``{"proposals": [{"slots", "composition", "cost", "source", "orders"}], "coverage": {...},
     "weight_unavailable": True, "incoming_invalid": reason or None}``: the incoming and all-unmatched
     proposals always, then up to ``keep`` other distinct compositions, each with its cheapest
-    association, cheapest first. ``orders`` lists every slot order of that composition within ``close``
+    association, cheapest first. ``orders`` lists every slot order of that composition within ``2 * close`` deviance
     of its cheapest, so a competing identity (an exchange at a crossing) reaches the core to price.
     Costs rank proposals; they are not evidence weights.
     """
+    window = 2.0 * close                 # close is nats; proposal costs are deviance (-2 ln L)
     pool = list(dict.fromkeys(branches))
     n = len(local)
     options = [None, *pool]
@@ -144,7 +145,7 @@ def match_link(local: Sequence[ModeObs], branches: Sequence[str], proposal_costs
             if state["truncated"]:
                 return
             c = partial + cost[m][j]
-            bound = state["limit"] + close          # a kept ranked order is within close of a kept (<= limit) best
+            bound = state["limit"] + window         # a kept ranked order is within window of a kept (<= limit) best
             if (b is not None and b in used) or not math.isfinite(c) or c + rest[m + 1] > bound:
                 continue
             slots.append(b)
@@ -164,7 +165,7 @@ def match_link(local: Sequence[ModeObs], branches: Sequence[str], proposal_costs
             return [{"slots": slots, "cost": c}]
         low = min(finite.values())
         return [{"slots": s, "cost": v} for s, v in sorted(finite.items(), key=lambda kv: (kv[1], _order_key(kv[0])))
-                if v <= low + close]
+                if v <= low + window]
 
     def composition_orders(slots: Sequence) -> dict[tuple, float]:
         # shortcut: every order of a fixed composition by permutation of its labels, n! for n local modes;

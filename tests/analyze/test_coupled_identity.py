@@ -308,7 +308,7 @@ def test_match_link_orders_match_full_enumeration(seed):
     for p in out["proposals"]:
         found = {s: c for s, c in every.items() if ident._composition(s) == p["composition"]}
         low = min(found.values())
-        assert {o["slots"] for o in p["orders"]} == {s for s, c in found.items() if c <= low + S.close_call_nats}
+        assert {o["slots"] for o in p["orders"]} == {s for s, c in found.items() if c <= low + 2 * S.close_call_nats}
 
 
 def test_duplicate_and_absent_branches_cost_nothing_extra():
@@ -330,9 +330,18 @@ def test_close_slot_orders_of_a_composition_are_kept_for_pricing():
     pq = next(p for p in out["proposals"] if p["composition"] == (("p", "q"), 0))
     assert pq["slots"] == ("p", "q")
     assert [(o["slots"], o["cost"]) for o in pq["orders"]] == [(("p", "q"), 0.0), (("q", "p"), 1.5)]
-    tight = ident.match_link(_local(2), ["p", "q"], cost, keep=None, close=1.0)
+    # close is nats: 0.5 nats is a 1.0 deviance window, too narrow for the 1.5 exchange
+    tight = ident.match_link(_local(2), ["p", "q"], cost, keep=None, close=0.5)
     pq = next(p for p in tight["proposals"] if p["composition"] == (("p", "q"), 0))
     assert [o["slots"] for o in pq["orders"]] == [("p", "q")]
+
+
+def test_exchanged_order_within_the_close_window_reaches_the_core():
+    # the exchange of (p, q) is 3 deviance units (1.5 nats) behind the cheapest order: inside close_call_nats = 2
+    table = {(0, "p"): 0.0, (0, "q"): 1.5, (1, "p"): 1.5, (1, "q"): 0.0, (0, None): 10.0, (1, None): 10.0}
+    out = ident.match_link(_local(2), ["p", "q"], lambda m, b: table[(m, b)], keep=None, close=S.close_call_nats)
+    pq = next(p for p in out["proposals"] if p["composition"] == (("p", "q"), 0))
+    assert {(o["slots"], o["cost"]) for o in pq["orders"]} == {(("p", "q"), 0.0), (("q", "p"), 3.0)}
 
 
 def test_recovered_branch_is_matched_and_only_a_true_newcomer_is_born():
