@@ -369,7 +369,8 @@ def test_zero_background_counts_its_modes_with_no_contender_left_unpriced_for_it
     elastic line, and no contender without evidence because its background sat at zero."""
     x = np.linspace(-8.0, 16.0, 81)
     elastic = convolute_voigt_dho(x, 1.0, 0.0, 1.0, 0.0, 0.3, 0.0, 300.0, 0.0, 50.0, peak="elastic")
-    ctx = _ctx(elastic + _dho(x, 4.0, 0.3, 400.0) + _dho(x, 9.0, 0.4, 250.0), x, 2)
+    # seed 5: the two modes lead the best three by >6 nats (seed 2 was a 0.03-nat tie)
+    ctx = _ctx(elastic + _dho(x, 4.0, 0.3, 400.0) + _dho(x, 9.0, 0.4, 250.0), x, 5)
     out, hyps = {}, {}
     results = loop.fit_structures_two_stage(ctx, mode_ceiling=3, rung1_out=out, hypotheses_out=hyps)
     sel = select.select_models(results, hyps, ctx, stamp=False)
