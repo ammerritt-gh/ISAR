@@ -138,18 +138,23 @@ def _fact(fact) -> None:
         raise _Bad(f"unknown fact {fact!r} (enterable: {', '.join(ENTERABLE)})")
 
 
-def _save(root, given: tuple, build) -> SaveResult:
-    """Run ``build`` (the checks, returning ``(entry, value)``), then write one line or nothing."""
+def _save(root, given: tuple, build, *, name: str = store.ENTRIES, check=None) -> SaveResult:
+    """Run ``build`` (the checks, returning ``(entry, value)``), then write one line or nothing. An ``entry`` of
+    None writes nothing (a save that changes nothing); ``check`` is the store's refusal test, run under its lock."""
     try:
         entry, value = build()
     except _Bad as bad:
         return SaveResult(False, str(bad), None, given, None)
+    if entry is None:
+        return SaveResult(True, None, value, given, None)
     try:
-        stored = store.append(Path(root), store.ENTRIES, entry)
+        stored = store.append(Path(root), name, entry, check=check)
+    except store.Refused as refused:
+        reason = refused.reason
     except store.StoreBusy:
         reason = _BUSY
     except OSError as exc:
-        reason = f"could not write {store.ENTRIES}: {exc}"
+        reason = f"could not write {name}: {exc}"
     else:
         return SaveResult(True, None, value, tuple(entry["targets"]), stored["id"])
     log.warning("intake save (%s) not written: %s", entry["kind"], reason)
