@@ -139,7 +139,7 @@ def _solo_keys(root: Path) -> frozenset[str]:
         session = SessionState.load(root / SESSION_NAME)
     except FileNotFoundError:
         return frozenset()
-    return frozenset(k for k, e in session.scans.items() if e.detectors)
+    return frozenset(k for k, e in session.scans.items() if authority.has_fast_solo(e, k))
 
 
 def _load(root, only: str | None = None) -> _Ctx:

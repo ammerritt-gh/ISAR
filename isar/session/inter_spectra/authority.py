@@ -50,6 +50,13 @@ class Effective:
     unit: str; outcome: dict; resolution: Resolution; label: str; line: RefitLine | None
 
 
+def has_fast_solo(entry, unit: str) -> bool:
+    """A stored fast solo fit: the ledger entry is ``fitted`` and carries its fast-pass record (file_fit's test)."""
+    if entry is None or entry.status != "fitted":
+        return False
+    return bool((entry.detectors.get(unit.rsplit(":", 1)[1]) or {}).get("fast_pass"))
+
+
 def stale_of(line: RefitLine, inputs_now: Mapping[str, str | None]) -> Stale | None:
     """Why a refit is out of date now: its own inputs first, else the first neighbour it was conditioned on."""
     own = inputs_now.get(line.unit)
