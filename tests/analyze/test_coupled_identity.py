@@ -331,3 +331,14 @@ def test_new_branch_id():
     assert ident.new_branch_id("fast:e1:7:a03", 0) == "fast:e1:7:a03#0"
     with pytest.raises(ValueError):
         ident.new_branch_id("fast", 0)
+
+
+def test_untriggered_assignment_keeps_its_own_ids_without_a_neighbour_carrying_them():
+    # first batch: fast solo ids are per spectrum, so no neighbour carries k's modes; skipped = inherited
+    A = held("A", "fA", [("fast:A#0", 10.0)])
+    k = held("k", "fast", [("fast:k#0", 10.0), ("fast:k#1", 14.0)])
+    a = asg("k", "b:round1", ("fast:k#0", "fast:k#1"), discrete="skipped")
+    r = run(["k"], [link("A", "k")], {"k": a}, {"A": A, "k": k}, mode="simultaneous", rings=None, sid="b:round1")
+    assert [r.ids[ref] for ref in refs("k", 2)] == ["fast:k#0", "fast:k#1"]
+    assert [r.status[ref] for ref in refs("k", 2)] == ["matched", "matched"]
+    assert r.flags == {}

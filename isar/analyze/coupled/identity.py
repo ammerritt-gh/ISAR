@@ -327,6 +327,7 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
         a, refs, elig = assignments[k], tuple(modes[k]), eligible(k)
         own = previous.get(k)
         continues = own is not None and not a.changed and len(own.modes) == a.count
+        inherited = continues and a.discrete == "skipped"    # an untriggered decision is not re-tested for support
         for m, ref in enumerate(refs):
             b, origin = a.slots[m], a.origins[m]
             confident, close = _slot_support(a, m, settings)
@@ -334,12 +335,13 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
                          or any(d.branch == b for d in previous[j].dormant))
             supported = b is not None and bool(via)
             plan[ref] = {"slot": b, "origin": origin, "confident": confident, "close": close,
-                         "supported": supported, "own": own.modes[m].branch if continues else None}
+                         "supported": supported, "inherited": inherited,
+                         "own": own.modes[m].branch if continues else None}
             if not confident or origin == "unresolved":
                 continue
             if supported:
                 edge(_obs(ref), ("id", b), kind="assigned", links=via)
-            if continues and (b is None or supported):
+            if continues and (b is None or supported or inherited):
                 edge(_obs(ref), _obs((k, own.fit, m)), kind="continuity", links=[])
 
     members: dict = defaultdict(list)
@@ -404,7 +406,7 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
                 ids[ref], status[ref] = None, "unresolved_return"
                 _flag(flags, "unresolved_return", {k}, [ref], slot=b,
                       reason="no eligible graph path supports the return")
-            elif not info["confident"] or (b is not None and not info["supported"]):
+            elif not info["confident"] or (b is not None and not info["supported"] and not info["inherited"]):
                 ids[ref], status[ref] = info["own"], "ambiguous"
                 why = "close alternatives" if not info["confident"] else "no eligible neighbour carries it"
                 _flag(flags, "identity_ambiguous", {k}, [ref], slot=b, reason=why)
