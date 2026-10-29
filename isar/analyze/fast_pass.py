@@ -37,7 +37,7 @@ from isar.analyze.components import (QE_WEIGHT_CONVENTION, CentralQE, Elastic, P
                                      central_qe_columns, phonon_unit_columns)
 from isar.analyze.estimators import FMIN
 from isar.analyze.lineshapes import KB, voigt_area_for_height
-from isar.analyze.phonon import GAMMA_FLOOR, _peak_omega0
+from isar.analyze.phonon import GAMMA_FLOOR, _peak_omega0, central_qe_admissible
 from isar.analyze.progress import ProgressFn, emitter
 
 log = logging.getLogger(__name__)
@@ -1261,7 +1261,9 @@ class _Engine:
                     twin("elastic limit", names[a], target, without(j), merged)
                 return
         if model.el is not None and model.el in free \
-                and point[model.el] <= s.twin_height_frac * sp.height_hi:       # 3 elastic
+                and point[model.el] <= s.twin_height_frac * sp.height_hi \
+                and not central_qe_admissible(self.ctx):                       # 3 elastic
+            # never on BL43LXU: the elastic line stays in every model, and a zero QE falls to 3b
             twin("zero elastic", names[model.el], self.variant(k, False, v.background, v.qe),
                  modes, lin)
             return

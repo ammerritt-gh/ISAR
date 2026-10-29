@@ -87,6 +87,18 @@ def test_the_qe_starting_widths_lie_inside_its_support():
     assert eng.qe_start in widths
 
 
+def test_a_near_zero_elastic_line_is_never_removed_on_bl43lxu():
+    # A phonon and background, no elastic line and no QE in the truth: the elastic height and the QE
+    # height both fit near zero. The elastic line stays in every model; the zero QE collapses to the
+    # model without the QE through the zero-QE twin (3b), never through a zero-elastic twin.
+    ctx = _ctx(_mean([PhononDHO(), ConstantBackground()], [5.0, 0.6, 40.0, 3.0]))
+    res = fast_pass.run_fast_pass(ctx, settings=SETTINGS)
+    assert all(m.elastic and "elastic" not in m.removed for m in res.models)
+    assert not any(m.reason.startswith("zero elastic") for m in res.models)
+    assert any(m.evidence_status == "degenerate_twin" and m.reason.startswith("zero qe")
+               for m in res.models)
+
+
 # ------------------------------------------------------------------------- the group rule, pure
 def _e(label, parent, ln_z, status="ok", count=1):
     return SimpleNamespace(label=label, parent=parent, ln_z=ln_z, status=status, count=count,
