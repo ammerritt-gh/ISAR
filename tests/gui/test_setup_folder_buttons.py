@@ -185,6 +185,19 @@ def _strip(qtbot, tmp_path) -> FilesStrip:
     return strip
 
 
+def _label_left(widget) -> int:
+    """The leftmost column where the button's text is drawn: the button grabbed with its text and without it
+    (same size), so the frame, bevel and any menu indicator cancel out."""
+    text = widget.text()
+    widget.setFixedWidth(widget.width())            # clearing the text must not change the size
+    drawn = widget.grab().toImage()
+    widget.setText("")
+    bare = widget.grab().toImage()
+    widget.setText(text)
+    return min(x for x in range(drawn.width()) for y in range(drawn.height() // 3, 2 * drawn.height() // 3)
+               if drawn.pixel(x, y) != bare.pixel(x, y))
+
+
 # the default test font, and the Windows style at a large Segoe UI, where a full row cut the label
 @pytest.mark.parametrize("family, point_size, style", [("Sans Serif", 9, "fusion"), ("Segoe UI", 13, "windows11")])
 def test_add_data_keeps_its_whole_text_at_the_minimum_width(qtbot, tmp_path, family, point_size, style):
@@ -194,8 +207,13 @@ def test_add_data_keeps_its_whole_text_at_the_minimum_width(qtbot, tmp_path, fam
     app.setFont(QFont(family, point_size))
     try:
         strip = _strip(qtbot, tmp_path)
-        assert strip._add.text() == strip._add.full_text() == "Add data ▾"
-        assert strip._add.width() >= strip._add.sizeHint().width()
+        add = strip._add
+        assert add.text() == add.full_text() == "Add data ▾"
+        # the drawn text: a centred label moves half of any extra width; a label cut at its left edge does not
+        left_narrow = _label_left(add)
+        add.setFixedWidth(add.width() + 40)
+        left_wide = _label_left(add)
+        assert left_wide - left_narrow == pytest.approx(20, abs=2)
     finally:
         app.setFont(old_font)
         app.setStyle(old_style)
