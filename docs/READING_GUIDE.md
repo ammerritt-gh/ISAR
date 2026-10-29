@@ -172,8 +172,8 @@ On Windows without a developer setup, start with the one-click installer and its
    documentation policy. Then [ARCHITECTURE.md](ARCHITECTURE.md).
 2. The living design docs, each owning one system and its roadmap:
    [design/scene.md](design/scene.md) · [design/steering.md](design/steering.md) ·
-   [design/eig.md](design/eig.md) · [design/gui.md](design/gui.md) ·
-   [design/reporting.md](design/reporting.md) · [STATS_PRIMER.md](STATS_PRIMER.md) (statistics;
+   [design/eig.md](design/eig.md) · [design/inter_spectra.md](design/inter_spectra.md) ·
+   [design/gui.md](design/gui.md) · [design/reporting.md](design/reporting.md) · [STATS_PRIMER.md](STATS_PRIMER.md) (statistics;
    kept at this path because frozen evidence cites it).
 3. The plans — work not yet landed, each with an owner and exit criteria:
    [plans/campaign-authorization-repair.md](plans/campaign-authorization-repair.md) ·
