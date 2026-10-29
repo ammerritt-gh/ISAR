@@ -1135,7 +1135,7 @@ class MainWindow(QMainWindow):
         session file always carries the FULL layout (close-while-compact expands first)."""
         if not self._compact_active:
             if self._empty:
-                self.statusBar().showMessage("Compact mode needs an open workspace")
+                self.statusBar().showMessage("Mini monitor needs an open workspace")
                 self._compact_mode_action.setChecked(False)
                 return
             if self._campaign_monitor is None:
@@ -1215,7 +1215,7 @@ class MainWindow(QMainWindow):
                 and getattr(self, "_operations", None) is not None
                 and self._operations.is_running_campaign()):
             self._compact_hint_shown = True
-            self.statusBar().showMessage("Tip: View ▸ Compact mode is a glanceable campaign monitor")
+            self.statusBar().showMessage("Tip: View ▸ Mini monitor shows campaign progress in a small window")
 
     def _register_dock(self, name: str, dock) -> None:
         """Track a dock so the Panels menu and layout autosave pick it up (call before menu build)."""
@@ -2200,7 +2200,7 @@ class MainWindow(QMainWindow):
             act.triggered.connect(lambda _checked=False, k=key: self._show_center_view(k, user=True))
         menu.addSeparator()
         # Compact campaign-monitor mode (M3-1): same window, docks stashed, stack page swapped.
-        self._compact_mode_action = menu.addAction("Compact mode")
+        self._compact_mode_action = menu.addAction("Mini monitor")
         self._compact_mode_action.setCheckable(True)
         self._compact_mode_action.triggered.connect(self.toggle_compact_mode)
         # `triggered` (user interaction only): _sync_rail's programmatic setChecked must not collapse.

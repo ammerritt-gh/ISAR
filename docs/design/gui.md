@@ -156,7 +156,7 @@ history):
   untouched, so cooperative Stop spans the promotion). The window never inspects workspace
   files; readiness detection lives in the manager. A campaign that dies before its first scan
   leaves the experiment pending and retryable.
-- **G20 — Compact campaign monitor.** Compact mode is an explicit mode (*View ▸ Compact mode*), not a
+- **G20 — Mini monitor.** Mini monitor is an explicit mode (*View ▸ Mini monitor*), not a
   responsive collapse; a laptop-sized window does not start in it (G24): same window, dock layout stashed in memory, central stack swapped to a glanceable
   card (status, current scan, budget, mini plane, log ticker, cooperative Stop). Read-only; the
   session file always carries the full layout.
