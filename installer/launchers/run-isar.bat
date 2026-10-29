@@ -33,6 +33,9 @@ if not exist "%ENVP%\pythonw.exe" goto no_env
 set "PATH=%ENVP%;%ENVP%\Library\mingw-w64\bin;%ENVP%\Library\usr\bin;%ENVP%\Library\bin;%ENVP%\Scripts;%ENVP%\bin;%SYS_PATH%"
 set "CONDA_PREFIX=%ENVP%"
 cd /d "%BASE%"
+:: An update or Repair that stopped before ISAR went in leaves the environment without it:
+:: refuse here, so no start is reported for a GUI that cannot load.
+if not exist "%ENVP%\Lib\site-packages\isar-*.dist-info" goto not_installed
 start "" "%ENVP%\pythonw.exe" -I -m isar_gui %*
 set "RC=%ERRORLEVEL%"
 >>"%LOG%" echo(Started %ENVP%\pythonw.exe -I -m isar_gui; start returned %RC%
@@ -43,6 +46,14 @@ endlocal & exit /b 0
 :start_failed
 echo.
 echo [ERROR] ISAR could not be started (code %RC%).
+goto show_and_wait
+
+:not_installed
+>>"%LOG%" echo(ISAR is not installed in %ENVP%: an install, update or Repair did not finish.
+echo.
+echo [ERROR] ISAR is not installed in this folder's Python environment: an install,
+echo         update or Repair did not finish.
+echo         Open the ISAR Launcher and choose Repair to finish it.
 goto show_and_wait
 
 :no_env

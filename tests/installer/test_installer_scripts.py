@@ -476,6 +476,31 @@ def test_collect_diagnostics_works_with_the_environment_gone(tmp_path):
     assert not list(Path(env["TEMP"]).glob("isar-diagnostics-*")), "the staging folder was left behind"
 
 
+def test_start_checks_isar_is_installed_before_it_starts_the_gui():
+    """Static: an environment without ISAR in it is refused before pythonw runs; otherwise the GUI dies
+    with no window while the launch log says it started. (The dynamic case is below.)"""
+    text = _text(RUNNER)
+    assert "Lib\\site-packages\\isar-*.dist-info" in text
+    assert text.index("isar-*.dist-info") < text.index('start "" "%ENVP%\\pythonw.exe"')
+
+
+def test_start_on_an_unfinished_install_says_repair_and_does_not_start(tmp_path):
+    """An update or Repair stopped after the environment was built, before ISAR went in: Start says so,
+    names Repair and does not start pythonw (the stub is never run)."""
+    env = _sandbox(tmp_path)
+    base = fake_install(_plain(tmp_path) / "b")
+    (base / "launcher").mkdir()
+    (base / "env").mkdir()
+    (base / "env" / "pythonw.exe").write_bytes(b"x")  # present, but ISAR was never put in
+    runner = base / "launcher" / "run-isar.bat"
+    runner.write_bytes(RUNNER.read_bytes())
+    rc, out = run_bat(runner, env=env)
+    assert rc == 1 and "Repair" in out, out
+    newest = max((Path(env["LOCALAPPDATA"]) / "ISAR" / "logs").glob("launch-*.log"), key=lambda p: p.stat().st_mtime)
+    log = newest.read_text(encoding="utf-8", errors="replace")
+    assert "is not installed" in log and "start returned" not in log, log
+
+
 def test_collect_diagnostics_attended_result_is_not_exited_past():
     """Static: an attended run must reach its Explorer window and pause. Written as ``if defined YES endlocal
     & exit`` the if binds only endlocal, so the exit runs either way; the group keeps both under the if.
