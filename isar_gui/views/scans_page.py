@@ -17,6 +17,7 @@ from isar_gui.viewmodels.scans_page import (
     EMPTY, PLOT, LIST, LAYOUTS, PASSES, SCALES, PageState, RedrawTiming, ScansPageViewModel)
 from isar_gui.views.elided_label import ElidedLabel
 from isar_gui.views.group_chips import GroupChips
+from isar_gui.views.inter_fit_bar import InterFitBar
 
 EMPTY_TEXT = 'No spectra selected. Select them in the scan list.'
 _log = logging.getLogger(__name__)
@@ -90,6 +91,16 @@ class ScansPage(QWidget):
         header_layout.addStretch(1)
         outer.addWidget(header)
         outer.addWidget(self.group_mount)
+        # The viewed fit of the open spectrum; hidden until the window gives the page its inter-spectra state.
+        self.inter_mount = self._mount('scans_page_inter', self)
+        self.inter_bar = InterFitBar(self.inter_mount)
+        self.inter_mount.layout().addWidget(self.inter_bar, 1)
+        self.inter_mount.hide()
+        outer.addWidget(self.inter_mount)
+        self.inter_bar.fit_chosen.connect(self.vm.choose_fit)
+        self.inter_bar.make_authoritative_requested.connect(self.vm.make_authoritative)
+        self.inter_bar.lock_requested.connect(self.vm.toggle_lock)
+        self.inter_bar.waterfall_toggled.connect(self.vm.set_waterfall)
         self.fit_mount.layout().addWidget(QLabel('Fit', self.fit_mount))
         self.fit_group, self.fit_buttons = self._switch(self.fit_mount, PASSES, 'Fit')
         self.fit_group.idClicked.connect(self._fit_clicked)
@@ -248,6 +259,9 @@ class ScansPage(QWidget):
         self.groups.set_store(store)
         self.vm.set_store(store)
 
+    def set_inter(self, inter):
+        self.vm.set_inter(inter)
+
     def refresh(self):
         self._timer.start(0)
 
@@ -315,6 +329,9 @@ class ScansPage(QWidget):
                  if not control.enabled and control.reason]
         self.hint.set_full_text(' · '.join(hints))
         self.hint.setVisible(bool(hints) and state.body == PLOT)
+        self.inter_mount.setVisible(state.inter is not None)
+        if state.inter is not None:
+            self.inter_bar.show_state(state.inter)
 
     def _redraw(self):
         started = perf_counter()

@@ -194,7 +194,7 @@ def test_first_use_walkthrough_uses_real_list_clicks_and_keyboard(qtbot, monkeyp
     _click_spectrum(window, ONE_MODE)
     drawn = _wait_drawn(qtbot, page, lambda state: state.keys == (ONE_MODE,))
     assert window.selection.keys == (ONE_MODE,)
-    assert not drawn.curves and drawn.scale == "normalised"
+    assert drawn.curves and drawn.scale == "normalised"    # a fresh page opens with Fit on Fast
     assert drawn.ylabel == "Counts per 10⁵ monitor"
 
     qtbot.mouseClick(page.fit_buttons["deep"], Qt.MouseButton.LeftButton)
