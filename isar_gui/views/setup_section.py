@@ -318,18 +318,15 @@ class SetupSection(QWidget):
         self._summary.setStyleSheet(_WARN if warn_summary else "")
         self._render_list(summary if bl43 else None)
 
-        # The folder marks need the readiness the worker reads: until it is read, a folder shows no check or cross,
-        # and its tooltip names the folder in force or saved (the same words as before any check).
-        read = intake.attention is not None and intake.attention.evaluated
+        # Unevaluated readiness (nothing imported yet): folder_status judges from the summary alone, and the mark shows.
         rf, gpi = folder_status(summary, settings, intake.attention)
         where, _warn = resolution_text(summary, settings)
         saved = None if settings is None else settings.gpi_folder
         gpi_where = "no gpi folder is chosen" if saved is None else (
             f"{saved.path} ({_SOURCE_WORDS.get(saved.source, saved.source)})")
-        _mark_folder(self._locate, bl43, rf if read else None, LOCATE_TIP,
-                     self._checked_text(curves) if rf is not None and read else where)
-        _mark_folder(self._gpi_locate, bl43, gpi if read else None, GPI_LOCATE_TIP,
-                     None if gpi is not None and read else gpi_where)
+        _mark_folder(self._locate, bl43, rf, LOCATE_TIP,
+                     self._checked_text(curves) if rf is not None else where)
+        _mark_folder(self._gpi_locate, bl43, gpi, GPI_LOCATE_TIP, None if gpi is not None else gpi_where)
 
         problem = curves.problem if bl43 and curves is not None else None
         shown = curve_problem(problem)

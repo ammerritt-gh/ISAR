@@ -83,6 +83,20 @@ def test_a_rejected_gpi_file_crosses_the_gpi_button_with_its_reason(qtbot, tmp_p
     assert "not used" in section._gpi_locate.toolTip()
 
 
+def test_a_fresh_bl43_experiment_with_nothing_imported_crosses_both_folders_with_the_reason(qtbot, tmp_path):
+    import intake_fixtures as fx
+    ws, _data = fx.bl43_workspace(tmp_path, stems=())        # the folder saved, nothing imported yet
+    intake = _bound(qtbot, ws.root)
+    assert not intake.attention.evaluated                    # the readiness is never judged before an import
+    section = _section(qtbot, intake)
+    rf, gpi = section._locate, section._gpi_locate
+    assert rf.accessibleName() == "Resolution curves folder: not good" and rf.accessibleDescription()
+    assert not rf.icon().isNull() and not gpi.icon().isNull()
+    assert rf.toolTip().startswith("Resolution curves (rf)…: not good\n")
+    assert gpi.accessibleName() == "gpi files folder: not good"
+    assert gpi.accessibleDescription() == "no gpi folder is chosen"
+
+
 def test_the_two_gpi_crosses_without_a_needs_attention_item_say_why_on_hover_and_to_a_reader(
         qtbot, monkeypatch, tmp_path):
     root = bl43_fixture.build_bl43_gpi_workspace(tmp_path, gpi="none")
