@@ -11,6 +11,8 @@ A deep item builds on the stored fast pass when it is current, and otherwise run
 emits it before any deep work. Its sampling pool is sized to the distinct models in the combined initial stage
 (:func:`isar.analyze.deep_pass.stage_width`); when that is fewer cores than it was given it says so first
 (status ``"cores"``).
+
+``freeze``, ``prepare_scan`` and ``prepare_unit`` are that preparation, split so the batch runner reuses it.
 """
 from __future__ import annotations
 
@@ -75,35 +77,69 @@ def fit_file(workspace_root: Path, item: FileItem, *, progress: ProgressFn | Non
                         f"analysis error ({type(exc).__name__}: {exc})", None))
 
 
-def _fit(root: Path, item: FileItem, progress, emit) -> None:
-    def result(pass_kind, status, reason=None, payload=None, cores=None):
-        emit(FileResult(item.item_id, item.unit_key, pass_kind, status, reason, payload, cores))
+@dataclass(frozen=True)
+class Frozen:
+    root: Path
+    card: object
+    session: object
+    inputs_at: int           # the freeze's time: orders saves by how new their inputs are (C-save)
 
-    exp, scan_s, det = item.unit_key.rsplit(":", 2)
-    scan = int(scan_s)
-    key = f"{exp}:{scan}"
+
+def freeze(root: Path) -> Frozen:
+    """The experiment as it is now, read once: its card and ledger, and the time the inputs were read at."""
     # The freeze's time orders saves by how new their inputs are (C-save). shortcut: wall clock across item
     # processes, a clock stepped back misorders two starts; take a sequence from the service if that bites.
     inputs_at = time.time_ns()
     card, session = Workspace.open(root).load()               # the freeze (design step 9)
-    prev = session.get(item.unit_key)
-    if prev is None:
-        return result(item.pass_kind, "failed", f"{item.unit_key}: not read in yet")
-    parsed = _parse_unit_record(card, session, prev, exp, scan)
+    return Frozen(root, card, session, inputs_at)
+
+
+def prepare_scan(frozen: Frozen, exp: str, scan: int, prev: ScanEntry):
+    """``(record, source_by_name)`` of the scan as ``isar run`` parses, reduces and QCs it; None when its data
+    is no longer there."""
+    parsed = _parse_unit_record(frozen.card, frozen.session, prev, exp, scan)
     if parsed is None:
-        where = (prev.provenance or {}).get("source_file")
-        return result(item.pass_kind, "failed", f"the data file for this analyzer is no longer at {where}")
+        return None
     rec, source_by_name = parsed
-    combine.reduce_record(rec, card)
-    qc.qc_record(rec, card)
+    combine.reduce_record(rec, frozen.card)
+    qc.qc_record(rec, frozen.card)
+    return rec, source_by_name
+
+
+@dataclass(frozen=True)
+class Prepared:
+    """A unit ready to fit or to hand to a refit. Only ``reason`` is set when the unit cannot be prepared."""
+    reason: str | None = None
+    task: tuple | None = None        # (rec, det, q, T, sample, scan_id, chash, ghash, seed), as _process_one takes it
+    eff: object = None               # the effective record the scan starts with
+    view: object = None              # the scan's calibration view (the run's when it has none)
+    now: object = None               # currentness.UnitNow: what the unit's result would be made from now
+    card: object = None              # the card with no dispersion prior (design step 11)
+    g: object = None                 # the guidelines
+    exclusions: set | None = None
+    version: dict | None = None      # the resolution version appended to the in-memory card, when new
+    tabulated: bool = False          # the card's calibration method is tabulated_elastic
+    source_by_name: dict | None = None
+    sp: StartPoint | None = None     # the scan's start point (intake BL43 only)
+    up: object = None                # the start point's plan of this unit (intake BL43 only)
+
+
+def prepare_unit(frozen: Frozen, scan_prep, unit_key: str, passes) -> Prepared:
+    """The unit as ``isar run`` prepares it: its fit task, calibration view and hashes, and its start point's
+    plan for the ``passes`` given. Writes nothing; the tabulated-calibration version is appended in memory."""
+    exp, scan_s, det = unit_key.rsplit(":", 2)
+    scan = int(scan_s)
+    key = f"{exp}:{scan}"
+    card = frozen.card
+    rec, source_by_name = scan_prep
     g = guide_mod.resolve(card)
     if det not in guide_mod.fit_detectors(g, card) or det not in rec.spectra:
-        return result(item.pass_kind, "failed", f"the card's fitting choices leave {det} out")
+        return Prepared(reason=f"the card's fitting choices leave {det} out")
     chash = content_hash(rec)
     tabulated = (card.policy.calibration or {}).get("method") == "tabulated_elastic"
     loaded = version = None
     if tabulated:
-        folder, pattern, _source = curves.resolution_location(card, root)
+        folder, pattern, _source = curves.resolution_location(card, frozen.root)
         loaded = curves.load_curves(folder, pattern)
         body = {"method": "tabulated_elastic", "folder": None if loaded.folder is None else str(loaded.folder),
                 "pattern": loaded.pattern, "library": loaded.fingerprint}
@@ -116,24 +152,50 @@ def _fit(root: Path, item: FileItem, progress, emit) -> None:
     sample = driver._sample_of(rec, card)            # the effective record keeps the experiment id
     sp = up = None
     if intake_scans.applies(card):
-        sp = StartPoint(root, nop_card, g, runcal, parsed={key: rec}, rows={key: intake_scans.scan_row(rec, chash)},
-                        data_revision={key: chash},
-                        passes=("fast",) if item.pass_kind == "fast" else ("fast", "deep"), run_id="",
-                        session=session, is_fresh=None, write_stub=None, loaded=loaded)
-        up = sp.plan([(rec, det, q, None, sample, item.unit_key, chash, "", seed)])[0]
+        sp = StartPoint(frozen.root, nop_card, g, runcal, parsed={key: rec},
+                        rows={key: intake_scans.scan_row(rec, chash)}, data_revision={key: chash},
+                        passes=passes, run_id="", session=frozen.session, is_fresh=None, write_stub=None,
+                        loaded=loaded)
+        up = sp.plan([(rec, det, q, None, sample, unit_key, chash, "", seed)])[0]
         task, eff, view = up.task, sp.frozen[key], sp.views[key] or runcal
         now = currentness.UnitNow(chash, up.ghash, up.calfp, up.inputs_hash)
     else:
         T = unit_data.scan_temperature(rec)
         ghash = canonical_hash(guide_mod.guidelines_signature(g, scan_number=scan, q=q, T=T))
-        task, eff, view = (rec, det, q, T, sample, item.unit_key, chash, ghash, seed), rec, runcal
+        task, eff, view = (rec, det, q, T, sample, unit_key, chash, ghash, seed), rec, runcal
         now = currentness.UnitNow(chash, ghash, calibrations.calibration_fingerprint(runcal, rec, det), None)
+    return Prepared(task=task, eff=eff, view=view, now=now, card=nop_card, g=g,
+                    exclusions=driver._exclusion_ids(card), version=version, tabulated=tabulated,
+                    source_by_name=source_by_name, sp=sp, up=up)
 
+
+def _fit(root: Path, item: FileItem, progress, emit) -> None:
+    def result(pass_kind, status, reason=None, payload=None, cores=None):
+        emit(FileResult(item.item_id, item.unit_key, pass_kind, status, reason, payload, cores))
+
+    exp, scan_s, det = item.unit_key.rsplit(":", 2)
+    scan = int(scan_s)
+    key = f"{exp}:{scan}"
+    frozen = freeze(root)
+    prev = frozen.session.get(item.unit_key)
+    if prev is None:
+        return result(item.pass_kind, "failed", f"{item.unit_key}: not read in yet")
+    scan_prep = prepare_scan(frozen, exp, scan, prev)
+    if scan_prep is None:
+        where = (prev.provenance or {}).get("source_file")
+        return result(item.pass_kind, "failed", f"the data file for this analyzer is no longer at {where}")
+    prep = prepare_unit(frozen, scan_prep, item.unit_key, ("fast",) if item.pass_kind == "fast" else ("fast", "deep"))
+    if prep.reason is not None:
+        return result(item.pass_kind, "failed", prep.reason)
+    task, eff, view, now = prep.task, prep.eff, prep.view, prep.now
+    nop_card, g, exclusions = prep.card, prep.g, prep.exclusions
+    sp, up, tabulated, version = prep.sp, prep.up, prep.tabulated, prep.version
+    inputs_at = frozen.inputs_at
     request = currentness.queue_deep_request()
     have = currentness.judge(prev, det, now, request)
     if item.pass_kind in have:
         return result(item.pass_kind, "already_current", f"already has a current {item.pass_kind} pass")
-    stored_cal = (card.state.tabulated_calibration.get(key) or {}).get("inputs_key")
+    stored_cal = (frozen.card.state.tabulated_calibration.get(key) or {}).get("inputs_key")
     calibration = ({"scan": key, "state": sp.recalibrated[key], "replaces": stored_cal}
                    if sp is not None and key in sp.recalibrated else None)
 
@@ -152,12 +214,12 @@ def _fit(root: Path, item: FileItem, progress, emit) -> None:
             entry = up.condition
         else:
             result("attempt", "attempt", None, {"schema": SCHEMA, "unit": item.unit_key, "pass": "attempt",
-                                                "measurement_record": driver._stub_record(card, task)})
+                                                "measurement_record": driver._stub_record(frozen.card, task)})
             entry = scan_delivery._process_one(
-                *task[:6], nop_card, g, view, driver._exclusion_ids(card), task[6], task[7], M=SCAN_M, seed=seed,
+                *task[:6], nop_card, g, view, exclusions, task[6], task[7], M=SCAN_M, seed=task[8],
                 errors_tier="fast", boot_workers=1, bayes_opts=driver._resolve_bayes_opts(), progress=progress)
         if det in eff.spectra:          # as the batch stamps; a dead analyzer keeps its import stamp
-            entry.provenance = {**driver._core_provenance(eff, det, source_by_name), **(entry.provenance or {})}
+            entry.provenance = {**driver._core_provenance(eff, det, prep.source_by_name), **(entry.provenance or {})}
         payload = {"schema": SCHEMA, "unit": item.unit_key, "pass": "fast",
                    "base": {"content_hash": prev.content_hash, "fast_id": None},
                    "deep": None, "fit_inputs": fit_inputs_of(entry, "fast"),
@@ -177,7 +239,7 @@ def _fit(root: Path, item: FileItem, progress, emit) -> None:
     n = min(item.cores, deep_pass.stage_width(oc["fast_pass"]))
     if n < item.cores:
         result("cores", "cores", cores=n)
-    record, timing, stop = _deep_stage(fast_entry, oc, task, nop_card, g, view, driver._exclusion_ids(card),
+    record, timing, stop = _deep_stage(fast_entry, oc, task, nop_card, g, view, exclusions,
                                        replace(request, workers=n), progress)
     if stop is not None:
         return result("deep", *stop)
