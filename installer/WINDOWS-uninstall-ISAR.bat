@@ -414,8 +414,10 @@ echo The ISAR installation in this folder will be replaced in place:
 echo     %BASE%
 echo Its Python environment is rebuilt from the package lock, and anything
 echo saved inside %BASE%\env goes with it. Its copy of ISAR's source is moved
-echo to the new commit; files you added there that ISAR does not track stay.
-echo Your workspaces elsewhere, your profile and the logs are not touched.
+echo to the new commit. Files you added there that ISAR does not track stay,
+echo unless that copy is damaged so that git cannot read it: then it is
+echo downloaded again and they go. Your workspaces elsewhere, your profile and
+echo the logs are not touched.
 goto confirm_ask
 :confirm_relocate
 echo ISAR %ISAR_RELEASE% will be installed into:
@@ -1266,6 +1268,12 @@ call :get_source
 if not defined ERR goto :eof
 if not exist "%BASE%\app" goto :eof
 if not exist "%GIT%" goto :eof
+:: A checkout that git can still read is kept whatever failed: a dropped connection
+:: must not cost the user's own files. ERR says what to do.
+if not exist "%BASE%\app\.git\" goto source_refetch
+"%GIT%" -c core.longpaths=true -C "%BASE%\app" rev-parse --git-dir >>"%LOG%" 2>&1 <nul
+if not errorlevel 1 goto :eof
+:source_refetch
 >>"%LOG%" echo(The kept source could not be brought to the commit: %ERR%
 >>"%LOG%" echo(It is removed and downloaded again.
 echo   The kept copy of ISAR's source could not be reused; downloading it again.

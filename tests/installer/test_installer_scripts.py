@@ -910,6 +910,37 @@ def test_failed_fetch_in_same_folder_preflight_stops_before_removal():
     assert preflight_fetch_offenders(text.replace('set "PF_FAIL=yes"\r\nset "ERR=the new version', 'set "ERR=the new version'))
 
 
+@pytest.mark.parametrize("usable", [True, False], ids=["git-checkout", "not-a-checkout"])
+def test_failed_refetch_keeps_a_checkout_git_can_read(tmp_path, usable):
+    """After a failed fetch, the kept source is removed only when git cannot read it: a usable checkout
+    (with the user's own files in it) stops with ERR, and the same-folder confirmation says so."""
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("needs git on PATH to tell a checkout from a folder")
+    env = _sandbox(tmp_path)
+    base = _plain(tmp_path) / "b"
+    app = base / "app"
+    app.mkdir(parents=True)
+    (app / "my-notes.txt").write_text("the user's\r\n", encoding="utf-8")
+    if usable:
+        subprocess.run([git, "init", "-q", str(app)], check=True)
+    text = _text(ENGINE)
+    body = [f'set "BASE={base}"', 'set "WORK=%TEMP%"', f'set "GIT={git}"', 'set "LOG=%TEMP%\\snip.log"',
+            "call :source_with_refetch", "exit /b 0", *_label_block(text, "source_with_refetch"),
+            *_label_block(text, "remove_entry"), ":get_source", 'set "ERR=git could not download the commit"',
+            "goto :eof", ":workspace_gate", 'set "GATE=ok"', "goto :eof"]
+    rc, out = _run_snippet(tmp_path, body, env)
+    assert rc == 0, out
+    assert (app / "my-notes.txt").exists() == usable, out
+
+
+def test_same_folder_confirmation_names_the_refetch_exception():
+    lines = _code_lines(_text(ENGINE))
+    i = lines.index(":confirm_same")
+    block = " ".join(ln[5:] for ln in lines[i + 1:i + 11] if ln.startswith("echo "))
+    assert "stay, unless that copy is damaged so that git cannot read it" in block, block
+
+
 def test_workspace_scan_reaches_paths_past_260_characters():
     """Static: LongPathsEnabled=1 here lets the unprefixed scan pass, so this cannot be a behaviour test.
     The scan roots at a \\\\?\\ path and strips it from what it reports and compares."""
