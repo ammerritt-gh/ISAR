@@ -238,15 +238,30 @@ def test_launcher_menu_compares_exact_codes_and_hands_over_uninstall():
 
 # ---------------------------------------------------------------- running the scripts
 
+SANDBOXED = ("USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP", "ISAR_TEST_DESKTOP", "ISAR_EXPERIMENTS_ROOT")
+
+
 def _sandbox(tmp_path, **extra):
     root = tmp_path / "Zo\u00eb user"
     env = {k.upper(): v for k, v in os.environ.items()}  # one entry per name: Windows names ignore case
-    for key, sub in (("LOCALAPPDATA", "local"), ("APPDATA", "roaming"), ("TEMP", "T mp"), ("TMP", "T mp"),
-                     ("ISAR_TEST_DESKTOP", "Desktop")):
-        (root / sub).mkdir(parents=True, exist_ok=True)
-        env[key] = str(root / sub)
+    # USERPROFILE stays plain: the system-folder refusal test names it as a path the installer must refuse.
+    paths = {"LOCALAPPDATA": root / "local", "APPDATA": root / "roaming", "TEMP": root / "T mp",
+             "TMP": root / "T mp", "ISAR_TEST_DESKTOP": root / "Desktop",
+             "ISAR_EXPERIMENTS_ROOT": root / "Documents" / "ISAR", "USERPROFILE": tmp_path / "profile"}
+    for key, path in paths.items():
+        path.mkdir(parents=True, exist_ok=True)
+        env[key] = str(path)
     env.update({k.upper(): v for k, v in extra.items()})
+    # The real profile holds the operator's GUI settings: a routine run must never reach it.
+    for key in SANDBOXED:
+        assert Path(env[key]).is_relative_to(tmp_path), (key, env[key])
     return env
+
+
+def test_sandbox_moves_every_profile_path_under_tmp_path(tmp_path):
+    env = _sandbox(tmp_path)
+    for key in SANDBOXED:
+        assert Path(env[key]).is_relative_to(tmp_path), (key, env[key])
 
 
 def run_bat(script, *args, env, timeout=90):
@@ -297,7 +312,7 @@ def test_validate_only_refuses_system_folders(tmp_path, which):
     # Program Files cannot be faked here (Windows resets ProgramFiles for each new process) and its
     # real path holds a space; "inside-windows" exercises the same inside-a-system-folder check.
     env = _sandbox(tmp_path)
-    value = {"profile": os.environ["USERPROFILE"], "windows": os.environ["SystemRoot"],
+    value = {"profile": env["USERPROFILE"], "windows": os.environ["SystemRoot"],
              "inside-windows": os.environ["SystemRoot"] + r"\ISAR"}[which]
     if which == "profile" and not PLAIN.fullmatch(value):
         pytest.skip("the profile path is refused for its characters already")
