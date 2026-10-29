@@ -356,6 +356,10 @@ found the resolution curves.
   it with *Use this curves folder*; ISAR never switches to it by itself. Hover the counts line for what a scan
   set, an analyzer and a spectrum are.
 
+The gpi folder is one line under the resolution curves: "gpi folder: <path> (found beside the data)", "(chosen by
+you)", or "gpi folder: none". *Choose gpi folder…* saves the folder you pick at once. Its gpi files are used
+after the data is read again or the analysis starts; the button's hover text says so.
+
 *Experiment info…* on the experiment line opens the experiment's name (with *Rename…*), its folder, and six optional
 fields: title, proposal, sample, people, dates and notes. They are kept with the experiment and no fit reads
 them. *Save details* keeps every other value already stored.
@@ -932,6 +936,7 @@ The inspector shows every fact with its source:
 
 | label | meaning |
 |---|---|
+| `gpi` | the beamline's `gpi_files/gpi.<set>` macro beside the data, when its check passed: the analyzer's HKL and the slit (see *gpi files beside the scans*) |
 | `header` | a `# key value` line, or a trailing `#Q=` / `#T=` line, in the file itself |
 | `trailer` | a trailing line that disagrees with the leading header (kept as a conflict) |
 | `sidecar` | the `.var` file beside the analyzer files |
@@ -939,12 +944,14 @@ The inspector shows every fact with its source:
 | `inferred` | derived by ISAR: `energy_keV` from `si_order` (1.977 keV per silicon order) when nothing else gives it, the count-recovery deviation, and `points_per_bin` (read from the `npts` data column) |
 | `missing` | nothing supplied it. The value is empty, and nothing downstream may invent one |
 
-The precedence is header, then trailer, sidecar, filename; the first found wins. A value you enter in ISAR
+The precedence is gpi (an accepted gpi file, see *gpi files beside the scans*), then header, trailer, sidecar,
+filename; the first found wins. A value you enter in ISAR
 is kept beside the file's value, not in this order: it is what the fit uses (see WORKSPACE_AND_CLI's
 *Values, conditions and what each fit used*, and GLOSSARY's *file value / user value*).
 
-A spectrum's `q_source` says which rung gave its Q. `header` or `filename` is rung 1 (the analyzer's own
-HKL). `none` is rung 4: no Q, `q = None`. Rungs 2 and 3 are planned, not built. For CsV3Sb5 every analyzer
+A spectrum's `q_source` says which rung gave its Q. `header`, `filename` or `gpi` is rung 1 (the analyzer's own
+HKL; `gpi` only when an accepted gpi file gives it). `none` is rung 4: no Q, `q = None`. Rungs 2 and 3 are
+planned, not built. The analyzer files of CsV3Sb5 carry no HKL, so without an accepted gpi file every analyzer
 is rung 4, and the scan's `hkl_nominal` is the only HKL in the record.
 
 ### Resolution, slit and zero
@@ -960,8 +967,9 @@ on its elastic line with that curve. To set this up:
    changes only through the GUI, never by editing a file. ISAR never switches a saved folder by itself: an
    `rf/` it finds beside a later import is listed in `report/curves.json` as another folder that also holds
    curves.
-2. Declare the slit if you know it: the header lines `agaph_mm` and `agapv_mm`, or enter the slit in ISAR
-   (the GUI). A slit you give is always used.
+2. Declare the slit if you know it: the header lines `agaph_mm` and `agapv_mm`, enter the slit in ISAR
+   (the GUI), or let an accepted gpi file give it (see *gpi files beside the scans*). A slit you give is always
+   used.
 3. ISAR checks the folder's curves at every import and every `isar run`, by their content: a curve replaced
    at the same path is noticed, and the calibration is rebuilt at the next run.
    `isar run` builds the calibration. The inspector shows each scan's slit, its candidate deviances and
@@ -988,12 +996,58 @@ the published phonons, and how far the prior moves the counts), run `tools\run-i
 main checkout. It takes one to two hours and writes its workspaces, logs and `summary.json` under
 `out\letacon_fast_pass\<timestamp>\`.
 
+### gpi files beside the scans
+
+The beamline's gpi macro for each scan set, `gpi_files/gpi.<set>` beside the data, holds what the analyzer files
+lack: each analyzer's HKL (so its Q), the analyzer slit (`agaph` × `agapv`) and the resolution curve set the
+scientist used (`sarf_name`). ISAR reads those few lines and nothing else in the file. It takes from a file only
+after the check below, and the check accepts or rejects the whole file.
+
+- **Finding the folder.** A `gpi_files/` folder beside the imported data is saved as the experiment's gpi folder
+  when none is saved, as `rf/` is, and the setup section says *found beside the data* or *chosen by you*. ISAR
+  never switches a saved folder. *Choose gpi folder…* on the setup line saves the folder you pick at once.
+- **Matching.** `gpi.<set>` belongs to the scan set whose analyzer files are `<set>_aNN`, matched by file name. A
+  `problem_name1` inside the file that names another set is noted, not refused.
+- **The check.** For every imported analyzer of the set, the file's Q magnitude (`Q_aNN`) must agree with the
+  `#Q=` trailer of that analyzer's data file within **0.15 /nm**. A missing value on either side fails the file.
+  Analyzers in the file with no data are ignored. The check compares magnitudes only: it does not verify the HKL
+  direction, the slit or the curve set, so a stale file with the same magnitudes would still pass it.
+- **If the file passes**, ISAR takes:
+  - each analyzer's HKL as its Q, source *gpi*, so the *Q (for steering)* gap clears. An analyzer without a
+    complete HKL (all of `_H`, `_K` and `_L`) keeps no Q;
+  - the slit `agaph` × `agapv`, unless you entered one (below). A missing dimension leaves the file's slit
+    unavailable;
+  - for each analyzer, the curve file `<sarf_name>_aNN` itself, not the first curve that happens to share its
+    slit. Without a `sarf_name`, ordinary slit matching applies. `resolution_name` is not read: ISAR uses SARF
+    curves only.
+- **If the file fails**, nothing from it is used for its scan set: no Q, no slit and no curve set, and the scan
+  runs as it would without a gpi file. Readiness lists the file under *gpi file not used*, with the worst
+  disagreeing analyzers. The GUI shows one notice per gpi file per GUI session, listing every file that newly
+  failed in the same refresh. A file shows again only when its result changes, never on every refresh. To clear
+  it, fix the file, then add the data again or start the analysis; ISAR reads the file again then.
+- **Your slit comes first.** A slit you enter that differs from the curve set's own slit is kept, the named set
+  is set aside for that scan (readiness: *gpi curve set not used*), and the curves follow your slit. A slit you
+  enter that agrees with the set's slit keeps the named set.
+- **A named curve missing from the folder** holds that analyzer as a missing curve; readiness names the file it
+  looked for, `<sarf_name>_aNN`. Its HKL and the slit are still taken, and the other analyzers proceed. ISAR does
+  not fall back to slit matching.
+- **Each check replaces the last.** Import, run start and the start of a queued single-file fit each judge the
+  files afresh and replace the previous result. A file that later fails, is removed, or whose analyzer's `#Q=`
+  changes contributes what it now gives, which may be nothing. Changing only `sarf_name`, between two curve sets
+  already in the folder, makes the saved calibration and the fits made with it stale. Your own values are never
+  touched, and the gpi values are never saved as yours.
+- **Experiments imported before this change** have no per-analyzer Q in their import record. Their gpi files show
+  as not used, with the reason *data has no |Q|*, until the data is added again or a run reads it.
+- **Not read:** the rest of the macro, including the dQ vectors, the beam energy, the Si order, the two-theta and
+  divergence settings, the arm Q, the plot settings and `resolution_name`. The files in the gpi folder are not
+  listed as *files not read*.
+
 ### Limits for BL43LXU
 
 - An analyzer's zero is its fitted elastic line, or the labelled pipeline zero. ISAR never defaults an
   energy zero to 0.0 on an uncalibrated axis.
 - The in-plane momentum spread of the resolution is not modelled. Q rungs 2 and 3 are not built, so an
-  analyzer's Q stays absent unless its file gives an HKL.
+  analyzer's Q stays absent unless its file, or an accepted gpi file, gives an HKL.
 - `_lr` counts are parsed and shown, never fitted (see `[reader]` under *Where BL43's settings live*).
 - The raw SPEC files are not read.
 - The Ba122 layout has no monitor, and ISAR does not deduce one.
