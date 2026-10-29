@@ -364,6 +364,13 @@ def enumerate_count_structures(ctx, n: int, profile: str = DEFAULT_PROFILE) -> l
     ``stokes2+bg``, ``stokes3+bg``, ...). Every mode honours the Bose-dead Stokes-only choice
     (:func:`isar.analyze.phonon._phonon_for`; DHO physics stays in phonon.py). Labels, order and k
     for ``n <= 2`` are pinned to the legacy hand enumeration by ``tests/analyze/test_catalogue.py``.
+
+    A BL43LXU spectrum (:func:`isar.analyze.phonon.central_qe_admissible`) gets exactly one
+    structure per count instead: ``elastic+<stokes>+qe+bg`` (``elastic+qe+bg`` at ``n = 0``): the
+    modes, the elastic line, the central QE (:class:`~isar.analyze.components.CentralQE`, its width
+    pinned to the card's ``quasielastic_fwhm`` when declared) and the background; the ``elastic``
+    token and component only under the elastic gate. Elastic-free and QE-free models are not
+    enumerated: the fast pass's twin rule builds them on demand.
     """
     sharp = entry("elastic", profile).model("sharp")
     broad = entry("quasielastic", profile).model("broad")
@@ -373,6 +380,19 @@ def enumerate_count_structures(ctx, n: int, profile: str = DEFAULT_PROFILE) -> l
     qe = broad.admissible(ctx)
 
     hyps: list[Hypothesis] = []
+    if phonon.central_qe_admissible(ctx):
+        central = entry("quasielastic", profile).model("central")
+        pin = getattr(ctx, "quasielastic_fwhm", None)
+        qe_c = central.recipe if pin is None else central.recipe(width=pin)
+        head, el = (("elastic",), (sharp.recipe,)) if elastic else ((), ())
+        if n == 0:
+            return [Hypothesis("+".join(head + ("qe", "bg")), (*el, qe_c, bg))]
+        stokes = "stokes" if n == 1 else f"stokes{n}"
+        modes = tuple(phonon._phonon_for(ctx) if i == 1 else phonon._phonon_for(ctx, f"phonon{i}")
+                      for i in range(1, n + 1))
+        _phonon_bearing_adder(hyps, profile)("+".join(head + (stokes, "qe", "bg")),
+                                             (*modes, *el, qe_c, bg))
+        return hyps
     if n == 0:
         if elastic:
             hyps.append(Hypothesis("elastic+bg", (sharp.recipe, bg)))

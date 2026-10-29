@@ -146,6 +146,29 @@ def test_catalogue_multimode_matches_legacy(elastic, qe, stokes_only):
     assert got == expected
 
 
+_CQE = ("class", "CentralQE", None, None)
+
+
+def test_bl43lxu_gets_one_elastic_plus_qe_structure_per_count():
+    """BL43LXU: every count is elastic + central QE + its modes + background, nothing else; the
+    reduced models are the fast pass's to build on demand. Off BL43LXU the list above holds."""
+    base = _ctx(elastic=True, qe=False, stokes_only=False)
+    ctx = replace(base, instrument="BL43LXU")
+    got = [_shape(catalogue.enumerate_count_structures(ctx, n)) for n in range(3)]
+    assert got == [
+        [("elastic+qe+bg", (_ELASTIC, _CQE, _BG))],
+        [("elastic+stokes+qe+bg", (_PHO_TIED, _ELASTIC, _CQE, _BG))],
+        [("elastic+stokes2+qe+bg", (_PHO_TIED, _PHO2_TIED, _ELASTIC, _CQE, _BG))]]
+    pinned = catalogue.enumerate_count_structures(replace(ctx, quasielastic_fwhm=1.5), 1)
+    assert [h.label for h in pinned] == ["elastic+stokes+qe+bg"]
+    assert _identity(pinned[0].components[2]) == ("instance", "CentralQE", "qe", None)
+    assert pinned[0].components[2].width == 1.5
+    # the same context off BL43LXU: today's list, unchanged
+    assert [h.label for h in catalogue.enumerate_count_structures(base, 1)] == \
+        ["stokes+bg", "elastic+stokes+bg"]
+    assert [h.label for h in catalogue.enumerate_count_structures(base, 0)] == ["elastic+bg", "bg"]
+
+
 def test_multimode_below_two_is_empty():
     assert phonon.enumerate_phonon_multimode(_ctx(elastic=True, qe=True,
                                                   stokes_only=False), n_max=1) == []
