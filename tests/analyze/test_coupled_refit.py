@@ -371,6 +371,21 @@ def test_a_near_tied_exchange_prices_but_a_clear_association_stays_skipped():
     assert R._Spec(clear).triggers == () and R.assign_jobs(clear)[0].discrete == "skipped"
 
 
+def test_a_continuing_unmatched_mode_keeps_its_id_across_sweeps():
+    snap = _entry_snapshot()
+    for sweep in range(3):
+        r = R.refit(snap, stage="both")
+        assert r.status in ("accepted", "unchanged") and r.assignment.slots == ("b1", None)
+        assert [m.branch for m in r.modes] == ["b1", "fast:y#1"]
+        own = R.held_from_fit(r.fit, unit="y", fit=f"f0000000000{sweep}", inputs=None, context=snap.context, T=200.0)
+        snap = replace(snap, own=own, own_record=r.fit, fit_id=f"f0000000001{sweep}")
+    born = R.refit(t_pair(spectrum([(8.0, 0.4, 40.0), (15.0, 0.4, 60.0)], seed=8), [(8.0, 0.4, 40.0)], ["b1"],
+                          [(8.0, 0.4, 40.0)], ["b1"], rec=record([(8.0, 0.4, 40.0)], probs={"1": 0.5, "2": 0.5})),
+                   stage="both")
+    new = [m.branch for m in born.modes if m.branch != "b1"]
+    assert born.assignment.count == 2 and len(new) == 1 and new[0].startswith("f00000000000a#")   # a birth is minted
+
+
 def test_only_exchangeable_unmatched_modes_get_the_factorial():
     two = [(5.0, 0.4, 40.0), (12.0, 0.4, 40.0)]
     spec = R._Spec(t_pair(spectrum(two, seed=3), two, ["fast:y#0", "fast:y#1"], [(8.0, 0.4, 40.0)], ["b1"]))

@@ -32,7 +32,7 @@ from isar.analyze import fast_pass, loop, prior
 from isar.analyze.components import ConstantBackground, Elastic, PhononDHO, QuasiElastic
 from isar.analyze.coupled import engine as cc
 from isar.analyze.coupled import rules
-from isar.analyze.coupled.identity import ModeObs, match_link, new_branch_id
+from isar.analyze.coupled.identity import ModeObs, _carried_ids, match_link, new_branch_id
 from isar.analyze.coupled.settings import InterSettings
 from isar.analyze.coupled.types import (SEVERITY_OF, Assignment, Dormant, Held, HeldMode, Priced, PricingJob,
                                         RefitResult, Snapshot)
@@ -836,7 +836,10 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
     F = rules.flag_score(R, U)
 
     # modes, labelled by slot (slot order)
-    ids = [b if b is not None else new_branch_id(snapshot.fit_id, m) for m, b in enumerate(slots)]
+    # an unmatched mode continues the incoming mode nearest in energy that no slot names (identity's own
+    # pairing); only a mode with no partner is a birth and gets a new id
+    carried = _carried_ids(a, spec.own, [float(theta[ai]) for ai, _g, _c in model.modes])
+    ids = [b if b is not None else carried.get(m) or new_branch_id(snapshot.fit_id, m) for m, b in enumerate(slots)]
     own_by = {md.branch: md for md in spec.own.modes}
     modes, energies = [], {}
     for m, (ai, gi, ci) in enumerate(model.modes):
