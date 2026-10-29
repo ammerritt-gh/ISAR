@@ -164,6 +164,8 @@ class ScansPageViewModel(ViewModel):
         else:
             self.chosen = {self._active: fit_id}
             self.fit = 'fast'    # a refit shows in the fast slot only
+            if self.layout == 'overlay':    # Overlay draws raw data alone, so the chosen fit would not show
+                self.layout = 'offset'
         self.refreshed.emit()
 
     def set_waterfall(self, on):

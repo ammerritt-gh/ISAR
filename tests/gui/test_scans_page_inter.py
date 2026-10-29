@@ -258,3 +258,14 @@ def test_the_legend_names_the_deep_curve_when_fit_is_deep(setup, reads):
     text = next(line.text for line in drawn.legend if line.entry == ONE_MODE)
     assert "Batch 1 · ring 2" not in text and CONDITIONAL_ERRORS not in text
     assert drawn.curves_header.startswith("Curves · Deep")    # the fixture's deep fit is untrusted
+
+
+def test_choosing_a_refit_leaves_overlay_so_its_curve_shows(setup, reads):
+    page, inter = setup
+    inter.histories[ONE_MODE] = make_history(_refit("r1", "ring 1"))
+    page.vm.set_layout("overlay")
+    _select(page, ONE_MODE, TWO_MODE, active=ONE_MODE)
+    page.vm.choose_fit("r1")
+    page.flush_redraw()
+    assert page.vm.layout == "offset"
+    assert next(t for t in page._drawn_state.traces if t.active).curves
