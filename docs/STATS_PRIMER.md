@@ -328,7 +328,7 @@ screens, in this order:
 |---|---|---|
 | a mode's height at or below `twin_height_frac` (1e-3) of the height ceiling | that mode is not there | the count below, same elastic variant, without that mode |
 | a mode's energy ω₀ at the zero-energy edge of the window, or its line shape equal to the elastic line's within `elastic_twin_tolerance` | that mode is the elastic line | the count below, with the elastic line |
-| the elastic height at or below the same fraction | there is no elastic line | the same count without the elastic line |
+| the elastic height at or below the same fraction | there is no elastic line | the same count without the elastic line (not on BL43LXU: the elastic line is never removed there, §2.1) |
 | two modes closer than `twin_coincide_fwhm` (0.5) resolution FWHM | one mode | the count below with the pair merged, one pair at a time (exactly coincident delta pairs first); the all-pairs merge is one more candidate |
 | a mode's width Γ at the floor | that mode is resolution limited | the same model with that Γ pinned at the floor: a delta-function mode convolved with the resolution |
 | the flat background at or below the same fraction of its ceiling | there is no background | the same model without its background |
@@ -458,7 +458,9 @@ so a recipe change does not mark it stale; force the masters to refit them under
 
 **The central quasi-elastic component (BL43LXU only).** Every BL43LXU model is the elastic line, one
 central quasi-elastic component (QE), the phonons and an optional flat background; the QE is not a
-phonon and does not change a model's phonon count. It is phenomenological, a "central excess" with no
+phonon and does not change a model's phonon count. The elastic line is never removed on BL43LXU, not
+even at zero height: a zero QE is removed (the reduced model without it is priced on its own), and a
+model with no elastic line is never offered. It is phenomenological, a "central excess" with no
 mechanism claimed: ISAR reports a fitted spectral weight and a fitted width, never a relaxation time, a
 mobile fraction or a process. Its shape is a Lorentzian of fitted intrinsic FWHM centred on the
 calibrated energy zero, times the relaxational detailed-balance factor `(E/kT) / (1 - exp(-E/kT))` at

@@ -63,18 +63,19 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   model's phonon count. Its height is the convolved peak value (the phonons' convention); its
   reported weight is the intrinsic shape integrated over the measured energy window, because the
   detailed-balance form has no finite all-energy integral. The width prior is a penalty, not a cap:
-  not allowed below 1/4 resolution FWHM, flat to 2 FWHM, then -1 nat per FWHM (STATS_PRIMER). A card
+  not allowed below 1 resolution FWHM, flat to 2 FWHM, then -1 nat per FWHM (STATS_PRIMER). A card
   `quasielastic_fwhm` pins the width and drops its prior. The elastic line is also in every BL43LXU
-  model; a component that fits to zero height is removed by the duplicate-model rule and the reduced
-  model is priced on its own evidence, as one result in place of its parent. Triple-axis, IN8's
-  fixed-width `QuasiElastic` and every other instrument are unchanged.
+  model and is never removed: a QE that fits to zero height is removed by the duplicate-model rule and
+  the reduced model is priced on its own evidence, as one result in place of its parent. Triple-axis,
+  IN8's fixed-width `QuasiElastic` and every other instrument are unchanged.
 - **phenomenon catalogue** — the single registry (`isar.phenomenon-catalogue/1`) of what can be
   present in a scan: acoustic, optic, elastic, quasielastic, unknown, bg_only. Each entry declares
   its local models and gates (the physics stays in `analyze/phonon.py`), plus dormant parameter
   priors, transport declarations, and constrained variants consumed when Laplace evidence lands.
   Structure enumeration is catalogue-driven, including the phonon-less nulls `elastic+bg` and `bg`
-  (on BL43LXU the starting zero-phonon model is `elastic+qe+bg`; `elastic+bg` and `bg` appear there
-  only as reduced models the duplicate rule builds).
+  (on BL43LXU the starting zero-phonon model is `elastic+qe+bg`; `elastic+bg` appears there only as the
+  reduced model the duplicate rule builds when the QE is removed, and a bare `bg` never appears, since
+  the elastic line is never removed).
 - **elastic_only** — the verdict when the phonon-less `elastic+bg` candidate wins selection with a
   significant elastic line: a positive, scan-local, categorically humble claim (confidence
   hard-capped at 0.5); never region exclusion, never a Bragg identification.
