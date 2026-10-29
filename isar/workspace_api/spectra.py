@@ -16,7 +16,7 @@ from types import MappingProxyType
 
 import numpy as np
 
-from .inter_spectra import fit_view_and_label
+from .inter_spectra import fit_views
 from .scan_list import PooledRow, SpectrumRow, Status
 from .evaluate import UnsupportedFitView, _component_manifest, deep_manifest, evaluate_manifest
 
@@ -778,9 +778,10 @@ def _zero_fallback(ws) -> str | None:
     return calibration.get("zero_fallback") if isinstance(calibration, Mapping) else None
 
 
-def _chosen_bundle(ws, row, qe, cache, zero_fallback, fit_id):
-    """The bundle whose fast slot draws refit ``fit_id`` (C-bundle); the solo's when that fit cannot be drawn."""
-    fit, label = fit_view_and_label(ws, row.key, fit_id)
+def _chosen_bundle(ws, row, qe, cache, zero_fallback, fit_id, view):
+    """The bundle whose fast slot draws refit ``fit_id`` (C-bundle); the solo's when that fit cannot be drawn.
+    ``view`` is the spectrum's ``fit_views`` entry, read once per call."""
+    fit, label = view
     if fit is None:
         _log.warning("fit %s of %s cannot be drawn; drawing the fast solo fit", fit_id, row.key)
         return _bundle(ws, row, qe, cache, zero_fallback)
@@ -797,6 +798,8 @@ def spectrum_bundles(ws, rows: Sequence[SpectrumRow | PooledRow], *,
     # fit_choice: spectrum key -> fit id; None, or a key missing from it, is today's fast solo, bit for bit
     qe = getattr(getattr(ws.card, "policy", None), "quasielastic_fwhm", None)
     zero_fallback = _zero_fallback(ws)
+    fids = {row.key: (fit_choice or {}).get(row.key, "fast") for row in rows if isinstance(row, SpectrumRow)}
+    views = fit_views(ws, {key: fid for key, fid in fids.items() if fid != "fast"})
     out = []
     for row in rows:
         if isinstance(row, PooledRow):
@@ -804,9 +807,9 @@ def spectrum_bundles(ws, rows: Sequence[SpectrumRow | PooledRow], *,
             out.append(_not_drawn_bundle(
                 row.key, "-", NotDrawn(POOLED, "pooled master"), summaries))
         elif isinstance(row, SpectrumRow):
-            fid = (fit_choice or {}).get(row.key, "fast")
+            fid = fids[row.key]
             out.append(_bundle(ws, row, qe, cache, zero_fallback) if fid == "fast"
-                       else _chosen_bundle(ws, row, qe, cache, zero_fallback, fid))
+                       else _chosen_bundle(ws, row, qe, cache, zero_fallback, fid, views[row.key]))
         else:
             raise ValueError("rows must contain only SpectrumRow or PooledRow")
     return tuple(out)

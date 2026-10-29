@@ -266,26 +266,41 @@ def _solo_view(ws, unit: str):
     return None
 
 
-def fit_view_and_label(ws, unit: str, fit: str = "authoritative") -> tuple[FitView | None, str]:
-    """The drawable view of ``fit`` (a fit id, ``"fast"``, or ``"authoritative"`` for the one in use) of a spectrum
-    and its plain label; ``(None, label)`` when the fit is not recorded or cannot be drawn."""
+def _view(ws, log: records.InterLog, lines: Mapping[str, records.RefitLine], unit: str, fit: str):
+    """``fit`` of a spectrum drawn from its solo outcome and the stored overlay, with its label; ``lines`` maps each
+    fit id of ``log`` to its line. ``(None, label)`` when the fit is not recorded or cannot be drawn."""
     solo = _solo_view(ws, unit)
-    c = _load(ws.root, only=unit)
-    if fit == "authoritative":
-        fit = c.res[unit].fit
-    if fit is None:
-        return None, ""
     if fit == FAST:
         return solo, "Fast solo"
-    line = c.lines.get(fit)
-    label = authority.fit_label(line, c.log.batches)
+    line = lines.get(fit)
+    label = authority.fit_label(line, log.batches)
     if line is None or line.unit != unit or line.status not in ELIGIBLE or solo is None:
         return None, label
-    payload = records.read_payload(c.root, line)
+    payload = records.read_payload(ws.root, line)
     if payload is None or payload.get("overlay") is None:
         return None, label
     return FitView(row=None, outcome=authority.overlay_outcome(solo._outcome, payload["overlay"]),
                    scan_number=solo.scan_number, detector_id=solo.detector_id, unit_id=unit), label
+
+
+def fit_view_and_label(ws, unit: str, fit: str = "authoritative") -> tuple[FitView | None, str]:
+    """The drawable view of ``fit`` (a fit id, ``"fast"``, or ``"authoritative"`` for the one in use) of a spectrum
+    and its plain label; ``(None, label)`` when the fit is not recorded or cannot be drawn."""
+    if fit == "authoritative":
+        fit = _load(ws.root, only=unit).res[unit].fit
+    if fit is None:
+        return None, ""
+    log = records.read_log(ws.root)
+    return _view(ws, log, {r.fit: r for r in log.refits}, unit, fit)
+
+
+def fit_views(ws, fits: Mapping[str, str]) -> dict[str, tuple[FitView | None, str]]:
+    """``fit_view_and_label`` for many spectra, each with a concrete fit id: the log is read once for all of them."""
+    if not fits:
+        return {}
+    log = records.read_log(ws.root)
+    lines = {r.fit: r for r in log.refits}
+    return {unit: _view(ws, log, lines, unit, fit) for unit, fit in fits.items()}
 
 
 def fit_view_of(ws, unit: str, fit: str = "authoritative") -> FitView | None:

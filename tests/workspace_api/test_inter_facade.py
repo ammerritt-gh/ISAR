@@ -336,6 +336,24 @@ def test_a_chosen_refit_keeps_the_stored_deep_pass_drawn(root):
     assert type(chosen._passes["deep"]) is type(solo._passes["deep"])
 
 
+def test_a_redraw_reads_the_log_once_for_all_its_rows(root, monkeypatch):
+    """A Scan(s) redraw of N refitted rows reads the inter-spectra log once, not once per row (a counter on it)."""
+    from isar.workspace_api import spectrum_bundles
+    from isar.workspace_api.scan_list import scan_list
+    ws = Workspace.open(root)
+    keys, fits = spectrum_keys(root)[:3], (F1, F2, F3)
+    h = _hashes(root, keys)
+    save(root, B1, [_refit(k, f, h[k]) for k, f in zip(keys, fits)])
+    ws.refresh()
+    rows = [scan_list(ws).spectrum(k) for k in keys]
+    reads = []
+    read_log = records.read_log
+    monkeypatch.setattr(records, "read_log", lambda root: reads.append(root) or read_log(root))
+    bundles = spectrum_bundles(ws, rows, fit_choice=dict(zip(keys, fits)))
+    assert len(reads) == 1
+    assert [(b.key, b.fit_id) for b in bundles] == list(zip(keys, fits))
+
+
 # ---------------------------------------------------------------------------
 # the batch preview (S1U4's graph is faked: the wrapper is what is tested)
 # ---------------------------------------------------------------------------
