@@ -29,11 +29,12 @@ RECORD_KEYS = {
     "close_call_alternatives", "numerically_marginal", "search_limit_reason",
     "deep_pass_candidate", "selected_model_id", "selected_label", "arena_fingerprint",
     "ln_like_saturated", "models", "peaks", "elastic_height", "background", "grouped_intensity",
-    "flags", "flag_statistics", "prior_provenance", "settings", "n_fits", "seed_count"}
+    "flags", "flag_statistics", "prior_provenance", "settings", "n_fits", "seed_count", "qe"}
 MODEL_KEYS = {
     "model_id", "label", "n_peaks", "elastic", "background", "delta_modes", "ln_model_prior",
     "evidence_status", "ln_z", "ln_like", "ln_prior", "cost", "k_free", "free", "probability",
-    "twin_of", "n_basins", "reason", "posterior_iterations", "params", "map_params"}
+    "twin_of", "n_basins", "reason", "posterior_iterations", "params", "map_params",
+    "qe", "on_demand", "removed", "superseded", "parent"}
 PEAK_KEYS = {
     "index", "omega0", "Gamma", "delta", "height", "area_stokes", "area_both", "sigma_omega0",
     "sigma_Gamma", "sigma_height", "sigma_area", "area_status", "corr_omega0_Gamma", "regime",
