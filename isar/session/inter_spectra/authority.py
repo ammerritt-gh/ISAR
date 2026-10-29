@@ -133,13 +133,13 @@ def fit_label(line: RefitLine | None, batches) -> str:
 
 
 def overlay_outcome(oc: dict, overlay: dict) -> dict:
-    """``oc`` with the overlay's drawable keys in place of the solo fit's and the solo verdict keys blanked."""
+    """``oc`` with the overlay's drawable keys in place of the solo fit's, None where the overlay lacks one, and the
+    solo verdict keys blanked: no solo number may sit beside a refit's."""
     out = {**oc}
     for k in SOLO_VERDICT_KEYS:
         out[k] = None
     for k in OVERLAY_KEYS:
-        if k in overlay:
-            out[k] = overlay[k]
+        out[k] = overlay.get(k)
     return out
 
 

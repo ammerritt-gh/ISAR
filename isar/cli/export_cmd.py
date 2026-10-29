@@ -41,14 +41,15 @@ def run(args) -> int:
         log.exception("export failed")
         return _fail("export_failed", f"{type(exc).__name__}: {exc}", as_json, 1)
     folder = str(s.folder.resolve())
+    inter = f", {s.n_modes_inter} inter-spectra" if s.n_modes_inter else ""
     print(f"export: {s.n_spectra} spectra, {s.n_modes} mode rows ({s.n_modes_fast} fast, "
-          f"{s.n_modes_deep} deep), {s.n_curves} resolution curves, {len(s.problems)} problems "
+          f"{s.n_modes_deep} deep{inter}), {s.n_curves} resolution curves, {len(s.problems)} problems "
           f"(listed in fits.json)")
     print(folder)
     if as_json:
         print(json.dumps({"export": {
             "folder": folder, "spectra": s.n_spectra, "modes": s.n_modes,
-            "modes_fast": s.n_modes_fast, "modes_deep": s.n_modes_deep,
+            "modes_fast": s.n_modes_fast, "modes_deep": s.n_modes_deep, "modes_inter": s.n_modes_inter,
             "resolution_curves": s.n_curves, "problems": len(s.problems)}}))
     sys.stdout.flush()
     return 0

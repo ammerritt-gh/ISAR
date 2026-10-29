@@ -1,13 +1,14 @@
 """`isar export`: one timestamped folder of the stored results, for use outside ISAR.
 
 ``export_workspace(root)`` writes ``report/exports/export-<YYYYMMDD-HHMMSS>[-N]/`` holding
-``modes.csv`` (one row per mode per pass, each labelled ``fast`` or ``deep``), ``fits.json`` (one
-record per ledger spectrum, with both stored pass records verbatim), ``spectra/*.csv`` (the current
+``modes.csv`` (one row per mode per pass, each labelled ``fast``, ``deep`` or ``inter``), ``fits.json`` (one
+record per ledger spectrum, with the stored pass records verbatim), ``spectra/*.csv`` (the current
 stored data of each spectrum), ``resolution/*.csv`` (each curve a fit used) and ``README.txt``.
 
 It reads stored results only: the ledger, the unit-data files and pooled blobs through the read
-facade, and each fit's recorded resolution curve. Nothing is refitted, reparsed or saved, and nothing
-picks one pass over the other. The folder is built under a ``.partial-*`` name and renamed into
+facade, and each fit's recorded resolution curve. Nothing is refitted, reparsed or saved. All passes are
+exported side by side; the authoritative one of each spectrum (``isar.session.inter_spectra.authority``, the
+one resolver) is marked, never picked here. The folder is built under a ``.partial-*`` name and renamed into
 place, so a failed export leaves no folder that reads as finished, and an earlier export is never
 overwritten.
 """
@@ -21,6 +22,7 @@ import logging
 import math
 import os
 import shutil
+import dataclasses
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,8 +30,10 @@ from pathlib import Path
 from isar.analyze.resolution import curve_from_record
 from isar.intake import scans as intake_scans
 from isar.session import outcome as outcome_mod
+from isar.session.inter_spectra import authority, records as inter_records
 from isar.session.workspace import Workspace
 from isar.workspace_api import Workspace as ReadWorkspace
+from isar.workspace_api.inter_spectra import inter_overview, is_flagged, refit_flagged
 from isar.workspace_api.scan_keys import split_key
 
 log = logging.getLogger(__name__)
@@ -39,12 +43,16 @@ EXPORTS_DIRNAME = "exports"
 _MAX_SUFFIX = 100
 
 # modes.csv: the results writer's columns unchanged, then ten for the export (the bounds empty on
-# fast rows; inputs_current empty where the row's pass was not judged).
+# fast rows; inputs_current empty where the row's pass was not judged), then four for the authoritative
+# fit (authoritative: the row's fit is the one in use; fit_source: the spectrum's plain-words label; fit_id:
+# the row's own fit; flagged: inter rows only).
 MODES_COLUMNS = outcome_mod._MODES_COLUMNS + [
     "pass", "trust", "scan_label", "spectrum_file", "fit_data_mismatch",
-    "omega0_lo", "omega0_hi", "gamma_lo", "gamma_hi", "inputs_current"]
+    "omega0_lo", "omega0_hi", "gamma_lo", "gamma_hi", "inputs_current",
+    "authoritative", "fit_source", "fit_id", "flagged"]
 SPECTRUM_COLUMNS = ["x_raw", "energy_meV", "counts", "sigma", "mask"]
 FAST_TRUST = "not assessed"   # the fast pass stores no trust flag; absence is not a verdict
+CONDITIONAL = "hesse_conditional"   # a refit's errors hold the neighbours fixed
 
 README_TEXT = """\
 ISAR export
@@ -55,9 +63,9 @@ Nothing was refitted to make it. Each export is a new folder; an earlier one is 
 
 Files
 -----
-modes.csv     one row per fitted mode per pass (fast and deep), mode_index 0 the lowest energy
-fits.json     one record per spectrum: its state, both stored pass records in full, provenance, and
-              what each pass's inputs were
+modes.csv     one row per fitted mode per pass (fast, deep and inter), mode_index 0 the lowest energy
+fits.json     one record per spectrum: its state, the stored pass records in full, provenance, and
+              what each pass's inputs were, and its inter-spectra fits
 spectra/      one CSV per spectrum: the data ISAR holds now
 resolution/   one CSV per measured resolution curve a fit used
 README.txt    this note
@@ -74,13 +82,16 @@ Units and conventions
   amplitude_intrinsic is the DHO's intrinsic narrow-limit amplitude A. See docs/STATS_PRIMER.md
   section 8 for the full DHO form and the height coordinate.
 - uncertainty_kind says what an uncertainty is: hesse (the *_err cells, symmetric, fast rows), minos
-  (the *_lo / *_hi cells, absolute MINOS bounds, deep rows), or empty when the mode has none.
+  (the *_lo / *_hi cells, absolute MINOS bounds, deep rows), hesse_conditional (the *_err cells of an
+  inter-spectra row: the error with the neighbours' modes held fixed, so smaller than a solo error and
+  not comparable to it), or empty when the mode has none.
 - Empty means missing, never zero. A missing uncertainty stays missing.
 
-Two passes, side by side
-------------------------
-Both passes are exported and nothing picks one. Tell them apart by:
-- the pass column of modes.csv (fast / deep), and the fast and deep blocks of each fits.json record;
+Passes, side by side
+--------------------
+Every pass is exported; the one ISAR uses for a spectrum (its authoritative fit) is marked, the others stay.
+Tell them apart by:
+- the pass column of modes.csv (fast / deep / inter), and the fast and deep blocks of each fits.json record;
 - count_state, which on each row is that row's own pass's state;
 - trust: on deep rows it is the stored deep record's own flag (trusted / untrusted); fast rows read
   "not assessed", because the fast pass stores no trust flag.
@@ -91,6 +102,17 @@ block are in fits.json under deep_pass.chosen.
 A deep pass that contributes no rows (refused, no chosen model, or no successful refit) says why in its
 fits.json deep block (state_reason, chosen_failure). A spectrum whose deep block is null never had a
 deep pass.
+The inter-spectra fit is the second pass that couples neighbouring spectra. An inter row is written only for
+a spectrum whose authoritative fit is a refit; the spectrum's other refits are listed in its fits.json
+inter_spectra block (history). Four trailing columns of modes.csv say which fit is in use:
+- authoritative: true on the row whose fit ISAR uses for that spectrum, false on the others, empty on deep
+  rows (the deep pass is a second opinion on the fast solo fit);
+- fit_source: the spectrum's authoritative fit in plain words, for example Fast solo, Batch 2 · sweep 3,
+  Your pick: ..., Locked: ..., or Fast solo (Batch 2 · ring 1 is out of date: ...);
+- fit_id: the row's own fit, fast or the refit's id;
+- flagged: on inter rows, true when ISAR sent the spectrum to a person for review.
+On an inter row inputs_current is false when the refit is out of date (a locked refit whose inputs changed),
+true when judged and current, empty when not judged; trust reads not assessed.
 The deep pass's sampler settings are provisional: while its state reason ends "provisional sampler
 settings: untrusted until calibration", read its preferred count as a second opinion, not a verdict.
 
@@ -147,6 +169,7 @@ class ExportSummary:
     n_modes_deep: int
     n_curves: int
     problems: tuple
+    n_modes_inter: int = 0
 
 
 def _sanitize(part) -> str:
@@ -473,6 +496,62 @@ def _currentness(bl43: bool, has_records: bool) -> dict:
             "note": "this export does not check whether each fit's inputs changed after the fit"}
 
 
+def _inter_state(root: Path, card, session) -> tuple:
+    """``(effective, overview, log)`` of the inter-spectra fits: the resolver's answers (a spectrum absent from
+    ``effective`` is its solo fit), the facade's labels and flags, and the stored log. The overview is read even
+    when no refit exists, so a lock or pick on a solo fit is exported. Empty when neither exists."""
+    outcomes = {e.scan_id: next(iter(e.detectors.values())) for e in session.scans.values()
+                if len(e.detectors or {}) == 1}
+    eff = authority.effective(root, outcomes, card.state.tabulated_calibration)
+    overview = inter_overview(root)
+    if not eff and not overview.by_key:
+        return {}, None, None
+    return eff, overview, inter_records.read_log(root)
+
+
+def _inter_rows(e, det, ent, ov) -> list:
+    """The modes.csv rows of the authoritative refit of one spectrum; none when it is on its solo fit."""
+    if ent is None or ent.line is None:
+        return []
+    res = ent.resolution
+    judged = not any("not judged" in n for n in res.notes)
+    current = str(res.stale is None).lower() if judged else ""
+    rows = []
+    for row in outcome_mod._mode_rows(e, det, ent.outcome):
+        row.update({"pass": "inter", "trust": FAST_TRUST, "inputs_current": current, "fit_id": ent.line.fit,
+                    "authoritative": "true", "flagged": str(ov is not None and is_flagged(ov.flag)).lower(),
+                    "uncertainty_kind": CONDITIONAL if row.get("omega0_err") is not None else None})
+        rows.append(row)
+    return rows
+
+
+def _fit_source(ent, ov) -> str:
+    """The spectrum's authoritative fit in plain words (the facade's label, from the same resolver)."""
+    if ov is None:
+        return "Fast solo"
+    if ov.in_use and (ent is None or ent.line is None):     # the stored refit cannot be read: the solo fit stands in
+        return "Fast solo (the stored refit cannot be read)"
+    return ov.label
+
+
+def _inter_block(unit, ent, ov, log, has_fast: bool):
+    """The fits.json ``inter_spectra`` block of one spectrum, null when it has no inter-spectra entry."""
+    if ov is None:
+        return None
+    history = [{"fit": "fast", "label": "Fast solo", "status": "fast", "flagged": False}] if has_fast else []
+    refits = sorted((r for r in log.refits if r.unit == unit and r.status in inter_records.ELIGIBLE),
+                    key=lambda r: log.batches[r.batch].number if r.batch in log.batches else 0)
+    history += [{"fit": r.fit, "label": authority.fit_label(r, log.batches), "status": r.status,
+                 "flagged": refit_flagged(log, r)}
+                for r in refits]
+    line = ent.line if ent is not None else None
+    drawn = {k: ent.outcome[k] for k in authority.OVERLAY_KEYS if k in ent.outcome} if line else None
+    return {"authoritative": {"fit": ov.fit_id, "source": ov.source, "label": _fit_source(ent, ov),
+                              "stale": ov.stale or ov.lock_stale, "locked": ov.locked},
+            "flag": dataclasses.asdict(ov.flag) if ov.flag else None,
+            "why_changed": line.why_changed if line else None, "fit": drawn, "history": history}
+
+
 def _build(root: Path, stage: Path, progress) -> tuple:
     """Write everything but fits.json into ``stage``; return (the fits.json body, the summary counts)."""
     ws = Workspace.open(root)
@@ -484,7 +563,8 @@ def _build(root: Path, stage: Path, progress) -> tuple:
     spectra_dir.mkdir()
     curves = _Curves(stage / "resolution")
     records, rows, problems, used_names = [], [], [], set()
-    n_fast = n_deep = 0
+    n_fast = n_deep = n_inter = 0
+    eff, overview, inter_log = _inter_state(root, card, session)
     by_fast: dict = {}
     by_deep: dict = {}
     items = _spectra(session)
@@ -528,19 +608,31 @@ def _build(root: Path, stage: Path, progress) -> tuple:
                 row.update({"pass": "fast", "trust": FAST_TRUST})
                 fast_rows.append(row)
         deep_rows = _deep_rows(e, det, oc) if oc is not None else []
+        ent = eff.get(e.scan_id)
+        ov = overview.by_key.get(e.scan_id) if overview is not None else None
+        inter_rows = _inter_rows(e, det, ent, ov)
+        source = _fit_source(ent, ov)
+        fast_authoritative = str(ent is None or ent.line is None).lower()      # the resolver's answer, not the rows
+        for row in fast_rows:
+            row.update({"authoritative": fast_authoritative, "fit_id": "fast"})
         shared = {"content_hash": fit_input["content_hash"], "fit_data_mismatch": mismatch,
                   "scan_label": label, "spectrum_file": spectrum_file}
-        for row in fast_rows + deep_rows:
+        for row in fast_rows + deep_rows + inter_rows:
             row.update(shared)
-        rows.extend(fast_rows + deep_rows)
+            if row["pass"] != "deep":
+                row["fit_source"] = source
+        rows.extend(fast_rows + deep_rows + inter_rows)
         n_fast += len(fast_rows)
         n_deep += len(deep_rows)
+        n_inter += len(inter_rows)
         record["fast"] = {"state": fast_state, "state_reason": fast_reason,
                           "record": (None if oc is None else
                                      "fast_pass" if outcome_mod.fast_pass_of(oc) else
                                      "fit_without_fast_pass"),
                           "n_modes_exported": len(fast_rows)}
         record["deep"] = _deep_block(oc, len(deep_rows)) if oc is not None else None
+        record["inter_spectra"] = _inter_block(e.scan_id, ent, ov, inter_log,
+                                               ov is not None and authority.has_fast_solo(e, e.scan_id))
         fit = fit_inputs.get(e.scan_id)
         record["inputs"] = {
             "fast": _pass_record(fit.fast if fit else None) if oc is not None else None,
@@ -567,7 +659,7 @@ def _build(root: Path, stage: Path, progress) -> tuple:
         if isinstance(arrays, str):
             record["spectrum_problem"] = arrays
             problems.append({"spectrum_id": e.scan_id, "detector": det, "problem": arrays})
-            for row in fast_rows + deep_rows:
+            for row in fast_rows + deep_rows + inter_rows:
                 row["spectrum_file"] = None
         else:
             x, counts, sigma, mask, axis = arrays
@@ -590,16 +682,16 @@ def _build(root: Path, stage: Path, progress) -> tuple:
         "experiment": Path(root).resolve().name, "isar_version": _isar_version(),
         "card": {"facility": card.policy.facility, "instrument": card.policy.instrument,
                  "plugin": card.policy.plugin},
-        "passes": {"exported": ["fast", "deep"],
-                   "selection": "none: both passes are exported side by side, each labelled; "
-                                "nothing picks one"},
+        "passes": {"exported": ["fast", "deep", "inter"],
+                   "selection": "all passes are exported side by side, each labelled; the authoritative "
+                                "one per spectrum is marked (authoritative / fit_source)"},
         "currentness": _currentness(bl43, bool(fit_inputs)),
-        "counts": {"spectra": len(records), "modes": n_fast + n_deep, "modes_fast": n_fast,
-                   "modes_deep": n_deep, "by_state": {"fast": by_fast, "deep": by_deep},
+        "counts": {"spectra": len(records), "modes": n_fast + n_deep + n_inter, "modes_fast": n_fast,
+                   "modes_deep": n_deep, "modes_inter": n_inter, "by_state": {"fast": by_fast, "deep": by_deep},
                    "with_deep_pass": sum(by_deep.values())},
         "resolution_curves": curves.table, "problems": problems, "spectra": records,
     }
-    return doc, (len(records), n_fast, n_deep, len(curves.table), tuple(problems))
+    return doc, (len(records), n_fast, n_deep, len(curves.table), tuple(problems), n_inter)
 
 
 def _promote(stage: Path, exports: Path, ts: str, doc: dict) -> Path:
@@ -635,7 +727,7 @@ def export_workspace(root, *, now: datetime | None = None, progress=None) -> Exp
     stage = exports / f".partial-{ts}-{os.getpid()}"
     stage.mkdir()
     try:
-        doc, (n_spectra, n_fast, n_deep, n_curves, problems) = _build(root, stage, progress)
+        doc, (n_spectra, n_fast, n_deep, n_curves, problems, n_inter) = _build(root, stage, progress)
         doc["exported_at"] = now.astimezone(timezone.utc).isoformat()
         folder = _promote(stage, exports, ts, doc)
     except BaseException:
@@ -644,6 +736,6 @@ def export_workspace(root, *, now: datetime | None = None, progress=None) -> Exp
         except OSError as exc:
             log.error("export: could not remove the staging folder %s: %s", stage, exc)
         raise
-    return ExportSummary(folder=folder, n_spectra=n_spectra, n_modes=n_fast + n_deep,
+    return ExportSummary(folder=folder, n_spectra=n_spectra, n_modes=n_fast + n_deep + n_inter,
                          n_modes_fast=n_fast, n_modes_deep=n_deep, n_curves=n_curves,
-                         problems=problems)
+                         problems=problems, n_modes_inter=n_inter)
