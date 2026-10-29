@@ -1151,7 +1151,7 @@ class _Engine:
         """The configured recipe's log prior (C-prior) at a full vector, one factor per coordinate: a
         pinned coordinate (a delta mode's width included) carries none and a soft-constrained one
         its truncated Gaussian instead; one ordered-energy factor per group of exchangeable modes
-        (``model.groups``; a group of one is the plain flat energy factor)."""
+        (``model.groups``; a group of one is the single penalised energy factor g(E))."""
         sp, omit = self.sp, model.omit
         lp = sum(sp.ln_energies([theta[a] for a in grp]) for grp in model.groups)
         for a, g, c in model.modes:

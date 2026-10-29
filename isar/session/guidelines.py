@@ -245,7 +245,7 @@ def _cast_like(value, default):
 
 def fast_pass_settings(source) -> "FastPassSettings":
     """The fast pass's settings for this card: the mode ceiling, every valid ``[fitting.fast_pass]``
-    key, and ``[fitting.prior]`` as the recipe's PriorSettings (no table: None, which is recipe v5).
+    key, and ``[fitting.prior]`` as the recipe's PriorSettings (no table: None, the recipe default, /6).
     A key that is unknown, the ceiling, or does not cast warns and is ignored; a bad prior table
     warns and is ignored whole. The near-zero energy ramp (``energy_ramp_*``) is not a card setting:
     such a key warns and is dropped, and the rest of the table applies."""

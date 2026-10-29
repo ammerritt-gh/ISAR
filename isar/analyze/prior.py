@@ -117,7 +117,7 @@ def amplitude_scale(ctx) -> float:
                      f"('monitor' or 'time'), got {source!r}: the amplitude scale cannot be chosen")
 
 
-# --- Recipe v5: settings, the resolved spectrum prior, the Laplace evidence ----------------------
+# --- Recipe /6: settings, the resolved spectrum prior, the Laplace evidence ----------------------
 def _check_ramp(start, end, ceiling, corner, unit: str) -> None:
     """The near-zero ramp's validity, shared by PriorSettings (FWHM units) and EnergyPrior (meV)."""
     if not all(math.isfinite(float(v)) for v in (start, end, ceiling, corner)) or ceiling < 0:

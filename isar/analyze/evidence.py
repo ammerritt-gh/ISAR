@@ -509,7 +509,7 @@ def candidate_bundle(hyp, ctx, *, prior_settings=None):
     """The :class:`~isar.analyze.catalogue.PriorBundle` a candidate is priced under: resolved under
     its own context (a variant's pins stay pinned), its identity entry's declared priors, and no
     factor for a hard-fixed parameter. The same resolution as
-    :func:`isar.analyze.select._candidate_evidence`. ``prior_settings`` (``None``: recipe v5, the
+    :func:`isar.analyze.select._candidate_evidence`. ``prior_settings`` (``None``: the recipe default, /6, the
     bounds ``loop.build_problem`` gives) rebuilds the bundle under a configured
     :class:`~isar.analyze.prior.PriorSettings`, bounds and default width density both."""
     from isar.analyze import catalogue, prior
