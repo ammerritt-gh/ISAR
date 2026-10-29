@@ -620,9 +620,9 @@ def case_latest(ctx: Ctx):
                                                       headers={"User-Agent": "isar-acceptance"}), timeout=30)
     except urllib.error.HTTPError as exc:
         if exc.code != 404:
-            raise Skip(f"could not ask GitHub for releases (HTTP {exc.code})")
+            raise Fail(f"could not ask GitHub for releases (HTTP {exc.code}); the latest installer went untested")
     except OSError as exc:
-        raise Skip(f"could not ask GitHub for releases ({exc})")
+        raise Fail(f"could not ask GitHub for releases ({exc}); the latest installer went untested")
     else:
         raise Skip("a release exists; the latest installer is tested after the first release")
     latest = ctx.copy_script("WINDOWS-install-ISAR-latest.bat")
