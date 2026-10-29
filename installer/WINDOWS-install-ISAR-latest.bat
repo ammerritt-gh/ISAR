@@ -51,7 +51,9 @@ goto check_args
 
 :args_done
 if not defined BAD_SWITCH goto get_release
-set "ERR=%BAD_SWITCH% names a release or a test, and this installer takes only the newest release. Nothing was changed."
+set "ERR=%BAD_SWITCH% is for test installs only, and this installer takes only the newest release. Nothing was changed."
+if "%BAD_SWITCH%"=="/repair" set "ERR=/repair works on an installation that is already there: use its ISAR-Launcher.bat menu. Nothing was changed."
+if "%BAD_SWITCH%"=="/uninstall" set "ERR=/uninstall works on an installation that is already there: use WINDOWS-uninstall-ISAR.bat. Nothing was changed."
 goto refuse
 
 :get_release

@@ -776,12 +776,16 @@ def test_replacement_and_relocation_stop_before_anything(tmp_path, case):
 LATEST = INSTALLER / "WINDOWS-install-ISAR-latest.bat"
 
 
-@pytest.mark.parametrize("args", [["/ref", "acs/job-branch"], ["/test-fail", "selftest"], ["/repair"], ["/uninstall"]])
-def test_latest_refuses_what_names_a_release_or_a_test(tmp_path, args):
-    """Refused before the first GitHub request and before any release installer runs; its own log says so."""
+@pytest.mark.parametrize("args,says", [(["/ref", "acs/job-branch"], "test installs"),
+                                       (["/test-fail", "selftest"], "test installs"),
+                                       (["/repair"], "ISAR-Launcher.bat"), (["/uninstall"], "WINDOWS-uninstall-ISAR.bat")])
+def test_latest_refuses_switches_it_does_not_take(tmp_path, args, says):
+    """Refused before the first GitHub request and before any release installer runs; its own log says
+    what to use instead."""
     env = _sandbox(tmp_path)
     rc, out = run_bat(LATEST, *args, "/yes", env=env)
     _log, lines = _last_log(env, "install-latest")
     assert (rc, lines[-1]) == (2, "OUTCOME=refused"), (args, out, lines[-4:])
     assert not any(ln.startswith(("GET ", "RUNNING ")) for ln in lines), (args, lines)
+    assert any(ln.startswith("REASON: ") and says in ln for ln in lines), (args, lines[-3:])
     assert not list(Path(env["TEMP"]).glob("isar-latest-*")), "the working folder was left behind"
