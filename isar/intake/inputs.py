@@ -1,7 +1,8 @@
 """Effective inputs: each scan's file values beside the user values in force, and what a fit used.
 
 Read from the import record (``report/intake_scans.json``, file values) and ``intake/entries.jsonl`` (user
-values and conditions). ``apply`` builds the effective record as a copy; the parsed record, its file
+values and conditions), plus the scan's entry of the latest gpi check (``isar.intake.gpi``), whose accepted
+values sit below the user's and above the file's. ``apply`` builds the effective record as a copy; the parsed record, its file
 facts and its counts are never changed. ``unit_inputs`` is the per-analyzer record a fit is tied to
 (``report/fit_inputs.jsonl``), ``inputs_hash`` its identity, and ``changes`` what differs between the
 inputs a pass used and those in force now. Imports only stdlib, numpy and ``isar.schema`` at module level
@@ -21,10 +22,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from numbers import Real
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from isar.intake import settings, store
+
+if TYPE_CHECKING:
+    from isar.intake.gpi import GpiScan
 
 ENTERABLE = {"temperature": "K", "slit": "mm"}      # fact -> its one unit
 FILE_FACT = {"temperature": "T_K", "slit": "slit"}  # fact -> the scan fact name in the parsed record
@@ -123,9 +128,10 @@ class FactInput:
     user_value: object | None    # canonical, from the entry in force; None when none
     user_entry: str | None       # id of the in-force "value" entry
     user_reason: str | None
-    used_value: object | None    # user_value if not None else file_value (None when both absent)
-    used_source: str             # "user" | "file" | "missing"
-    disagreement: bool           # user and file both present and not equal
+    used_value: object | None    # user_value ?? gpi_value ?? file_value (None when all absent)
+    used_source: str             # "user" | "gpi" | "file" | "missing"
+    disagreement: bool           # user and (gpi ?? file) both present and not equal
+    gpi_value: object | None = None   # slit only: the accepted gpi slit
 
 
 @dataclass(frozen=True)
@@ -142,6 +148,9 @@ class ScanInputs:
     excluded: Condition | None                           # the in-force exclusion, else None
     dead: Mapping[str, Condition] = field(default_factory=dict)             # analyzer -> declaration
     counts_accepted: Mapping[str, Condition] = field(default_factory=dict)  # analyzer -> declaration
+    gpi: "GpiScan | None" = None          # the latest gpi check's entry for this scan, accepted or not
+    named: str | None = None              # the gpi file's sarf_name in force; None: none, rejected or dropped
+    named_dropped: str | None = None      # why the named set was set aside (a user slit, ruling F), else None
 
 
 def _file_value(fact: str, v):
@@ -160,36 +169,78 @@ def _condition(e: dict | None) -> Condition | None:
     return Condition(e["id"], e.get("reason"), e["at"]) if e is not None and e["declared"] else None
 
 
-def scan_inputs(row: dict, index: EntryIndex) -> ScanInputs:
-    """One scan's file and user values, the used value, any disagreement, and the conditions in force."""
+def scan_inputs(row: dict, index: EntryIndex, gpi: "GpiScan | None" = None) -> ScanInputs:
+    """One scan's file and user values, the used value, any disagreement, and the conditions in force.
+    ``gpi`` is the scan's entry of the latest gpi check; only an accepted one contributes."""
     scan = row["scan"]
     row_facts = row.get("facts") or {}
+    accepted = gpi if gpi is not None and gpi.accepted else None
     facts = {}
     for fact, name in FILE_FACT.items():
         f = row_facts.get(name) or {}
         file_value = _file_value(fact, f.get("value"))
+        gpi_value = accepted.slit if accepted is not None and fact == "slit" else None
         e = index.facts.get((scan, fact))
         user = e if e is not None and e["kind"] == "value" else None
         user_value = None if user is None else (float(user["value"]) if fact == "temperature" else user["value"])
-        used = user_value if user_value is not None else file_value
+        used, used_source = next(((v, s) for v, s in ((user_value, "user"), (gpi_value, "gpi"), (file_value, "file"))
+                                  if v is not None), (None, "missing"))
+        below = gpi_value if gpi_value is not None else file_value
         facts[fact] = FactInput(
             fact=fact, file_value=file_value, file_source=f.get("source") or "missing",
             user_value=user_value, user_entry=None if user is None else user["id"],
             user_reason=None if user is None else user.get("reason"),
-            used_value=used,
-            used_source="user" if user_value is not None else ("file" if file_value is not None else "missing"),
-            disagreement=user_value is not None and file_value is not None and not _equal(fact, user_value, file_value))
+            used_value=used, used_source=used_source,
+            disagreement=user_value is not None and below is not None and not _equal(fact, user_value, below),
+            gpi_value=gpi_value)
+
+    named = dropped = None
+    if accepted is not None and accepted.sarf_name is not None:
+        user_slit = facts["slit"].user_value
+        setting = accepted.sarf_setting
+        if user_slit is None or (setting is not None and _equal("slit", user_slit, setting)):
+            named = accepted.sarf_name
+        else:
+            dropped = (f"the user's slit {user_slit} replaces the curve set {accepted.sarf_name} named by "
+                       f"{Path(accepted.file).name} (its slit {setting or 'unknown'}); curves follow the user's slit")
 
     def held(cond):
         return {det: c for det, e in sorted(index.units.get((scan, cond), {}).items())
                 if (c := _condition(e)) is not None}
     return ScanInputs(scan=scan, facts=facts, excluded=_condition(index.conditions.get((scan, "excluded"))),
-                      dead=held("dead"), counts_accepted=held("counts_accepted"))
+                      dead=held("dead"), counts_accepted=held("counts_accepted"),
+                      gpi=gpi, named=named, named_dropped=dropped)
+
+
+def analyzer_q(row: dict, si: ScanInputs, det: str) -> tuple[list[float] | None, str]:
+    """One analyzer's Q in force and its source: the accepted gpi HKL, else the row's own Q, else none."""
+    if si.gpi is not None and si.gpi.accepted and det in si.gpi.q:
+        return list(si.gpi.q[det]), "gpi"
+    a = (row.get("analyzers") or {}).get(det) or {}
+    if a.get("q_source", "none") != "none":
+        return a.get("q"), a["q_source"]
+    return None, "none"
+
+
+def calibration_slit(si: ScanInputs) -> str | None:
+    """The slit a scan's calibration declares: the named set's own setting while it is in force and known,
+    else the slit in force."""
+    if si.named is not None and si.gpi.sarf_setting is not None:
+        return si.gpi.sarf_setting
+    return si.facts["slit"].used_value
+
+
+def named_key(name: str | None, curves: Mapping[str, dict | None]) -> dict | None:
+    """The named curve set's identity for ``calibration_inputs_key``; None without a name."""
+    if name is None:
+        return None
+    return {"set": name, "curves": {det: None if c is None else c.get("sha256") for det, c in sorted(curves.items())}}
 
 
 def apply(record, si: ScanInputs):
-    """The effective record: a copy with the user values, without the dead analyzers, and naming the
-    analyzers whose counts are accepted. ``record`` itself when nothing changes; it is never mutated."""
+    """The effective record: a copy with the user values and the accepted gpi values, without the dead
+    analyzers, and naming the analyzers whose counts are accepted and the gpi file's curve set in force.
+    ``record`` itself when nothing changes; it is never mutated."""
     facts = dict(record.facts or {})
     changed = False
     for fact, fi in si.facts.items():
@@ -199,8 +250,17 @@ def apply(record, si: ScanInputs):
             facts[name] = {"value": fi.user_value, "source": "user", "entry": fi.user_entry,
                            "file": copy.deepcopy(own) if own is not None else None}
             changed = True
-    spectra = {det: sp for det, sp in record.spectra.items() if det not in si.dead}
-    changed = changed or len(spectra) != len(record.spectra)
+        elif fi.used_source == "gpi":
+            facts[FILE_FACT[fact]] = {"value": fi.gpi_value, "source": "gpi", "file": si.gpi.file}
+            changed = True
+    gpi_q = si.gpi.q if si.gpi is not None and si.gpi.accepted else {}
+    spectra = {det: (dataclasses.replace(sp, q=list(gpi_q[det]), q_source="gpi") if det in gpi_q else sp)
+               for det, sp in record.spectra.items() if det not in si.dead}
+    changed = changed or len(spectra) != len(record.spectra) or any(det in gpi_q for det in spectra)
+    if si.named is not None:
+        facts["resolution_set"] = {"value": si.named, "setting": si.gpi.sarf_setting, "source": "gpi",
+                                   "file": si.gpi.file, "curves": copy.deepcopy(si.gpi.curves)}
+        changed = True
     accepted = sorted(det for det in si.counts_accepted if det in spectra)
     if accepted:
         facts["counts_accepted"] = {"value": accepted, "source": "user",
@@ -224,11 +284,17 @@ def _canonical_hash(obj) -> str:
 
 def calibration_inputs_key(*, data_revision: str, folder: str | None, pattern: str | None,
                            library: str | None, declared_slit: str | None,
-                           analyzers: Sequence[str], counts_accepted: Sequence[str]) -> str:
-    """The identity of what a scan's tabulated calibration is computed from (values, never entry ids)."""
-    return _canonical_hash({"data_revision": data_revision, "folder": folder, "pattern": pattern,
-                            "library": library, "declared_slit": declared_slit,
-                            "analyzers": sorted(analyzers), "counts_accepted": sorted(counts_accepted)})
+                           analyzers: Sequence[str], counts_accepted: Sequence[str],
+                           named: dict | None = None) -> str:
+    """The identity of what a scan's tabulated calibration is computed from (values, never entry ids).
+    ``named`` (``named_key``) enters only when a gpi file's curve set is in force, so without one the key
+    is what it always was."""
+    key = {"data_revision": data_revision, "folder": folder, "pattern": pattern,
+           "library": library, "declared_slit": declared_slit,
+           "analyzers": sorted(analyzers), "counts_accepted": sorted(counts_accepted)}
+    if named is not None:
+        key["named"] = named
+    return _canonical_hash(key)
 
 
 def _finite(obj):
@@ -280,7 +346,7 @@ def unit_inputs(row: dict, si: ScanInputs, det: str, calibration: dict | None) -
         "data": row.get("data_revision"),
         "temperature": fact("temperature"),
         "slit": fact("slit"),
-        "q": {"value": a.get("q"), "source": a.get("q_source", "none")},
+        "q": dict(zip(("value", "source"), analyzer_q(row, si, det))),
         "excluded": _declared(si.excluded),
         "dead": _declared(si.dead.get(det)),
         "dead_in_scan": sorted(d for d in si.dead if d != det),
@@ -325,7 +391,7 @@ class Change:
     field: str               # "data"|"temperature"|"slit"|"q"|"excluded"|"dead"|"dead_in_scan"|"counts_accepted"|"resolution_folder"|"curve"|"resolution_library"|"calibration_<setting|basis|zero|zero_source|held_reason>"
     used: object             # the value the pass used
     now: object              # the value in force now
-    now_source: str | None   # for temperature/slit: "user"|"file"|"missing"; else None
+    now_source: str | None   # for temperature/slit: "user"|"gpi"|"file"|"missing"; else None
 
 
 def changes(used: dict, current: dict, *, folder_now: str | None = None,
