@@ -344,6 +344,19 @@ def test_untriggered_assignment_keeps_its_own_ids_without_a_neighbour_carrying_t
     assert r.flags == {}
 
 
+def test_an_unmatched_mode_keeps_its_own_incoming_id_across_a_count_change():
+    # simultaneous: k's own fast:k#0 is carried by no neighbour; neighbours tip k from one mode to two
+    A = held("A", "fA", [("p", 12.0)])
+    k = held("k", "fast", [("fast:k#0", 10.0)])
+    two = run(["k"], [link("A", "k")], {"k": asg("k", "b:round1", (None, "p"), changed=True)},
+              {"A": A, "k": k}, mode="simultaneous", rings=None, sid="b:round1")
+    assert [two.ids[ref] for ref in refs("k", 2)] == ["fast:k#0", "p"]
+    assert two.flags == {}
+    three = run(["k"], [link("A", "k")], {"k": asg("k", "b:round1", (None, "p", None), changed=True)},
+                {"A": A, "k": k}, mode="simultaneous", rings=None, sid="b:round1")
+    assert [three.ids[ref] for ref in refs("k", 3)] == ["fast:k#0", "p", "f_k#2"]   # index 2 had no incoming id
+
+
 def test_a_confident_winner_with_a_close_rival_stays_confident():
     # p = 0.86 >= 0.80 and a rival 1.8 nats behind: a close call goes to review, it does not make the slot ambiguous
     A = held("A", "fA", [("p", 10.0), ("q", 12.0)])

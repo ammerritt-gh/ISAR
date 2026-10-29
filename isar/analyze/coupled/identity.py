@@ -335,8 +335,11 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
             via = sorted((k, j) for j in elig if any(md.branch == b for md in previous[j].modes)
                          or any(d.branch == b for d in previous[j].dormant))
             supported = b is not None and bool(via)
+            # an unmatched mode keeps the incoming id at its index, unless the assignment names that branch
+            kept = own.modes[m].branch if own is not None and m < len(own.modes) else None
+            kept = kept if kept not in a.slots else None
             plan[ref] = {"slot": b, "origin": origin, "confident": confident, "close": close,
-                         "supported": supported, "inherited": inherited,
+                         "supported": supported, "inherited": inherited, "kept": kept,
                          "own": own.modes[m].branch if continues else None}
             if not confident or origin == "unresolved":
                 continue
@@ -414,7 +417,7 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
             elif b is not None:
                 ids[ref], status[ref] = names[root], "matched"
             else:
-                ids[ref], status[ref] = names.get(root) or new_branch_id(ref[1], m), "new_branch"
+                ids[ref], status[ref] = names.get(root) or info["kept"] or new_branch_id(ref[1], m), "new_branch"
 
         resolved = {ids[r] for r in refs} | {plan[r]["slot"] for r in refs}
         recs = []
