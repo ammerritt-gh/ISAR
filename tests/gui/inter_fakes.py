@@ -17,6 +17,7 @@ class FakeInterState(QObject):
     changed = Signal()
     history_ready = Signal(str)
     preview_ready = Signal(object)
+    preview_failed = Signal(object)
     saved = Signal(str)
 
     def __init__(self, parent=None):
@@ -24,6 +25,7 @@ class FakeInterState(QObject):
         self.overview: InterOverview | None = make_overview()
         self.histories: dict[str, tuple[FitEntry, ...]] = {}
         self.previews: dict[BatchRequest, BatchPreview] = {}
+        self.preview_errors: dict[BatchRequest, str] = {}
         self.error: str | None = None
         self.calls: list[tuple[str, tuple]] = []
         self.fail_next: str | None = None          # a reason: the next writer refuses with it
@@ -48,6 +50,9 @@ class FakeInterState(QObject):
 
     def preview_for(self, req: BatchRequest) -> BatchPreview | None:
         return self.previews.get(req)
+
+    def preview_error_for(self, req: BatchRequest) -> str | None:
+        return self.preview_errors.get(req)
 
     def bind(self, root) -> None:
         self.calls.append(("bind", (root,)))

@@ -18,6 +18,7 @@ TOO_FEW_SELECTED = "A simultaneous batch needs at least two selected spectra."
 ADD_OFF = "Select scans in the scan list that are not anchors yet and have a fast-pass result."
 REMOVE_OFF = "Select one or more anchors in the list first."
 WORKING = "Working out what this batch would do…"
+PREVIEW_FAILED = "This batch's preview could not be read"
 CANNOT_START = "This batch cannot start."
 
 
@@ -65,13 +66,13 @@ def preview_text(preview: BatchPreview | None) -> str:
     return "\n".join(line for line in (preview.line, *preview.notes) if line)
 
 
-def _start(*reasons: str | None, preview: BatchPreview | None) -> Control:
+def _start(*reasons: str | None, preview: BatchPreview | None, error: str | None = None) -> Control:
     """The first reason that holds says why Start is greyed; the preview's own refusal comes after the rules."""
     for reason in reasons:
         if reason:
             return Control(False, reason)
     if preview is None:
-        return Control(False, WORKING)
+        return Control(False, f"{PREVIEW_FAILED}: {error}" if error else WORKING)
     if not preview.can_start:
         return Control(False, preview.reason or CANNOT_START)
     return Control(True, None)
@@ -85,12 +86,16 @@ def _gate(bound: bool, ok: bool, off: str) -> Control:
 
 def box_state(*, bound: bool, blocked: str | None, n_anchors: int, n_selected: int, n_addable: int,
               n_selected_anchors: int, anchored: BatchPreview | None, simultaneous: BatchPreview | None,
-              note: str | None) -> BoxState:
-    """``anchored`` / ``simultaneous`` are the previews for the requests ``wanted_requests`` names, else None."""
+              note: str | None, anchored_error: str | None = None,
+              simultaneous_error: str | None = None) -> BoxState:
+    """``anchored`` / ``simultaneous`` are the previews for the requests ``wanted_requests`` names, else None;
+    ``*_error`` is the text of a read of that request that raised, shown in place of the working text."""
     unbound = None if bound else NO_EXPERIMENT
     return BoxState(
-        anchored=_start(unbound, blocked, NO_ANCHORS if n_anchors == 0 else None, preview=anchored),
-        simultaneous=_start(unbound, blocked, TOO_FEW_SELECTED if n_selected < 2 else None, preview=simultaneous),
+        anchored=_start(unbound, blocked, NO_ANCHORS if n_anchors == 0 else None, preview=anchored,
+                        error=anchored_error),
+        simultaneous=_start(unbound, blocked, TOO_FEW_SELECTED if n_selected < 2 else None, preview=simultaneous,
+                            error=simultaneous_error),
         add=_gate(bound, n_addable > 0, ADD_OFF),
         remove=_gate(bound, n_selected_anchors > 0, REMOVE_OFF),
         anchored_line=preview_text(anchored),

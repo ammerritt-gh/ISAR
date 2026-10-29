@@ -54,6 +54,7 @@ class InterState(QObject):
     changed = Signal()                 # the overview (anchors, flags, locks, settings) swapped in
     history_ready = Signal(str)        # spectrum key whose history arrived
     preview_ready = Signal(object)     # BatchRequest whose preview arrived
+    preview_failed = Signal(object)    # BatchRequest whose preview read raised: the box shows why beside Start
     saved = Signal(str)                # SaveOutcome.message of every write, ok or not (the window sends it to the Log)
 
     def __init__(self, intake, parent=None) -> None:
@@ -63,6 +64,7 @@ class InterState(QObject):
         self._overview: InterOverview | None = None
         self._histories: dict[str, tuple[FitEntry, ...]] = {}
         self._previews: dict[BatchRequest, BatchPreview] = {}
+        self._preview_errors: dict[BatchRequest, str] = {}
         self._want: BatchRequest | None = None      # the newest preview asked for
         self._loading: set[tuple[str, object]] = set()   # (kind, key) queued or running
         self._error: str | None = None
@@ -94,6 +96,7 @@ class InterState(QObject):
         self._error = None
         self._histories.clear()
         self._previews.clear()
+        self._preview_errors.clear()
         self._loading.clear()
         self._todo.clear()
         if self._root is None:
@@ -153,6 +156,10 @@ class InterState(QObject):
     def preview_for(self, req: BatchRequest) -> BatchPreview | None:
         return self._previews.get(req)
 
+    def preview_error_for(self, req: BatchRequest) -> str | None:
+        """The text of a preview read that raised, kept until a reload; the box does not re-ask for that request."""
+        return self._preview_errors.get(req)
+
     def _fire_preview(self) -> None:
         req = self._want
         if req is None or self._root is None:
@@ -200,6 +207,9 @@ class InterState(QObject):
         self._loading.discard((kind, key))
         if error is not None:
             self._error = error         # the last good value stays shown
+            if kind == "preview":
+                self._preview_errors[key] = error
+                self.preview_failed.emit(key)
             return
         if kind == "overview":
             self._overview = value

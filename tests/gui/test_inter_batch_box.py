@@ -19,8 +19,8 @@ from gui.inter_helpers import assert_described
 from isar.workspace_api.inter_spectra import BatchRequest
 from isar_gui.selection import identity
 from isar_gui.viewmodels.inter_batch import (ADD_OFF, CANNOT_START, NO_ANCHORS, NO_EXPERIMENT, REMOVE_OFF,
-                                             TOO_FEW_SELECTED, WORKING, Control, anchored_request, box_state,
-                                             simultaneous_request, wanted_requests)
+                                             PREVIEW_FAILED, TOO_FEW_SELECTED, WORKING, Control, anchored_request,
+                                             box_state, simultaneous_request, wanted_requests)
 from isar_gui.viewmodels.scan_list import ScanListViewModel
 from isar_gui.views.inter_batch_box import InterBatchBox
 
@@ -176,6 +176,20 @@ def test_an_enabled_anchored_start_emits_exactly_the_request_it_previewed(made):
     box.batch_requested.connect(sent.append)
     box._start_anchored.click()
     assert sent == [req] and box._start_anchored.isEnabled()
+
+
+def test_a_failed_preview_read_is_shown_beside_start_and_says_why(made):
+    box, _, inter, _ = made
+    _publish(inter, revision="2", anchors=(A[3],))
+    req = anchored_request("q", (A[3],))
+    inter.preview_errors[req] = "preview: ValueError: the fit log is unreadable"
+    inter.preview_failed.emit(req)
+    reason = box._anchored_reason.text()
+    assert reason.startswith(PREVIEW_FAILED) and "the fit log is unreadable" in reason and WORKING not in reason
+    assert not box._start_anchored.isEnabled() and box._start_anchored.toolTip() == reason
+    asked = [c for c in inter.calls if c[0] == "request_preview"]
+    inter.preview_failed.emit(req)                  # a refresh does not ask for the failed request again
+    assert [c for c in inter.calls if c[0] == "request_preview"] == asked
 
 
 def test_a_simultaneous_batch_needs_two_selected_spectra_and_sends_the_selection(made):

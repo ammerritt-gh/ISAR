@@ -145,6 +145,7 @@ class InterBatchBox(QWidget):
         self._scan_list = scan_list
         inter.changed.connect(lambda *_: self.refresh())
         inter.preview_ready.connect(lambda *_: self.refresh())
+        inter.preview_failed.connect(lambda *_: self.refresh())
         scan_list.selection_changed.connect(lambda *_: self.refresh())
         scan_list.snapshot_changed.connect(lambda *_: self.refresh())
         self.refresh()
@@ -180,14 +181,16 @@ class InterBatchBox(QWidget):
         wanted = wanted_requests(bound=bound, direction=self._direction, anchors=inter.anchors, selection=selection)
         chosen = self._fill_anchors(inter.anchors)
         previews = {req.kind: inter.preview_for(req) for req in wanted}
+        errors = {req.kind: inter.preview_error_for(req) for req in wanted}
         state = box_state(bound=bound, blocked=view.blocked if bound else None, n_anchors=len(inter.anchors),
                           n_selected=len(selection), n_addable=len(scan_list.anchorable_keys()),
                           n_selected_anchors=len(chosen), anchored=previews.get("anchored"),
-                          simultaneous=previews.get("simultaneous"), note=inter.error)
+                          simultaneous=previews.get("simultaneous"), note=inter.error,
+                          anchored_error=errors.get("anchored"), simultaneous_error=errors.get("simultaneous"))
         self._apply(state)
         if inter.anchors and not self._decided:
             self._set_expanded(True)            # collapsed until there are anchors; the user's choice wins after
-        missing = [req for req in wanted if previews.get(req.kind) is None]
+        missing = [req for req in wanted if previews.get(req.kind) is None and errors.get(req.kind) is None]
         if missing:
             inter.request_preview(missing[0])   # one at a time: InterState keeps only the newest request
 
