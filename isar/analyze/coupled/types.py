@@ -76,6 +76,7 @@ class Snapshot:
     terms: tuple[TermInput, ...]   # every active term containing unit (anchored: its conditioner change terms only)
     settings: InterSettings
     batch_kind: str                # "anchored" | "simultaneous"
+    fast: Held | None = None       # the fast solo fit, what delta_fast and the width/regime flags compare with (default: own)
 
 
 @dataclass(frozen=True)
