@@ -260,7 +260,7 @@ def inter_history(root, key: str) -> tuple[FitEntry, ...]:
             f"{x.stage} {x.index}", x.status != "unchanged", r.fit == x.fit, pick is not None and pick.fit == x.fit,
             locked_fit == x.fit, stale is not None, _stale_text(stale),
             _flag(c, x, payload, stale_locked=locked_fit == x.fit and stale is not None), why, True,
-            payload is not None and (payload.get("overlay") or {}).get("interval") is not None))
+            payload is not None and (payload.get("came_out") or {}).get("errors") == "conditional"))
     return tuple(out)
 
 

@@ -54,7 +54,7 @@ def _refit(unit, fit, h, *, status="accepted", flag=None, why=None, cond=(), ove
     return {"fit": fit, "unit": unit, "status": status, "reason": None, "seed": "fast", "inputs": h,
             "conditioned_on": [{"unit": u, "fit": f, "inputs": hh} for u, f, hh in cond], "flag": flag,
             "why_changed": why,
-            "payload": {"came_in": {}, "came_out": came_out or {},
+            "payload": {"came_in": {}, "came_out": came_out or {"errors": "conditional"},
                         "overlay": {"n_modes": 2, "omega0": 3.5, "best_label": "2 modes", "interval": [3.4, 3.6],
                                     "modes": [{"omega0": 3.5, "omega0_err": 0.1, "gamma": 0.4, "amplitude": 50.0},
                                               {"omega0": 7.5, "omega0_err": 0.2, "gamma": 0.6, "amplitude": 20.0}]}
@@ -249,12 +249,15 @@ def test_history_marks_the_pick_the_lock_and_staleness(root):
     assert hist[F1].authoritative and ("stale_locked_fit", "serious") in [(r.code, r.severity) for r in hist[F1].flag.reasons]
 
 
-def test_a_refit_with_no_interval_has_no_errors_available(root):
+def test_errors_available_follows_the_recorded_errors_not_the_interval(root):
+    """A refit's error bars are as its record says ("conditional" | "unavailable"), whatever interval it carries."""
     k1 = spectrum_keys(root)[0]
-    r = _refit(k1, F1, _hashes(root, [k1])[k1])
-    r["payload"]["overlay"]["interval"] = None
-    save(root, B1, [r])
-    assert [e.errors_available for e in inter_history(root, k1)] == [True, False]
+    h = _hashes(root, [k1])[k1]
+    save(root, B1, [_refit(k1, F1, h, came_out={"errors": "unavailable"})])            # covariance failed, interval kept
+    r2 = _refit(k1, F2, h, came_out={"errors": "conditional"})
+    r2["payload"]["overlay"]["interval"] = None                                       # good errors, no interval
+    save(root, B2, [r2], stage="sweep", index=3)
+    assert [e.errors_available for e in inter_history(root, k1)] == [True, False, True]
 
 
 def _hold(root, unit):
