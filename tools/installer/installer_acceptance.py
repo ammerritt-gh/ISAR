@@ -542,6 +542,9 @@ def case_relocate_fail(ctx: Ctx):
         raise Fail("<i2>'s payload is still present after the relocation")
     if locator(ctx.p2).get("ISAR_BASE", "").lower() != str(i3).lower():
         raise Fail("locator does not name <i3>")
+    shortcuts = desktop_links(ctx.p2)  # none at all would pass the loop below vacuously
+    if not shortcuts or any(t.lower() != str(i3 / "ISAR-Launcher.bat").lower() for t in shortcuts.values()):
+        raise Fail(f"Desktop shortcuts do not all point at <i3>'s ISAR-Launcher.bat: {shortcuts or 'none'}")
 
 
 def sha_tree(root: Path) -> dict:
