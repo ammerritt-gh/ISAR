@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 import hashlib
@@ -16,6 +16,7 @@ from types import MappingProxyType
 
 import numpy as np
 
+from .inter_spectra import fit_view_and_label
 from .scan_list import PooledRow, SpectrumRow, Status
 from .evaluate import UnsupportedFitView, _component_manifest, deep_manifest, evaluate_manifest
 
@@ -134,6 +135,8 @@ class SpectrumBundle:
     m_ref: float | None
     fine_energy: np.ndarray
     zero: str = ZERO_NONE
+    fit_id: str = "fast"                 # the fit the fast slot draws: "fast" or a refit's id
+    fit_label: str = "Fast solo"
     _passes: Mapping[PassName, PassCurves | NotDrawn] = field(
         default_factory=dict, repr=False, compare=False)
 
@@ -509,7 +512,7 @@ def _resolution_token(fit):
         "center", "gauss_fwhm", "lorentz_fwhm", "T")))
 
 
-def _revision(row, unit, zero_fallback):
+def _revision(row, unit, zero_fallback, fit_id="fast"):
     digest = hashlib.sha256()
     digest.update(str(row.key).encode("utf-8"))
     for name in ("x", "counts", "variance", "mask", "monitor"):
@@ -538,6 +541,8 @@ def _revision(row, unit, zero_fallback):
     digest.update(repr(row.fast).encode("utf-8"))
     digest.update(repr(row.deep).encode("utf-8"))
     digest.update(repr(zero_fallback).encode("utf-8"))
+    if fit_id != "fast":       # the solo's revision is what it always was
+        digest.update(f"|fit:{fit_id}".encode("utf-8"))
     return digest.hexdigest()[:16]
 
 
@@ -671,7 +676,7 @@ def _pass_not_drawn(row, pass_name, fit, resolution, resolution_error, fine_raw,
             f"{pass_name} curve unavailable ({type(exc).__name__}: {exc})")
 
 
-def _bundle(ws, row, qe, cache, zero_fallback):
+def _bundle(ws, row, qe, cache, zero_fallback, fit_id="fast"):
     fit = row.fit
     summaries = _summaries(row, fit)
     try:
@@ -683,7 +688,7 @@ def _bundle(ws, row, qe, cache, zero_fallback):
     if unit is None:
         return _not_drawn_bundle(
             row.key, "-", NotDrawn(NOT_PARSED, "not parsed or failed"), summaries)
-    revision = _revision(row, unit, zero_fallback)
+    revision = _revision(row, unit, zero_fallback, fit_id)
     if cache is not None and (hit := cache._get(revision)) is not None:
         return hit
     try:
@@ -773,8 +778,20 @@ def _zero_fallback(ws) -> str | None:
     return calibration.get("zero_fallback") if isinstance(calibration, Mapping) else None
 
 
+def _chosen_bundle(ws, row, qe, cache, zero_fallback, fit_id):
+    """The bundle whose fast slot draws refit ``fit_id`` (C-bundle); the solo's when that fit cannot be drawn."""
+    fit, label = fit_view_and_label(ws, row.key, fit_id)
+    if fit is None:
+        _log.warning("fit %s of %s cannot be drawn; drawing the fast solo fit", fit_id, row.key)
+        return _bundle(ws, row, qe, cache, zero_fallback)
+    bundle = _bundle(ws, replace(row, fit=fit), qe, cache, zero_fallback, fit_id)
+    return replace(bundle, fit_id=fit_id, fit_label=label)
+
+
 def spectrum_bundles(ws, rows: Sequence[SpectrumRow | PooledRow], *,
-                     cache: SpectraCache | None = None) -> tuple[SpectrumBundle, ...]:
+                     cache: SpectraCache | None = None,
+                     fit_choice: Mapping[str, str] | None = None) -> tuple[SpectrumBundle, ...]:
+    # fit_choice: spectrum key -> fit id; None, or a key missing from it, is today's fast solo, bit for bit
     qe = getattr(getattr(ws.card, "policy", None), "quasielastic_fwhm", None)
     zero_fallback = _zero_fallback(ws)
     out = []
@@ -784,7 +801,9 @@ def spectrum_bundles(ws, rows: Sequence[SpectrumRow | PooledRow], *,
             out.append(_not_drawn_bundle(
                 row.key, "-", NotDrawn(POOLED, "pooled master"), summaries))
         elif isinstance(row, SpectrumRow):
-            out.append(_bundle(ws, row, qe, cache, zero_fallback))
+            fid = (fit_choice or {}).get(row.key, "fast")
+            out.append(_bundle(ws, row, qe, cache, zero_fallback) if fid == "fast"
+                       else _chosen_bundle(ws, row, qe, cache, zero_fallback, fid))
         else:
             raise ValueError("rows must contain only SpectrumRow or PooledRow")
     return tuple(out)
