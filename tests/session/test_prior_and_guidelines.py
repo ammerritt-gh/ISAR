@@ -63,9 +63,9 @@ def test_prior_excludes_target_scan():
 
 
 # --------------------------------------------------------------------------- guidelines
-def _card_with_fitting(fitting: dict):
+def _card_with_fitting(fitting: dict, instrument: str = "S30"):
     pol = card_mod.CardPolicy(
-        facility="APS", instrument="S30", format_version="2025", plugin="spec_s30",
+        facility="APS", instrument=instrument, format_version="2025", plugin="spec_s30",
         detectors=[card_mod.DetectorSpec("ana7", 10, "Ana7_3std", True),
                    card_mod.DetectorSpec("ana5", 8, "Ana5_3std", False)],
         energy_column="HerixE", monitor_column="ICO-C", counting_mode="time",
@@ -374,3 +374,25 @@ def test_a_fast_pass_edit_changes_the_signature_of_a_scan():
     edit = G.guidelines_signature(G.resolve(_card_with_fitting({"fast_pass": {"seed_stop_gain": 4.0}})),
                                   scan_number=1, q=None, T=None)
     assert edit != base
+
+
+# Computed on the parent commit (before the central QE), same call: a non-BL43LXU card's stored
+# currency must not move.
+S30_SIGNATURE_HASH = "14ba740fb67d38fef1fd46596f769ac430e9f946f861d21eb4ee0d7d589aebdb"
+
+
+def test_the_central_qe_moves_only_a_bl43lxu_signature(monkeypatch):
+    from isar.analyze import prior
+    from isar.session.state import canonical_hash
+    monkeypatch.delenv("ISAR_MODE_CEILING", raising=False)
+    sig = lambda card: G.guidelines_signature(G.resolve(card), scan_number=1, q=None, T=None)
+    other = sig(_card_with_fitting({}))
+    assert "central_qe" not in other and canonical_hash(other) == S30_SIGNATURE_HASH
+    bl43 = sig(_card_with_fitting({}, instrument="BL43LXU"))
+    assert bl43["central_qe"]["recipe"] == prior.CENTRAL_QE_RECIPE_VERSION
+    assert bl43["central_qe"]["settings"]["knee_fwhm"] == 2.0
+    assert {k: v for k, v in bl43.items() if k != "central_qe"} == other
+    assert canonical_hash(bl43) != S30_SIGNATURE_HASH
+    monkeypatch.setattr(prior, "CENTRAL_QE_RECIPE_VERSION", prior.CENTRAL_QE_RECIPE_VERSION + "+next")
+    assert sig(_card_with_fitting({}, instrument="BL43LXU")) != bl43            # a QE change refits
+    assert sig(_card_with_fitting({})) == other                                  # and only BL43LXU
