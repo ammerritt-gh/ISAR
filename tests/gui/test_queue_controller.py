@@ -875,12 +875,28 @@ def test_a_batch_whose_process_ends_without_an_end_record_settles_failed_though_
     assert r.ctrl.view().batches[0].reason == "the batch ended without an end record"
 
 
+def test_a_stopped_batch_counts_its_saved_rings_and_not_its_start_payload(rig, monkeypatch):
+    r = rig(cores=2)
+    _start_batch(r, monkeypatch)
+    (start,) = r.wait_commands("start", 1)
+    iid, key = start["item_id"], start["unit_key"]
+    r.emit(_result(iid, key, "inter", event="start"), _batch_saved(iid, key, ()))
+    for spectrum in (A06, A07, A08):
+        r.emit(_result(iid, key, "inter", event="stage"), _batch_saved(iid, key, (spectrum,)))
+    r.wait(lambda: {A06, A07, A08} <= {k for keys in r.saved for k in keys})
+    r.ctrl.stop(iid)
+    r.wait_commands("stop", 1)
+    r.emit(_finished(iid, end="stopped"))
+    r.wait(lambda: r.ctrl.view().batches[0].status == "stopped")
+    assert r.lines[-1] == f"Stopped: {r.ctrl.view().batches[0].label} (anchored): kept 3 rings"
+
+
 def test_a_stopped_batch_keeps_its_saved_rings_says_what_it_kept_and_never_settles_done(rig, monkeypatch):
     r = rig(cores=2)
     _start_batch(r, monkeypatch)
     (start,) = r.wait_commands("start", 1)
     iid, key = start["item_id"], start["unit_key"]
-    r.emit(_result(iid, key, "inter"), _batch_saved(iid, key, (A06, A07)))
+    r.emit(_result(iid, key, "inter", event="stage"), _batch_saved(iid, key, (A06, A07)))
     r.wait(lambda: r.saved)
     r.ctrl.stop(iid)
     r.wait_commands("stop", 1)

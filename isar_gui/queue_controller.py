@@ -157,10 +157,11 @@ class LeaveSummary:
 class _Result:
     """One result the service reported for one pass of an item, and what became of its save."""
 
-    __slots__ = ("saving", "saved", "error")
+    __slots__ = ("saving", "event", "saved", "error")
 
-    def __init__(self, saving: bool) -> None:
+    def __init__(self, saving: bool, event: str | None = None) -> None:
         self.saving = saving
+        self.event = event                  # a batch's payload: "start", "stage" or "end"; None for a file
         self.saved: bool | None = None      # None: not yet answered (only meaningful when ``saving``)
         self.error: str | None = None
 
@@ -186,7 +187,7 @@ class _Rec:
         self.label = label                          # a batch's name ("Inter-spectra batch, started 14:32"); "" for a file
         self.spec = spec                            # a batch's start object, as the service gets it; None for a file
         self.results: dict[str, _Result] = {}       # fast and deep: the one result of each pass
-        self.saves: list[_Result] = []              # a batch: every ring or sweep, in arrival order
+        self.saves: list[_Result] = []              # a batch: every payload's save, in arrival order
         self.final: str | None = None       # the scheduler's settled state, once seen
         self.finished_at: float | None = None
         self.override: str | None = None    # a reason the scheduler cannot know (the process died)
@@ -824,7 +825,7 @@ class QueueController(QObject):
                                  end_record=end_record):
             rec = self._recs[ev["item_id"]]
             if pass_kind == "inter":
-                rec.saves.append(_Result(saving))
+                rec.saves.append(_Result(saving, ev.get("event")))
             else:
                 rec.results[pass_kind] = _Result(saving)
 
@@ -896,7 +897,7 @@ class QueueController(QObject):
         kind = rec.spec["kind"]
         name = f"{rec.label} ({kind})"
         if status == "stopped":
-            kept = sum(1 for r in rec.saves if r.saved)
+            kept = sum(1 for r in rec.saves if r.saved and r.event == "stage")   # rings and sweeps, not start or end
             return f"Stopped: {name}: kept {kept} " + (_plural(kept, "ring", "rings") if kind == "anchored"
                                                        else _plural(kept, "sweep", "sweeps"))
         if status in ("held", "failed"):
