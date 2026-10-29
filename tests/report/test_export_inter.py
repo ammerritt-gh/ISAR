@@ -29,6 +29,8 @@ OVERLAY = {"n_modes": 1, "omega0": 3.5, "best_label": "1 mode",
            "modes": [{"omega0": 3.5, "omega0_err": 0.2, "gamma": 0.4, "gamma_err": 0.1}],
            "fast_pass": {"state": "resolved", "peaks": []}}
 FLAG = {"score": 2.0, "flagged": True, "reasons": [{"code": "moved", "severity": "warn", "text": "moved"}]}
+NO_MODES = {"n_modes": 0, "omega0": None, "best_label": "no modes", "modes": [],
+            "fast_pass": {"state": "unresolved", "peaks": []}}
 REPAIR = {"score": 0.5, "flagged": False,
           "reasons": [{"code": "neighbour_supported_split", "severity": "info", "text": "split, repaired"}]}
 
@@ -58,7 +60,7 @@ def _hash(root, unit):
                                    load_state(root / "card.state.json").tabulated_calibration, [unit])[unit]
 
 
-def _save_ring(root, batch, refits, number_flag=None):
+def _save_ring(root, batch, refits, number_flag=None, overlay=OVERLAY):
     """One anchored batch with one ring; ``refits``: (fit id, unit) pairs, each stamped with the unit's hash now."""
     start = {"schema": records.SCHEMA_SAVE, "unit": f"inter:{batch}:batch", "pass": "inter", "batch": batch,
              "event": "start",
@@ -74,7 +76,7 @@ def _save_ring(root, batch, refits, number_flag=None):
                                    "inputs": _hash(root, u), "conditioned_on": [], "flag": number_flag,
                                    "why_changed": "a shoulder split off",
                                    "payload": {"came_in": {}, "came_out": {"errors": "conditional"},
-                                               "overlay": OVERLAY}} for f, u in refits]}}
+                                               "overlay": overlay}} for f, u in refits]}}
     writer.save_inter(root, [start, stage])
 
 
@@ -136,6 +138,16 @@ def test_a_repair_is_listed_as_a_reason_but_is_not_flagged_for_review(ws_root):
     assert block["flag"]["severity"] == "info"
     assert [r["code"] for r in block["flag"]["reasons"]] == ["neighbour_supported_split"]
     assert block["history"][-1]["flagged"] is False
+
+
+def test_an_authoritative_refit_with_no_modes_leaves_the_solo_rows_not_authoritative(ws_root):
+    k1 = spectrum_keys(ws_root)[0]
+    _save_ring(ws_root, "b000000000001", [(F1, k1)], overlay=NO_MODES)
+    _, _, rec, rows = _export(ws_root)
+    solo = _rows(rows, k1)
+    assert solo and {r["pass"] for r in solo} == {"fast"}                   # the solo fit has modes; no inter row
+    assert all((r["authoritative"], r["fit_id"], r["fit_source"]) == ("false", "fast", "Batch 1 · ring 1") for r in solo)
+    assert rec[k1]["inter_spectra"]["authoritative"]["fit"] == F1
 
 
 def test_picking_the_solo_fit_then_locking_a_refit_then_stale_follow_the_resolver(ws_root):

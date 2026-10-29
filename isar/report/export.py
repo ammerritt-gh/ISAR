@@ -610,8 +610,9 @@ def _build(root: Path, stage: Path, progress) -> tuple:
         ov = overview.by_key.get(e.scan_id) if overview is not None else None
         inter_rows = _inter_rows(e, det, ent, ov)
         source = _fit_source(ent, ov)
+        fast_authoritative = str(ent is None or ent.line is None).lower()      # the resolver's answer, not the rows
         for row in fast_rows:
-            row.update({"authoritative": str(not inter_rows).lower(), "fit_id": "fast"})
+            row.update({"authoritative": fast_authoritative, "fit_id": "fast"})
         shared = {"content_hash": fit_input["content_hash"], "fit_data_mismatch": mismatch,
                   "scan_label": label, "spectrum_file": spectrum_file}
         for row in fast_rows + deep_rows + inter_rows:
