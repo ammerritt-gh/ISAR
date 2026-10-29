@@ -1128,3 +1128,17 @@ def test_source_adds_the_missing_origin_before_it_fetches(tmp_path):
     url = subprocess.run([git, "-C", str(app), "remote", "get-url", "origin"], capture_output=True, text=True).stdout
     assert rc == 0 and url.strip() == f"https://github.com/{gh_repo}.git", (url, out)
     assert "could not download" in out, out
+
+
+def test_start_on_an_interrupted_update_says_run_the_installer_again(tmp_path):
+    """An update stopped after the environment was built leaves its record at STATE=installing, which Repair
+    refuses; Start must name the installer, not Repair."""
+    env = _sandbox(tmp_path)
+    base = fake_install(_plain(tmp_path) / "b", STATE="installing")
+    (base / "launcher").mkdir()
+    (base / "env").mkdir()
+    (base / "env" / "pythonw.exe").write_bytes(b"x")  # present, but ISAR was never put in
+    runner = base / "launcher" / "run-isar.bat"
+    runner.write_bytes(RUNNER.read_bytes())
+    rc, out = run_bat(runner, env=env)
+    assert rc == 1 and "Run the installer again" in out and "choose Repair" not in out, out

@@ -53,7 +53,14 @@ goto show_and_wait
 echo.
 echo [ERROR] ISAR is not installed in this folder's Python environment: an install,
 echo         update or Repair did not finish.
+:: An install or update stopped at STATE=installing is one Repair refuses.
+findstr /b /l /c:"STATE=installing" "%BASE%\INSTALL_INFO.txt" >nul 2>nul
+if not errorlevel 1 goto not_installed_rerun
 echo         Open the ISAR Launcher and choose Repair to finish it.
+goto show_and_wait
+
+:not_installed_rerun
+echo         Run the installer again, into this same folder, to finish it.
 goto show_and_wait
 
 :no_env
