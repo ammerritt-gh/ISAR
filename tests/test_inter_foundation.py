@@ -201,10 +201,12 @@ def _loaded_after(imports: str) -> str:
 
 
 def test_the_core_store_and_records_load_no_numerics_and_no_qt():
-    """The pure modules stay light: they import no numpy, scipy or Qt."""
-    loaded = _loaded_after("import isar.session.inter_spectra.authority, isar.session.inter_spectra.runner, "
-                           "isar.session.inter_spectra.preview, isar.analyze.coupled.refit, "
-                           "isar.analyze.coupled.identity, isar.intake.inter_values")
+    """The pure modules stay light: they import no numpy, scipy or Qt. The numerical core (refit, identity) and the
+    GUI-side writers (inter_values, which reuse isar.intake.values) are not pure and are not listed."""
+    loaded = _loaded_after("import isar.session.inter_spectra.authority, isar.session.inter_spectra.runner, isar.session.inter_spectra.graph, "
+                           "isar.session.inter_spectra.rings, isar.session.inter_spectra.schedule, "
+                           "isar.session.inter_spectra.preview, isar.analyze.coupled.settings, "
+                           "isar.analyze.coupled.types, isar.intake.inter_spectra")
     assert loaded == "[]", loaded
 
 
