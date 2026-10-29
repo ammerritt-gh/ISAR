@@ -112,6 +112,8 @@ area.
    is `absolute` / `needs_zero` / `needs_conversion_and_zero` (`scan.py:28`). A no-elastic-line scan on
    a `needs_zero` instrument with no zero is a *held* non-result — **never default E0 = 0.0.**
    Instrument-agnostic code that assumes a 2-state (absolute-or-not) world breaks TAS data. (ARCHITECTURE §5.)
+   The display may draw such a scan on its file axis, labelled beamline zero or not zeroed; no number is
+   computed from it (`isar/workspace_api/spectra.py`).
 
 5. **QC masks, never deletes; the dispersion prior accepts only folds.** Rejection marks a per-point
    flag and keeps the data (`miniscan_reject`); deleting anything breaks the trust contract. Only clean
