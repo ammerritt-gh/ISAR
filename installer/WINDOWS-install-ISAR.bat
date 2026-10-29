@@ -154,6 +154,7 @@ set "BASE="
 set "BASE_CREATED="
 set "RECORDS_WRITTEN="
 set "INSTALL_ID="
+set "SHOW_RELEASE=%ISAR_RELEASE%"
 call :open_log_and_work
 if not defined WORK goto no_work
 >>"%LOG%" echo(ISAR installer %ISAR_RELEASE% build %INSTALLER_BUILD%: %OP%, started %STAMP%
@@ -448,10 +449,8 @@ copy /y "%WORK%\isar-win-64.lock" "%BASE%\launcher\isar-win-64.lock" >nul 2>nul
 set "ERR=the package lock could not be placed in %BASE%\launcher"
 if not exist "%BASE%\launcher\isar-win-64.lock" goto fail
 echo   The download and build messages go to the log, not this window.
-"%MM_EXE%" create -y --no-rc -r "%BASE%\mamba" -p "%BASE%\env" -f "%BASE%\launcher\isar-win-64.lock" >>"%LOG%" 2>&1 <nul
-set "ERR=the Python environment could not be built; check the internet connection and the free disk space, then run this installer again"
-if errorlevel 1 goto fail
-if not exist "%BASE%\env\python.exe" goto fail
+call :create_env
+if defined ERR goto fail
 call :step_ok
 
 call :step_start source "Downloading ISAR's source at commit %COMMIT%"
@@ -491,11 +490,165 @@ if not "%SELFTEST%"=="pass" set "OUTCOME=installed-selftest-failed"
 goto finish
 
 :: ===========================================================================
-:: Repair and uninstall arrive in later builds of this installer.
+:: Repair: rebuilds the environment from the files kept in the installation
+:: (the lock copy, micromamba, the package cache) and restores the recorded
+:: source commit. It never asks GitHub for a tag or branch, so it never
+:: changes the release, and it uses no Python or git it is repairing.
 :: ===========================================================================
 :repair
-set "ERR=Repair is not available in this build of the installer"
-goto refuse
+title ISAR Repair
+set "ERR="
+set "ENV_REMOVED="
+set "APP_REMOVED="
+echo ============================================================================
+echo   ISAR Repair
+echo ============================================================================
+if defined LOGFILE echo   Everything Repair does is written to:
+if defined LOGFILE echo       %LOGFILE%
+echo.
+set "ERR=Repair needs the installation folder; start it from the ISAR Launcher in that folder"
+if not defined HAVE_DIR goto refuse
+set "VBPATH=%ARG_DIR%"
+>>"%LOG%" echo(Installation folder given with /dir, unchecked:
+>>"%LOG%" set VBPATH
+call :validate_base_var
+set "ERR=the installation folder was refused: %VB_REASON%"
+if defined VB_REASON goto refuse
+set "BASE=%VBPATH%"
+>>"%LOG%" echo(Installation folder: %BASE%
+set "CB=%BASE%"
+call :classify
+>>"%LOG%" echo(Ownership: %OWN% %OWN_STATE% %OWN_WHY%
+set "ERR=there is no ISAR installation in %BASE%"
+if "%OWN%"=="none" goto refuse
+set "ERR=%BASE% is not an ISAR installation this installer can prove it owns: %OWN_WHY%"
+if not "%OWN%"=="owned" goto refuse
+set "ERR=the installation in %BASE% never finished installing (its record says %OWN_STATE%); run the installer again into the same folder instead"
+if not "%OWN_STATE%"=="complete" goto refuse
+:: Every value below was checked against its grammar by :read_record.
+set "INSTALL_ID=%II_INSTALL_ID%"
+set "INSTALL_KIND=%II_INSTALL_KIND%"
+set "SOURCE_REF=%II_SOURCE_REF%"
+set "COMMIT=%II_SOURCE_COMMIT%"
+set "LOCK_SHA256=%II_LOCK_SHA256%"
+set "REC_MM_SHA=%II_MAMBA_SHA256%"
+set "REC_MM_VER=%II_MAMBA_VERSION%"
+set "SHOW_RELEASE=%II_ISAR_RELEASE%"
+>>"%LOG%" echo(Recorded: INSTALL_KIND=%INSTALL_KIND% SOURCE_REF=%SOURCE_REF% SOURCE_COMMIT=%COMMIT%
+set "ERR=/test-fail is a test switch: Repair accepts it only on a test installation"
+if defined TEST_FAIL if not "%INSTALL_KIND%"=="test" goto refuse
+set "ERR="
+
+echo Repair rebuilds ISAR's Python environment in:
+echo     %BASE%\env
+echo from the package lock kept in the installation, puts ISAR's source back at
+if "%INSTALL_KIND%"=="test" echo the recorded commit %COMMIT:~0,8% (TEST INSTALLATION of %SOURCE_REF%),
+if not "%INSTALL_KIND%"=="test" echo the recorded commit %COMMIT:~0,8% (release %SHOW_RELEASE%),
+echo reinstalls ISAR and runs the self-test. Your workspaces, profile and logs
+echo are not touched. It takes several minutes.
+if defined YES goto repair_running
+choice /C YN /N /M "Repair now? (Y/N): "
+set "ANSWER=%ERRORLEVEL%"
+>>"%LOG%" echo(Asked: repair now? choice code %ANSWER%
+set "ERR=you answered No"
+if not "%ANSWER%"=="1" goto cancel
+set "ERR="
+
+:repair_running
+call :running_gate
+if "%GATE%"=="refuse" goto refuse
+if "%GATE%"=="cancel" goto cancel
+
+call :step_start preflight "Checking the files Repair rebuilds from"
+set "LOCK_COPY=%BASE%\launcher\isar-win-64.lock"
+set "ERR=the package lock kept in %BASE%\launcher is missing, so Repair cannot rebuild from it; run the installer again into the same folder"
+if not exist "%LOCK_COPY%" goto fail
+call :sha256 "%LOCK_COPY%"
+set "ERR=the package lock kept in %BASE%\launcher is not the one this installation was built from, so Repair will not use it; run the installer again into the same folder"
+if not "%SHA%"=="%LOCK_SHA256%" goto fail
+set "MM_EXE=%BASE%\micromamba\micromamba.exe"
+set "MM_NEED=yes"
+if exist "%MM_EXE%" call :sha256 "%MM_EXE%"
+if exist "%MM_EXE%" if "%SHA%"=="%REC_MM_SHA%" set "MM_NEED="
+if "%TEST_FAIL%"=="download" set "MM_NEED=yes"
+if not defined MM_NEED >>"%LOG%" echo(micromamba in the installation matches MAMBA_SHA256.
+if not defined MM_NEED goto repair_mm_ok
+call :step_start micromamba "Downloading micromamba %REC_MM_VER% again and checking its checksum"
+set "MM_URL=https://github.com/mamba-org/micromamba-releases/releases/download/%REC_MM_VER%/micromamba-win-64"
+if "%TEST_FAIL%"=="download" set "MM_URL=%MM_URL%.test-fail-download"
+"%CURL%" --fail -sS -L --proto =https -o "%WORK%\micromamba.exe" "%MM_URL%" >>"%LOG%" 2>&1 <nul
+set "ERR=micromamba could not be downloaded; check the internet connection and try again"
+if errorlevel 1 goto fail
+call :sha256 "%WORK%\micromamba.exe"
+set "ERR=the downloaded micromamba does not match the checksum this installation recorded, so it was not used"
+if not "%SHA%"=="%REC_MM_SHA%" goto fail
+call :step_ok
+:repair_mm_ok
+set "WS_TARGETS=env"
+call :workspace_gate
+if "%GATE%"=="refuse" goto refuse
+if "%GATE%"=="fail" goto fail
+call :step_ok_named preflight
+
+:: -- nothing has been removed or changed before this line --
+
+call :step_start remove-env "Removing the old Python environment"
+cd /d "%WORK%"
+set "ENV_REMOVED=yes"
+if exist "%BASE%\env\" rd /s /q "%BASE%\env" 2>nul
+if exist "%BASE%\env" if not exist "%BASE%\env\" del /f /q "%BASE%\env" >nul 2>nul
+set "ERR=the old environment could not be removed completely (a program may still be using it); close it and run Repair again"
+if exist "%BASE%\env" goto fail
+call :step_ok
+
+call :step_start env-create "Rebuilding the Python environment from the lock; this takes several minutes"
+if not defined MM_NEED goto repair_mm_placed
+if not exist "%BASE%\micromamba\" mkdir "%BASE%\micromamba" 2>nul
+copy /y "%WORK%\micromamba.exe" "%MM_EXE%" >nul 2>nul
+call :sha256 "%MM_EXE%"
+set "ERR=micromamba could not be placed in %BASE%\micromamba"
+if not "%SHA%"=="%REC_MM_SHA%" goto fail
+:repair_mm_placed
+echo   The download and build messages go to the log, not this window.
+call :create_env
+if defined ERR goto fail
+call :step_ok
+
+call :step_start source "Putting ISAR's source back at commit %COMMIT%"
+call :get_source
+if not defined ERR goto repair_source_ok
+:: The kept copy could not be brought to the commit: it is downloaded afresh,
+:: after checking that nothing of the user's is saved inside it. Without git
+:: a fresh download fails too, so the kept copy stays.
+if not exist "%BASE%\app" goto fail
+if not exist "%GIT%" goto fail
+>>"%LOG%" echo(The kept source could not be restored: %ERR%
+>>"%LOG%" echo(It is removed and downloaded again.
+echo   The kept copy of ISAR's source could not be restored; downloading it again.
+set "WS_TARGETS=app"
+call :workspace_gate
+if "%GATE%"=="refuse" set "ERR=a workspace is saved inside ISAR's source folder; move it out of %BASE%\app, then run Repair again"
+if not "%GATE%"=="ok" goto fail
+cd /d "%WORK%"
+set "APP_REMOVED=yes"
+if exist "%BASE%\app\" rd /s /q "%BASE%\app" 2>nul
+if exist "%BASE%\app" if not exist "%BASE%\app\" del /f /q "%BASE%\app" >nul 2>nul
+set "ERR=the old copy of ISAR's source could not be removed completely; close any program using it and run Repair again"
+if exist "%BASE%\app" goto fail
+call :get_source
+if defined ERR goto fail
+:repair_source_ok
+call :step_ok
+
+call :step_start isar-install "Installing ISAR into the environment"
+call :install_isar
+if defined ERR goto fail
+call :step_ok
+
+call :run_selftest
+if "%SELFTEST%"=="pass" set "OUTCOME=repaired"
+if not "%SELFTEST%"=="pass" set "OUTCOME=repaired-selftest-failed"
+goto finish
 
 :uninstall
 set "ERR=Uninstall is not available in this build of the installer"
@@ -520,10 +673,14 @@ goto finish
 :finish
 cd /d "%SystemRoot%" 2>nul
 if "%OUTCOME%"=="installed" set "ERR="
+if "%OUTCOME%"=="repaired" set "ERR="
 if "%OUTCOME%"=="installed-selftest-failed" set "ERR=the self-test failed"
+if "%OUTCOME%"=="repaired-selftest-failed" set "ERR=the self-test failed"
 set "RC=1"
 if "%OUTCOME%"=="installed" set "RC=0"
+if "%OUTCOME%"=="repaired" set "RC=0"
 if "%OUTCOME%"=="installed-selftest-failed" set "RC=3"
+if "%OUTCOME%"=="repaired-selftest-failed" set "RC=3"
 if "%OUTCOME%"=="refused" set "RC=2"
 if "%OUTCOME%"=="cancelled" set "RC=2"
 if defined ERR >>"%LOG%" echo(REASON: %ERR%
@@ -548,8 +705,10 @@ call :remove_work
 if defined YES goto finish_exit
 if "%OUTCOME%"=="failed" call :open_notepad
 if "%OUTCOME%"=="installed-selftest-failed" call :open_notepad
+if "%OUTCOME%"=="repaired-selftest-failed" call :open_notepad
 echo.
-choice /C C /N /M "Press C to close this window."
+if "%OP%"=="install" choice /C C /N /M "Press C to close this window."
+if not "%OP%"=="install" choice /C C /N /M "Press C to continue."
 :finish_exit
 endlocal & exit /b %RC%
 
@@ -558,16 +717,54 @@ echo.
 echo ============================================================================
 if "%OUTCOME%"=="installed" echo   ISAR IS INSTALLED AND CHECKED
 if "%OUTCOME%"=="installed-selftest-failed" echo   ISAR IS INSTALLED, BUT ITS SELF-TEST FAILED
-if "%OUTCOME%"=="failed" echo   THE INSTALL FAILED
-if "%OUTCOME%"=="cancelled" echo   THE INSTALL WAS CANCELLED
-if "%OUTCOME%"=="refused" echo   THE INSTALL WAS REFUSED
+if "%OUTCOME%"=="repaired" echo   ISAR IS REPAIRED AND CHECKED
+if "%OUTCOME%"=="repaired-selftest-failed" echo   ISAR IS REPAIRED, BUT ITS SELF-TEST FAILED
+set "OP_WORD=INSTALL"
+if "%OP%"=="repair" set "OP_WORD=REPAIR"
+if "%OUTCOME%"=="failed" echo   THE %OP_WORD% FAILED
+if "%OUTCOME%"=="cancelled" echo   THE %OP_WORD% WAS CANCELLED
+if "%OUTCOME%"=="refused" echo   THE %OP_WORD% WAS REFUSED
 echo ============================================================================
 if defined ERR echo Reason: %ERR%
 if "%OUTCOME%"=="installed" goto end_installed
 if "%OUTCOME%"=="installed-selftest-failed" goto end_selftest
+if "%OUTCOME%"=="repaired" goto end_repaired
+if "%OUTCOME%"=="repaired-selftest-failed" goto end_repaired_selftest
+if "%OP%"=="repair" if "%OUTCOME%"=="failed" goto end_repair_failed
 if "%OUTCOME%"=="failed" goto end_failed
 echo Nothing was installed, removed or changed.
 goto end_log
+
+:end_repaired
+call :end_where
+echo Repair rebuilt the Python environment, put ISAR's source back at the
+echo recorded commit and reinstalled ISAR, which passed its self-test.
+call :end_repair_removed
+echo Start ISAR with "ISAR Launcher" in that folder.
+goto end_log
+
+:end_repaired_selftest
+call :end_where
+echo Repair rebuilt the environment and the source, but ISAR did not pass
+echo its self-test:
+call :show_check_failures
+call :end_repair_removed
+echo Choose Collect diagnostics in the launcher and send the zip it makes.
+goto end_log
+
+:end_repair_failed
+if not defined ENV_REMOVED echo Nothing was removed or changed.
+if not defined ENV_REMOVED goto end_log
+call :end_repair_removed
+echo ISAR cannot start until a Repair finishes. Run Repair again; if it fails
+echo again, choose Collect diagnostics in the launcher and send the zip it makes.
+goto end_log
+
+:end_repair_removed
+echo Removed: the old Python environment (%BASE%\env).
+if defined APP_REMOVED echo Removed: the old copy of ISAR's source (%BASE%\app), downloaded again.
+echo Your workspaces, profile and logs were not touched.
+goto :eof
 
 :end_installed
 call :end_where
@@ -599,7 +796,7 @@ goto end_log
 :end_where
 echo Installed in: %BASE%
 if "%INSTALL_KIND%"=="test" echo TEST INSTALLATION of %SOURCE_REF% at %COMMIT:~0,8%, not a release
-if not "%INSTALL_KIND%"=="test" echo Release:      %ISAR_RELEASE% (commit %COMMIT:~0,8%)
+if not "%INSTALL_KIND%"=="test" echo Release:      %SHOW_RELEASE% (commit %COMMIT:~0,8%)
 goto :eof
 
 :end_log
@@ -697,8 +894,20 @@ if not "%MATCH%"=="yes" set "GH_CODE=000"
 >>"%LOG%" echo(HTTP %GH_CODE%
 goto :eof
 
-:: Fetch the resolved commit into <base>\app with the environment's git, write
-:: the tracked workspace markers before checking out (D4), then check out.
+:: The environment from the lock copy kept beside the launcher (C-lock), into
+:: the installation's own root prefix and package cache. Sets ERR on failure.
+:create_env
+set "ERR="
+"%MM_EXE%" create -y --no-rc -r "%BASE%\mamba" -p "%BASE%\env" -f "%BASE%\launcher\isar-win-64.lock" >>"%LOG%" 2>&1 <nul
+set "ERR=the Python environment could not be built; check the internet connection and the free disk space, then try again"
+if errorlevel 1 goto :eof
+if not exist "%BASE%\env\python.exe" goto :eof
+set "ERR="
+goto :eof
+
+:: Bring <base>\app to the commit with the environment's git: a new checkout
+:: is made, a kept one (Repair) is reused and fetches only when the commit is
+:: missing. The tracked workspace markers are written before the checkout (D4).
 :get_source
 set "ERR="
 call :env_path
@@ -711,19 +920,27 @@ set "GIT_CONFIG_NOSYSTEM=1"
 set "GIT_CONFIG_GLOBAL=%WORK%\empty.gitconfig"
 set "GIT_TERMINAL_PROMPT=0"
 set "APP=%BASE%\app"
+cd /d "%WORK%"
+if exist "%APP%\.git\" goto source_have_repo
 if not exist "%APP%\" mkdir "%APP%" 2>nul
 set "ERR=could not create %APP%"
 if not exist "%APP%\" goto :eof
-cd /d "%WORK%"
 "%GIT%" -C "%APP%" init -q >>"%LOG%" 2>&1 <nul
 set "ERR=git init failed in %APP%"
 if errorlevel 1 goto :eof
 "%GIT%" -C "%APP%" remote add origin "https://github.com/%GH_REPO%.git" >>"%LOG%" 2>&1 <nul
 set "ERR=git could not add the ISAR remote"
 if errorlevel 1 goto :eof
+goto source_fetch
+:source_have_repo
+>>"%LOG%" echo(Reusing the git checkout kept in %APP%
+"%GIT%" -C "%APP%" cat-file -e "%COMMIT%^{commit}" >>"%LOG%" 2>&1 <nul
+if not errorlevel 1 goto source_fetched
+:source_fetch
 "%GIT%" -C "%APP%" fetch -q --depth 1 origin %COMMIT% >>"%LOG%" 2>&1 <nul
 set "ERR=git could not download commit %COMMIT%; check the internet connection and try again"
 if errorlevel 1 goto :eof
+:source_fetched
 call :write_markers
 if defined ERR goto :eof
 "%GIT%" -C "%APP%" checkout -q --detach --force %COMMIT% >>"%LOG%" 2>&1 <nul
@@ -841,6 +1058,76 @@ goto :eof
 :env_path
 set "EP=%BASE%\env"
 set "PATH=%EP%;%EP%\Library\mingw-w64\bin;%EP%\Library\usr\bin;%EP%\Library\bin;%EP%\Scripts;%EP%\bin;%SYS_PATH%"
+goto :eof
+
+:: Is ISAR from this installation running (any process whose program lies
+:: under <base>\env)? GATE=ok when none, else refuse (with ERR, and under /yes)
+:: or cancel. Attended, the user may close ISAR and check again.
+:running_gate
+set "GATE=ok"
+:running_again
+set "PSI_A=%BASE%\env\"
+del /f /q "%WORK%\running.txt" >nul 2>nul
+powershell -NoProfile -NonInteractive -Command "try { $b=[IO.Path]::GetFullPath($env:PSI_A); $n=0; foreach ($p in @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)) { $e=$p.ExecutablePath; if ($e -and $e.StartsWith($b, [StringComparison]::OrdinalIgnoreCase)) { 'ISAR_RUNNING=' + $p.ProcessId; $n++ } }; 'COUNT=' + $n } catch { 'ERROR ' + $_.Exception.Message }" > "%WORK%\running.txt" 2>nul <nul
+findstr /b /l /c:"COUNT=0" "%WORK%\running.txt" >nul 2>nul
+if not errorlevel 1 goto :eof
+findstr /b /l /c:"COUNT=" "%WORK%\running.txt" >nul 2>nul
+if not errorlevel 1 goto running_found
+>>"%LOG%" type "%WORK%\running.txt"
+set "ERR=could not check whether ISAR is running (PowerShell did not answer); see the log"
+set "GATE=refuse"
+goto :eof
+:running_found
+>>"%LOG%" findstr /b /l /c:"ISAR_RUNNING=" "%WORK%\running.txt"
+set "ERR=ISAR from this installation is running; close every ISAR window, then try again"
+echo.
+echo ISAR from this installation is running (its process IDs):
+findstr /b /l /c:"ISAR_RUNNING=" "%WORK%\running.txt"
+set "GATE=refuse"
+if defined YES goto :eof
+choice /C RC /N /M "Close every ISAR window, then press R to check again, or C to cancel: "
+set "ANSWER=%ERRORLEVEL%"
+>>"%LOG%" echo(Asked: ISAR is running; check again? choice code %ANSWER%
+if "%ANSWER%"=="1" goto running_again
+set "ERR=ISAR from this installation was still running"
+set "GATE=cancel"
+goto :eof
+
+:: Workspace scan (D4) of the payload folders named in WS_TARGETS (space
+:: separated, under BASE): every card.policy.toml or gui.state.json, without
+:: following junctions or links, except the files listed in
+:: tracked-workspace-markers.txt under app. GATE=ok when none; refuse when
+:: one is found (each folder logged as WORKSPACE_FOUND= and shown) or a
+:: target is itself a link; fail when the scan could not run.
+:workspace_gate
+set "GATE=ok"
+set "PSI_A=%BASE%"
+set "PSI_B=%WS_TARGETS%"
+set "PSI_C=%BASE%\tracked-workspace-markers.txt"
+set "PSI_D=%WORK%\ws_found.txt"
+del /f /q "%WORK%\ws.txt" "%PSI_D%" >nul 2>nul
+powershell -NoProfile -NonInteractive -Command "try { $b=$env:PSI_A; $skip=@{}; if ([IO.File]::Exists($env:PSI_C)) { foreach ($l in [IO.File]::ReadAllLines($env:PSI_C)) { if ($l) { $skip[[IO.Path]::Combine($b,'app',$l).ToLowerInvariant()]=1 } } }; $found=New-Object Collections.Generic.List[string]; $link=''; $rp=[IO.FileAttributes]::ReparsePoint; foreach ($t in $env:PSI_B.Split(' ')) { $r=[IO.Path]::Combine($b,$t); if (-not [IO.Directory]::Exists($r)) { continue }; $ri=New-Object IO.DirectoryInfo($r); if ($ri.Attributes -band $rp) { $link=$t; break }; $st=New-Object Collections.Stack; $st.Push($ri); while ($st.Count) { $d=$st.Pop(); foreach ($e in $d.EnumerateFileSystemInfos()) { if ($e.Attributes -band [IO.FileAttributes]::Directory) { if (-not ($e.Attributes -band $rp)) { $st.Push($e) } } elseif ($e.Name -ieq 'card.policy.toml' -or $e.Name -ieq 'gui.state.json') { if (-not $skip.ContainsKey($e.FullName.ToLowerInvariant())) { if (-not $found.Contains($e.DirectoryName)) { $found.Add($e.DirectoryName) } } } } } }; if ($link) { 'LINK ' + $link } else { $o=@(foreach ($f in $found) { 'WORKSPACE_FOUND=' + $f }); [IO.File]::WriteAllLines($env:PSI_D, [string[]]$o, (New-Object Text.UTF8Encoding $false)); 'SCAN ' + $found.Count } } catch { 'ERROR ' + $_.Exception.Message }" > "%WORK%\ws.txt" 2>nul <nul
+>>"%LOG%" echo(Workspace scan of %WS_TARGETS%:
+>>"%LOG%" type "%WORK%\ws.txt"
+findstr /b /l /c:"SCAN 0" "%WORK%\ws.txt" >nul 2>nul
+if not errorlevel 1 goto :eof
+findstr /b /l /c:"SCAN " "%WORK%\ws.txt" >nul 2>nul
+if not errorlevel 1 goto workspace_found
+set "GATE=refuse"
+set "ERR=a folder this would remove is a junction or link inside %BASE%, which may point somewhere else entirely; nothing was removed"
+findstr /b /l /c:"LINK " "%WORK%\ws.txt" >nul 2>nul
+if not errorlevel 1 goto :eof
+set "GATE=fail"
+set "ERR=the folders to be removed could not be checked for workspaces; see the log"
+goto :eof
+:workspace_found
+>>"%LOG%" type "%PSI_D%"
+echo.
+echo A workspace is saved inside the part of the installation this would remove:
+type "%PSI_D%"
+echo Move each folder named above out of %BASE%, then try again.
+set "ERR=a workspace is saved inside the installation; move it out first"
+set "GATE=refuse"
 goto :eof
 
 :: ===========================================================================

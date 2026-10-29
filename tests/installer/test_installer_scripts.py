@@ -6,8 +6,10 @@ no longer fail is caught too. The dynamic checks run the real scripts through ``
 LOCALAPPDATA, APPDATA, TEMP and the Desktop moved into ``tmp_path`` (TEMP with a space and an
 accented letter), on fake installations; nothing here touches the network or a real profile.
 """
+import hashlib
 import os
 import re
+import shutil
 import subprocess
 import tomllib
 import zipfile
@@ -410,3 +412,85 @@ def test_collect_diagnostics_works_with_the_environment_gone(tmp_path):
     assert "env\\python.exe: missing" in summary, summary
     assert not list(Path(env["TEMP"]).glob("isar-diagnostics-*")), "the staging folder was left behind"
 
+
+def repairable(base, **over):
+    """A fake complete installation whose kept lock and micromamba match the record."""
+    base.mkdir(parents=True)
+    (base / "launcher").mkdir()
+    (base / "micromamba").mkdir()
+    lock, mm = b"# platform: win-64\n@EXPLICIT\n", b"not really micromamba"
+    (base / "launcher" / "isar-win-64.lock").write_bytes(lock)
+    (base / "micromamba" / "micromamba.exe").write_bytes(mm)
+    (base / "env").mkdir()
+    (base / "env" / "python.exe").write_bytes(b"x")
+    (base / "app").mkdir()
+    fake_install(base, LOCK_SHA256=hashlib.sha256(lock).hexdigest(), MAMBA_SHA256=hashlib.sha256(mm).hexdigest(),
+                 **over)
+    _launcher_copies(base)
+    return base
+
+
+def _tree(path):
+    return sorted((str(p.relative_to(path)), p.stat().st_size, p.stat().st_mtime_ns)
+                  for p in path.rglob("*") if not p.is_dir())
+
+
+@pytest.mark.parametrize("case", ["no-dir", "not-complete", "test-fail-on-release", "lock-changed",
+                                  "workspace-in-env", "env-is-a-junction", "isar-running"])
+def test_repair_stops_before_removing_anything(tmp_path, case):
+    """Repair (through the launcher) refuses or fails with the installation untouched whenever its
+    ownership, its kept files, a workspace inside env, a link, or a running ISAR says so."""
+    env = _sandbox(tmp_path)
+    over = {"not-complete": {"STATE": "installing"}, "test-fail-on-release": {"INSTALL_KIND": "release"}}
+    base = repairable(_plain(tmp_path) / "b", **over.get(case, {}))
+    args, want_rc, want_line, proc = ["repair", "/yes"], 2, None, None
+    outside = tmp_path / "outside"
+    if case == "no-dir":
+        script, args = base / "launcher" / "WINDOWS-install-ISAR.bat", ["/repair", "/yes"]
+    else:
+        script = base / "ISAR-Launcher.bat"
+    if case == "test-fail-on-release":
+        args += ["/test-fail", "selftest"]
+    elif case == "lock-changed":
+        (base / "launcher" / "isar-win-64.lock").write_bytes(b"# platform: win-64\n@EXPLICIT\nx\n")
+        want_rc = 1
+    elif case == "workspace-in-env":
+        (base / "env" / "my run").mkdir()
+        (base / "env" / "my run" / "card.policy.toml").write_text("# a user's workspace\n")
+        want_line = "WORKSPACE_FOUND=" + str(base / "env" / "my run")
+    elif case == "env-is-a-junction":
+        (base / "env" / "python.exe").unlink()
+        (base / "env").rmdir()
+        outside.mkdir()
+        (outside / "keep.txt").write_text("not ISAR's\n")
+        mk = subprocess.run(["cmd", "/d", "/c", "mklink", "/J", str(base / "env"), str(outside)],
+                            capture_output=True, text=True)
+        assert mk.returncode == 0, mk.stdout + mk.stderr
+    elif case == "isar-running":
+        shutil.copyfile(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe", base / "env" / "cmd.exe")
+        proc = subprocess.Popen([str(base / "env" / "cmd.exe"), "/d", "/c", "ping -n 60 127.0.0.1 >nul"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                creationflags=0x08000000)
+        want_line = f"ISAR_RUNNING={proc.pid}"
+    before = _tree(base)
+    try:
+        rc, out = run_bat(script, *args, env=env)
+    finally:
+        if proc:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+            proc.wait(timeout=30)
+    log = sorted((Path(env["LOCALAPPDATA"]) / "ISAR" / "logs").glob("repair-*.log"))[-1]
+    lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+    assert rc == want_rc, (case, rc, out)
+    assert lines[-1] == ("OUTCOME=failed" if want_rc == 1 else "OUTCOME=refused"), (case, lines[-5:])
+    assert not any(ln.startswith("STEP=remove-") for ln in lines), case
+    if want_line:
+        assert want_line in lines, (case, [ln for ln in lines if "=" in ln][-8:])
+    reason = {"no-dir": "needs the installation folder", "not-complete": "never finished installing",
+              "test-fail-on-release": "only on a test installation", "lock-changed": "is not the one",
+              "workspace-in-env": "a workspace is saved", "env-is-a-junction": "junction or link",
+              "isar-running": "is running"}[case]
+    assert any(ln.startswith("REASON: ") and reason in ln for ln in lines), (case, lines[-3:])
+    assert _tree(base) == before, case
+    if case == "env-is-a-junction":
+        assert (outside / "keep.txt").exists()
