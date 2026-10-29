@@ -160,6 +160,23 @@ def kill_tree(pid: int) -> None:
     subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)], capture_output=True, check=False)
 
 
+def gui_pids(base: Path) -> list[int]:
+    """Pids of ISAR GUI processes started from this installation, matched by command line (never image name)."""
+    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like ('*' + $env:ISAR_H_BASE + '\\*') "
+          "-and $_.CommandLine -like '*isar_gui*' } | ForEach-Object { $_.ProcessId }")
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", env={**os.environ, "ISAR_H_BASE": str(base)})
+    if r.returncode != 0:
+        out(f"  could not list the ISAR GUI processes: {r.stderr.strip()[-200:]}")
+    return [int(x) for x in r.stdout.split() if x.isdigit()]
+
+
+def stop_gui(base: Path) -> None:
+    for pid in gui_pids(base):
+        out(f"    stopping ISAR GUI pid {pid} under {base}")
+        kill_tree(pid)
+
+
 def quote_arg(a: str) -> str:
     return a if re.fullmatch(r"[A-Za-z0-9_./:\\=-]+", a) else '"%s"' % a
 
@@ -373,19 +390,25 @@ def case_launcher(ctx: Ctx):
     base = ctx.base["i1"]
     need(ctx, "i1", "fresh")
     result, nonce = ctx.p1.temp / "launcher-result.json", uuid.uuid4().hex
-    res = ctx.script(ctx.p1, base / "ISAR-Launcher.bat", ["start"], "launcher-start",
-                     extra_env={"ISAR_GUI_SELFTEST_RESULT": str(result), "ISAR_GUI_SELFTEST_NONCE": nonce})
-    expect(res, 0, None)
-    deadline = time.monotonic() + 120  # the launcher may return before the GUI has written
-    while not result.exists() and time.monotonic() < deadline:
-        time.sleep(1)
-    if not result.exists():
-        raise Fail("the GUI wrote no self-test result")
-    got = json.loads(result.read_text(encoding="utf-8"))
-    if got.get("nonce") != nonce:
-        raise Fail("result nonce does not match")
-    if not [p for p in ctx.logs_now(ctx.p1) if p.name.startswith("launch-")]:
-        raise Fail("no launch-*.log")
+    ok = False
+    try:
+        res = ctx.script(ctx.p1, base / "ISAR-Launcher.bat", ["start"], "launcher-start",
+                         extra_env={"ISAR_GUI_SELFTEST_RESULT": str(result), "ISAR_GUI_SELFTEST_NONCE": nonce})
+        expect(res, 0, None)
+        deadline = time.monotonic() + 120  # the launcher may return before the GUI has written
+        while not result.exists() and time.monotonic() < deadline:
+            time.sleep(1)
+        if not result.exists():
+            raise Fail("the GUI wrote no self-test result")
+        got = json.loads(result.read_text(encoding="utf-8"))
+        if got.get("nonce") != nonce:
+            raise Fail("result nonce does not match")
+        if not [p for p in ctx.logs_now(ctx.p1) if p.name.startswith("launch-")]:
+            raise Fail("no launch-*.log")
+        ok = True
+    finally:
+        if not ok:  # a hung GUI would otherwise refuse the cases after this one
+            stop_gui(base)
 
 
 def case_running(ctx: Ctx):
@@ -752,6 +775,18 @@ def self_check() -> int:
         child = [sys.executable, "-c", f"import time, pathlib; pathlib.Path(r'{marker}').write_text('go'); time.sleep(120)"]
         res = run_proc(child, ctx.p1.env(), root, 60, root / "k.txt", kill_when=marker.exists)
         assert res.status == "killed" and res.secs < 30, (res.status, res.secs)
+        # the GUI lookup finds a process by its command line under one installation only, and stop_gui kills it by pid
+        fake_gui = [sys.executable, "-c", "import time; time.sleep(120)", str(ctx.base["i1"] / "app" / "isar_gui")]
+        proc = subprocess.Popen(fake_gui, env=ctx.p1.env(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
+        try:
+            assert proc.pid in gui_pids(ctx.base["i1"]), "gui_pids missed a process under its installation"
+            assert gui_pids(ctx.base["i2"]) == [], "gui_pids matched a process of another installation"
+            stop_gui(ctx.base["i1"])
+            proc.wait(timeout=30)  # raises if the kill by pid did not reach the process
+        finally:
+            if proc.poll() is None:
+                kill_tree(proc.pid)
         out("self-check: ok")
         return 0
     finally:
