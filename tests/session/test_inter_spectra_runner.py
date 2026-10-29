@@ -420,6 +420,19 @@ def test_a_stale_locked_fit_never_conditions_a_refit(tmp_path, when):
         assert all(c.fit != y_line.fit for c in used)
 
 
+def test_a_batch_whose_members_all_leave_is_not_called_settled(tmp_path):
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"}, {"toy": "keep"}, {"toy": "keep"}))
+
+    def lock_all():
+        for u in (x, y, z):
+            assert inter_values.set_lock(ws, u, locked=True, fit_id="fast").ok
+    bench = Bench(ws, _when("sweep", 1, "refine", lock_all))
+    spec = _simultaneous(ws, (x, y, z))
+    end = bench.run(spec).batches[spec.batch_id].end
+    assert (end["state"], bench.end().status) == ("nothing_left", "done_warning")
+    assert end["reason"] == runner.NOTHING_LEFT
+
+
 def test_assignments_that_disagree_on_a_branch_carry_no_factor_for_it(tmp_path):
     """E18: x assigns its mode to branch B, y (changed, to C) does not carry B; after the stage boundary neither
     carries a factor for B, and the shared objective over the stage sums without raising."""

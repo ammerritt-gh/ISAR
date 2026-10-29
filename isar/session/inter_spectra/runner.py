@@ -44,6 +44,7 @@ NOT_CURRENT = "its fast pass is not current; run the fast pass first"
 CUT_OFF = "cut off by a failed neighbour"
 SCOPE_CHANGED = "the scope changed since the preview"
 STALE_LOCK = "its locked fit is out of date, so it is neither refitted nor used"
+NOTHING_LEFT = "no spectrum was left to refit before a round settled; its results are kept"
 _THREAD_ENV = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")    # as driver._THREAD_ENV
 _ELIGIBLE = ("accepted", "unchanged")
 _KINDS = ("anchored", "simultaneous")
@@ -324,7 +325,7 @@ class _Run:
         c, missed = self.counts(), self.unreached_list()
         if state == "failed":
             status = "failed"
-        elif c["failed"] or missed or state == "did_not_settle":
+        elif c["failed"] or missed or state in ("did_not_settle", "nothing_left"):
             status = "done_warning"
             if reason is None:
                 reason = "; ".join(x for x in (f"{len(missed)} spectra not reached" if missed else "",
@@ -797,7 +798,8 @@ class _Run:
                 else:
                     active.discard(k)
                     self.not_reached.setdefault(k, CUT_OFF)
-            if not snaps:
+            if not snaps:                                # no round can settle: nothing is left to refit
+                outcome = "nothing_left"
                 break
             self.stage_name, self.index = "sweep", self.sweeps
             self.progress("assign")
@@ -886,6 +888,8 @@ class _Run:
         self.drift = self.drift_of(held)
         if outcome == "did_not_settle":
             self.end("did_not_settle", f"did not settle within {s.sweep_cap} sweeps; its results are kept")
+        elif outcome == "nothing_left":
+            self.end(outcome, NOTHING_LEFT)
         else:
             self.end(outcome)
 
