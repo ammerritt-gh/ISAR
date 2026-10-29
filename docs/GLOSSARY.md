@@ -75,10 +75,11 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   Structure enumeration is catalogue-driven, including the phonon-less nulls `elastic+bg` and `bg`
   (on BL43LXU the starting zero-phonon model is `elastic+qe+bg`; `elastic+bg` and `bg` appear there
   only as reduced models the duplicate rule builds).
-- **elastic_only** — the verdict when the phonon-less `elastic+bg` candidate (on BL43LXU any
-  phonon-less winner) wins selection with a
+- **elastic_only** — the verdict when the phonon-less `elastic+bg` candidate wins selection with a
   significant elastic line: a positive, scan-local, categorically humble claim (confidence
   hard-capped at 0.5); never region exclusion, never a Bragg identification.
+  On BL43LXU there is no `elastic+bg` score for that elastic test, so a phonon-less winner is
+  reported `no_signal` with the phonon-less wording instead.
 - **constraint transport** — carrying parameters fit in a clean region as *soft* constraints into
   complicated regions (crossings, spurions), assuming slow variation; declared per catalogue entry
   (smoothness class + scale in r.l.u.), one-directional, applied exactly once via the existing
