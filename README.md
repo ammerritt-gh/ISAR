@@ -4,6 +4,8 @@
 > **Authority:** canonical for product overview and quickstart
 > **Verified against code revision:** `c20e23d` (2026-10-29)
 
+[![DOI](https://zenodo.org/badge/1277919462.svg)](https://doi.org/10.5281/zenodo.23771477)
+
 ISAR helps a researcher during an inelastic scattering beamtime. It reads the scans as they come
 in from inelastic X-ray (IXS) and triple-axis instruments — so far APS Sector 30, SPring-8 BL43LXU
 and ILL IN8 — analyzes them, and can choose and run the next measurement itself.
