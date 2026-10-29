@@ -172,6 +172,8 @@ class CoupledEngine(fast_pass._Engine):
         self.slots = list(slots)
         self.ln_exch = sum(math.lgamma(n + 1) for n in n_exchangeable)
         self.continuous = continuous
+        if self.seed_qe:                       # the central QE's start width (BL43LXU), as the fast pass's seed picks it
+            self._choose_qe_start()
 
     def ln_prior(self, model, theta) -> float:
         sp, omit = self.sp, model.omit
@@ -192,6 +194,10 @@ class CoupledEngine(fast_pass._Engine):
             lp += sp.ln_height(theta[model.el])
         if model.bg is not None and model.bg not in omit:
             lp += sp.ln_background(theta[model.bg])
+        if model.qe_h is not None and model.qe_h not in omit:      # the central QE: per-spectrum, never coupled
+            lp += sp.ln_height(theta[model.qe_h])
+        if model.qe_w is not None and model.qe_w not in omit:
+            lp += sp.ln_qe_width(theta[model.qe_w])
         return lp + sum(p.logpdf(float(theta[i])) for i, p in model.soft_priors)
 
     def _canonical(self, model, theta):
