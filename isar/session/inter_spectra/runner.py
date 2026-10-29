@@ -280,6 +280,7 @@ class _Run:
         self.failed: dict[str, str] = {}          # unit -> reason of its latest failed attempt
         self.not_reached: dict[str, str] = {}     # unit -> reason it was never attempted
         self.records: dict[str, dict] = {}        # fit id -> record of a refit accepted in this batch
+        self.lines: dict = {}                     # fit id -> RefitLine of the stored log, read when a fit is missing
         self.ctx: dict = {}
         self.stage_name, self.index, self.of, self.round = "prepare", 0, None, None
         self.rings_done = self.sweeps = self.rounds = None
@@ -389,8 +390,9 @@ class _Run:
         for r in log0.refits:
             by_unit.setdefault(r.unit, []).append(r)
         needed = sorted({*scope, *(c.unit for u in scope for r in by_unit.get(u, ()) for c in r.conditioned_on)})
-        now = records.inputs_now_from(rows, index, frozen.card.state.tabulated_calibration, needed)
-        self.res = {u: authority.resolve(u, refits=by_unit.get(u, ()), pick=user.picks.get(u), lock=user.locks.get(u),
+        self.now = now = records.inputs_now_from(rows, index, frozen.card.state.tabulated_calibration, needed)
+        self.lines = {r.fit: r for r in log0.refits}
+        self.res ={u: authority.resolve(u, refits=by_unit.get(u, ()), pick=user.picks.get(u), lock=user.locks.get(u),
                                          has_fast=authority.has_fast_solo(frozen.session.get(u), u), inputs_now=now)
                     for u in scope}
         locked = {u for u in scope if user.locks.get(u) is not None and user.locks[u].locked}
@@ -458,14 +460,23 @@ class _Run:
             return self.frozen.session.get(u).detectors[u.rsplit(":", 1)[1]]["fast_pass"]
         if fit in self.records:
             return self.records[fit]
-        line = next((r for r in self.records_mod.read_log(self.root).refits if r.fit == fit), None)
+        line = self.line_of(fit)
         payload = None if line is None else self.records_mod.read_payload(self.root, line)
         if not payload or not (payload.get("overlay") or {}).get("fast_pass"):
             raise ValueError(f"{u}: the stored fit {fit} cannot be read")
         return payload["overlay"]["fast_pass"]
 
+    def line_of(self, fit: str):
+        """The stored log line of a refit not made in this batch (the log is re-read once for a fit not seen yet)."""
+        if fit not in self.lines:
+            self.lines = {r.fit: r for r in self.records_mod.read_log(self.root).refits}
+        return self.lines.get(fit)
+
     def held_of(self, u: str, fit: str):
-        return self.core.held_from_fit(self.record_of(u, fit), unit=u, fit=fit, inputs=self.inputs.get(u),
+        # a stored refit carries the inputs it was made from (C-save-inter), never today's hash
+        line = None if fit == "fast" or fit in self.records else self.line_of(fit)
+        inputs = line.inputs if line is not None and line.inputs is not None else self.inputs.get(u)
+        return self.core.held_from_fit(self.record_of(u, fit), unit=u, fit=fit, inputs=inputs,
                                        context=self.ctx[u], T=self.nodes[u].T)
 
     def snapshot(self, u: str, own, sid: str, terms, stage_id: str | None = None):
@@ -595,15 +606,26 @@ class _Run:
 
     def take_new_locks(self, held: dict) -> set:
         """E11: locks are re-read at every ring and sweep; a member locked since becomes a fixed neighbour, read
-        as the fit its lock pins. Returns the units newly fixed."""
+        as the fit its lock pins. A lock on a stale (or unrecorded) fit is judged as at the freeze: it is neither
+        refitted nor used, so its held value goes. Returns the units that leave the refits."""
+        from isar.session.inter_spectra import authority
         user = self.read_user(self.root)
         new = set()
         for u, ls in user.locks.items():
-            if ls.locked and u in self.members and u not in self.fixed and u in self.current \
-                    and not isinstance(self.ctx.get(u), tuple):
-                self.fixed[u] = "lock"
-                held[u] = self.held_of(u, ls.fit or "fast")
-                new.add(u)
+            if not (ls.locked and u in self.members and u not in self.fixed and u not in self.stale_locks
+                    and u in self.current and not isinstance(self.ctx.get(u), tuple)):
+                continue
+            fit = ls.fit or "fast"
+            line = None if fit == "fast" or fit in self.records else self.line_of(fit)
+            new.add(u)
+            if fit not in ("fast", *self.records) and (line is None or authority.stale_of(line, self.now) is not None):
+                self.stale_locks.add(u)
+                held.pop(u, None)
+                self.not_reached.setdefault(u, STALE_LOCK)
+                continue
+            self.fixed[u] = "lock"
+            held[u] = self.held_of(u, fit)
+            self.not_reached.pop(u, None)
         return new
 
     def open_pool(self, width: int) -> None:
@@ -648,7 +670,7 @@ class _Run:
             sid = f"{self.batch}:ring{r}"
             todo = {}
             for k in ring.members:
-                if k in self.fixed or k not in self.incoming:
+                if k in self.fixed or k in self.stale_locks or k not in self.incoming:
                     continue
                 links = [l for l in ring.conditioners.get(k, ()) if _other(l, k) in held_frozen]
                 if not links:
@@ -800,12 +822,20 @@ class _Run:
                 self.progress("refine")
                 move, width, snaps2, R_all = 0.0, 0, {}, {}
                 for group in plan.groups:                # E8: Gauss-Seidel, each group sees the earlier groups
-                    ks = [k for k in group if k in active and k in A]
+                    gs = {}
+                    for k in group:
+                        if k not in active or k not in A:
+                            continue
+                        terms = terms_of(k, held)
+                        if terms:
+                            gs[k] = self.snapshot(k, held[k], f"{self.batch}:sweep{n}", terms, stage_id=sid)
+                        else:                    # its neighbours left during the round (a stale lock went)
+                            active.discard(k)
+                            self.not_reached.setdefault(k, CUT_OFF)
+                    ks = list(gs)
                     if not ks:
                         continue
                     width = max(width, len(ks))
-                    gs = {k: self.snapshot(k, held[k], f"{self.batch}:sweep{n}", terms_of(k, held), stage_id=sid)
-                          for k in ks}
                     R = self.refits(gs, A)
                     for k in ks:
                         r = R[k]

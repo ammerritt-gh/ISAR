@@ -347,6 +347,33 @@ def test_a_lock_mid_sweep_is_refused_and_the_member_leaves_the_sweeps(tmp_path):
     assert log.batches[spec.batch_id].end["state"] == "settled"
 
 
+@pytest.mark.parametrize("when", ["before", "during", "current"])
+def test_a_stale_locked_fit_never_conditions_a_refit(tmp_path, when):
+    """y's refit from a first batch goes stale when z is recalibrated (y's own fast solo stays current). Locked
+    before the batch or during it, it is neither a fixed neighbour nor conditioned on; a current locked refit is
+    a fixed neighbour stamped with the inputs it was made from."""
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"},) * 3)
+    first = _simultaneous(ws, (x, y, z))
+    Bench(ws).run(first)
+    (y_line,) = [r for r, _ in _lines(ws, first.batch_id) if r.unit == y and r.accept.decision == "authoritative"][-1:]
+    if when != "current":
+        scan, det = z.rsplit(":", 1)
+        _calibrate(ws, scan, det, 0.5)
+
+    def lock():
+        assert inter_values.set_lock(ws, y, locked=True, fit_id=y_line.fit).ok
+    if when != "during":
+        lock()
+    bench = Bench(ws, _when("sweep", 1, "refine", lock) if when == "during" else None)
+    spec = _simultaneous(ws, (x, y))
+    bench.run(spec)
+    used = [c for r, _ in _lines(ws, spec.batch_id) for c in r.conditioned_on if c.unit == y]
+    if when == "current":
+        assert used and {(c.fit, c.inputs) for c in used} == {(y_line.fit, y_line.inputs)}
+    else:
+        assert all(c.fit != y_line.fit for c in used)
+
+
 def test_assignments_that_disagree_on_a_branch_carry_no_factor_for_it(tmp_path):
     """E18: x assigns its mode to branch B, y (changed, to C) does not carry B; after the stage boundary neither
     carries a factor for B, and the shared objective over the stage sums without raising."""
