@@ -1,10 +1,14 @@
-"""Spectrum keys, series keys and temperatures for the inter-spectra graph (C-keys). Stdlib only; no Qt.
+"""Spectrum keys, series keys and temperatures for the inter-spectra graph (C-keys). Stdlib at module level; no Qt.
 
 Read-only: ``read_nodes`` reads the import record, the intake entries and the ledger, and never writes.
-S1U4 fills the bodies.
+The numerics and the workspace are imported inside the functions, so the module loads without them.
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import re
+from collections import Counter
 from dataclasses import dataclass
 
 
@@ -28,9 +32,84 @@ class NodeSet:
     repeats: tuple[str, ...]                # one line per series slot holding >1 scan (assumption U-b)
 
 
+def _natural(text: str) -> tuple:
+    """Sort key that puts 'a9' before 'a10' and 'SPEC_2' before 'SPEC_10'."""
+    return tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in re.split(r"(\d+)", text) if p)
+
+
 def series_key(row: dict, *, sample: str | None, hkl_step: float) -> str | None:
-    raise NotImplementedError("stub: filled by S1U4")
+    from isar.reduce.collate import _q_key      # collate imports numpy; kept out of module import
+
+    hkl = ((row.get("facts") or {}).get("hkl_nominal") or {}).get("value")
+    if isinstance(hkl, list) and len(hkl) == 3:
+        i, j, k = _q_key(hkl, hkl_step)
+        return f"{sample or ''}|q:{i},{j},{k}@{hkl_step}"
+    qs = {det: a.get("q") for det, a in (row.get("analyzers") or {}).items()}
+    if qs and all(q is not None for q in qs.values()):
+        keyed = {det: list(_q_key(q, hkl_step)) for det, q in sorted(qs.items())}
+        digest = hashlib.sha256(json.dumps(keyed, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        return "aq:" + digest[:16]
+    return None
+
+
+def _ineligible(si, det: str, entry) -> str | None:
+    if si.excluded is not None:
+        return "scan excluded"
+    if det in si.dead:
+        return "declared dead"
+    if entry is None:
+        return "not fitted yet"
+    if entry.status == "fitted" and det in entry.detectors:
+        return None
+    if entry.reasons:
+        return str(entry.reasons[0])
+    return entry.status if entry.status != "fitted" else "not fitted yet"
 
 
 def read_nodes(root) -> NodeSet:
-    raise NotImplementedError("stub: filled by S1U4")
+    from isar.intake import inputs, scans as intake_scans, store
+    from isar.reduce.collate import _t_key
+    from isar.session.workspace import Workspace
+
+    card, session = Workspace.open(root).load()
+    pol = card.policy
+    sample = (pol.sample or {}).get("name") or ""
+    t_round = (pol.collation or {}).get("t_round", 0.1)
+    rows = intake_scans.read_scans(root)
+    read = store.read_all(root, store.ENTRIES)
+    index = inputs.index_entries(read.entries, lines=read.lines)
+
+    nodes: dict[str, SpectrumNode] = {}
+    members: dict[str, list[tuple[float, int, str]]] = {}     # series key -> (slot, scan number, scan key)
+    slots: dict[str, float] = {}
+    labels: dict[str, str] = {}
+    for scan, row in sorted(rows.items(), key=lambda kv: _natural(kv[0])):
+        si = inputs.scan_inputs(row, index)
+        used = si.facts["temperature"].used_value
+        T = None if used is None else float(used)
+        series = series_key(row, sample=sample, hkl_step=pol.hkl_round_step)
+        labels[scan] = row["set"]
+        if T is not None:
+            slots[scan] = _t_key(T, t_round)
+            if series is not None:
+                members.setdefault(series, []).append((slots[scan], int(row["scan_number"]), scan))
+        scan_reason = None
+        if series is None:
+            scan_reason = "no q setting recorded for this scan"
+        elif T is None:
+            scan_reason = "no temperature"
+        for det in sorted(row.get("analyzers") or {}, key=_natural):
+            key = f"{scan}:{det}"
+            why = _ineligible(si, det, session.scans.get(key))
+            nodes[key] = SpectrumNode(key, scan, det, row["set"], series, T, why is None, why or scan_reason)
+
+    series_out: dict[str, tuple[str, ...]] = {}
+    repeat_lines: list[str] = []
+    for series, found in members.items():
+        ordered = sorted(found, key=lambda m: (m[0], m[1]))
+        series_out[series] = tuple(scan for _, _, scan in ordered)
+        for slot, n in sorted(Counter(m[0] for m in ordered).items()):
+            if n > 1:
+                names = ", ".join(labels[scan] for s, _, scan in ordered if s == slot)
+                repeat_lines.append(f"{series}: {slot:g} K holds {n} scans ({names}); no temperature link touches them")
+    return NodeSet(nodes=nodes, series=series_out, slots=slots, repeats=tuple(repeat_lines))
