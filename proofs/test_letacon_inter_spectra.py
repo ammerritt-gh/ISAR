@@ -70,6 +70,7 @@ pytestmark = pytest.mark.timeout(0)
 
 EXPECT = "test_letacon_inter_spectra.expect.json"
 TARGET_S = 1800.0                       # the design's 30-minute target: printed against, never asserted
+WAIT_LIMIT_S = 6 * 3600.0               # silence from the service this long fails the proof (a stall, not a target)
 RESULTS: dict = {}                      # filled by the tests in file order; the last test writes summary.json
 
 
@@ -171,7 +172,9 @@ class _Service:
         self.proc.stdin.flush()
 
     def wait_for(self, pred, what: str) -> dict:
-        """The first event matching ``pred``, however long it takes; a service that exits meanwhile is a failure."""
+        """The first event matching ``pred``. A service that exits meanwhile fails the proof, and so does one that
+        stays silent for WAIT_LIMIT_S: it is stopped first, so the run ends with a named failure, not a hang."""
+        deadline = time.monotonic() + WAIT_LIMIT_S
         with self._cv:
             while True:
                 hit = next((e for e in self.events if pred(e)), None)
@@ -180,7 +183,15 @@ class _Service:
                 if self.proc.poll() is not None:
                     pytest.fail(f"the analysis service exited ({self.proc.returncode}) waiting for {what}; "
                                 f"log: {self.log}", pytrace=False)
-                self._cv.wait(timeout=5)
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    self._kill()
+                    pytest.fail(f"the analysis service gave no answer for {WAIT_LIMIT_S / 3600:g} h while waiting for "
+                                f"{what}; it was stopped; log: {self.log}", pytrace=False)
+                self._cv.wait(timeout=min(5.0, left))
+
+    def _kill(self) -> None:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.proc.pid)], capture_output=True)
 
     def run(self, item_id: str, spec: runner.BatchSpec) -> tuple[dict, list[dict], float]:
         """Start one batch as an ``inter`` item (the GUI's start command) and wait for its finish."""
@@ -199,7 +210,7 @@ class _Service:
                 self.proc.wait(timeout=60)
             except (OSError, subprocess.TimeoutExpired) as exc:
                 print(f"\nthe analysis service did not shut down ({exc}); stopping its process tree")
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(self.proc.pid)], capture_output=True)
+                self._kill()
         self._err.close()
 
 
