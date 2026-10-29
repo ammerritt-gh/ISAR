@@ -207,7 +207,7 @@ class InterState(QObject):
         elif kind == "history":
             self._histories[key] = value
             self.history_ready.emit(key)
-        else:
+        elif key == self._want:         # the request is its own tag: an answer to one since passed over is dropped
             self._previews[key] = value
             self.preview_ready.emit(key)
 

@@ -214,6 +214,33 @@ def test_a_preview_request_debounces_and_only_the_newest_is_computed(qtbot, stat
     assert state.preview_for(a) is None
 
 
+def test_a_preview_that_finishes_after_a_newer_request_is_dropped(qtbot, state, overview, monkeypatch, tmp_path):
+    held = threading.Event()
+    asked = []
+
+    def preview(root, req):
+        asked.append(req)
+        if req.direction == "q":            # the first request is held until the newer one is queued
+            held.wait(5)
+        return make_preview(line=f"{len(req.anchors)} anchors")
+
+    monkeypatch.setattr(reads, "batch_preview", preview)
+    state.bind(tmp_path)
+    qtbot.waitUntil(lambda: state.revision == "1", timeout=5000)
+    ready = []
+    state.preview_ready.connect(ready.append)
+    a = BatchRequest(kind="anchored", direction="q", anchors=(KEY,), selection=())
+    b = BatchRequest(kind="anchored", direction="T", anchors=(KEY, "e:1:a04"), selection=())
+    state.request_preview(a)
+    qtbot.waitUntil(lambda: asked == [a], timeout=5000)
+    state.request_preview(b)
+    qtbot.waitUntil(lambda: ("preview", b) in state._loading, timeout=5000)
+    held.set()
+    qtbot.waitUntil(lambda: ready[-1:] == [b], timeout=5000)
+    assert ready == [b]                      # a's late answer is never emitted
+    assert state.preview_for(a) is None
+
+
 def test_a_refresh_calls_no_writer(qtbot, state, overview, monkeypatch, tmp_path):
     writes = []
     for name in ("set_anchors", "pick_fit", "set_lock", "save_settings"):
