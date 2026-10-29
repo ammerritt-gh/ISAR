@@ -679,12 +679,15 @@ conditions — these are wants, not commitments.
 - `isar/session/deep_delivery.py:122` — the deep record's QE summary is built by hand beside
   `fast_pass._qe_result`, each computing its window from `ctx.x_used - ctx.center`; one
   `CentralQE.summary(local, ctx)` in `components.py` for both. Revisit if a third consumer reads it.
+- `tests/installer/test_installer_scripts.py:1` — the installer regression tests take about 35 s at
+  `-n 4`, mostly one cmd or PowerShell start per row of the validator tables; check every row in one
+  probe start. Revisit with the routine-suite trim, starting from `--durations=20`.
 
 ---
 
 ## Notes
 
-routine suite 1.8 min, over its 1-min budget
+routine suite 3.3 min, over its 1-min budget
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test
