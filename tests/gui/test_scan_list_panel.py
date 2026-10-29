@@ -148,7 +148,8 @@ def test_default_and_optional_columns(qtbot, monkeypatch, sample):
     hidden = {c: panel._view.isColumnHidden(i) for i, c in enumerate(COLUMNS)}
     # the sample holds stored fast- and deep-pass results, so those two columns are on by themselves
     assert hidden == {"scan": False, "T": False, "Q": False, "parsed": False,
-                      "fast": False, "deep": False, "slit": True, "file": True}
+                      "fast": False, "deep": False, "anchor": True, "flag": True, "lock": True, "inter": True,
+                      "slit": True, "file": True}      # the inter-spectra columns wait for an inter-spectra state
     assert _model_item(panel, f"set:{KEY_A}", "fast").text() == "…"       # no current-results read here: no coverage claimed
     cell = _model_item(panel, f"spec:{A[4]}", "fast")
     assert cell.text() == "close call" and not cell.icon().isNull()
