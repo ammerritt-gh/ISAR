@@ -1,18 +1,31 @@
 """Which fit of a spectrum is in use, and what the readers see (C-authority). Pure; no I/O in ``resolve``.
 
-S1U1 writes the types and stubs and the overlay key list; S1U5 fills the resolver and the readers. The
-resolver is the one rule every reader uses, so the GUI, export and report cannot disagree.
+The resolver is the one rule every reader uses, so the GUI, export and report cannot disagree. A user pick and a
+machine acceptance are ordered on one causal clock, the intake store's ``seq`` (a pick has ``pick.seq``, an
+acceptance ``intake_seq + 0.5``: it saw every pick with ``seq <= intake_seq`` and none above), never wall time.
+Imports stdlib, ``records`` and ``isar.intake.inter_spectra`` at module level, so it loads no numpy;
+``effective`` reads the fingerprints through ``records.inputs_now_from``, which imports numpy when it runs.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
 
-from isar.intake.inter_spectra import InterUser, LockState, Pick
-from isar.session.inter_spectra.records import InterLog, RefitLine
+from isar.intake.inter_spectra import FAST, InterUser, LockState, Pick, read_user
+from isar.session.inter_spectra import records
+from isar.session.inter_spectra.records import ELIGIBLE, InterLog, RefitLine
+
+_log = logging.getLogger(__name__)
 
 # The stored overlay's keys, redrawn in place of the solo fit's (C-authority, N3)
 OVERLAY_KEYS = ("fast_pass", "modes", "model_manifest", "omega0", "best_label", "n_modes", "interval")
+# FitOutcome fields that state the solo fit's verdict or interval. Blanked in an overlaid outcome, because
+# FitView._pick and _fast_pass_columns would present the solo verdict next to a refit's numbers.
+SOLO_VERDICT_KEYS = ("verdict", "disposition", "confidence", "omega0_err", "omega0_profile", "hesse_interval",
+                     "hesse_trusted", "bayes_interval", "bayes_ok", "model_interval", "model_robust",
+                     "interval_reliable", "deep_pass", "candidates")
 
 
 @dataclass(frozen=True)
@@ -37,24 +50,130 @@ class Effective:
     unit: str; outcome: dict; resolution: Resolution; label: str; line: RefitLine | None
 
 
+def stale_of(line: RefitLine, inputs_now: Mapping[str, str | None]) -> Stale | None:
+    """Why a refit is out of date now: its own inputs first, else the first neighbour it was conditioned on."""
+    own = inputs_now.get(line.unit)
+    if own is not None and line.inputs is not None and own != line.inputs:
+        return Stale("inputs_changed", line.unit)
+    for c in line.conditioned_on:
+        now = inputs_now.get(c.unit)
+        if now is not None and c.inputs is not None and now != c.inputs:
+            return Stale("neighbour_inputs_changed", c.unit)
+    return None
+
+
 def resolve(unit: str, *, refits: Sequence[RefitLine], pick: Pick | None, lock: LockState | None,
             has_fast: bool, inputs_now: Mapping[str, str | None]) -> Resolution:
-    raise NotImplementedError("stub: filled by S1U5")
+    cands = {r.fit: r for r in refits if r.unit == unit and r.status in ELIGIBLE}
+    if has_fast:
+        cands[FAST] = None                                   # the solo fit: judged by the existing currentness
+    notes: list[str] = []
+    locked = bool(lock and lock.locked)
+    lock_fit = lock.fit if locked else None
+    chosen: str | None = None
+    kind = "fast_solo"
+    if locked:
+        if lock_fit in cands:
+            chosen, kind = lock_fit, "lock"
+        else:
+            notes.append(f"the lock names {lock_fit}, which is not a recorded fit")
+    if chosen is None:
+        events = []                                          # (clock, tiebreak, fit, kind)
+        if pick is not None:
+            if pick.fit in cands:
+                events.append((float(pick.seq), 0, pick.fit, "pick"))
+            else:
+                notes.append(f"the pick names {pick.fit}, which is not a recorded fit")
+        for pos, r in enumerate(r for r in refits if r.unit == unit and r.fit in cands):
+            if r.accept is not None and r.accept.decision == "authoritative":
+                events.append((r.accept.intake_seq + 0.5, pos + 1, r.fit, "batch"))
+        if events:
+            _, _, chosen, kind = max(events)
+        elif has_fast:
+            chosen, kind = FAST, "fast_solo"
+    stale = None
+    if chosen is not None and chosen != FAST:
+        line = cands[chosen]
+        stale = stale_of(line, inputs_now)
+        if inputs_now.get(unit) is None or line.inputs is None:
+            notes.append("its inputs are not judged")
+    if stale is not None and kind == "lock":
+        return Resolution(unit, chosen, "lock", chosen, True, lock_fit, stale, False, tuple(notes))
+    if stale is not None:
+        return Resolution(unit, FAST if has_fast else None, "fallback", chosen, locked, lock_fit, stale, True,
+                          tuple(notes))
+    return Resolution(unit, chosen, kind, chosen, locked, lock_fit, None, True, tuple(notes))
 
 
 def resolve_all(log: InterLog, user: InterUser, inputs_now: Mapping[str, str | None],
                 fast_units: Collection[str]) -> dict[str, Resolution]:
-    raise NotImplementedError("stub: filled by S1U5")
+    """A resolution for every spectrum with an eligible refit, a pick or a lock; the others are their solo fit."""
+    by_unit: dict[str, list[RefitLine]] = {}
+    for r in log.refits:
+        by_unit.setdefault(r.unit, []).append(r)
+    units = sorted({*by_unit, *user.picks, *(u for u, ls in user.locks.items() if ls.locked)})
+    return {u: resolve(u, refits=by_unit.get(u, ()), pick=user.picks.get(u), lock=user.locks.get(u),
+                       has_fast=u in fast_units, inputs_now=inputs_now) for u in units}
+
+
+def fit_label(line: RefitLine | None, batches) -> str:
+    """"Fast solo" | "Batch 2 · ring 1" | "Batch 3 · sweep 4"; ``batches`` maps batch id to ``BatchInfo``."""
+    if line is None:
+        return "Fast solo"
+    info = batches.get(line.batch)
+    number = info.number if info is not None else line.batch
+    return f"Batch {number} · {line.stage} {line.index}"
+
+
+def overlay_outcome(oc: dict, overlay: dict) -> dict:
+    """``oc`` with the overlay's drawable keys in place of the solo fit's and the solo verdict keys blanked."""
+    out = {**oc}
+    for k in SOLO_VERDICT_KEYS:
+        out[k] = None
+    for k in OVERLAY_KEYS:
+        if k in overlay:
+            out[k] = overlay[k]
+    return out
 
 
 def effective(root, outcomes: Mapping[str, dict], tabulated, rows=None, index=None) -> dict[str, Effective]:
-    # one entry per unit with any refit; units absent from the result are their solo fit. Used by export and report.
-    raise NotImplementedError("stub: filled by S1U5")
-
-
-def overlay_outcome(oc: dict, overlay: dict) -> dict:           # {**oc} with OVERLAY_KEYS from overlay, solo verdict keys None
-    raise NotImplementedError("stub: filled by S1U5")
-
-
-def fit_label(line: RefitLine | None, batches) -> str:           # "Fast solo" | "Batch 2 · ring 1" | "Batch 3 · sweep 4"
-    raise NotImplementedError("stub: filled by S1U5")
+    """One entry per spectrum with any refit (``outcomes``: unit -> its stored solo outcome); a unit absent from
+    the result is its solo fit. A refit in use whose stored overlay is gone falls back to the solo outcome, noted."""
+    root = Path(root)
+    log_, user = records.read_log(root), read_user(root)
+    units = {r.unit for r in log_.refits}
+    if not units:
+        return {}
+    needed = sorted({*units, *(c.unit for r in log_.refits for c in r.conditioned_on)})
+    if rows is None or index is None:
+        from isar.intake import inputs, scans as intake_scans, store
+        read = store.read_all(root, store.ENTRIES)
+        rows = intake_scans.read_scans(root) if rows is None else rows
+        index = inputs.index_entries(read.entries, lines=read.lines) if index is None else index
+    now = records.inputs_now_from(rows, index, tabulated, needed)
+    res = resolve_all(log_, user, now, set(outcomes))
+    lines = {r.fit: r for r in log_.refits}
+    out: dict[str, Effective] = {}
+    for unit in sorted(units):
+        r = res[unit]
+        if r.fit is None:
+            continue
+        line = lines.get(r.fit) if r.fit != FAST else None
+        oc = outcomes.get(unit)
+        if line is not None:
+            payload = records.read_payload(root, line)
+            overlay = None if payload is None else payload.get("overlay")
+            if overlay is None or oc is None:
+                _log.warning("%s: refit %s cannot be drawn (no overlay or no solo outcome); using the solo fit",
+                             unit, line.fit)
+                r = replace(r, fit=FAST if oc is not None else None, source="fallback",
+                            notes=(*r.notes, "the stored refit cannot be drawn; the solo fit stands in"))
+                line = None
+                if oc is None:
+                    continue
+            else:
+                oc = overlay_outcome(oc, overlay)
+        elif oc is None:
+            continue
+        out[unit] = Effective(unit, oc, r, fit_label(line, log_.batches), line)
+    return out
