@@ -369,7 +369,7 @@ class ScanListPanel(QWidget):           # acts through the VM; asks the window o
         if any(not vm.is_anchor(k) for k in keys):
             self._anchor_action(menu, "Set as anchor", True, has_fast)
         if any(vm.is_anchor(k) for k in keys):
-            self._anchor_action(menu, "Remove anchor", False, has_fast)
+            self._anchor_action(menu, "Remove anchor", False, True)
         read = self._add_action(menu, READ_TEXT, lambda: self.read_again_requested.emit(keys))
         read.setEnabled(bool(keys))
         read.setToolTip("Read the selected scans' files again, as a drop does. Hidden scans stay hidden."

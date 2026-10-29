@@ -343,9 +343,11 @@ class ScanListViewModel(ViewModel):
         return tuple(key for key in self.selected_spectra() if self._snapshot.spectrum(key).fast.stored)
 
     def set_anchor_selected(self, anchored: bool) -> None:
-        """Set or remove the anchor on the selected spectra with a fast-pass result. InterState shows the outcome
-        (its ``saved`` goes to the Log), so a refused write is not repeated here."""
-        keys = self.selected_fast_keys()
+        """Set the anchor on the selected spectra with a fast-pass result, or remove it from every selected anchored
+        spectrum (a lost fast result must not trap an anchor). InterState shows the outcome (its ``saved`` goes to
+        the Log), so a refused write is not repeated here."""
+        keys = (self.selected_fast_keys() if anchored
+                else tuple(k for k in self.selected_spectra() if self.is_anchor(k)))
         if keys and self._inter is not None:
             self._inter.set_anchors(keys, anchored)
 

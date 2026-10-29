@@ -204,6 +204,17 @@ def test_anchoring_with_no_fast_result_is_disabled_and_says_why(made):
     assert inter.calls == []
 
 
+def test_an_anchor_without_a_fast_result_can_still_be_removed(made):
+    panel, vm, inter = made
+    _publish(inter, revision="2", anchors=(A[5],))
+    vm.select_keys((A[5],))
+    _right_click(panel, f"spec:{A[5]}")
+    action = _menu(panel)["Remove anchor"]
+    assert action.isEnabled()
+    action.trigger()
+    assert inter.calls[-1] == ("set_anchors", ((A[5],), False, None))
+
+
 def test_the_row_menu_shows_the_tooltips_of_every_action(made):
     panel, vm, inter = made
     _publish(inter, revision="2", anchors=(A[3],))
