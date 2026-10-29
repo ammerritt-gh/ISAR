@@ -386,6 +386,21 @@ def test_a_continuing_unmatched_mode_keeps_its_id_across_sweeps():
     assert born.assignment.count == 2 and len(new) == 1 and new[0].startswith("f00000000000a#")   # a birth is minted
 
 
+def test_widths_and_shifts_are_compared_with_the_fast_solo_not_the_last_sweep():
+    # data 3x the fast solo's width; the incoming refit (sweep 2) already sits at 2x, so only 1.5x per sweep
+    own, fast = [(8.0, 0.8, 40.0)], [(8.5, 0.4, 40.0)]
+    snap = t_pair(spectrum([(8.0, 1.2, 40.0)], seed=10), own, ["b1"], [(8.0, 0.4, 40.0)], ["b1"])
+    vs_own = R.refit(snap, stage="both")
+    assert "linewidth_change" not in codes(vs_own)
+    r = R.refit(replace(snap, fast=held("y", fast, ["b1"], T=200.0)), stage="both")
+    assert "linewidth_change" in codes(r)
+    assert r.delta_fast["omega0"]["b1"] == pytest.approx(r.energies["b1"] - 8.5)       # change since the fast solo
+    assert r.delta_fast["count"] == 0
+    # a fast solo carrying other ids is paired by energy
+    other = R.refit(replace(snap, fast=held("y", fast, ["fast:y#0"], T=200.0)), stage="both")
+    assert "linewidth_change" in codes(other) and other.delta_fast["omega0"]["b1"] == r.delta_fast["omega0"]["b1"]
+
+
 def test_only_exchangeable_unmatched_modes_get_the_factorial():
     two = [(5.0, 0.4, 40.0), (12.0, 0.4, 40.0)]
     spec = R._Spec(t_pair(spectrum(two, seed=3), two, ["fast:y#0", "fast:y#1"], [(8.0, 0.4, 40.0)], ["b1"]))

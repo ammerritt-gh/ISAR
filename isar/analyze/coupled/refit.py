@@ -840,7 +840,6 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
     # pairing); only a mode with no partner is a birth and gets a new id
     carried = _carried_ids(a, spec.own, [float(theta[ai]) for ai, _g, _c in model.modes])
     ids = [b if b is not None else carried.get(m) or new_branch_id(snapshot.fit_id, m) for m, b in enumerate(slots)]
-    own_by = {md.branch: md for md in spec.own.modes}
     modes, energies = [], {}
     for m, (ai, gi, ci) in enumerate(model.modes):
         e, g, h = float(theta[ai]), float(theta[gi]), float(theta[ci])
@@ -859,9 +858,11 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
                               guard_source=source, status=mstatus,
                               regime=_regime(spec.fs, spec.fwhm, e, g, corr.get(m)), pinned=ai in model.fixed_pos))
         energies[ids[m]] = e
-    delta_fast = {"count": k - spec.n0, "omega0": {b: energies[b] - own_by[b].omega0 for b in ids if b in own_by}}
+    fast = snapshot.fast or spec.own                 # what the changes are measured from (amendment 16, item 4)
+    fast_by = _fast_modes(fast, ids, [md.omega0 for md in modes], exact_only=snapshot.fast is None)
+    delta_fast = {"count": k - len(fast.modes), "omega0": {b: energies[b] - fast_by[b].omega0 for b in ids if b in fast_by}}
 
-    flag = _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, own_by, F, R, cov, notes, dropped)
+    flag = _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, F, R, cov, notes, dropped)
     why = _why(status, reason, spec.n0, k, slots, spec.incoming, J_old, J)
     fit, overlay, cov_out = _record(eng, spec, a, model, theta, cov, sd, rel_sd, modes, ids, D, status)
     normalisers = {f"ln_z:{b}": (float(o.ln_z), "ln meV") for b, o in zip(slots, objs)
@@ -879,7 +880,26 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
         starts=eng.n_fits + rel.n_fits, timing=timing, priced=tuple(priced), cache_hits=hits)
 
 
-def _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, own_by, F, R, cov, notes, dropped) -> dict:
+def _fast_modes(fast: Held, ids, energy, *, exact_only: bool) -> dict[str, HeldMode]:
+    """Result branch id -> the fast solo's mode it descends from: the same id, else (the solo carries its
+    own ``fast:<unit>#i`` ids) the nearest free mode in energy, one-to-one."""
+    by_id = {md.branch: md for md in fast.modes}
+    out = {b: by_id[b] for b in ids if b in by_id}
+    if exact_only:
+        return out
+    free = [md for md in fast.modes if md.branch not in out]
+    pairs = sorted((abs(energy[m] - md.omega0), m, j) for m, b in enumerate(ids) if b not in out
+                   for j, md in enumerate(free))
+    done_m, done_j = set(), set()
+    for _d, m, j in pairs:
+        if m not in done_m and j not in done_j:
+            done_m.add(m)
+            done_j.add(j)
+            out[ids[m]] = free[j]
+    return out
+
+
+def _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, F, R, cov, notes, dropped) -> dict:
     """The flag (N2): F against the threshold, and every own reason of the design's list (they flag
     whatever the score); the four note codes never set ``flagged``."""
     s = snapshot.settings
@@ -912,14 +932,14 @@ def _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, own_by, F
                                    f"neighbour branch {b} is predicted at {cs[0]:.2f} meV but not seen here",
                                    [b], predicted=cs))
     for m, b in enumerate(slots):
-        if b is None or b not in own_by:
+        if b is None or b not in fast_by:
             continue
-        g_old, g_new = own_by[b].gamma, modes[m].gamma
+        g_old, g_new = fast_by[b].gamma, modes[m].gamma
         ratio = g_new / g_old if g_old > 0 else math.inf
         if not 1.0 / s.linewidth_ratio <= ratio <= s.linewidth_ratio:
             reasons.append(_reason("linewidth_change", f"the width of {b} changed by a factor {ratio:.2f}",
                                    [b], gamma_from=g_old, gamma_to=g_new))
-        if own_by[b].regime == "underdamped" and modes[m].regime in ("overdamped", "near_elastic"):
+        if fast_by[b].regime == "underdamped" and modes[m].regime in ("overdamped", "near_elastic"):
             reasons.append(_reason("overdamped_entry", f"{b} moved from underdamped to {modes[m].regime}",
                                    [b], regime=modes[m].regime))
     if "incomplete_comparison" in a.reasons:
