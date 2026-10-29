@@ -65,7 +65,7 @@ SPLIT_FRACTIONS = (0.75, 0.25)     # an audit split's lower part carries this sh
 NEAR_ZERO_SIGMAS = 4.5
 NEAR_ZERO_MAX_MODES = 3
 COINCIDENT_DELTA_MEV = 1e-6   # two delta modes closer than this are one mode, merged first
-QE_START_WIDTHS_FWHM = (0.5, 1.0, 3.0)   # central QE starting widths (x FWHM); starts only, not the prior
+QE_START_WIDTHS_FWHM = (1.0, 1.5, 3.0)   # central QE starting widths (x FWHM), inside its support; starts only
 CACHE_SIZE = 4096             # unit columns kept, keyed by (omega0, Gamma, peak selector)
 # The red-first switch of the delta-mode twin rule: a module flag the acceptance worker may set;
 # never a setting, never read from the environment.
@@ -1061,7 +1061,7 @@ class _Engine:
             self.qe_start = pins[0]
             return
         lo, hi = self.sp.bounds("qe_width")
-        widths = [float(np.clip(f * self.fwhm, lo, hi)) for f in QE_START_WIDTHS_FWHM]
+        widths = list(dict.fromkeys(float(np.clip(f * self.fwhm, lo, hi)) for f in QE_START_WIDTHS_FWHM))
         self.qe_start_widths = widths
         costs = [self._seed_nnls(self._seed_linear_cols(w), 0)[1] for w in widths]
         self.qe_start = widths[int(np.argmin(costs))]
@@ -1514,9 +1514,8 @@ class _Engine:
         out = [(family, n, m, None) for family, n, m in out]
         if model.qe_w is not None:           # the QE width moved both ways, the heights re-solved
             i = model.qe_w
-            out += [("qe_width", k, modes,
-                     {"qe_width": float(np.clip(parent.theta[i] * f, model.lo[i], model.hi[i]))})
-                    for f in WIDTH_FACTORS]
+            clipped = {float(np.clip(parent.theta[i] * f, model.lo[i], model.hi[i])) for f in WIDTH_FACTORS}
+            out += [("qe_width", k, modes, {"qe_width": w}) for w in sorted(clipped)]   # a clip may repeat
         return out
 
     def run(self):

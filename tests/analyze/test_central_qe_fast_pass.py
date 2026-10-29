@@ -79,6 +79,14 @@ def test_a_central_qe_is_fitted_and_recorded():
     assert chosen["superseded"] is False and chosen["parent"] == chosen["label"]
 
 
+def test_the_qe_starting_widths_lie_inside_its_support():
+    eng = fast_pass._Engine(_ctx(np.full(X.size, 20.0)), SETTINGS)
+    eng._choose_qe_start()
+    widths = eng.qe_start_widths
+    assert widths and min(widths) >= eng.fwhm and len(set(widths)) == len(widths)
+    assert eng.qe_start in widths
+
+
 # ------------------------------------------------------------------------- the group rule, pure
 def _e(label, parent, ln_z, status="ok", count=1):
     return SimpleNamespace(label=label, parent=parent, ln_z=ln_z, status=status, count=count,
