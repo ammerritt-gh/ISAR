@@ -9,9 +9,12 @@ after your files and reads them. The files stay where they are and must stay ava
 use <b>Add data ▾</b>. The line under the experiment name tells you how many scan sets and analyzers were read.</p>
 
 <h3>2. Choose the resolution curves</h3>
-<p>BL43LXU data are fitted with the measured resolution curves. If the setup area says <b>No resolution curves
-yet</b>, press <b>Choose curves folder…</b> and pick the folder that holds them. ISAR saves the choice with the
-experiment. It also looks for a folder named <i>rf</i> next to your data.</p>
+<p>BL43LXU data are fitted with the measured resolution curves. The setup area has two buttons,
+<b>Resolution curves (rf)…</b> and <b>gpi files…</b>. Each shows a green check when its folder is good and a red
+cross when it is not; hover over it for the folder's path and the reason. If the setup area says <b>No resolution
+curves yet</b>, or the <b>Resolution curves (rf)…</b> button has a red cross, press it and pick the folder that
+holds the curves. ISAR saves the choice with the experiment. It also looks for a folder named <i>rf</i> next to your
+data, and for a <i>gpi_files</i> folder.</p>
 
 <h3>3. Fix what needs attention</h3>
 <p><b>Needs attention</b> lists what is missing or unreadable. Open a group, tick the scan sets it concerns, enter
@@ -29,8 +32,8 @@ ISAR cannot fit yet is listed as <i>held</i> with the reason; add it again once 
 already stored stay.</p>
 
 <h3>5. Read the scan list</h3>
-<p>Each row is a scan set; open it to see its analyzers. The <b>Fast pass</b> and <b>Deep pass</b> columns appear
-by themselves once a result exists. The colour dot and the word say how settled a result is; hover a word for
+<p>Each row is a scan set; open it to see its analyzers. The <b>hkl</b> column shows each analyzer's hkl in r.l.u. when ISAR has one (hover for its source); <b>|Q| (nm⁻¹)</b> is under <b>Columns ▾</b>. On BL43LXU the <b>gpi</b> and <b>rf</b> columns show a check or a cross for each analyzer.
+The <b>Fast pass</b> and <b>Deep pass</b> columns appear by themselves once a result exists. The colour dot and the word say how settled a result is; hover a word for
 what it means, or see <b>Help ▸ What the status words mean</b>. Select an analyzer row and press
 <b>Open inspector</b> (or double-click it) to see the file's facts, your values, and the plot.</p>
 
