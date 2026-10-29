@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from inter_synthetic import SCAN, build, grid_coords, node, point, scan_nodes
+from inter_synthetic import SCAN, build, grid_coords, point, scan_nodes
 from isar.session.inter_spectra.graph import anchored_scope
 from isar.session.inter_spectra.nodes import NodeSet
 from isar.session.inter_spectra.q_provider import QPoint
