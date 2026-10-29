@@ -448,8 +448,10 @@ under the full bundle (rung 2, named in `validity["unseen_informative"]`). The r
 `PriorSettings.energy_ramp_*`, not a card setting (a `[fitting.prior]` key naming one warns and is
 dropped), and every fit records them (`recipe_provenance()["energy_penalty"]`, in meV, with the FWHM
 it read). The version bump, and a later change to any ramp default (the recipe defaults are in the
-guidelines signature as `prior_recipe_settings`), marks every stored fast and deep pass stale: it is
-redone when next asked for, never deleted.
+guidelines signature as `prior_recipe_settings`), marks every stored per-scan and analyzer-file
+fast pass, and every deep pass, stale: it is redone when next asked for, never deleted. A pooled
+master is the exception: it is carried while its member set and predictive contract are unchanged,
+so a recipe change does not mark it stale; force the masters to refit them under /6.
 
 **Known limit: the Laplace evidence inside the ramp.** A Gaussian likelihood times the penalised
 prior is not a Gaussian, so the fast pass's posterior-mode Laplace evidence is no longer exact for a
