@@ -15,6 +15,7 @@ import pytest
 
 import isar
 from inter_fixtures import build_inter_workspace, spectrum_keys
+from isar.analyze.coupled.settings import SETTING_DEFS
 from isar.intake import inputs, inter_values, scans as intake_scans, store
 from isar.schema.card import load_state
 from isar.session import writer
@@ -97,7 +98,8 @@ def recalibrate(root, scan, det, zero):
 # ---------------------------------------------------------------------------
 def test_an_empty_workspace_has_the_empty_overview(root):
     o = inter_overview(root)
-    assert (o.revision, dict(o.by_key), o.anchors, dict(o.settings), o.batches) == ("0", {}, (), {}, ())
+    assert (o.revision, dict(o.by_key), o.anchors, o.batches) == ("0", {}, (), ())
+    assert dict(o.settings) == {d.name: d.default for d in SETTING_DEFS}        # every named setting, defaults filled
     assert inter_history(root, spectrum_keys(root)[0])[0].fit_id == "fast"      # the solo alone
 
 

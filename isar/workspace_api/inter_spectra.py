@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from isar.analyze.coupled.settings import InterSettings
 from isar.intake import inputs, scans as intake_scans, store
 from isar.intake.inter_spectra import FAST, InterUser, read_inter_settings, read_user
 from isar.schema.card import load_policy, load_state
@@ -222,10 +223,10 @@ def _summary(c: _Ctx, info: records.BatchInfo) -> BatchSummary:
 
 def inter_overview(root) -> InterOverview:
     c = _load(root)
+    settings = InterSettings.from_values(c.user.settings).to_values()     # every named setting, defaults filled
     if not c.log.batches and not c.user.max_seq:
-        return InterOverview("0", {}, (), {}, ())
+        return InterOverview("0", {}, (), settings, ())
     by_key = {u: _spectrum(c, u, r) for u, r in c.res.items()}
-    settings = read_inter_settings(c.root).to_values()
     batches = tuple(_summary(c, b) for b in sorted(c.log.batches.values(), key=lambda b: b.number))
     revision = hashlib.sha256(repr((by_key, c.user.anchors, settings, batches)).encode("utf-8")).hexdigest()[:16]
     return InterOverview(revision, by_key, c.user.anchors, settings, batches)
