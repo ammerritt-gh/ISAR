@@ -120,6 +120,11 @@ class InterSettingsDialog(QDialog):
         save.setToolTip("Save the values you changed. Settings you did not touch are not written.")
         save.setDefault(True)
         save.clicked.connect(self._save)
+        if not inter.settings:      # before the first overview read the rows are defaults, not saved values
+            save.setEnabled(False)
+            self._message.setText("Settings not read yet: the values shown are defaults, not this experiment's saved "
+                                  "values. Save is off until they are read; reopen this dialog then.")
+            self._message.setVisible(True)
         cancel = buttons.addButton(QDialogButtonBox.StandardButton.Cancel)
         cancel.setObjectName("inter_settings_cancel")
         cancel.setToolTip("Close without saving anything.")

@@ -174,6 +174,19 @@ def test_an_edit_after_use_default_sends_the_edit(qtbot):
     assert inter.calls == [("save_settings", ({"q_tolerance_meV": 4.0},))]
 
 
+def test_before_the_first_read_save_is_off_and_the_dialog_says_the_values_are_defaults(qtbot):
+    inter = FakeInterState()
+    inter.overview = None                  # the facade has not read the experiment's settings yet
+    dlg = InterSettingsDialog(inter)
+    qtbot.addWidget(dlg)
+    assert not dlg.findChild(QPushButton, "inter_settings_save").isEnabled()
+    msg = dlg.findChild(QLabel, "inter_settings_message")
+    assert not msg.isHidden()
+    assert "not read yet" in msg.text()
+    _save(dlg)
+    assert inter.calls == []
+
+
 def test_cancel_writes_nothing(qtbot):
     dlg, inter = _dialog(qtbot)
     _editor(dlg, "sweep_cap").setValue(40)
