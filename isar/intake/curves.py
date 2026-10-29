@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -142,6 +142,22 @@ def load_curves(folder, pattern) -> LoadedCurves:
         return _unusable(f"resolution library unavailable ({exc})", folder, pattern)
     stamps = _stamps(folder, library)
     return LoadedCurves(library, fp, None, sarf.curve_identity(folder, library), folder, pattern, stamps)
+
+
+def with_named(loaded: LoadedCurves, name: str | None) -> LoadedCurves:
+    """``loaded`` narrowed to the named set (a gpi file's ``sarf_name``): the library, identity and stamps are
+    that set's alone; fingerprint, folder, pattern and problem stay ``loaded``'s, so currentness still follows
+    every file of the folder. ``loaded`` itself when there is no name or the folder cannot be used."""
+    if name is None or loaded.problem is not None or loaded.folder is None:
+        return loaded
+    from isar.parsers import sarf   # imported here: the read side never loads a parser
+    try:
+        library = sarf.load_named(loaded.folder, loaded.pattern, name)
+    except (OSError, ValueError, re.error) as exc:
+        log.warning("resolution curves: the named set %s could not be loaded (%s); no curve from it", name, exc)
+        library = ResolutionLibrary()
+    return replace(loaded, library=library, identity=sarf.curve_identity(loaded.folder, library),
+                   stamps=_stamps(loaded.folder, library))
 
 
 def resolution_location(card, workspace_root) -> tuple[Path | None, str | None, str]:

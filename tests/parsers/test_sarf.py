@@ -194,3 +194,32 @@ def test_curve_is_rebuilt_from_its_reference_only_while_the_files_are_unchanged(
     sarf._LIBRARIES.clear()                                              # a fresh process reads the disk
     with pytest.raises(ValueError, match="changed"):
         sarf.curve_from_reference(ref)
+
+
+def test_a_named_set_is_reached_even_where_the_slit_lookup_keeps_another(tmp_path):
+    """C-named-curves: two sets at 40x40; the slit lookup keeps the first, the name reaches the other."""
+    from intake_fixtures import write_library
+    from isar.intake.curves import load_curves, with_named
+    rf = tmp_path / "rf"
+    write_library(rf, {"60x60": 0.9, "40x40": 1.3}, ("a03",))                 # sarf_t_s2_40_40_a03 (and s1 60x60)
+    write_library(rf, {"40x40": 2.0}, ("a03",), prefix="sarf_z")             # sarf_z_s1_40_40_a03
+    assert Path(sarf.load_library(rf, PATTERN).get("a03", "40x40").source).name == "sarf_t_s2_40_40_a03"
+    named = sarf.load_named(rf, PATTERN, "sarf_z_s1_40_40")
+    assert len(named) == 1 and Path(named.get("a03", "40x40").source).name == "sarf_z_s1_40_40_a03"
+    assert len(sarf.load_named(rf, PATTERN, "sarf_z_s1_40")) == 0             # a name prefix is not the set
+
+    loaded = load_curves(rf, PATTERN)
+    narrowed = with_named(loaded, "sarf_z_s1_40_40")
+    assert narrowed.identity[("a03", "40x40")]["file"] == "sarf_z_s1_40_40_a03" and len(narrowed.identity) == 1
+    assert (narrowed.fingerprint, narrowed.folder, narrowed.pattern, narrowed.problem) == \
+        (loaded.fingerprint, loaded.folder, loaded.pattern, loaded.problem)
+    assert set(narrowed.stamps) == {("a03", "40x40")}
+    assert with_named(loaded, None) is loaded
+
+    ref = {"folder": str(rf), "pattern": PATTERN, "fingerprint": loaded.fingerprint, "detector": "a03",
+           "setting": "40x40", "named": "sarf_z_s1_40_40"}
+    assert Path(sarf.curve_from_reference(ref).source).name == "sarf_z_s1_40_40_a03"
+    assert Path(sarf.curve_from_reference({**ref, "named": None}).source).name == "sarf_t_s2_40_40_a03"
+    (rf / "sarf_z_s1_40_40_a03").write_text("# replaced\n 0 1 1\n 1 0 0\n", encoding="utf-8", newline="\n")
+    with pytest.raises(ValueError, match="changed"):
+        sarf.curve_from_reference(ref)
