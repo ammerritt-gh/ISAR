@@ -12,13 +12,17 @@ Process::
 stdout/stderr streams; their deep timings travel in progress events through the item pipe instead.
 The GUI runner retains every protocol line in its queue log. stdout carries the protocol and nothing
 else; stderr is free text, never parsed. Exit 0 after ``bye``; exit 2 when ``<root>`` holds no ``card.policy.toml`` (one ``log``
-error line, no ``ready``). Two test-only options, hidden from ``--help``: ``--fit-target`` and
-``--save-target`` (``<module>:<function>``; defaults :func:`isar.session.file_fit.fit_file` and
-:func:`isar.session.writer.save_results`). The fit target's module also provides ``FileItem``.
+error line, no ``ready``). Four test-only options, hidden from ``--help``: ``--fit-target``,
+``--save-target``, ``--inter-target`` and ``--inter-save-target`` (``<module>:<function>``; defaults
+:func:`isar.session.file_fit.fit_file`, :func:`isar.session.writer.save_results`,
+:func:`isar.session.inter_spectra.runner.run_batch` and :func:`isar.session.writer.save_inter`). The fit
+target's module also provides ``FileItem``, the inter target's ``BatchItem``.
 
 Commands (stdin, one UTF-8 JSON object per line)::
 
     {"op": "start", "item_id", "unit_key", "pass": "fast"|"deep", "cores": int >= 1}
+    {"op": "start", "item_id", "unit_key": "inter:<batch_id>:batch", "pass": "inter", "cores": int >= 1,
+     "batch": {"batch_id", "members": [spectrum keys], ...the BatchSpec json}}
     {"op": "stop", "item_id"}   {"op": "hold_writes"}   {"op": "release_writes"}
     {"op": "shutdown"}          {"op": "ping"}
 
@@ -29,7 +33,7 @@ Events (stdout, one JSON object per line, flushed per line)::
     {"ev": "cores", "item_id", "cores"}        deep only: the item keeps these, the rest are free now
     {"ev": "progress", "item_id", "t", **the C-progress dict}       t: seconds since "started"
     {"ev": "result", "item_id", "unit_key", "pass", "status", "reason", "saving"}
-    {"ev": "saved", "item_id", "unit_key", "pass", "status", "reason"}
+    {"ev": "saved", "item_id", "unit_key", "pass", "status", "reason"}     inter adds "keys", "refused"
     {"ev": "save_failed", "item_id", "unit_key", "pass", "error"}
     {"ev": "finished", "item_id", "end": "completed"|"stopped"|"failed", "reason"}
     {"ev": "writes_held"}   {"ev": "writes_released"}
@@ -54,6 +58,14 @@ The rules the consumer may rely on:
   gets ``error``. ``stop`` on an item that is not running emits one ``log`` warning and nothing else.
 * An item's ``attempt`` record goes to the writer only (a failed save of it is a ``log`` warning); its
   ``cores`` notice becomes one ``cores`` event and never reaches the writer.
+* An inter item (a batch) occupies every member: a start whose members overlap a running item's, or a fast or
+  deep start on a running batch's member, is refused like a same-unit start. Each of its results carries an
+  ``ack`` token; the writer thread saves the result, then sends ``{"token", "verdict"}`` down the item's
+  second, one-way pipe (the save target's verdict dict, or ``{"saved": false, "error"}`` when nothing of it
+  was written). ``saved`` for an inter result lists the ``keys`` the save accepted and the count ``refused``.
+  A batch whose item ended, was stopped or failed without sending its ``end`` payload gets one written by the
+  service (state ``stopped`` or ``failed``) with no event of its own; a batch whose start was never saved
+  gets none (the save refuses an unknown batch, logged at info).
 
 Top-level imports are stdlib only: every item process re-imports this module as ``__mp_main__`` under
 spawn, and analysis imports here would add to every item's start. The fitting stack loads in the item
@@ -82,8 +94,10 @@ log = logging.getLogger("isar.session.analysis_service")     # not __name__: "__
 
 FIT_TARGET = "isar.session.file_fit:fit_file"
 SAVE_TARGET = "isar.session.writer:save_results"
+INTER_TARGET = "isar.session.inter_spectra.runner:run_batch"
+INTER_SAVE_TARGET = "isar.session.writer:save_inter"
 POLICY_NAME = "card.policy.toml"            # isar.session.workspace.POLICY_NAME, not imported (stdlib only)
-PASSES = ("fast", "deep")
+PASSES = ("fast", "deep", "inter")
 JOIN_S = 5.0                                # an ended or killed item's process is reaped within this
 # One BLAS thread per process: driver._THREAD_ENV's names and rule, kept here because importing driver
 # would load the fitting stack into every item's __mp_main__.
@@ -231,17 +245,32 @@ def _target(spec: str):
     return module, getattr(module, name)
 
 
-def _item_main(fit_spec: str, root: str, fields: tuple, conn) -> None:
+def _ack_reader(ack_conn):
+    """The inter item's ``ack(token)``: block until the service has saved the result that carried ``token`` and
+    return its verdict. The service ending (EOF) raises, which ends the runner."""
+    got: dict = {}
+
+    def ack(token: int) -> dict:
+        while token not in got:
+            msg = ack_conn.recv()
+            got[msg["token"]] = msg["verdict"]
+        return got.pop(token)
+    return ack
+
+
+def _item_main(fit_spec: str, root: str, fields: tuple, conn, ack_conn=None) -> None:
     """The item process: run the fit target on one item and send what it reports down ``conn`` as
-    ``("progress", dict)``, ``("result", dict)``, then ``("end",)`` or ``("error", text)``."""
+    ``("progress", dict)``, ``("result", dict)``, then ``("end",)`` or ``("error", text)``. An inter item
+    (``ack_conn`` given) also reads the save verdicts back from it."""
     if os.name != "nt":
         os.setpgrp()                    # the stop kills the group (POSIX); Windows uses the item's job
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format=_LOG_FORMAT)
     try:
         module, fit = _target(fit_spec)
-        fit(Path(root), module.FileItem(*fields),
+        extra = {} if ack_conn is None else {"ack": _ack_reader(ack_conn)}
+        fit(Path(root), (module.FileItem if ack_conn is None else module.BatchItem)(*fields),
             progress=lambda ev: conn.send(("progress", dict(ev))),
-            emit=lambda r: conn.send(("result", dataclasses.asdict(r))))
+            emit=lambda r: conn.send(("result", dataclasses.asdict(r))), **extra)
         conn.send(("end",))
     except Exception as exc:  # noqa: BLE001 — the item's failure is its finished reason
         log.exception("item %s (%s pass of %s) failed", *fields[:3])
@@ -282,17 +311,19 @@ class _Job:
     status: str
     reason: str | None
     payload: dict
+    ack: object = None                  # inter: the send end of the item's verdict pipe
+    token: int | None = None            # inter: the token the item waits on
 
 
 class _Writer(threading.Thread):
     """The one writer: a FIFO of results, saved in arrival order (every waiting result in one ``save_fn``
     call), and the write hold, which keeps the workspace write lock between saves for a folder copy."""
 
-    def __init__(self, root: Path, save_fn, emit) -> None:
+    def __init__(self, root: Path, save_fn, emit, inter_save_fn) -> None:
         super().__init__(name="analysis-writer", daemon=True)
         from isar.session import atomic, writer       # the service process only, never an item's __mp_main__
         self._lock, self._busy, self._stale = atomic.workspace_write_lock, atomic.WorkspaceBusy, writer.ProjectionStale
-        self._root, self._save_fn, self._emit = root, save_fn, emit
+        self._root, self._save_fn, self._inter_save_fn, self._emit = root, save_fn, inter_save_fn, emit
         self._cv = threading.Condition()
         self._jobs: deque[_Job] = deque()
         self._hold = self._held = self._closing = False
@@ -379,8 +410,19 @@ class _Writer(threading.Thread):
                 self._emit({"ev": "log", "level": "warning", "text": f"still waiting to hold writes: {exc}"})
 
     def _save(self, batch: list[_Job]) -> None:
+        # Consecutive jobs of one kind go to one save call, so arrival order holds across the two save functions.
+        run: list[_Job] = []
+        for job in batch:
+            if run and _is_inter(run[0]) != _is_inter(job):
+                self._save_run(run)
+                run = []
+            run.append(job)
+        self._save_run(run)
+
+    def _save_run(self, batch: list[_Job]) -> None:
+        inter = _is_inter(batch[0])
         try:
-            verdicts = self._save_fn(self._root, [j.payload for j in batch])
+            verdicts = (self._inter_save_fn if inter else self._save_fn)(self._root, [j.payload for j in batch])
         except self._stale as exc:          # saved; the projections wait for the next save
             verdicts = exc.verdicts
             self._emit({"ev": "log", "level": "warning",
@@ -388,26 +430,54 @@ class _Writer(threading.Thread):
         except Exception as exc:  # noqa: BLE001 — a failed save is reported per result; the writer goes on
             log.exception("saving %d result(s) failed", len(batch))
             verdicts = [str(exc) or type(exc).__name__] * len(batch)
+        for job, why in zip(batch, verdicts):
+            self._ack(job, why)
         self._may_report.wait()
         for job, why in zip(batch, verdicts):
-            if job.pass_kind == "attempt":
-                if why is not None:
-                    self._emit({"ev": "log", "level": "warning",
-                                "text": f"{job.unit_key}: the attempt record was not saved: {why}"})
-            elif why is None:
-                self._emit({"ev": "saved", "item_id": job.item_id, "unit_key": job.unit_key,
-                            "pass": job.pass_kind, "status": job.status, "reason": job.reason})
+            if job.pass_kind in ("attempt", "inter_end"):
+                if isinstance(why, str):
+                    quiet = job.pass_kind == "inter_end" and why.startswith("unknown batch")
+                    (log.info if quiet else self._warn)(
+                        f"{job.unit_key}: the {job.pass_kind.replace('_', ' ')} record was not saved: {why}")
+            elif not isinstance(why, str) and (why is None or inter):
+                event = {"ev": "saved", "item_id": job.item_id, "unit_key": job.unit_key,
+                         "pass": job.pass_kind, "status": job.status, "reason": job.reason}
+                if inter:
+                    event.update(keys=list(why["accepted"]), refused=len(why["refused"]))
+                self._emit(event)
             else:
                 self._emit({"ev": "save_failed", "item_id": job.item_id, "unit_key": job.unit_key,
                             "pass": job.pass_kind, "error": why})
+
+    def _warn(self, text: str) -> None:
+        self._emit({"ev": "log", "level": "warning", "text": text})
+
+    @staticmethod
+    def _ack(job: _Job, why) -> None:
+        """Answer an inter item's wait: the save's verdict, or ``saved: false`` and why when nothing was written."""
+        if job.ack is None:
+            return
+        verdict = why if isinstance(why, dict) else {"saved": False, "error": why or "not saved"}
+        try:
+            job.ack.send({"token": job.token, "verdict": verdict})
+        except (OSError, ValueError) as exc:        # the item is gone: nobody waits for this answer
+            log.info("ack %s for %s not delivered (%s)", job.token, job.unit_key, exc)
+
+
+def _is_inter(job: _Job) -> bool:
+    return job.pass_kind in ("inter", "inter_end")
 
 
 class _Item:
     """One running item: its process, the read end of its pipe and its job."""
 
-    def __init__(self, item_id: str, unit_key: str, pass_kind: str, proc, conn, job: _WinJob | None) -> None:
+    def __init__(self, item_id: str, unit_key: str, pass_kind: str, proc, conn, job: _WinJob | None,
+                 members: tuple[str, ...], batch_id: str | None = None, ack=None) -> None:
         self.item_id, self.unit_key, self.pass_kind = item_id, unit_key, pass_kind
         self.proc, self.conn, self.job = proc, conn, job
+        self.members, self.batch_id, self.ack = members, batch_id, ack      # the inter item's: scope, id, verdict pipe
+        self.inter_ended = False                    # an ``end`` payload was handed over
+        self.progress: dict = {}                    # the latest progress event, for a service-written end line
         self.t0 = time.monotonic()
         self.stopped = self.completed = self.cores_sent = False
         self.error: str | None = None
@@ -419,12 +489,13 @@ class _Service:
     # shortcut: one interpreter per item, spawn cost per item; upgrade to warm fast workers if spawn exceeds
     # ~20% of a typical fast item.
 
-    def __init__(self, root: Path, fit_spec: str, save_fn, emit) -> None:
-        self.root, self.fit_spec, self.emit = root, fit_spec, emit
+    def __init__(self, root: Path, fit_spec: str, save_fn, emit, inter_spec: str = INTER_TARGET,
+                 inter_save_fn=None) -> None:
+        self.root, self.fit_spec, self.inter_spec, self.emit = root, fit_spec, inter_spec, emit
         self.ctx = multiprocessing.get_context("spawn")
         self.running: dict[str, _Item] = {}
         self.used: set[str] = set()
-        self.writer = _Writer(root, save_fn, emit)
+        self.writer = _Writer(root, save_fn, emit, inter_save_fn or _target(INTER_SAVE_TARGET)[1])
 
     def serve(self, commands) -> int:
         self.writer.start()
@@ -480,38 +551,73 @@ class _Service:
             self.emit({"ev": "error", "text": f"a start needs an item_id: {json.dumps(cmd)[:200]}"})
             return
         unit, kind, cores = cmd.get("unit_key"), cmd.get("pass"), cmd.get("cores")
-        other = next((it.item_id for it in self.running.values() if it.unit_key == unit), None)
+        batch = cmd.get("batch")
+        members = (unit,) if kind != "inter" else self._members(batch)
+        held = self._held(members) if isinstance(members, tuple) else None
+        same = next((it.item_id for it in self.running.values() if it.unit_key == unit), None)
         why = (f"item id {iid} is already used in this service" if iid in self.used else
                f"invalid start: unit_key {unit!r} is not 'experiment:scan:analyzer'"
                if not isinstance(unit, str) or unit.count(":") < 2 else
                f"invalid start: pass {kind!r} is not one of {PASSES}" if kind not in PASSES else
                f"invalid start: cores {cores!r} is not a whole number of at least 1"
                if type(cores) is not int or cores < 1 else
-               f"{unit} already has a running item ({other})" if other is not None else None)
+               members if isinstance(members, str) else
+               f"invalid start: unit_key {unit!r} is not inter:{batch['batch_id']}:batch"
+               if kind == "inter" and unit != f"inter:{batch['batch_id']}:batch" else
+               f"{unit} already has a running item ({same})" if same is not None and kind != "inter" else
+               f"{held[0]} is held by a running item ({held[1]})" if held is not None else
+               f"{unit} already has a running item ({same})" if same is not None else None)
         self.used.add(iid)
         if why is None:
-            why = self._launch(iid, unit, kind, cores)
+            why = self._launch(iid, unit, kind, cores, batch)
         if why is not None:
             self.emit({"ev": "finished", "item_id": iid, "end": "failed", "reason": why})
 
-    def _launch(self, iid: str, unit: str, kind: str, cores: int) -> str | None:
+    @staticmethod
+    def _members(batch) -> tuple[str, ...] | str:
+        """The batch object's member keys, or the reason it is not a usable batch."""
+        if not isinstance(batch, dict) or not isinstance(batch.get("batch_id"), str) or not batch["batch_id"]:
+            return "invalid start: an inter item needs a batch object with a batch_id"
+        members = batch.get("members")
+        if (not isinstance(members, list) or not members
+                or not all(isinstance(m, str) and m.count(":") >= 2 for m in members)):
+            return "invalid start: batch.members is not a non-empty list of spectrum keys"
+        return tuple(members)
+
+    def _held(self, members: tuple[str, ...]) -> tuple[str, str] | None:
+        """``(member, item_id)`` of the first member a running item occupies, or None."""
+        for m in members:
+            for it in self.running.values():
+                if m in it.members:
+                    return m, it.item_id
+        return None
+
+    def _launch(self, iid: str, unit: str, kind: str, cores: int, batch: dict | None = None) -> str | None:
         """Start the item's process in its own job; the refusal reason when it could not start."""
         read, write = self.ctx.Pipe(duplex=False)
-        proc = self.ctx.Process(target=_item_main, args=(self.fit_spec, str(self.root), (iid, unit, kind, cores),
-                                                         write), name=f"isar-item-{iid}", daemon=False)
+        inter = kind == "inter"
+        ack_read, ack_write = self.ctx.Pipe(duplex=False) if inter else (None, None)
+        fields = (iid, unit, kind, cores, *((batch,) if inter else ()))
+        proc = self.ctx.Process(target=_item_main, args=(self.inter_spec if inter else self.fit_spec,
+                                                         str(self.root), fields, write, ack_read),
+                                name=f"isar-item-{iid}", daemon=False)
         try:
             proc.start()
         except Exception as exc:  # noqa: BLE001 — a process that could not start is that item's failure
             log.exception("item %s: the fitting process did not start", iid)
-            read.close()
-            write.close()
+            for end in (read, write, ack_read, ack_write):
+                if end is not None:
+                    end.close()
             return f"the fitting process could not start ({type(exc).__name__}: {exc})"
         write.close()           # the child holds the only write end: its death reads as EOF here
+        if ack_read is not None:
+            ack_read.close()    # the child holds the only read end; this process's death reads as EOF there
         job = _WinJob.create()
         if job is not None and not job.assign(proc.pid):
             job.close()
             job = None
-        self.running[iid] = _Item(iid, unit, kind, proc, read, job)
+        self.running[iid] = _Item(iid, unit, kind, proc, read, job, tuple(batch["members"]) if inter else (unit,),
+                                  batch["batch_id"] if inter else None, ack_write)
         self.emit({"ev": "started", "item_id": iid, "pid": proc.pid})
         return None
 
@@ -545,6 +651,7 @@ class _Service:
     def _message(self, item: _Item, msg: tuple) -> None:
         kind = msg[0]
         if kind == "progress":
+            item.progress = msg[1]
             self.emit({"ev": "progress", "item_id": item.item_id, "t": time.monotonic() - item.t0, **msg[1]})
         elif kind == "result":
             self._result(item, msg[1])
@@ -571,7 +678,11 @@ class _Service:
         self.emit({"ev": "result", "item_id": item.item_id, "unit_key": item.unit_key, "pass": r.get("pass_kind"),
                    "status": status, "reason": r.get("reason"), "saving": payload is not None})
         if payload is not None:         # after the result event, so its "saved" can only follow it
-            self.writer.put(_Job(item.item_id, item.unit_key, r.get("pass_kind"), status, r.get("reason"), payload))
+            job = _Job(item.item_id, item.unit_key, r.get("pass_kind"), status, r.get("reason"), payload)
+            if item.pass_kind == "inter":
+                job.ack, job.token = (item.ack, r.get("ack")) if r.get("ack") is not None else (None, None)
+                item.inter_ended |= payload.get("event") == "end"
+            self.writer.put(job)
 
     def _kill(self, item: _Item) -> None:
         """Kill the item's process and every process under it."""
@@ -601,11 +712,27 @@ class _Service:
             item.job.wait_empty(JOIN_S)
             item.job.close()
         item.conn.close()
+        if item.ack is not None:
+            item.ack.close()
         del self.running[item.item_id]
         end, reason = (("stopped", None) if item.stopped else ("completed", None) if item.completed else
                        ("failed", item.error) if item.error is not None else
                        ("failed", f"the fitting process ended unexpectedly (exit code {item.proc.exitcode})"))
+        if item.pass_kind == "inter" and not item.inter_ended:
+            self._end_batch(item, end, reason)
         self.emit({"ev": "finished", "item_id": item.item_id, "end": end, "reason": reason})
+
+    def _end_batch(self, item: _Item, end: str, reason: str | None) -> None:
+        """The item is gone without handing over an ``end`` payload: write the batch's end line once, quietly."""
+        p = item.progress
+        state = "stopped" if end == "stopped" else "failed"
+        text = reason or ("stopped by the user; completed rings/sweeps are kept" if state == "stopped" else
+                          "the batch ended without an end record")
+        self.writer.put(_Job(item.item_id, item.unit_key, "inter_end", state, text, {
+            "schema": "isar.inter-result/1", "unit": item.unit_key, "pass": "inter", "batch": item.batch_id,
+            "event": "end", "end": {
+                "state": state, "reason": text, "done": p.get("done", 0), "failed": p.get("failed", 0),
+                "not_reached": [], "rings_done": None, "sweeps": None, "rounds": None, "timing": {}}}))
 
     def _shutdown(self) -> int:
         self.writer.gate(False)         # every item's finished before any further saved
@@ -677,6 +804,8 @@ def main(argv=None) -> int:
     parser.add_argument("--log", help="append the service's and every fit's text output to this file")
     parser.add_argument("--fit-target", default=FIT_TARGET, help=argparse.SUPPRESS)
     parser.add_argument("--save-target", default=SAVE_TARGET, help=argparse.SUPPRESS)
+    parser.add_argument("--inter-target", default=INTER_TARGET, help=argparse.SUPPRESS)
+    parser.add_argument("--inter-save-target", default=INTER_SAVE_TARGET, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.log:
         _redirect_stderr(args.log)
@@ -689,7 +818,8 @@ def main(argv=None) -> int:
     for name in _THREAD_ENV:
         os.environ.setdefault(name, "1")
     _module, save_fn = _target(args.save_target)
-    return _Service(root, args.fit_target, save_fn, emit).serve(_read_commands())
+    _module, inter_save_fn = _target(args.inter_save_target)
+    return _Service(root, args.fit_target, save_fn, emit, args.inter_target, inter_save_fn).serve(_read_commands())
 
 
 if __name__ == "__main__":
