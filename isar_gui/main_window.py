@@ -883,12 +883,12 @@ class MainWindow(QMainWindow):
         return key if ss is None else ss.label
 
     def _locate_resolution_folder(self) -> None:
-        """*Choose curves folder…* (setup line, attention list, readiness list): the one route; a refused save is
+        """*Resolution curves (rf)…* (setup line, attention list, readiness list): the one route; a refused save is
         shown in the setup section (and, like every save, in the Log)."""
         self.setup_section.show_save_outcome(locate_resolution_folder(self, self.intake))
 
     def _locate_gpi_folder(self) -> None:
-        """*Choose gpi folder…* on the setup line: the one route that saves a gpi folder the user picks; a refused
+        """*gpi files…* on the setup line: the one route that saves a gpi folder the user picks; a refused
         save is shown in the setup section (and, like every save, in the Log)."""
         self.setup_section.show_save_outcome(locate_gpi_folder(self, self.intake))
 
