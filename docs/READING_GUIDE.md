@@ -155,6 +155,9 @@ Read in this order when returning after time away:
 ISAR should be operable by a scientist who has never read a design doc — this door is also the
 standing check that we are building a usable instrument, not a self-certifying loop.
 
+On Windows without a developer setup, start with the one-click installer and its guide:
+[installer/ISAR-Installation-README.md](../installer/ISAR-Installation-README.md).
+
 1. [USING_ISAR.md](USING_ISAR.md) — set up once, re-run one command as scans land
    (`isar profile` for where a campaign spent its time).
 2. [WORKED_EXAMPLE.md](WORKED_EXAMPLE.md) — one scan, start to finish.

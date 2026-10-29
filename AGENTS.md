@@ -19,6 +19,9 @@ area.
   micromamba lives at `%USERPROFILE%\AppData\Local\micromamba\micromamba.exe`; envs under
   `…\Local\micromamba\envs\` **or** `%USERPROFILE%\AppData\Roaming\mamba\envs\`.
 - **Setup (operator):** double-click `setup-isar-env.bat` (creates env, `pip install -e ".[gui]"`).
+- **Windows installer (outside users):** `installer/` holds the one-click installer and its guide,
+  `installer/ISAR-Installation-README.md`. The deliberate acceptance run is
+  `tools\installer\run-installer-acceptance.bat` (tens of minutes; never part of the routine gate).
 - **CLI entrypoint:** `isar` → `isar.cli.main:main`. Subcommands: `init detect ingest run status
   report score profile drive view diagnose`.
 - **GUI:** `run-isar-gui.bat` → the environment's `pythonw.exe -m isar_gui` (no console);
