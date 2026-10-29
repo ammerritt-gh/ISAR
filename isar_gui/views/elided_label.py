@@ -60,16 +60,20 @@ class ElidedButton(QPushButton):
     def full_text(self) -> str:
         return self._full
 
+    def _room(self) -> int:
+        """The padding the style adds, plus the icon and its gap when the button has an icon (the folder marks)."""
+        return self._PAD + (self.iconSize().width() + 4 if not self.icon().isNull() else 0)
+
     def set_full_text(self, text: str) -> None:
         self._full = text
         self.setAccessibleName(text)
         self.setText(self.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight,
-                                                    max(self.width() - self._PAD, 1)))
+                                                    max(self.width() - self._room(), 1)))
         self.updateGeometry()
 
     def sizeHint(self):  # noqa: N802 (Qt override)
         hint = super().sizeHint()
-        hint.setWidth(self.fontMetrics().horizontalAdvance(self._full) + self._PAD)
+        hint.setWidth(self.fontMetrics().horizontalAdvance(self._full) + self._room())
         return hint
 
     def minimumSizeHint(self):  # noqa: N802 (Qt override)
@@ -80,4 +84,4 @@ class ElidedButton(QPushButton):
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
         super().resizeEvent(event)
         self.setText(self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight,
-                                                    max(self.width() - self._PAD, 1)))
+                                                    max(self.width() - self._room(), 1)))

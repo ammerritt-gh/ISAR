@@ -125,7 +125,7 @@ def test_the_rejected_group_reads_in_plain_words_with_its_tooltip(qtbot, monkeyp
 def test_choose_gpi_folder_saves_it_as_the_users_and_the_setup_line_says_so(qtbot, monkeypatch, tmp_path):
     root, data = build(tmp_path)
     w = _window(qtbot, monkeypatch, root)
-    assert "found beside the data" in w.setup_section._gpi.full_text()
+    assert "found beside the data" in w.setup_section._gpi_locate.toolTip()
     other = tmp_path / "elsewhere"
     other.mkdir()
     monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *a, **k: str(other))
@@ -133,6 +133,6 @@ def test_choose_gpi_folder_saves_it_as_the_users_and_the_setup_line_says_so(qtbo
         w.setup_section._gpi_locate.click()
     saved = settings.current_settings(root).gpi_folder
     assert (saved.source, Path(saved.path)) == ("user", other.resolve())
-    assert "chosen by you" in w.setup_section._gpi.full_text()
+    assert str(other.resolve()) in w.setup_section._gpi_locate.toolTip()
     # the folder changed since the check: its values are set aside until the data is read again
     assert w.attention_list._groups["gpi_folder_changed"].title.text() == "gpi folder changed: its values are set aside"
