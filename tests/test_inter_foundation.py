@@ -229,3 +229,14 @@ def test_a_stamped_fast_solo_carries_the_fit_inputs_hash_of_its_spectrum(tmp_pat
     fresh = inputs.inputs_hash(inputs.unit_inputs(rows[scan], inputs.scan_inputs(rows[scan], index), det, None))
     assert (session.scans[key].provenance or {}).get("fit_inputs", {}).get("hash") == fresh
     assert "fast" in currentness.current_passes(ws, [key])[key]
+
+
+def test_each_stamped_fast_solo_carries_its_own_temperature(tmp_path):
+    from isar.session.workspace import Workspace
+    ws = build_inter_workspace(tmp_path)
+    _, session = Workspace.open(ws).load()
+    keys = spectrum_keys(ws)
+    for key in keys:
+        det = key.rsplit(":", 1)[1]
+        assert session.scans[key].detectors[det]["T"] == session.scans[key].provenance["T"], key
+    assert {session.scans[k].detectors[k.rsplit(":", 1)[1]]["T"] for k in keys} == {100.0, 150.0, 200.0}

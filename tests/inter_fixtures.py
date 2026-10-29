@@ -69,7 +69,7 @@ def build_inter_workspace(root: Path, temperatures: Sequence[float] = (100, 150,
             entry = session.scans[key]
             si = inputs.scan_inputs(rows[scan], index)
             unit = inputs.unit_inputs(rows[scan], si, det, card.state.tabulated_calibration.get(scan))
-            entry.detectors = {det: outcome(det, "resolved")}
+            entry.detectors = {det: {**outcome(det, "resolved"), "T": entry.provenance["T"]}}     # the spectrum's own T
             entry.status, entry.reasons = "fitted", []
             # what file_fit stamps: the inputs hash, and the guidelines hash the judge reads back (stored_now)
             entry.guidelines_hash = currentness.stored_now(entry, det, g=g, runcal=runcal, row=rows[scan],
