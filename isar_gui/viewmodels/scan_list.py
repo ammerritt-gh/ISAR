@@ -35,7 +35,7 @@ HEADER_TIPS = {
     "scan": "The scan set (one scan, one file per analyzer) and, under it, each analyzer's spectrum.",
     "T": "Sample temperature, as the files give it (or as you entered it).",
     "hkl": "(h, k, l) in r.l.u.; source in each cell's tooltip",
-    "absq": "|Q| as the analyzer's file gives it, in nm⁻¹. Blank where the file holds none.",
+    "absq": "|Q| as the analyzer's file gives it, in nm⁻¹. A dash where the file holds none.",
     "gpi": ("Per analyzer: a check when an accepted gpi file gives its hkl, else a cross with the reason. "
             "On a scan row, a check only when every analyzer is good."),
     "rf": ("Per analyzer: a check when a resolution curve is in force for it, else a cross with the reason. "
