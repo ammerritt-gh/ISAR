@@ -496,7 +496,8 @@ def test_view_state_round_trips_the_columns_and_the_sort_but_not_the_filter(qtbo
     panel._filter.setText("a05")
     session = SimpleNamespace(view_state={})
     vm.save_view_state(session)
-    assert session.view_state["scan_list"] == {"columns": ["file"], "sort": "temperature", "hidden": ["fast"]}
+    assert session.view_state["scan_list"] == {"columns": ["file"], "sort": "temperature", "hidden": ["fast"],
+                                               "show_removed": False}
 
     panel2, vm2, _ = _make(qtbot, monkeypatch, sample)
     vm2.load_view_state(session)

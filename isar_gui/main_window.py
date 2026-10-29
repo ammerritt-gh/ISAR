@@ -563,6 +563,7 @@ class MainWindow(QMainWindow):
             self._gui_store = None
         self.scans_page.set_store(self._gui_store)
         self.scans_page.store_dirty.connect(self._on_groups_changed)
+        self.scan_list_vm.set_store(self._gui_store)      # the scans this experiment's list has removed
         self.scans_page.load_view_state(self._session)
         self._seed_folder_watcher()
 
@@ -725,6 +726,7 @@ class MainWindow(QMainWindow):
             self.attention_list.set_expanded(saved["expanded"])
         self.files_strip = FilesStrip(self)
         self.scan_list = ScanListPanel(self.scan_list_vm)
+        self.scan_list_vm.store_dirty.connect(self._on_groups_changed)
         self.scan_inspector = ScanInspectorPanel(self.scan_list_vm)
         self.scan_inspector.set_intake(self.intake)
         self.scan_inspector.setMinimumWidth(_INSPECTOR_MIN)
@@ -1700,8 +1702,8 @@ class MainWindow(QMainWindow):
             self._store_save_timer.start()
 
     def _on_groups_changed(self) -> None:
-        """A manual-group mutation or ui-scrap change (order/collapsed) from the Scans dock:
-        debounce-persist the GUI store (the same store the watched folders live in)."""
+        """A manual-group mutation, ui-scrap change (order/collapsed) or removed-scan change from the scan list or
+        the Scans dock: debounce-persist the GUI store (the same store the watched folders live in)."""
         if self._gui_store is not None:
             self._store_save_timer.start()
 

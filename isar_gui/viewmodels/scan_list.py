@@ -40,6 +40,8 @@ HEADER_TIPS = {
 }
 _STATE_KEY = "scan_list"
 _DASH = "—"
+REMOVED_TIP = ("Removed from the list: hidden here, from the Scans page and from the selection, but its data and "
+               "fits are kept. Select it and choose Restore to list to bring it back.")
 _TEMP_TERM = re.compile(r"(\d+(?:\.\d+)?)\s*k", re.IGNORECASE)
 _NO_SUMMARY = ImportSummary(0, 0, (), (), {}, None, None)     # nothing imported yet: the ledger's lists stand
 
@@ -62,6 +64,7 @@ class Node:
     children: tuple["Node", ...] = ()
     accessible_name: str = ""
     accessible_description: str = ""
+    removed: bool = False             # a removed scan shown under Show removed: drawn greyed, named "(removed)"
 
 
 # ---- cell formatting ----------------------------------------------------------------------
@@ -180,6 +183,7 @@ class ScanListViewModel(ViewModel):
     snapshot_changed = Signal()         # after every rebuild: bind, background update, sort/filter/columns
     inspect_requested = Signal(str)     # open the inspector column on this key
     selection_changed = Signal(tuple)   # tuple[str, ...]: the selected keys, list order (C-selection)
+    store_dirty = Signal()              # the removed set changed: the window saves the experiment's GUI store
 
     def __init__(self, ws, parent=None) -> None:
         super().__init__(ws, parent)
@@ -195,6 +199,9 @@ class ScanListViewModel(ViewModel):
         self._intake = None
         self._queue = None
         self._marks: dict[str, dict[str, str]] = {}    # the queue's marks as the list last took them
+        self._store = None                    # the experiment's GuiStore, which keeps the removed scans
+        self._removed: set[str] = set()       # scans removed from this list: hidden here, kept everywhere else
+        self._show_removed = False            # the Show removed toggle: removed scans listed greyed
         self._auto = self._auto_columns()
         self.selection.set_order(self._order_keys)
         self.selection.changed.connect(self._on_selection_changed)
@@ -259,7 +266,7 @@ class ScanListViewModel(ViewModel):
     def layout_choices(self) -> tuple:
         """What the user chose about the layout; a change of it reveals the selection. A column a stored pass
         switches on by itself is not a choice, so its arrival does not move the list."""
-        return (self._sort, self._filter_text, frozenset(self._optional), frozenset(self._hidden))
+        return (self._sort, self._filter_text, frozenset(self._optional), frozenset(self._hidden), self._show_removed)
 
     def _auto_columns(self) -> set[str]:
         """The result columns to show by themselves: a stored record of that pass exists or the queue marks one, and
@@ -327,6 +334,56 @@ class ScanListViewModel(ViewModel):
         """C-current: unit key -> the passes holding a current stored result; None before the first read."""
         return None if self._intake is None else self._intake.current
 
+    # ---- removed scans: hidden from this list only (fits, groups and the queue still count them) -------
+    @property
+    def show_removed(self) -> bool:
+        return self._show_removed
+
+    def set_show_removed(self, flag: bool) -> None:
+        if bool(flag) != self._show_removed:
+            self._show_removed = bool(flag)
+            self.snapshot_changed.emit()
+
+    def set_store(self, store) -> None:
+        """Bind the experiment's GuiStore (``None``: no experiment) and load the scans it has removed."""
+        self._store = store
+        self._removed = store.removed_units() if store is not None else set()
+        self.snapshot_changed.emit()
+
+    def is_removed(self, key: str) -> bool:
+        return key in self._removed
+
+    def removed_count(self) -> int:
+        return sum(1 for ss in self._snapshot.sets for sp in ss.spectra if sp.key in self._removed)
+
+    def selected_spectra(self) -> tuple[str, ...]:
+        """The selected spectrum keys; a pooled master is neither removed nor read again."""
+        return tuple(key for key in self.selection.keys if isinstance(self._snapshot.spectrum(key), SpectrumRow))
+
+    def remove_selected(self) -> None:
+        keys = [key for key in self.selected_spectra() if key not in self._removed]
+        if keys:
+            self._removed.update(keys)
+            self._persist_removed()
+            self.selection.set(tuple(key for key in self.selection.keys if key not in self._removed),
+                               origin=ORIGIN_LIST)
+            self.snapshot_changed.emit()
+
+    def restore_selected(self) -> None:
+        keys = [key for key in self.selected_spectra() if key in self._removed]
+        if keys:
+            self._removed.difference_update(keys)
+            self._persist_removed()
+            self.snapshot_changed.emit()
+
+    def _persist_removed(self) -> None:
+        if self._store is not None:
+            self._store.set_removed_units(self._removed)
+            self.store_dirty.emit()
+
+    def _listed(self, key: str) -> bool:
+        return self._show_removed or key not in self._removed
+
     # ---- the workspace changed -----------------------------------------------------------
     def set_workspace(self, ws) -> None:
         """Rebind and retain only selected keys still in the snapshot."""
@@ -382,14 +439,15 @@ class ScanListViewModel(ViewModel):
         return None
 
     def container_keys(self, node_id: str) -> tuple[str, ...]:
-        """Unfiltered membership, also used for the all/some/none mark."""
+        """Unfiltered membership of the listed scans (a removed one is not listed), also used for the all/some/none mark."""
         if node_id.startswith("set:"):
             ss = self._snapshot.scan_set(node_id[4:])
-            return () if ss is None else tuple(sp.key for sp in ss.spectra)
+            return () if ss is None else tuple(sp.key for sp in ss.spectra if self._listed(sp.key))
         if node_id.startswith("ana:"):
             ana = node_id[4:]
             return tuple(row.key for row in self._ordered_rows()
-                         if isinstance(row, SpectrumRow) and (row.analyzer or _DASH) == ana)
+                         if isinstance(row, SpectrumRow) and (row.analyzer or _DASH) == ana
+                         and self._listed(row.key))
         if node_id == "section:pooled":
             return tuple(p.key for p in self._snapshot.pooled)
         return ()
@@ -462,17 +520,19 @@ class ScanListViewModel(ViewModel):
         terms = filter_terms(self._filter_text)
         sets = []
         for ss in self._sorted_sets():
-            spectra = [sp for sp in ss.spectra if spectrum_matches(terms, ss, sp)]
-            if spectra or not terms:
+            listed = [sp for sp in ss.spectra if self._listed(sp.key)]
+            spectra = [sp for sp in listed if spectrum_matches(terms, ss, sp)]
+            if spectra or (listed and not terms):
                 sets.append((ss, spectra))
         files = [f for f in self._snapshot.files_not_read if file_matches(terms, f)]
         pooled = [p for p in self._snapshot.pooled if pooled_matches(terms, p)]
         return sets, files, pooled
 
     def counts(self) -> tuple[int, int]:
-        """``(visible, total)`` spectra; pooled masters are not counted."""
+        """``(visible, listed)`` spectra; pooled masters are not counted, nor removed scans unless shown."""
         sets, _files, _pooled = self._visible()
-        return sum(len(spectra) for _ss, spectra in sets), self._snapshot.n_spectra
+        listed = sum(1 for ss in self._snapshot.sets for sp in ss.spectra if self._listed(sp.key))
+        return sum(len(spectra) for _ss, spectra in sets), listed
 
     def outside_filter(self) -> str | None:
         """Selected keys hidden by the filter remain selected and are named here."""
@@ -531,9 +591,13 @@ class ScanListViewModel(ViewModel):
     def _spectrum_node(self, sp: SpectrumRow, with_unit: bool, ss: ScanSetRow | None = None) -> Node:
         """A spectrum row under its set (``ss`` is ``None``) or under its analyzer (``ss`` given)."""
         mine = self._marks.get(sp.key, {})
+        removed = sp.key in self._removed
+        scan = (Cell(ss.label) if ss is not None else
+                Cell(sp.analyzer or _DASH, None if sp.analyzer else "the analyzer is not known"))
+        if removed:
+            scan = Cell(f"{scan.text} (removed)", REMOVED_TIP)
         cells = {
-            "scan": (Cell(ss.label) if ss is not None else
-                     Cell(sp.analyzer or _DASH, None if sp.analyzer else "the analyzer is not known")),
+            "scan": scan,
             "T": _fact_cell(ss.temperature) if ss is not None else Cell(""),
             "Q": _fact_cell(sp.q, with_unit),
             "parsed": _status_cell(sp.parsed, PARSED),
@@ -543,7 +607,7 @@ class ScanListViewModel(ViewModel):
             "file": (Cell(sp.file_name, sp.file_path or sp.file_name) if sp.file_name
                      else Cell(_DASH, "the analyzer's file cannot be told")),
         }
-        return Node(f"spec:{sp.key}", "spectrum", sp.key, cells)
+        return Node(f"spec:{sp.key}", "spectrum", sp.key, cells, removed=removed)
 
     def _analyzer_nodes(self, sets, with_unit: bool) -> list[Node]:
         """The analyzer flip: one top row per analyzer, every scan set's spectrum beneath it."""
@@ -589,7 +653,8 @@ class ScanListViewModel(ViewModel):
     def save_view_state(self, session) -> None:
         session.view_state[_STATE_KEY] = {
             "columns": [c for c in OPTIONAL_COLUMNS if c in self._optional], "sort": self._sort,
-            "hidden": [c for c in RESULT_COLUMNS if c in self._hidden]}      # not the auto-on ones: per experiment
+            "hidden": [c for c in RESULT_COLUMNS if c in self._hidden],      # not the auto-on ones: per experiment
+            "show_removed": self._show_removed}
 
     def load_view_state(self, session) -> None:
         st = (getattr(session, "view_state", None) or {}).get(_STATE_KEY)
@@ -600,8 +665,10 @@ class ScanListViewModel(ViewModel):
         sort = st.get("sort") if st.get("sort") in SORTS else self._sort
         off = st.get("hidden")
         hidden = {c for c in off if c in RESULT_COLUMNS} if isinstance(off, list) else self._hidden
-        if optional != self._optional or sort != self._sort or hidden != self._hidden:
-            self._optional, self._sort, self._hidden = optional, sort, hidden
+        show = st.get("show_removed")
+        show_removed = show if isinstance(show, bool) else self._show_removed
+        if optional != self._optional or sort != self._sort or hidden != self._hidden or show_removed != self._show_removed:
+            self._optional, self._sort, self._hidden, self._show_removed = optional, sort, hidden, show_removed
             self._auto = self._auto_columns()
             self.snapshot_changed.emit()
             self.selection.resync()
