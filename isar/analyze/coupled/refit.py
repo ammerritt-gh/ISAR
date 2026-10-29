@@ -81,6 +81,19 @@ class _Labelled(cc.CoupledEngine):
             return None
         return self._place(model, theta, cost, family, int(res.nfev), str(res.message)), cost
 
+    def _ln_exch(self, model) -> float:
+        """ln of the k! of each group of exchangeable unmatched modes (spec 3): the base engine's groups
+        (equal priors, pinned energies out), split by the delta mask; a matched slot is never one."""
+        pos = {a: m for m, (a, _g, _c) in enumerate(model.modes)}
+        total = 0.0
+        for grp in model.groups:
+            masks = [pos[a] in model.delta for a in grp if isinstance(self.slots[pos[a]], cc.Entry)]
+            total += sum(math.lgamma(masks.count(v) + 1) for v in (False, True))
+        return total
+
+    def ln_prior(self, model, theta) -> float:
+        return super().ln_prior(model, theta) + self._ln_exch(model)
+
 
 def _parts(context):
     """(ScanContext, FastPassSettings, structure whitelist) of a ``Snapshot.context``."""
@@ -496,9 +509,7 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
         return Priced(job.key, k, slots, None, "no_evidence", None,
                       f"the neighbour density of {bad[0]} has no verified normaliser", 0, time.perf_counter() - t0)
     u = sum(b is None for b in slots)
-    # shortcut: u! treats every unmatched slot as exchangeable even where a delta mask singles one out
-    #   (spec 3 asks per identical-prior group); upgrade if a delta-masked unmatched pair ever contends.
-    eng = _Labelled(spec.ctx, spec.fs, objs, n_exchangeable=(u,) if u > 1 else (), structures=spec.structures)
+    eng = _Labelled(spec.ctx, spec.fs, objs, structures=spec.structures)
     for v in eng.variants.get(k, ()):
         for family, modes in _starts(spec, k, slots):
             eng.fit(v, modes, family)

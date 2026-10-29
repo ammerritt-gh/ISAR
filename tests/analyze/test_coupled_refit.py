@@ -358,3 +358,14 @@ def test_the_prior_cap_is_an_entry_edge_only_where_it_is_the_observation_edge():
     edge = R._Spec(t_pair(_short(18.0), nb, ["b1"], nb, ["b1"]))                # the cap is not reached
     assert edge.hi == 18.0 and edge.entry.physical_hi
     assert edge.entry.B(edge.hi) == 0.0 and edge.d_edge(edge.hi) == 0.0
+
+
+def test_only_exchangeable_unmatched_modes_get_the_factorial():
+    two = [(5.0, 0.4, 40.0), (12.0, 0.4, 40.0)]
+    spec = R._Spec(t_pair(spectrum(two, seed=3), two, ["fast:y#0", "fast:y#1"], [(8.0, 0.4, 40.0)], ["b1"]))
+    both = R._Labelled(spec.ctx, spec.fs, spec.slot_objects((None, None)), structures=STRUCT)
+    variant = both.variant(2, True, True)
+    assert both._ln_exch(both.model(variant, ())) == pytest.approx(math.log(2.0))      # two DHOs: ln 2!
+    assert both._ln_exch(both.model(variant, (1,))) == 0.0                             # a delta and a DHO: none
+    one = R._Labelled(spec.ctx, spec.fs, spec.slot_objects(("b1", None)), structures=STRUCT)
+    assert one._ln_exch(one.model(variant, ())) == 0.0                                 # one unmatched: none
