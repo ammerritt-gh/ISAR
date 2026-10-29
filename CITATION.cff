@@ -1,0 +1,33 @@
+cff-version: 1.2.0
+message: "If you use ISAR in your research, please cite this software."
+type: software
+
+title: "ISAR: Inelastic Scattering Automated Researcher"
+
+authors:
+  - family-names: Merritt
+    given-names: Adrian M.
+    orcid: "https://orcid.org/0000-0002-5457-8444"
+
+abstract: >-
+  ISAR is a prototype automated pipeline for inelastic X-ray and
+  triple-axis neutron scattering experiments: it parses incoming
+  scans, analyzes them with per-scan verdicts on how far to trust
+  each result, and can drive data acquisition against a simulated
+  instrument.
+
+license: GPL-3.0-or-later
+
+repository-code: "https://github.com/ammerritt-gh/ISAR"
+url: "https://github.com/ammerritt-gh/ISAR"
+
+keywords:
+  - inelastic scattering
+  - inelastic X-ray scattering
+  - inelastic neutron scattering
+  - triple-axis spectrometry
+  - phonons
+  - lattice dynamics
+  - spectral fitting
+  - autonomous experiments
+  - data analysis
