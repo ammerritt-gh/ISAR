@@ -59,23 +59,32 @@ def build_inter_workspace(root: Path, temperatures: Sequence[float] = (100, 150,
     ingest.ingest_batch(card, session, [incoming], data_dir=ws_root / "data", workspace_root=ws_root)
     if fits:       # stamp_fit's effect on every spectrum, in one load and save (stamp_fit per spectrum: about 10 s)
         from isar.intake import inputs, scans as intake_scans, store
-        from isar.session import calibrations, currentness, guidelines as guide_mod
-        g, runcal = guide_mod.resolve(card), calibrations.calibration_view(card)
+        from isar.session import file_fit
+        ws.save(card, session)                                 # the ingest, for file_fit's freeze to read
+        frozen = file_fit.freeze(ws_root)
+        card, session = frozen.card, frozen.session
         rows = intake_scans.read_scans(ws_root)
         read = store.read_all(ws_root, store.ENTRIES)
         index = inputs.index_entries(read.entries, lines=read.lines)
+        scan_preps = {}
         for key in session.scans:
             scan, det = key.rsplit(":", 1)
+            exp, scan_no = scan.rsplit(":", 1)
             entry = session.scans[key]
+            if scan not in scan_preps:                         # one parse per scan, as the batch runner does
+                scan_preps[scan] = file_fit.prepare_scan(frozen, exp, int(scan_no), entry)
+            # file_fit's own preparation: the hashes it stamps, and the calibration state a save stores on the card
+            prep = file_fit.prepare_unit(frozen, scan_preps[scan], key, ("fast",))
+            card.state.tabulated_calibration.update(prep.sp.recalibrated)
             si = inputs.scan_inputs(rows[scan], index)
             unit = inputs.unit_inputs(rows[scan], si, det, card.state.tabulated_calibration.get(scan))
             entry.detectors = {det: {**outcome(det, "resolved"), "T": entry.provenance["T"]}}     # the spectrum's own T
             entry.status, entry.reasons = "fitted", []
-            # what file_fit stamps: the inputs hash, and the guidelines hash the judge reads back (stored_now)
-            entry.guidelines_hash = currentness.stored_now(entry, det, g=g, runcal=runcal, row=rows[scan],
-                                                           scan_inputs=si, curves_now=None).guidelines_hash
-            entry.provenance = {**(entry.provenance or {}), "fit_inputs": {
-                "run": "", "hash": inputs.inputs_hash(unit), "fallbacks": list(inputs.fallbacks(unit))}}
+            entry.guidelines_hash = prep.now.guidelines_hash
+            entry.provenance = {**(entry.provenance or {}),
+                                "calibration_fingerprint": prep.now.calibration_fingerprint,
+                                "fit_inputs": {"run": "", "hash": prep.now.inputs_hash,
+                                               "fallbacks": list(inputs.fallbacks(unit))}}
         _write_results_csv(ws, session)
     ws.save(card, session)
     return ws_root

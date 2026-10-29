@@ -16,10 +16,13 @@ import pytest
 
 import intake_fixtures as fx
 import isar
+from inter_fixtures import build_inter_workspace, spectrum_keys
 from isar.analyze import deep_pass, errors
-from isar.intake import values
+from isar.intake import inputs, scans as intake_scans, store, values
+from isar.schema.card import load_state
 from isar.session import calibrations, deep_delivery, driver, file_fit, ingest, measurement_store, scan_delivery
 from isar.session.file_fit import FileItem, fit_file
+from isar.session.inter_spectra import records
 from isar.session.state import ScanEntry, canonical_hash, content_hash
 from isar.session.writer import save_results
 
@@ -331,3 +334,19 @@ def test_a_real_fast_pass_saved_from_fit_file_is_carried_by_the_batch(tmp_path):
     session.put(entry)
     ws.save(card, session)
     assert [r.status for r in _fit(ws, f"{scan}:a03")] == ["already_current"]
+
+
+def test_the_fingerprint_agrees_at_save_time(tmp_path):
+    """Joint worked example, part 1 (S1U5 and S1U6): for an unchanged spectrum the hash the runner stamps
+    (UnitNow), the one save_inter recomputes, and the stored fast solo's are one hash."""
+    ws = build_inter_workspace(tmp_path, temperatures=(100,), setups=("0p5_0p5_3",), n_analyzers=2)
+    unit = spectrum_keys(ws)[0]
+    frozen = file_fit.freeze(ws)
+    exp, scan, _det = unit.rsplit(":", 2)
+    prep = file_fit.prepare_unit(frozen, file_fit.prepare_scan(frozen, exp, int(scan), frozen.session.get(unit)),
+                                 unit, ("fast",))
+    read = store.read_all(ws, store.ENTRIES)
+    now = records.inputs_now_from(intake_scans.read_scans(ws), inputs.index_entries(read.entries, lines=read.lines),
+                                  load_state(ws / "card.state.json").tabulated_calibration, [unit])[unit]
+    stored = frozen.session.get(unit).provenance["fit_inputs"]["hash"]
+    assert prep.now.inputs_hash == now == stored
