@@ -1,4 +1,4 @@
-"""Experiment settings for the BL43 intake: the resolution-curve folder and descriptive metadata.
+"""Experiment settings for the BL43 intake: the resolution-curve folder, the gpi folder and descriptive metadata.
 
 Each save appends one entry to ``intake/settings.jsonl`` through ``store``. Nothing here starts work
 or checks a curve: a folder that is missing or empty is reported by the curve check, not refused here.
@@ -14,7 +14,9 @@ from . import store
 
 log = logging.getLogger(__name__)
 
-_KINDS = ("resolution_folder", "experiment_metadata")
+_FOLDER_KINDS = ("resolution_folder", "gpi_folder")
+_KINDS = (*_FOLDER_KINDS, "experiment_metadata")
+_FOLDER_NAME = {"resolution_folder": "resolution folder", "gpi_folder": "gpi folder"}
 _SOURCES = ("user", "discovered")
 _BUSY = "the intake store is busy (another ISAR process is saving); try again"
 
@@ -42,6 +44,7 @@ class ExperimentSettings:
     resolution_folder: ResolutionFolder | None   # None: nothing saved
     metadata: dict[str, str]                     # the latest metadata save, whole; {} when none
     damaged: tuple[store.Damaged, ...] = ()      # settings lines skipped (store- or schema-level), by line
+    gpi_folder: ResolutionFolder | None = None   # the gpi_files folder; None: nothing saved
 
 
 def _problem(e: dict) -> str | None:
@@ -49,10 +52,10 @@ def _problem(e: dict) -> str | None:
     kind = e.get("kind")
     if kind not in _KINDS:
         return f"unknown kind {kind!r}"
-    if kind == "resolution_folder":
+    if kind in _FOLDER_KINDS:
         for k in ("path", "source", "at"):
             if not isinstance(e.get(k), str):
-                return f"resolution_folder entry has no {k!r}"
+                return f"{kind} entry has no {k!r}"
         if e["source"] not in _SOURCES:
             return f"unknown folder source {e['source']!r}"
         if not (e.get("found_beside") is None or isinstance(e["found_beside"], str)):
@@ -83,11 +86,13 @@ def current_settings(root) -> ExperimentSettings:
         if e["kind"] not in latest or e["seq"] > latest[e["kind"]]["seq"]:
             latest[e["kind"]] = e
     folder = latest.get("resolution_folder")
+    gpi = latest.get("gpi_folder")
     meta = latest.get("experiment_metadata")
     return ExperimentSettings(
         resolution_folder=_folder(folder) if folder is not None else None,
         metadata=dict(meta["fields"]) if meta is not None else {},
         damaged=tuple(sorted(damaged, key=lambda d: d.line)),
+        gpi_folder=_folder(gpi) if gpi is not None else None,
     )
 
 
@@ -110,16 +115,27 @@ def _write(root, entry: dict, targets: tuple[str, ...], value: object, check=Non
     return _refuse(reason, targets)
 
 
-def _no_folder_yet(entries: list[dict]) -> str | None:
-    for e in entries:
-        if e.get("kind") == "resolution_folder" and _problem(e) is None:   # a damaged folder line never blocks
-            f = _folder(e)
-            return f"a resolution folder is already saved ({f.path}, {f.source}); discovery never replaces it"
-    return None
+def _no_folder_yet(kind: str):
+    def check(entries: list[dict]) -> str | None:
+        for e in entries:
+            if e.get("kind") == kind and _problem(e) is None:   # a damaged folder line never blocks
+                f = _folder(e)
+                return f"a {_FOLDER_NAME[kind]} is already saved ({f.path}, {f.source}); discovery never replaces it"
+        return None
+    return check
 
 
 def save_resolution_folder(root, folder, *, source: str = "user",
                            found_beside: str | None = None) -> SaveResult:
+    return _save_folder("resolution_folder", root, folder, source, found_beside)
+
+
+def save_gpi_folder(root, folder, *, source: str = "user", found_beside: str | None = None) -> SaveResult:
+    """The experiment's gpi folder (``gpi_files/``), with ``save_resolution_folder``'s rules."""
+    return _save_folder("gpi_folder", root, folder, source, found_beside)
+
+
+def _save_folder(kind: str, root, folder, source: str, found_beside: str | None) -> SaveResult:
     if source not in _SOURCES:
         raise ValueError(f"source must be 'user' or 'discovered', got {source!r}")
     if source == "discovered" and found_beside is None:
@@ -130,18 +146,19 @@ def save_resolution_folder(root, folder, *, source: str = "user",
     if folder is None or not str(folder).strip():
         return _refuse("no folder given", target)
     p = Path(str(folder)).expanduser()
+    name = _FOLDER_NAME[kind]
     if not p.is_absolute():
-        return _refuse(f"the resolution folder must be an absolute path: {folder}", target)
+        return _refuse(f"the {name} must be an absolute path: {folder}", target)
     if not p.exists():
-        return _refuse(f"resolution folder {p} does not exist", target)
+        return _refuse(f"{name} {p} does not exist", target)
     if not p.is_dir():
         return _refuse(f"{p} is not a folder", target)
     canonical = str(p.resolve())
-    entry = {"kind": "resolution_folder", "path": canonical, "source": source}
+    entry = {"kind": kind, "path": canonical, "source": source}
     check = None
     if source == "discovered":
         entry["found_beside"] = found_beside
-        check = _no_folder_yet
+        check = _no_folder_yet(kind)
     return _write(root, entry, target, canonical, check)
 
 
