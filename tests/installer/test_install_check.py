@@ -78,6 +78,18 @@ def test_stale_result_file_is_removed_not_read(tmp_path):
     assert not (work / RESULT).exists()
 
 
+def test_cli_check_leaves_the_user_profile_alone(tmp_path, monkeypatch):
+    """isar --help imports matplotlib, which creates a .matplotlib folder under USERPROFILE."""
+    from isar.install_check import _cli
+    profile, work = tmp_path / "profile", tmp_path / "work"
+    profile.mkdir()
+    work.mkdir()
+    monkeypatch.setenv("USERPROFILE", str(profile))
+    ok, detail = _cli(ROOT, ROOT, work)
+    assert ok, detail
+    assert not any(profile.iterdir()), [p.name for p in profile.iterdir()]
+
+
 def test_empty_path_is_never_under_the_copy():
     # realpath("") is the working folder; a missing __file__ must not pass as the copy under test.
     from isar.install_check import _under

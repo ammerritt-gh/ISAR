@@ -69,16 +69,17 @@ def _curve(expect):
     return True, f"{curve.detector_id} curve, {y.size} points, peak {y.max():.3g}"
 
 
-def _child_env(dev_root) -> dict:
+def _child_env(dev_root, work) -> dict:
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("PYTHON")}
     env["PYTHONNOUSERSITE"] = "1"
+    env["MPLCONFIGDIR"] = str(work / "mplconfig")  # else matplotlib creates .matplotlib under USERPROFILE
     if dev_root is not None:
         env["PYTHONPATH"] = str(dev_root)
     return env
 
 
 def _cli(expect, dev_root, work):
-    env = _child_env(dev_root)
+    env = _child_env(dev_root, work)
     if dev_root is None:
         help_cmd = [str(Path(sys.prefix) / "Scripts" / "isar.exe"), "--help"]
     else:
@@ -118,6 +119,7 @@ def _gui(work, timeout, qt_platform, dev_root):
     env = {k: v for k, v in os.environ.items() if not k.startswith("QT_")}
     env.update({k: str(v) for k, v in dirs.items()})
     env.update(ISAR_EXPERIMENTS_ROOT=str(work / "workspaces"), QT_QPA_PLATFORM=qt_platform,
+               MPLCONFIGDIR=str(work / "mplconfig"),
                ISAR_GUI_SELFTEST_RESULT=str(result), ISAR_GUI_SELFTEST_NONCE=nonce)
     if dev_root is None:
         cmd = [sys.executable, "-I", "-m", "isar_gui"]
