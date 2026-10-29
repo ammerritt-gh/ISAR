@@ -94,6 +94,66 @@ def _collector_back_after_each_test():
     collector_guard.release()
 
 
+@pytest.fixture(autouse=True)
+def _collect_on_the_main_thread_only(request):
+    """No cyclic collection runs off the main thread while a GUI test runs.
+
+    A collection runs on whichever thread allocates when the threshold trips, and it finalizes
+    unreachable PySide6 wrappers there; a Qt object destroyed off the GUI thread corrupts the heap
+    ("Windows fatal exception: code 0xc0000374" / access violation, in whatever test happens to be
+    running). Under xdist every worker has the execnet receiver thread, which allocates on each
+    message, so the gate lost a worker about one run in two; measured with a ``gc.callbacks`` probe
+    over ``tests/gui -n 16``: collections started on execnet's ``Dummy-N`` threads (and, rarely, a
+    watchdog observer thread). Serial runs have no such thread, hence "parallel only". Production
+    covers its own threads with ``collector_guard``; this does the same for the harness's.
+
+    So the collector is off for the test and runs once on the main thread at the end, after the
+    windows are closed. A test that exercises the collector itself carries ``collector_under_test``.
+    """
+    import gc
+
+    from isar_gui import collector_guard
+
+    if request.node.get_closest_marker("collector_under_test"):
+        yield
+        return
+
+    class Held:      # stands in for a thread, so collector_guard composes this hold with the GUI's own
+        alive = True
+
+        def is_alive(self):
+            return self.alive
+
+    held = Held()
+    collector_guard.hold(held)
+    yield
+    gc.collect()
+    held.alive = False
+    collector_guard.release()      # back on only when no GUI thread is still held
+
+
+@pytest.fixture(autouse=True)
+def _no_window_outlives_its_test(_isolated_user_dirs, _no_live_health_probes):
+    """Close every top-level window a test left shown.
+
+    pytest-qt closes only the widgets given to ``qtbot.addWidget``; a window the code under test
+    opened itself (the Help window, a popup, a dock floated out) stays visible, because ``deleteLater``
+    does not run until the event loop does. The offscreen screen's cursor routes ``QTest.mouseMove`` to
+    the topmost visible window under the point, so a survivor from an earlier test on the same xdist
+    worker swallowed the move and ``hover`` stayed ``None`` (``test_help.py`` then
+    ``test_scan_list_selection.py::test_gutter_file_and_blank_clicks_and_hover``). Runs after
+    qtbot's close and before the per-test patches are undone (it depends on the fixtures that patch).
+    """
+    yield
+    from PySide6.QtWidgets import QApplication
+    from shiboken6 import isValid
+
+    for window in QApplication.topLevelWidgets():
+        # closing one window can delete a later one in the list (a child window), so look again
+        if isValid(window) and window.isVisible():
+            window.close()
+
+
 @pytest.fixture
 def make_ws(tmp_path):
     """Return a factory that stamps a synthetic workspace under a fresh subdir and returns its path."""
