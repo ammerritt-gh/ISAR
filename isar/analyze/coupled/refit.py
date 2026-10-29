@@ -877,7 +877,7 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
         F=F, delta_fast=delta_fast, flag=flag, why_changed=why, overlay=overlay if drawn else None,
         overlay_unavailable=None if drawn else f"a {status} refit is not drawn",
         covariance=cov_out, errors="conditional" if cov is not None else "unavailable", normalisers=normalisers,
-        starts=eng.n_fits + rel.n_fits, timing=timing, priced=tuple(priced), cache_hits=hits)
+        starts=eng.n_fits + rel.n_fits, timing=timing, priced=tuple(priced), cache_hits=hits, ell=spec.ell)
 
 
 def _fast_modes(fast: Held, ids, energy, *, exact_only: bool) -> dict[str, HeldMode]:
@@ -1054,7 +1054,9 @@ def seam_report(a: RefitResult, b: RefitResult, link: Link, settings: InterSetti
     gb = {m.branch: m for m in second.modes}
     pairs = []
     for br in sorted(set(ga) & set(gb)):
-        sa, sb = ga[br].guard or 0.0, gb[br].guard or 0.0
+        # an unavailable guard widens by the spec's fallback ell/sqrt(12) (that spectrum's window), never 0
+        sa, sb = (m.guard if m.guard is not None else r.ell / math.sqrt(12.0)
+                  for m, r in ((ga[br], first), (gb[br], second)))
         f = cc.Factor(f"seam:{link.a}|{link.b}:{br}", br, (link.a, link.b), (1.0, -1.0),
                       s=math.sqrt(base * base + sa * sa + sb * sb), C=s.penalty_cap, kind=kind, w=w, d=d,
                       family=s.shape_family)

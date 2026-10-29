@@ -130,3 +130,4 @@ class RefitResult:
     starts: int; timing: Mapping[str, float]        # assign_s, likelihood_s, continuous_s, uncertainty_s, release_s
     priced: tuple[Priced, ...]                      # the prices this refit used or made (the runner's cache, remedy 1)
     cache_hits: int
+    ell: float = 0.0                                # the spectrum's energy window width, meV (seam guard fallback ell/sqrt(12))

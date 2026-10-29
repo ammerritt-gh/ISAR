@@ -371,6 +371,21 @@ def test_a_near_tied_exchange_prices_but_a_clear_association_stays_skipped():
     assert R._Spec(clear).triggers == () and R.assign_jobs(clear)[0].discrete == "skipped"
 
 
+def test_a_missing_seam_guard_widens_the_tolerance_instead_of_vanishing():
+    link = Link("q", "a", "b", 0.1, None)
+    ok, lost = _ring_mate("b", 14.0), _ring_mate("b", 14.0)
+    lost.modes = (replace(lost.modes[0], guard=None, guard_source="unavailable"),)
+    for mate in (ok, lost):
+        mate.ell = 22.0
+    known = R.seam_report(_ring_mate("a", 8.0), ok, link, S)
+    unknown = R.seam_report(_ring_mate("a", 8.0), lost, link, S)
+    assert known["over"] and not unknown["over"]                       # ell/sqrt(12) = 6.4 meV, not 0
+    assert unknown["pairs"][0]["guard_unavailable"] and unknown["pairs"][0]["U"] < known["pairs"][0]["U"]
+    # the real RefitResult carries the window width it was fitted in
+    snap = t_pair(spectrum([(8.0, 0.4, 40.0)], seed=1), [(8.0, 0.4, 40.0)], ["b1"], [(8.0, 0.4, 40.0)], ["b1"])
+    assert R.refit(snap, stage="both").ell == pytest.approx(R._Spec(snap).ell)
+
+
 def test_a_continuing_unmatched_mode_keeps_its_id_across_sweeps():
     snap = _entry_snapshot()
     for sweep in range(3):
