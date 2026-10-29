@@ -97,3 +97,29 @@ def test_zero_price_entries_reproduce_the_solo_evidence(k):
     bare = coupled()
     # a constant shift of the objective moves L-BFGS-B's relative stop by ~1e-5 nats: not a prior difference
     assert bare.ln_z == pytest.approx(base.ln_z - math.lgamma(k + 1), abs=1e-4)
+
+
+def test_j_includes_the_soft_constraint_the_optimiser_applies():
+    from isar.schema.steering import ParamConstraints
+    base = _spectrum([(8.0, 0.5, 60.0)])
+    ctx = ScanContext(x=base.x, counts=base.counts, mask=base.mask, T=300.0, center=0.0, gauss_fwhm=1.5,
+                      lorentz_fwhm=0.0, instrument="S30", energy_status="absolute",
+                      constraints=ParamConstraints(soft={"phonon.omega0": (9.0, 0.05)}))
+    s = fast_pass.FastPassSettings(mode_ceiling=1)
+    sp = prior.resolve_prior_for(ctx, s.prior or prior.PriorSettings())
+    eng = cc.CoupledEngine(ctx, s, [cc.Entry(sp.energy, band=1.0, b_edge=0.0, b_mid=0.0)], continuous=True)
+    model = eng.model(eng.variant(1, True, True), ())
+    assert model.soft
+    theta0 = eng._start(model, [(8.0, 0.5, 60.0, False)], None)
+    res = eng._trf(model, theta0, "coupled")
+    theta = theta0.copy()
+    theta[model.free] = res.x
+    a = model.modes[0][0]
+    # the soft pull moves the optimum off the data's 8.0 meV; J, the objective _trf minimised, is stationary there
+    assert 8.3 < theta[a] < 9.0
+    for d in (-0.02, 0.02):
+        moved = theta.copy()
+        moved[a] += d
+        assert eng.J(model, moved) >= eng.J(model, theta) - 1e-6
+    z = sum(((theta[i] - mu) / sd) ** 2 for i, mu, sd in model.soft)
+    assert eng.J(model, theta) == pytest.approx(eng.cost(model, theta) + z + sum(p for _, p, _s in eng.penalty_terms(model, theta)))

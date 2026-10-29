@@ -214,7 +214,9 @@ class CoupledEngine(fast_pass._Engine):
         return out
 
     def J(self, model, theta) -> float:
-        return self.cost(model, theta) + sum(p for _, p, _s in self.penalty_terms(model, theta))
+        # the soft-constraint squares are the residuals _trf applies, so acceptance and covariance see its objective
+        soft = sum(((theta[i] - mu) / sd) ** 2 for i, mu, sd in model.soft)
+        return self.cost(model, theta) + soft + sum(p for _, p, _s in self.penalty_terms(model, theta))
 
     def _trf(self, model, theta0, family):
         if not self.continuous:
