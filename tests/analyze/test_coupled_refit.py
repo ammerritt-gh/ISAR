@@ -141,7 +141,7 @@ def test_the_entry_price_stays_in_the_composition_log_mass():
     eng = R._Labelled(spec.ctx, spec.fs, spec.slot_objects(("b1", None)), structures=STRUCT)
     model = eng.model(eng.variant(2, True, True), ())
     theta = np.array([8.0, 0.4, 40.0, 15.0, 0.4, 60.0, 100.0, 2.0])
-    edge = spec.hi - 0.3 * spec.band                     # inside the edge band: B = B_mid H(0.3)
+    edge = spec.lo + 0.3 * spec.band                     # inside the physical edge band: B = B_mid H(0.3)
     at = {e: eng.ln_prior(model, np.where(np.arange(8) == 3, e, theta)) for e in (15.0, edge)}
     solo = spec.ep.log_pdf(15.0) - spec.ep.log_pdf(edge)
     B = spec.entry.B
@@ -338,3 +338,23 @@ def test_a_pinned_unmatched_energy_pays_its_entry_price_once():
     nb = [(12.0, 0.4, 40.0)]
     assert ln_z(S, (None,), nb) - ln_z(zero, (None,), nb) == pytest.approx(-(S.birth_edge + S.birth_mid) / 2, abs=1e-9)
     assert ln_z(S, ("b1",), nb) - ln_z(zero, ("b1",), nb) == pytest.approx(0.0, abs=1e-9)
+
+
+# repair batch 1 -------------------------------------------------------------------------------------------
+def _short(top):
+    """A spectrum measured only up to ``top`` meV (the 20 meV prior cap does not truncate it)."""
+    x = np.linspace(-6.0, top, 201)
+    ctx = ScanContext(x=x, counts=np.ones(x.size), mask=np.ones(x.size, bool), T=300.0, center=0.0,
+                      gauss_fwhm=FWHM, lorentz_fwhm=0.0, instrument="S30", energy_status="absolute")
+    return Prepared(ctx, 2)
+
+
+def test_the_prior_cap_is_an_entry_edge_only_where_it_is_the_observation_edge():
+    nb = [(8.0, 0.4, 40.0)]
+    past = R._Spec(t_pair(spectrum(nb, seed=8), nb, ["b1"], nb, ["b1"]))      # measured to 24 meV, capped at 20
+    assert past.hi == 20.0 and not past.entry.physical_hi
+    near_cap = past.hi - 0.3 * past.band
+    assert past.entry.B(near_cap) == S.birth_mid and past.d_edge(near_cap) > 0.3 * past.band
+    edge = R._Spec(t_pair(_short(18.0), nb, ["b1"], nb, ["b1"]))                # the cap is not reached
+    assert edge.hi == 18.0 and edge.entry.physical_hi
+    assert edge.entry.B(edge.hi) == 0.0 and edge.d_edge(edge.hi) == 0.0

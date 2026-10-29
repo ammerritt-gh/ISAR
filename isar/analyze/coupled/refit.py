@@ -172,8 +172,11 @@ class _Spec:
         self.ell = self.hi - self.lo
         self.fwhm = prior.resolution_fwhm(self.ctx)
         self.band = min(0.2 * self.ell, max(self.fwhm, 0.5))
-        # Convention recorded (spec 2): the support edges are the observation edges.
-        self.entry = cc.Entry(self.ep, self.band, b_edge=snap.settings.birth_edge, b_mid=snap.settings.birth_mid)
+        # Convention recorded (spec 2): the support edges are the observation edges; an upper prior cap that
+        # truncates the observed window is not one (no edge relief there, distance to the physical edge).
+        self.physical_hi = self.hi >= float(np.max(self.ctx.x_used))
+        self.entry = cc.Entry(self.ep, self.band, b_edge=snap.settings.birth_edge, b_mid=snap.settings.birth_mid,
+                              physical_hi=self.physical_hi)
         self.ceiling = int(self.fs.mode_ceiling)
         self.own = snap.own
         self.n0 = len(self.own.modes)
@@ -252,7 +255,7 @@ class _Spec:
         return sum(a * (e if k == self.snap.unit else self.frozen[f.branch_id][k]) for k, a in zip(f.members, f.a))
 
     def d_edge(self, e: float) -> float:
-        return min(e - self.lo, self.hi - e)
+        return min(e - self.lo, self.hi - e) if self.physical_hi else e - self.lo
 
     def inside(self, b: str) -> bool:
         return any(self.lo <= c <= self.hi for c in self.pred.get(b, ()))
