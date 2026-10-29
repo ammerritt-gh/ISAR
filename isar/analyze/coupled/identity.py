@@ -16,6 +16,7 @@ fit id, index) and named by a persistent branch id that is minted once, at a con
 """
 from __future__ import annotations
 
+import itertools
 import math
 from collections import defaultdict, deque
 from collections.abc import Sequence
@@ -118,9 +119,8 @@ def match_link(local: Sequence[ModeObs], branches: Sequence[str], proposal_costs
     fixed = {_composition(s) for s, _ in mandatory}
 
     best: dict[tuple, tuple[float, tuple]] = {}         # composition -> (cost, slots) of its cheapest association
-    leaves: dict[tuple, dict[tuple, float]] = defaultdict(dict)   # composition -> {slots: cost} of every association
-    mandatory_max = max(sum(cost[m][options.index(b)] for m, b in enumerate(s)) for s, _ in mandatory)
-    state = {"nodes": 0, "truncated": False, "limit": -math.inf if keep == 0 else math.inf}
+    leaves: dict[tuple, dict[tuple, float]] = defaultdict(dict)   # ranked composition -> {slots: cost}, within bound
+    state ={"nodes": 0, "truncated": False, "limit": -math.inf if keep == 0 else math.inf}
 
     def record(slots: tuple, c: float) -> None:
         comp = _composition(slots)
@@ -144,8 +144,7 @@ def match_link(local: Sequence[ModeObs], branches: Sequence[str], proposal_costs
             if state["truncated"]:
                 return
             c = partial + cost[m][j]
-            # a kept order sits within close of its composition's cheapest, and the mandatory ones are kept too
-            bound = max(state["limit"], mandatory_max) + close
+            bound = state["limit"] + close          # a kept ranked order is within close of a kept (<= limit) best
             if (b is not None and b in used) or not math.isfinite(c) or c + rest[m + 1] > bound:
                 continue
             slots.append(b)
@@ -156,23 +155,33 @@ def match_link(local: Sequence[ModeObs], branches: Sequence[str], proposal_costs
 
     walk(0, [], set(), 0.0)
 
-    def orders(comp: tuple, slots: tuple, c: float) -> list[dict]:
-        found = leaves.get(comp)
-        if not found:                                   # an unreached (infinite-cost) proposal keeps its own slots
+    def slot_cost(s: Sequence) -> float:
+        return sum(cost[m][options.index(b)] for m, b in enumerate(s))
+
+    def orders(found: dict[tuple, float], slots: tuple, c: float) -> list[dict]:
+        finite = {s: v for s, v in found.items() if math.isfinite(v)}
+        if not finite:                                  # nothing finite to keep: the proposal keeps its own slots
             return [{"slots": slots, "cost": c}]
-        low = min(found.values())
-        return [{"slots": s, "cost": v} for s, v in sorted(found.items(), key=lambda kv: (kv[1], _order_key(kv[0])))
+        low = min(finite.values())
+        return [{"slots": s, "cost": v} for s, v in sorted(finite.items(), key=lambda kv: (kv[1], _order_key(kv[0])))
                 if v <= low + close]
+
+    def composition_orders(slots: Sequence) -> dict[tuple, float]:
+        # shortcut: every order of a fixed composition by permutation of its labels, n! for n local modes;
+        # upgrade to branch and bound if n ever exceeds about 8
+        names, unmatched = _composition(slots)
+        labels = [*names, *([None] * unmatched)]
+        return {p: slot_cost(p) for p in set(itertools.permutations(labels))}
 
     ranked = sorted((c, comp, s) for comp, (c, s) in best.items() if comp not in fixed)
     kept = ranked if keep is None else ranked[:keep]
     proposals = []
     for s, src in mandatory:
-        comp, c = _composition(s), sum(cost[m][options.index(b)] for m, b in enumerate(s))
-        proposals.append({"slots": s, "composition": comp, "cost": c, "source": src,
-                          "orders": orders(comp, s, c)})
+        c = slot_cost(s)
+        proposals.append({"slots": s, "composition": _composition(s), "cost": c, "source": src,
+                          "orders": orders(composition_orders(s), s, c)})
     proposals += [{"slots": s, "composition": comp, "cost": c, "source": "ranked",
-                   "orders": orders(comp, s, c)} for c, comp, s in kept]
+                   "orders": orders(leaves[comp], s, c)} for c, comp, s in kept]
     total = sum(math.comb(len(pool), r) for r in range(min(n, len(pool)) + 1))
     returned = len({p["composition"] for p in proposals})
     return {"proposals": proposals,

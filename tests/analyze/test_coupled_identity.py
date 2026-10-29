@@ -296,6 +296,21 @@ def test_match_link_ranks_like_full_enumeration(seed):
     assert out["weight_unavailable"] and out["coverage"]["search_limited"]
 
 
+@pytest.mark.parametrize("seed", range(4))
+def test_match_link_orders_match_full_enumeration(seed):
+    rng = random.Random(seed)
+    pool = ["p", "q", "r"]
+    table = {(m, b): rng.uniform(0, 4) for m in range(3) for b in [None, *pool]}
+    out = ident.match_link(_local(3), pool, lambda m, b: table[(m, b)], incoming=("p", "q", None), keep=None,
+                           close=S.close_call_nats)
+    every = {s: sum(table[(m, b)] for m, b in enumerate(s)) for s in itertools.product([None, *pool], repeat=3)
+             if len({b for b in s if b}) == sum(b is not None for b in s)}
+    for p in out["proposals"]:
+        found = {s: c for s, c in every.items() if ident._composition(s) == p["composition"]}
+        low = min(found.values())
+        assert {o["slots"] for o in p["orders"]} == {s for s, c in found.items() if c <= low + S.close_call_nats}
+
+
 def test_duplicate_and_absent_branches_cost_nothing_extra():
     table = {(0, None): 5.0, (0, "p"): 1.0, (0, "q"): 3.0, (1, None): 7.0, (1, "p"): 2.0, (1, "q"): 9.0}
     out = ident.match_link(_local(2), ["p", "p", "q"], lambda m, b: table[(m, b)], keep=None)
