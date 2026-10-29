@@ -37,6 +37,7 @@ def modes(*energies, held=()):
 # refit modes at two temperatures: A, B, C, D each refitted to a branch (b0..b3)
 FITTED = modes(3.1, 5.9, 9.05, 12.0)
 HELD_B = modes(3.1, 5.9, 9.05, 12.0, held=(1,))             # B sits where its neighbours put it
+HELD_WRONG_B = modes(3.1, 7.4, 9.05, 12.0, held=(1,))       # held, 1.4 meV off the paper's B
 MISSING_B = modes(3.1, 9.05, 12.0)                          # no mode near 6 meV
 
 
@@ -72,9 +73,13 @@ def test_b_unflagged_and_unmatched_is_not_ok():
     assert not verdict.ok and "matched at no temperature" in verdict.why
 
 
-def test_b_matched_and_held_by_its_neighbours_is_ok_without_a_flag():
+def test_b_held_by_its_neighbours_counts_only_within_the_stated_tolerance():
     events = {302.0: None, 97.0: None}
-    assert chk.moving_is_flagged(events, matches(HELD_B), None).ok
+    assert chk.moving_is_flagged(events, matches(HELD_B, tol=0.5), 0.5).ok
+    # held but no tolerance stated, or held at a wrong energy that only the half-spacing window admits: nothing
+    # checks where the neighbours pulled it, so no pass without a flag
+    assert not chk.moving_is_flagged(events, matches(HELD_B, tol=None), None).ok
+    assert not chk.moving_is_flagged(events, matches(HELD_WRONG_B, tol=None), None).ok
     assert not chk.moving_is_flagged(events, matches(FITTED), None).ok
 
 
