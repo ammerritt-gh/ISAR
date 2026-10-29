@@ -36,6 +36,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor
 
+from isar.workspace_api.scan_list import effective_hkl, hkl_bin, hkl_step
 from isar_gui.scan_filter import ScanFilter, parse_query
 from isar_gui.scan_keys import member_matches, scan_prefix, split_key
 from isar_gui.viewmodels.base import ViewModel
@@ -155,13 +156,18 @@ def _finite_list(v) -> list | None:
     return None
 
 
-def unit_rows(scan_views) -> list[ScanUnit]:
+def _fact_q(fact) -> list | None:
+    return None if fact is None or fact.value is None else list(fact.value)
+
+
+def unit_rows(scan_views, hkl: dict | None = None) -> list[ScanUnit]:
     """One :class:`ScanUnit` per ledger entry — no merging, each keeps its own analyzer q.
 
     The key is ``ScanView.scan_id`` (the canonical ``"exp:scan:det"``); the detector id is split from
-    that key, falling back to the sole entry in ``ScanView.detectors``. ``q`` is the unit's OWN
-    ``ScanView.hkl`` (already resolved per-entry); ``q_target``/``B``/``command`` come from the
-    (tolerantly-absent) provenance. Insertion order is preserved.
+    that key, falling back to the sole entry in ``ScanView.detectors``. ``q`` is the unit's effective hkl
+    from ``hkl`` (:func:`~isar.workspace_api.scan_list.effective_hkl`, keyed by unit key) when given, else its
+    OWN ``ScanView.hkl``; ``q_target``/``B``/``command`` come from the (tolerantly-absent) provenance.
+    Insertion order is preserved.
     """
     out: list[ScanUnit] = []
     for sv in scan_views:
@@ -194,7 +200,7 @@ def unit_rows(scan_views) -> list[ScanUnit]:
             scan_number=getattr(sv, "scan_number", None), det=det,
             scan_type=getattr(sv, "scan_type", "") or "",
             source_file=getattr(sv, "source_file", None),
-            T=getattr(sv, "T", None), q=getattr(sv, "hkl", None),
+            T=getattr(sv, "T", None), q=getattr(sv, "hkl", None) if hkl is None else _fact_q(hkl.get(key)),
             q_target=_finite_list(prov.get("q_target")), B=B,
             command=(str(prov["command"]) if prov.get("command") else None),
             status=getattr(sv, "status", "") or "", fit=fit))
@@ -215,10 +221,10 @@ class AutoGroup:
 def _rounding(ws) -> tuple[float, float]:
     """(t_round, q_step) for auto-group binning.
 
-    Prefers the card's collation ``t_round`` and the policy ``hkl_round_step`` so an auto-group means
-    the same thing the reducer's collation does. Falls back to 1 K / 0.001 rlu (the brief's defaults)
-    when no card is accessible (e.g. the empty/pending workspace)."""
-    t_round, q_step = 1.0, 0.001
+    ``t_round`` prefers the card's collation so an auto-group means the same thing the reducer's collation
+    does; ``q_step`` is the facade's :func:`hkl_step` (the policy ``hkl_round_step``). Falls back to 1 K /
+    0.001 rlu (the brief's defaults) when no card is accessible (e.g. the empty/pending workspace)."""
+    t_round = 1.0
     try:
         card = getattr(ws, "card", None)
         if card is not None:
@@ -226,12 +232,9 @@ def _rounding(ws) -> tuple[float, float]:
             tr = collation.get("t_round")
             if tr:
                 t_round = float(tr)
-            hs = getattr(getattr(card, "policy", None), "hkl_round_step", None)
-            if hs:
-                q_step = float(hs)
     except Exception as exc:  # noqa: BLE001 — binning params are best-effort, never fatal
         log.debug("auto-group rounding: falling back to defaults (%s)", exc)
-    return t_round, q_step
+    return t_round, hkl_step(ws)
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +441,7 @@ class ScansViewModel(ViewModel):
     def __init__(self, ws, store=None, parent=None):
         super().__init__(ws, parent)
         self._store = store  # GuiStore | None (None in the empty/pending state)
+        self._intake = None  # IntakeState | None: the fact rows the effective hkl reads (set_intake)
         self._all_rows: list[ScanUnit] = []   # every ledger unit, before the orthogonal filter
         self._filter = ScanFilter()           # the active narrowing predicate (empty = show all)
         self._rows: list[ScanUnit] = []       # _all_rows survivors of _filter — the VISIBLE set
@@ -470,6 +474,13 @@ class ScansViewModel(ViewModel):
         self._rebuild()
         self.refreshed.emit()
 
+    def set_intake(self, intake) -> None:
+        """Bind the window's IntakeState: the q groups and the ``q:`` filter read the effective hkl it holds, and
+        regroup on its ``changed`` (a new gpi folder or gpi check) with no workspace refresh."""
+        self._intake = intake
+        intake.changed.connect(self.refresh)
+        self.refresh()
+
     # ---- refresh ----
     def refresh(self) -> None:
         self._rebuild()
@@ -489,7 +500,8 @@ class ScansViewModel(ViewModel):
         physical = [sv for sv in scan_views
                     if not any(bool(getattr(fv, "pooled", False))
                                for fv in (getattr(sv, "detectors", None) or {}).values())]
-        self._all_rows = unit_rows(physical)
+        fact_rows = () if self._intake is None else (self._intake.fact_rows or ())
+        self._all_rows = unit_rows(physical, hkl=effective_hkl(physical, fact_rows))
         self._reapply_filter()
 
     def _reapply_filter(self) -> None:
@@ -577,13 +589,9 @@ class ScansViewModel(ViewModel):
         q_step = _rounding(self._ws)[1]
         seen: dict[tuple, list] = {}
         for u in self._all_rows:
-            if not u.q or any(v is None for v in u.q):
-                continue
-            try:
-                gkey = tuple(int(round(float(v) / q_step)) for v in u.q)
-            except (TypeError, ValueError):
-                continue
-            seen.setdefault(gkey, [round(i * q_step, 6) for i in gkey])
+            gkey = hkl_bin(u.q, q_step)
+            if gkey is not None:
+                seen.setdefault(gkey, [round(i * q_step, 6) for i in gkey])
         return [(_fmt_q(center), tuple(center)) for _gkey, center in sorted(seen.items())]
 
     # ---- multi-detector predicate (drives Analyzer tab + chip label form) ----
@@ -620,16 +628,12 @@ class ScansViewModel(ViewModel):
             if u.T is not None:
                 b = round(round(u.T / t_round) * t_round, 6)
                 t_groups.setdefault(b, []).append(u.key)
-            if u.q and all(v is not None for v in u.q):
-                try:
-                    gkey = tuple(int(round(float(v) / q_step)) for v in u.q)
-                    # The grouping is by rounded bins, not by the first member's exact q.  Display
-                    # the bin centre and its width so the header does not claim false precision.
-                    disp = [round(i * q_step, 6) for i in gkey]
-                except (TypeError, ValueError) as exc:
-                    log.debug("auto-group q-bin: non-numeric q %r for %s (%s)", u.q, u.key, exc)
-                else:
-                    q_groups.setdefault(gkey, (disp, []))[1].append(u.key)
+            gkey = hkl_bin(u.q, q_step)
+            if gkey is not None:
+                # The grouping is by rounded bins, not by the first member's exact q.  Display
+                # the bin centre and its width so the header does not claim false precision.
+                disp = [round(i * q_step, 6) for i in gkey]
+                q_groups.setdefault(gkey, (disp, []))[1].append(u.key)
             if u.det is not None:
                 ana_groups.setdefault(u.det, []).append(u.key)
             if u.B is not None:
@@ -877,15 +881,10 @@ class ScansViewModel(ViewModel):
             if len(t_bins) == 1:
                 return f"T = {next(iter(t_bins)):g} K"
         # shared q-bin
-        if all(u.q and all(v is not None for v in u.q) for u in units):
-            try:
-                q_bins = {tuple(int(round(float(v) / q_step)) for v in u.q) for u in units}
-            except (TypeError, ValueError) as exc:
-                log.debug("suggest_group_name: non-numeric q, skipping q-bin (%s)", exc)
-                q_bins = set()
-            if len(q_bins) == 1:
-                disp = [round(float(v), 4) for v in units[0].q]
-                return f"q = {disp}"
+        q_bins = {hkl_bin(u.q, q_step) for u in units}
+        if len(q_bins) == 1 and None not in q_bins:
+            disp = [round(float(v), 4) for v in units[0].q]
+            return f"q = {disp}"
         # shared analyzer
         if all(u.det is not None for u in units):
             dets = {u.det for u in units}

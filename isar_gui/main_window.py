@@ -506,6 +506,7 @@ class MainWindow(QMainWindow):
         self.scans_vm.inspect_requested.connect(self._route_inspect)
         self.scans_vm.groups_changed.connect(self._on_groups_changed)
         self.scans_vm.store_dirty.connect(self._on_groups_changed)
+        self.scans_vm.set_intake(self.intake)
         # The campaign feed/status VM: event-log ticks fan out to it in _on_workspace_changed;
         # process liveness arrives via the window's stable drive slots (wired once in __init__ —
         # the coordinator outlives bindings, so per-bind lambdas would accumulate and dangle).
