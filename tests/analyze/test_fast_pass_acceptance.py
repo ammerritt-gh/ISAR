@@ -2,7 +2,7 @@
 It is opt-in by environment (skipped otherwise); run it with
 
     set ISAR_FAST_PASS_ACCEPTANCE=1
-    python -m pytest tests/analyze/test_fast_pass_acceptance.py -m slow -s -p no:xdist
+    python -m pytest tests/analyze/test_fast_pass_acceptance.py --run-slow -s -p no:xdist
 
 It runs its own pool of at most six processes (single-thread BLAS, 600 s kill per row), once with the
 delta-twin rule on and once with it off. Both tables and the aims as reached are printed (the operator's

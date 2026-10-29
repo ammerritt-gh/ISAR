@@ -115,16 +115,24 @@ def pytest_unconfigure(config):
         shutil.rmtree(_profile, ignore_errors=True)  # scratch folder in the system temp; a leftover is harmless
 
 
+# Marker -> the option that opts it in. Without the option its tests are deselected, even when named.
+_OPT_IN = {"statistical": "--run-statistical", "slow": "--run-slow"}
+
+
 def pytest_addoption(parser):
     parser.addoption("--run-statistical", action="store_true", default=False,
                      help="Include repeated-fit coverage/bias campaigns (explicit opt-in).")
+    parser.addoption("--run-slow", action="store_true", default=False,
+                     help="Include the slow checks (run deliberately, never in the routine gate).")
 
 
 def pytest_collection_modifyitems(config, items):
-    """Long statistical campaigns never run as an accidental side effect of a full suite."""
-    if config.getoption("--run-statistical"):
-        return
-    campaigns = [item for item in items if item.get_closest_marker("statistical")]
-    if campaigns:
-        items[:] = [item for item in items if not item.get_closest_marker("statistical")]
-        config.hook.pytest_deselected(items=campaigns)
+    """Statistical campaigns and slow checks never run as an accidental side effect of a suite
+    run; what is left is the routine gate (operator ruling 2026-10-29)."""
+    for marker, option in _OPT_IN.items():
+        if config.getoption(option):
+            continue
+        dropped = [item for item in items if item.get_closest_marker(marker)]
+        if dropped:
+            items[:] = [item for item in items if not item.get_closest_marker(marker)]
+            config.hook.pytest_deselected(items=dropped)

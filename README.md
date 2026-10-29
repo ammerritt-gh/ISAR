@@ -129,8 +129,9 @@ a clean checkout can *see* this evidence but cannot reproduce it.
 
 ## Setup
 
-Python ≥ 3.11. `pip install -e .` (test extras: `pip install -e .[test]`; run `python -m pytest -m
-"not slow" -n 16 --dist worksteal` — about a minute, and it needs nothing outside git, so it runs in any
+Python ≥ 3.11. `pip install -e .` (test extras: `pip install -e .[test]`; run `python -m pytest
+-n 16 --dist worksteal` — about ninety seconds, slow tests left out by default (`--run-slow` or
+`run-isar-checks.bat` runs them on purpose), and it needs nothing outside git, so it runs in any
 checkout or worktree (the real-data checks are `proofs/`, run on purpose on the main checkout with
 `python -m pytest proofs` or `run-isar-proofs.bat`); `-n 16` is tuned for an idle 32-core box — on a smaller machine use
 `-n auto`; drop `-n 16 --dist worksteal` to run serially when debugging). To also run

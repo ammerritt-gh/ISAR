@@ -7,7 +7,7 @@ destructive-error rate (the metric that decides "adequate"). It prints the table
 hard-asserts the load-bearing bar: a serviceable local 9B must destroy no genuine data.
 
 Without the opt-in, collection does not contact LLMM. An opted-in run fails if LLMM is not up.
-Marked live and slow; deselect with -m "not live" or -m "not slow".
+Marked live and slow, so it runs only with --run-slow; deselect it there with -m "not live".
 """
 import logging
 import os
