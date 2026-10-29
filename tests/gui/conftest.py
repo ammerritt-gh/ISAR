@@ -94,6 +94,26 @@ def _collector_back_after_each_test():
     collector_guard.release()
 
 
+@pytest.fixture(autouse=True)
+def _no_window_outlives_its_test(_isolated_user_dirs, _no_live_health_probes):
+    """Close every top-level window a test left shown.
+
+    pytest-qt closes only the widgets given to ``qtbot.addWidget``; a window the code under test
+    opened itself (the Help window, a popup, a dock floated out) stays visible, because ``deleteLater``
+    does not run until the event loop does. The offscreen screen's cursor routes ``QTest.mouseMove`` to
+    the topmost visible window under the point, so a survivor from an earlier test on the same xdist
+    worker swallowed the move and ``hover`` stayed ``None`` (``test_help.py`` then
+    ``test_scan_list_selection.py::test_gutter_file_and_blank_clicks_and_hover``). Runs after
+    qtbot's close and before the per-test patches are undone (it depends on the fixtures that patch).
+    """
+    yield
+    from PySide6.QtWidgets import QApplication
+
+    for window in QApplication.topLevelWidgets():
+        if window.isVisible():
+            window.close()
+
+
 @pytest.fixture
 def make_ws(tmp_path):
     """Return a factory that stamps a synthetic workspace under a fresh subdir and returns its path."""
