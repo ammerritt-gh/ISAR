@@ -116,7 +116,7 @@ def locate_resolution_folder(parent: QWidget, intake):
 
 
 def locate_gpi_folder(parent: QWidget, intake):
-    """*Choose gpi folder…*: pick a folder and save it at once as the user's gpi folder. Returns the
+    """*gpi files…*: pick a folder and save it at once as the user's gpi folder. Returns the
     :class:`~isar_gui.viewmodels.intake.SaveOutcome`, or ``None`` when cancelled."""
     saved = intake.settings.gpi_folder if intake.settings is not None else None
     folder = QFileDialog.getExistingDirectory(parent, "Choose the gpi folder", "" if saved is None else saved.path)
@@ -171,7 +171,7 @@ class _RunButton(ElidedButton):
 
 class SetupSection(QWidget):
     locate_requested = Signal()
-    gpi_locate_requested = Signal()     # "Choose gpi folder…" -> the window's gpi chooser route
+    gpi_locate_requested = Signal()     # "gpi files…" -> the window's gpi chooser route
     run_requested = Signal()            # "Fast-pass all ready (N)" -> MainWindow.start_analysis (the button holds no logic)
 
     def __init__(self, intake, parent: QWidget | None = None) -> None:
