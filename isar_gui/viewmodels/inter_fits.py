@@ -58,9 +58,15 @@ def entry_tip(entry: FitEntry) -> str:
     return "\n".join(lines)
 
 
-def bar_state(entries: Sequence[FitEntry] | None, viewed: str, *, locked: bool = False,
-              locked_fit: str | None = None, waterfall_off: str | None = None,
+VIEWED = "viewed"    # ``drawn`` default: the viewed fit is the one on the plot
+
+
+def bar_state(entries: Sequence[FitEntry] | None, viewed: str, *, drawn: str | None = VIEWED,
+              locked: bool = False, locked_fit: str | None = None, waterfall_off: str | None = None,
               waterfall_on: bool = False) -> BarState:
+    """``drawn``: the fit id on the plot for this spectrum, 'deep' for its deep solo curve, None for no curve."""
+    if drawn == VIEWED:
+        drawn = viewed
     if entries is None:
         reading = "Reading this spectrum's fits…"
         return BarState(None, viewed, locked, reading, reading, "Lock this fit", reading,
@@ -81,12 +87,14 @@ def bar_state(entries: Sequence[FitEntry] | None, viewed: str, *, locked: bool =
             authoritative_off = f"Locked to {locked_fit}; unlock first."
         else:
             authoritative_off = None
-        info, info_tip = _info(entry, locked)
+        info, info_tip = _info(entry, locked, drawn)
     return BarState(tuple(entries), viewed, locked, menu_off, authoritative_off,
                     "Unlock" if locked else "Lock this fit", lock_off, waterfall_off, waterfall_on, info, info_tip)
 
 
-def _info(entry: FitEntry, locked: bool) -> tuple[str, str]:
+def _info(entry: FitEntry, locked: bool, drawn: str | None) -> tuple[str, str]:
+    if drawn is None:    # the viewed fit is not on the plot, so no line may describe it as shown
+        return "No fit is shown", "No fit is shown"
     parts = [f"Showing {entry.label}", "authoritative" if entry.authoritative else "not authoritative"]
     if locked:
         parts.append("locked")

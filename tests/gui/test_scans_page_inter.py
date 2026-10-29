@@ -229,7 +229,7 @@ def test_bar_is_hidden_without_inter_state_and_loading_history_is_said(qtbot, sc
     assert not page.inter_mount.isHidden() and "reading" in page.inter_bar.menu_button.text()
 
 
-def test_a_fresh_page_draws_the_authoritative_refit_at_the_default_fit(qtbot, scans_view_ws_readonly, reads):
+def test_fit_none_draws_no_fit_curve_even_with_an_authoritative_refit(qtbot, scans_view_ws_readonly, reads):
     ws = Workspace.open(scans_view_ws_readonly)
     page = ScansPage(ScanListViewModel(ws), ws)
     qtbot.addWidget(page)
@@ -242,10 +242,9 @@ def test_a_fresh_page_draws_the_authoritative_refit_at_the_default_fit(qtbot, sc
     inter.overview = make_overview(by_key={ONE_MODE: _row(ONE_MODE, "r2")})
     inter.histories[ONE_MODE] = make_history(_refit("r2", "ring 2", authoritative=True))
     drawn = _select(page, ONE_MODE, active=ONE_MODE)
-    assert page._drawn_state.traces[0].curves
-    assert drawn.curves_header == "Curves · Inter-spectra fits"
-    text = next(line.text for line in drawn.legend if line.entry == ONE_MODE)
-    assert "Batch 1 · ring 2" in text and CONDITIONAL_ERRORS in text
+    assert not drawn.curves and drawn.curves_header is None
+    assert not any(CONDITIONAL_ERRORS in line.text for line in drawn.legend)
+    assert page._drawn_state.inter.info == "No fit is shown"
 
 
 def test_the_legend_names_the_deep_curve_when_fit_is_deep(setup, reads):

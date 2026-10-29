@@ -107,6 +107,7 @@ class ScansPageViewModel(ViewModel):
         self._frame = None
         self._state = PageState()
         self.inter = None
+        self._drawn = None        # the fit id, 'deep' or None on the plot for the active spectrum
         self.chosen = {}          # active spectrum key -> fit id; session-local, never saved (hard rule 7)
         self.waterfall = False
         self._active = None
@@ -331,7 +332,7 @@ class ScansPageViewModel(ViewModel):
         from dataclasses import replace
         bar = None
         if inter is not None and self._active is not None and body == PLOT:
-            bar = bar_state(history, viewed,
+            bar = bar_state(history, viewed, drawn=self._drawn,
                             locked=bool(row and row.locked), locked_fit=row.locked_fit_id if row else None,
                             waterfall_off=wf_off, waterfall_on=wf)
         state = replace(state, inter=bar, fit_value=self.fit, scale_value=self.scale,
@@ -383,6 +384,7 @@ class ScansPageViewModel(ViewModel):
         return tuple(picked), total
 
     def _plot_state(self, common, labels, n, viewed):
+        self._drawn = None
         traces, drawn_keys, not_drawn, deep_summaries, refit_flags = [], [], [], [], []
         wf = self._wf_on
         fit_pass = 'fast' if wf else self.fit
@@ -402,10 +404,8 @@ class ScansPageViewModel(ViewModel):
                 continue
             y_unit = scaled.y_unit
             curves, note = (), None
-            refit = fit_id != 'fast'
-            # an in-use refit is the spectrum's fit, so it draws in the fast slot even at Fit None
-            shown = 'fast' if refit and fit_pass == 'none' else fit_pass
-            refit = refit and shown == 'fast'    # Deep draws the solo deep fit, never the refit
+            shown = fit_pass
+            refit = fit_id != 'fast' and shown == 'fast'    # Deep draws the solo deep fit, never the refit
             if shown != 'none' and common['view'] != 'overlay':
                 result = scaled.passes[shown]
                 summary = bundle.summaries[shown]
@@ -426,6 +426,8 @@ class ScansPageViewModel(ViewModel):
             tag = ' (beamline zero)' if bundle.zero == ZERO_BEAMLINE else ''
             identity = fit_label if wf else labels[bundle.key] + tag
             active = self._wf_entries[index].fit_id == viewed if wf else bundle.key == self.selection.active
+            if curves and (fit_id == viewed if wf else bundle.key == self._active):
+                self._drawn = 'deep' if shown == 'deep' else fit_id    # what the bar names on show
             traces.append(ScansTrace(identity, note, scaled.x, scaled.y, scaled.yerr,
                                      scaled.kept, scaled.fine_x, curves, fit_pass == 'deep', active))
             drawn_keys.append(bundle.key)
