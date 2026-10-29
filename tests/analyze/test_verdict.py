@@ -373,3 +373,14 @@ def test_a_close_call_between_none_and_some_peaks_is_not_no_signal():
         assert v.verdict == "unconstrained" and "alternatives 1 (P=0.45)" in v.reasons[-1]
     assert verdict.classify([res], ctx, sel, count_probabilities=probs,
                             count_state="resolved").verdict == "no_signal"
+
+
+def test_off_bl43lxu_a_delta_twin_winner_is_not_rebuilt():
+    """Main's rebuild (c20e23d6) returns None for a delta-twin winner with a background: only the
+    background-free twin is searched there. The reduction search is the BL43LXU rebuild's alone."""
+    x = np.linspace(-10.0, 10.0, 81)
+    ctx = ScanContext(x=x, counts=np.full(81, 20.0), mask=np.ones(81, bool), T=100.0, center=0.0,
+                      gauss_fwhm=1.0, lorentz_fwhm=0.0, instrument="TAS", energy_status="needs_zero")
+    params = {"phonon.omega0": 3.0, "phonon.Gamma": 0.1, "phonon.h": 30.0, "bg.BG": 3.0}   # pinned Gamma
+    for label in ("stokes+bg_delta1", "elastic+stokes+bg_delta1"):
+        assert verdict._fitted_model(label, params, ctx) is None

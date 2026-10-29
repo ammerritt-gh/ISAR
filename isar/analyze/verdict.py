@@ -104,16 +104,23 @@ def _fitted_model(label, params, ctx):
     (`stokes2+bg`) must reconstruct here, else a GoF-bad two-branch fit is silently mis-routed to
     `junk` (and the descriptor falsification is disabled for it). ``None`` if the label is not
     enumerable here or its params do not pack."""
-    from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
+    from isar.analyze.phonon import (central_qe_admissible, enumerate_phonon_multimode,
+                                     enumerate_phonon_structures)
 
     hyps = {h.label: h for h in (*enumerate_phonon_structures(ctx), *enumerate_phonon_multimode(ctx))}
     hyp = hyps.get(label)
-    if hyp is None:
-        # An on-demand reduced model (no elastic line, QE or background) is not enumerated: it is
-        # the reduction of an enumerated structure carrying exactly these parameters.
+    if hyp is None and central_qe_admissible(ctx):
+        # BL43LXU: an on-demand reduced model (no QE or background; never without the elastic line) is
+        # not enumerated; it is the reduction of an enumerated structure, rebuilt by its label.
+        hyp = next((red for base in hyps.values() for red in _reductions(base) if red.label == label), None)
+    elif hyp is None and "bg.BG" not in (params or {}):
+        # A background-free degenerate twin (loop.without_background): the enumerated structure
+        # that, less its background, carries exactly these parameters.
+        from isar.analyze.loop import without_background
+
         names = set(params or ())
-        hyp = next((red for base in hyps.values() for red in _reductions(base)
-                    if set(red.build().param_names()) == names), None)
+        hyp = next((twin for base in hyps.values() for twin in [without_background(base)]
+                    if twin is not None and set(twin.build().param_names()) == names), None)
     if hyp is None:
         return None
     comp = hyp.build()
