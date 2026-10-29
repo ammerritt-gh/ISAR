@@ -232,13 +232,14 @@ def test_a_stamped_fast_solo_carries_the_fit_inputs_hash_of_its_spectrum(tmp_pat
     from isar.session import currentness
     from isar.session.workspace import Workspace
     ws = build_inter_workspace(tmp_path)
-    _, session = Workspace.open(ws).load()
+    card, session = Workspace.open(ws).load()
     rows = intake_scans.read_scans(ws)
     read = store.read_all(ws, store.ENTRIES)
     index = inputs.index_entries(read.entries, lines=read.lines)
     key = spectrum_keys(ws)[-1]
     scan, det = key.rsplit(":", 1)
-    fresh = inputs.inputs_hash(inputs.unit_inputs(rows[scan], inputs.scan_inputs(rows[scan], index), det, None))
+    fresh = inputs.inputs_hash(inputs.unit_inputs(rows[scan], inputs.scan_inputs(rows[scan], index), det,
+                                                  card.state.tabulated_calibration.get(scan)))
     assert (session.scans[key].provenance or {}).get("fit_inputs", {}).get("hash") == fresh
     assert "fast" in currentness.current_passes(ws, [key])[key]
 
