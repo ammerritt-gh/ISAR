@@ -168,8 +168,8 @@ Nothing here needs fixing. It is the baseline to regress against after tuning.
 ## 5. Known-inert and out of scope for this run
 
 - **Declared hypotheses do not move real placements.** The production catalogue declares no
-  identity-conditioned priors, so no real fit's identity is ever non-None-matched — the permanent
-  xfail tripwire `tests/drive/test_fcc_battery.py::test_acoustic_priority_declared_hypothesis_moves_real_placements`.
+  identity-conditioned priors, so no real fit's identity is ever non-None-matched — backlog item
+  DRV-6 in `TODO.md` (its strict-xfail tripwire test was deleted 2026-10-29).
   Do not read this run's placements as evidence for or against hypothesis priority.
 - **Cost / per-neutron pricing is Planned** (SCENE-5.5, H21(a)). Section 1 argues the pricing
   target should be re-examined before it is built.
