@@ -10,7 +10,7 @@ import json
 import sys
 import traceback
 
-from isar.intake import curves, inputs
+from isar.intake import curves, gpi, inputs
 from isar.schema import card as card_mod
 from isar.session import ingest, writer
 from isar.session.atomic import WorkspaceBusy
@@ -71,6 +71,7 @@ def run(args) -> int:
             "gaps": report.to_jsonable()["gaps"],
             "last_ingest": report.to_jsonable()["last_ingest"],
             "curves": report.curves,
+            "gpi": report.gpi,
             "intake_damaged": damaged,
             "import_record_error": report.import_record_error}))
         return 0
@@ -99,6 +100,12 @@ def run(args) -> int:
             print(f"  resolution curves: check failed ({report.curves['error']})")
         else:
             for line in curves.CurveCheck.from_dict(report.curves).lines():
+                print(f"  {line}")
+    if report.gpi is not None:
+        if "error" in report.gpi:
+            print(f"  gpi files: check failed ({report.gpi['error']})")
+        else:
+            for line in gpi.GpiCheck.from_dict(report.gpi).lines():
                 print(f"  {line}")
     for line in damaged:
         print(f"  intake: {line}")

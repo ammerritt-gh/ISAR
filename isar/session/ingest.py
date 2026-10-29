@@ -22,6 +22,7 @@ from pathlib import Path
 
 from isar.intake import curves as intake_curves
 from isar.intake import fit_inputs as intake_fit_inputs
+from isar.intake import gpi as intake_gpi
 from isar.intake import scans as intake_scans
 from isar.parsers import registry
 from isar.parsers.base import FileSet
@@ -366,6 +367,7 @@ class IngestReport:
     gaps: list = field(default_factory=list)         # file_gaps output
     last_ingest: dict = field(default_factory=dict)  # persisted, additive operator summary
     curves: dict | None = None                       # the resolution-curve check (BL43); {"error"} when it failed
+    gpi: dict | None = None                          # the gpi check (BL43, isar.intake.gpi); {"error"} when it failed
     import_record_error: str | None = None           # BL43: the import record was not written (GUI file values stale)
     dirty: bool = False
 
@@ -379,6 +381,7 @@ class IngestReport:
                 "gaps": [list(g) for g in self.gaps],
                 "last_ingest": dict(self.last_ingest),
                 "curves": None if self.curves is None else dict(self.curves),
+                "gpi": None if self.gpi is None else dict(self.gpi),
                 "import_record_error": self.import_record_error}
 
 
@@ -450,14 +453,15 @@ def supersede_summed(session, *, on_supersede=None) -> bool:
     return changed
 
 
-def _files_not_read(plan: IngestPlan, got: _Collected, curves: dict | None) -> dict:
+def _files_not_read(plan: IngestPlan, got: _Collected, curves: dict | None, gpi_folder=None) -> dict:
     """Resolved path -> its ``files`` entry in the import record, for each file of this batch that was not
     read (None: read, so any earlier entry goes). Curve files (the check's folder and its other folders)
-    are never listed: they are counted by the curve check, and a real ``rf/`` holds hundreds."""
-    skip = []
+    are never listed: they are counted by the curve check, and a real ``rf/`` holds hundreds. Nor are the
+    files of the gpi folder in force (``gpi_folder``): the gpi check reads them."""
+    skip = [Path(gpi_folder).resolve()] if gpi_folder is not None else []
     if curves and "error" not in curves:
-        skip = [Path(p).resolve() for p in
-                [curves.get("folder")] + [o["path"] for o in curves.get("other_folders") or []] if p]
+        skip += [Path(p).resolve() for p in
+                 [curves.get("folder")] + [o["path"] for o in curves.get("other_folders") or []] if p]
     set_of = {str(Path(p).resolve()): fs.key for fs in plan.file_sets for p, _g in fs.measurements}
     out: dict = {}
 
@@ -539,6 +543,7 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
 
     report = IngestReport()
     plan = discover(data_paths, card)
+    gpi_folder = None
     if workspace_root is not None:
         try:
             check = intake_curves.check_curves(workspace_root, card, data_paths, by="import")
@@ -546,6 +551,11 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
         except Exception as exc:  # noqa: BLE001 — a failed curve check is reported, never aborts the batch
             log.exception("ingest: resolution-curve check failed")
             report.curves = {"error": f"{type(exc).__name__}: {exc}"}
+        if intake_scans.applies(card):
+            try:
+                gpi_folder = intake_gpi.gpi_folder_in_force(workspace_root, data_paths)
+            except Exception:  # noqa: BLE001 — the gpi check below reports it; the batch goes on
+                log.exception("ingest: gpi folder discovery failed")
 
     # --- parse measurement files/sets, tracking record -> source file(s) for dedup reporting ---
     got = _collect(plan, card, isolate=True, session=session, ledger=session)
@@ -631,10 +641,16 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
     if intake:
         try:
             intake_scans.record_import(workspace_root, intake_rows,
-                                       seen_files=_files_not_read(plan, got, report.curves))
+                                       seen_files=_files_not_read(plan, got, report.curves, gpi_folder))
         except Exception as exc:  # noqa: BLE001 — a failed import record is logged and reported, never aborts the batch
             log.exception("ingest: %s not written", intake_scans.INTAKE_SCANS)
             report.import_record_error = import_record_message(intake_scans.INTAKE_SCANS, exc)
+        try:     # after the rows are recorded: the check judges every imported scan's #Q= as it now stands
+            check = intake_gpi.check_gpi(workspace_root, card, data_paths, by="import")
+            report.gpi = None if check is None else check.to_dict()
+        except Exception as exc:  # noqa: BLE001 — a failed gpi check is reported, never aborts the batch
+            log.exception("ingest: gpi check failed")
+            report.gpi = {"error": f"{type(exc).__name__}: {exc}"}
 
     # --- file manifest for ALL classified files (merge, never replace) ---
     # For a measurement-class FILE, its scans still split into measurement scans (ledgered, listed

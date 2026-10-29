@@ -40,8 +40,8 @@ from isar.calibrate.energy_zero import (
     ZeroSeries,
     build_energy_calibration,
 )
-from isar.intake.curves import LoadedCurves, load_curves, resolution_location
-from isar.intake.inputs import calibration_inputs_key
+from isar.intake.curves import LoadedCurves, load_curves, resolution_location, with_named
+from isar.intake.inputs import calibration_inputs_key, named_key
 from isar.parsers import metadata, sarf, spec_base
 from isar.schema import axes
 from isar.schema.card import Card
@@ -187,14 +187,18 @@ def _num(v) -> float | None:
     return v if math.isfinite(v) else None
 
 
-def _calibrate_detector(x, det, spectrum, library, setting, problem, identified, accepted=False) -> dict:
-    """One detector's entry of the state map: its zero and elastic fit, or why it is held."""
+def _calibrate_detector(x, det, spectrum, library, setting, problem, identified, accepted=False,
+                        named=None) -> dict:
+    """One detector's entry of the state map: its zero and elastic fit, or why it is held. ``named``: the gpi
+    file's curve set the library holds alone (a missing curve is named by its expected file)."""
     why = tabulated.count_hold(spectrum, accepted=accepted)   # the info notice is print rounding: raw, fitted
     if why == NON_RAW_REASON:
         return {"held_reason": NON_RAW_REASON, "flags": []}      # parsed and shown, never fitted
     if why is not None:                                   # _i counts off an integer: held until accepted
         return {"held_reason": f"{det}: {why}", "flags": []}
     why = tabulated.curve_need(library, det, setting, problem)
+    if why is not None and named is not None and not problem and setting is not None:
+        why = f"no curve {named}_{det} (the curve set the gpi file names) in the resolution folder"
     if why is None and not identified:                   # its file was unreadable between the load and its identity
         why = f"the curve at {setting} is unreadable for its identity (its file changed or was locked while read)"
     if why is not None:
@@ -218,9 +222,21 @@ def _calibrate_detector(x, det, spectrum, library, setting, problem, identified,
             "flags": flags}
 
 
+def _named_set(rec) -> dict:
+    """The effective record's ``resolution_set`` fact (a gpi file's curve set in force), else {}."""
+    return (rec.facts or {}).get("resolution_set") or {}
+
+
 def _declared_slit(rec) -> str | None:
-    slit = (rec.facts.get("slit") or {}).get("value")
+    """The named set's own setting while one is in force and its setting is known, else the slit fact."""
+    slit = _named_set(rec).get("setting") or (rec.facts.get("slit") or {}).get("value")
     return None if slit is None else (metadata.normalise_slit(slit) or str(slit))
+
+
+def curves_for(record, loaded: LoadedCurves | None) -> LoadedCurves | None:
+    """The curves this record is calibrated and fitted with: ``loaded`` narrowed to the gpi file's named set
+    when one is in force (``curves.with_named``), else ``loaded`` itself."""
+    return loaded if loaded is None else with_named(loaded, _named_set(record).get("value"))
 
 
 def _accepted(rec) -> list:
@@ -233,14 +249,16 @@ def _calibrate_scan(rec, library, fp, problem, folder, pattern, chash, identity,
     declared = _declared_slit(rec)
     choice = tabulated.choose_setting(x, rec.spectra, library, declared)
     accepted = set(_accepted(rec))
+    named = _named_set(rec).get("value")
     detectors = {}
     for det, sp in rec.spectra.items():
         d = _calibrate_detector(x, det, sp, library, choice.setting, problem, (det, choice.setting) in identity,
-                                det in accepted)
+                                det in accepted, named)
         if "held_reason" not in d:           # the curve its zero was fitted with, by content
             d["curve"] = identity[(det, choice.setting)]
         detectors[det] = d
-    return {"content_hash": chash, "inputs_key": inputs_key, "library": fp,
+    out = {"named": named} if named is not None else {}      # absent without a named set: today's state
+    return {**out, "content_hash": chash, "inputs_key": inputs_key, "library": fp,
             "folder": None if folder is None else str(folder),
             "pattern": pattern, "declared": declared,
             "setting": choice.setting, "setting_source": choice.source,
@@ -263,7 +281,8 @@ def _inputs_key(record, data_hash: str, loaded: LoadedCurves) -> str:
     return calibration_inputs_key(
         data_revision=data_hash, folder=None if loaded.folder is None else str(loaded.folder),
         pattern=loaded.pattern, library=loaded.fingerprint, declared_slit=_declared_slit(record),
-        analyzers=sorted(record.spectra), counts_accepted=_accepted(record))
+        analyzers=sorted(record.spectra), counts_accepted=_accepted(record),
+        named=named_key(_named_set(record).get("value"), _named_set(record).get("curves") or {}))
 
 
 def tabulated_key(card: Card, record, *, data_hash: str, base_dir=None, loaded: LoadedCurves | None = None) -> str:
@@ -275,8 +294,9 @@ def tabulated_key(card: Card, record, *, data_hash: str, base_dir=None, loaded: 
 def calibrate_scan_state(card: Card, record, *, data_hash: str, base_dir=None,
                          loaded: LoadedCurves | None = None) -> dict:
     """One scan's `tabulated_elastic` state, computed now against ``loaded`` (else the folder in force);
-    writes nothing. An odd scan gets an ``error`` state with the reason, never an exception."""
-    loaded = _curves(card, base_dir, loaded)
+    writes nothing. An odd scan gets an ``error`` state with the reason, never an exception. A named curve
+    set in force (the record's ``resolution_set``) is calibrated with exactly its files (``curves_for``)."""
+    loaded = curves_for(record, _curves(card, base_dir, loaded))
     key = _inputs_key(record, data_hash, loaded)
     try:
         return _calibrate_scan(record, loaded.library, loaded.fingerprint, loaded.problem, loaded.folder,
@@ -507,6 +527,8 @@ def _resolve_tabulated(record, detector_id, runcal: RunCalibration, version: str
         return held(d["held_reason"])
     ref = {"folder": scan_state["folder"], "pattern": scan_state["pattern"],
            "fingerprint": scan_state["library"], "detector": detector_id, "setting": scan_state["setting"]}
+    if scan_state.get("named"):            # a gpi file's named set: rebuilt by file name, never the slit lookup
+        ref["named"] = scan_state["named"]
     try:
         # The run's snapshot when the scan view carries it (a pooled worker never re-reads the folder), with
         # the stamp the snapshot took of its file. shortcut: a curve outside the snapshot is stamped from
