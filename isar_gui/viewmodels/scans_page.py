@@ -75,7 +75,7 @@ class PageState:
     not_drawn: tuple[tuple[str, str], ...] = ()
     traces: tuple[ScansTrace, ...] = ()
     curves_header: str | None = None
-    fit_value: str = 'none'
+    fit_value: str = 'fast'
     scale_value: str = 'normalised'
     inter: BarState | None = None
 
@@ -88,7 +88,7 @@ class ScansPageViewModel(ViewModel):
         super().__init__(ws, parent)
         self.scan_list = scan_list_vm
         self.selection = scan_list_vm.selection
-        self.fit = 'none'
+        self.fit = 'fast'    # the Fast slot carries the authoritative fit, so a fresh page draws it
         self.layout = 'offset'
         self.scale = 'normalised'
         self.hand_step = None
@@ -212,7 +212,7 @@ class ScansPageViewModel(ViewModel):
         for name, default in (("zero_lines", True), ("peak_lines", True), ("filled_symbols", False)):
             value = saved.get(name, default)
             setattr(self, name, value if isinstance(value, bool) else default)
-        for name, choices, default in (('fit', PASSES, 'none'), ('layout', LAYOUTS, 'offset'),
+        for name, choices, default in (('fit', PASSES, 'fast'), ('layout', LAYOUTS, 'offset'),
                                         ('scale', SCALES, 'normalised')):
             value = saved.get(name)
             setattr(self, name, value if isinstance(value, str) and value in choices else default)

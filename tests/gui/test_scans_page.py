@@ -224,7 +224,7 @@ def test_view_state_and_control_widths(page):
     session.view_state['scans_page'] = {'fit': 'x', 'layout': 3}
     page.load_view_state(session)
     page.flush_redraw()
-    assert (page.vm.fit, page.vm.layout, page.vm.scale) == ('none', 'offset', 'normalised')
+    assert (page.vm.fit, page.vm.layout, page.vm.scale) == ('fast', 'offset', 'normalised')
     assert page.minimumSizeHint().width() <= 300
     assert page.fit_mount.minimumSizeHint().width() <= 150
     assert page.layout_mount.minimumSizeHint().width() + page.scale_mount.minimumSizeHint().width() + 6 <= 300

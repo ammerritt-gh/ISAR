@@ -15,6 +15,7 @@ from gui.inter_fakes import FakeInterState, make_entry, make_history, make_overv
 from isar.workspace_api import Workspace
 from isar.workspace_api.inter_spectra import SpectrumInter
 from isar_gui.inter_words import CONDITIONAL_ERRORS
+from isar_gui.viewmodels.inter_fits import NOT_ON_PLOT
 from isar_gui.gui_store import GuiStore
 from isar_gui.viewmodels import scans_page as vm_module
 from isar_gui.viewmodels.scan_list import ScanListViewModel
@@ -229,7 +230,7 @@ def test_bar_is_hidden_without_inter_state_and_loading_history_is_said(qtbot, sc
     assert not page.inter_mount.isHidden() and "reading" in page.inter_bar.menu_button.text()
 
 
-def test_fit_none_draws_no_fit_curve_even_with_an_authoritative_refit(qtbot, scans_view_ws_readonly, reads):
+def _fresh_page(qtbot, scans_view_ws_readonly):
     ws = Workspace.open(scans_view_ws_readonly)
     page = ScansPage(ScanListViewModel(ws), ws)
     qtbot.addWidget(page)
@@ -238,13 +239,36 @@ def test_fit_none_draws_no_fit_curve_even_with_an_authoritative_refit(qtbot, sca
     page.set_inter(inter)
     page.resize(700, 600)
     page.show()
-    assert page.vm.fit == "none"
     inter.overview = make_overview(by_key={ONE_MODE: _row(ONE_MODE, "r2")})
     inter.histories[ONE_MODE] = make_history(_refit("r2", "ring 2", authoritative=True))
+    return page
+
+
+def test_fresh_page_draws_the_authoritative_refit_and_names_it(qtbot, scans_view_ws_readonly, reads):
+    page = _fresh_page(qtbot, scans_view_ws_readonly)
+    assert page.vm.fit == "fast"
     drawn = _select(page, ONE_MODE, active=ONE_MODE)
+    assert drawn.curves and reads[-1] == {ONE_MODE: "r2"}
+    assert any(CONDITIONAL_ERRORS in line.text for line in drawn.legend)
+    assert page._drawn_state.inter.info.startswith("Showing Batch 1 · ring 2")
+    assert page._drawn_state.inter.authoritative_off == "This fit is already the one ISAR uses for this spectrum."
+
+
+def test_fit_none_draws_no_fit_curve_and_greys_make_authoritative_and_lock(qtbot, scans_view_ws_readonly, reads):
+    page = _fresh_page(qtbot, scans_view_ws_readonly)
+    page.vm.inter.histories[ONE_MODE] = make_history(_refit("r1", "ring 1"), _refit("r2", "ring 2", authoritative=True))
+    _select(page, ONE_MODE, active=ONE_MODE)
+    page.vm.choose_fit("r1")    # a viewed, non-authoritative fit that Fit None then hides
+    page.vm.set_fit("none")
+    page.flush_redraw()
+    drawn = page.drawn()
     assert not drawn.curves and drawn.curves_header is None
     assert not any(CONDITIONAL_ERRORS in line.text for line in drawn.legend)
-    assert page._drawn_state.inter.info == "No fit is shown"
+    bar = page._drawn_state.inter
+    assert bar.info == "No fit is shown"
+    assert bar.authoritative_off == NOT_ON_PLOT and bar.lock_off == NOT_ON_PLOT
+    assert page.inter_bar.authoritative_button.toolTip() == NOT_ON_PLOT
+    assert not page.inter_bar.authoritative_button.isEnabled() and not page.inter_bar.lock_button.isEnabled()
 
 
 def test_the_legend_names_the_deep_curve_when_fit_is_deep(setup, reads):
