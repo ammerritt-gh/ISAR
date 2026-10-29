@@ -463,6 +463,7 @@ def test_preview_anchored_wraps_the_graph_and_adds_provider_notes(root, monkeypa
     assert p.notes == ("n1", "the recorded lattice epoch is not a valid cell: 2 spectra")
     assert f.calls["build"]["grid"] is not None and f.calls["build"]["kinds"] == frozenset({"q", "T"})
     assert f.calls["build"]["collinearity_tol"] == 1e-6
+    assert f.calls["build"]["q_reasons"]["e:1:a04"] == "the recorded lattice epoch is not a valid cell"
 
 
 def test_preview_q_with_no_coordinates_says_why_whatever_the_graph_says(root, monkeypatch):

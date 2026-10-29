@@ -15,6 +15,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 ACCEPTED = ("gpi", "header", "filename", "reported")     # the source words that make an analyzer's hkl accepted
+NO_HKL = "no accepted hkl"
 INVALID_CELL = "the recorded lattice epoch is not a valid cell"
 
 
@@ -98,7 +99,7 @@ def q_coordinates(root, keys: Collection[str]) -> QCoordinates:
                 scan_inputs[scan] = inputs.scan_inputs(row, index, gpi_now.get(scan))
             q, source = inputs.analyzer_q(row, scan_inputs[scan], det)
         if q is None or source not in ACCEPTED:
-            reasons[key] = "no accepted hkl"
+            reasons[key] = NO_HKL
             continue
         cart = epoch = None
         if cell is not None:

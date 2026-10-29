@@ -22,7 +22,7 @@ from isar.session.inter_spectra.graph import anchored_scope, build_graph
 from isar.session.inter_spectra.layout import grid_for
 from isar.session.inter_spectra.nodes import read_nodes
 from isar.session.inter_spectra.preview import Q_NO_LAYOUT, preview_anchored, preview_simultaneous
-from isar.session.inter_spectra.q_provider import INVALID_CELL, q_coordinates
+from isar.session.inter_spectra.q_provider import INVALID_CELL, NO_HKL, q_coordinates
 from isar.session.inter_spectra.records import ELIGIBLE
 from isar.session.inter_spectra.rings import plan_anchored
 from isar.session.inter_spectra.schedule import plan_simultaneous
@@ -113,7 +113,7 @@ NO_DIRECTION = "choose a direction first (q, T, or q and T)"
 NO_SELECTION = "select at least two spectra first"
 NO_FIT = "No fit in use"
 NO_Q = "spreading in q needs each analyzer's accepted hkl; none is accepted for this scan"
-NOT_COUPLED = ("no accepted hkl", "unknown spectrum")       # provider reasons the preview does not count as a note
+NOT_COUPLED = (NO_HKL, "unknown spectrum")       # provider reasons the preview does not count as a note
 _SEV = {"info": 0, "warn": 1, "serious": 2}
 
 
@@ -379,7 +379,8 @@ def batch_preview(root, req: BatchRequest) -> BatchPreview:
             notes.append(f"{len(set(req.selection)) - len(scope)} selected spectra are unknown to the import record")
     qc = q_coordinates(root, scope)
     graph = build_graph(ns.nodes, ns, scope=scope, kinds=kinds, grid=grid,
-                        coords=qc.points if "q" in kinds else {}, collinearity_tol=settings.collinearity_tol)
+                        coords=qc.points if "q" in kinds else {}, collinearity_tol=settings.collinearity_tol,
+                        q_reasons=qc.reasons)
     locked_here = locks & set(scope)
     if req.kind == "anchored":
         res = _load(root).res

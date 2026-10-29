@@ -8,6 +8,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 
 from isar.session.inter_spectra.graph import LinkGraph, Term
+from isar.session.inter_spectra.q_provider import INVALID_CELL, NO_HKL
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,9 @@ def _alone(g: LinkGraph, k: str) -> str:
     why = g.unlinked.get(k, ())
     if "q: no analyzer layout for this instrument" in why:
         return "this instrument has no analyzer layout"
-    if "q: no accepted hkl" in why:
+    if f"q: {INVALID_CELL}" in why:
+        return INVALID_CELL
+    if f"q: {NO_HKL}" in why:
         return "no accepted hkl for its analyzer"
     return "no neighbour in the selection"
 

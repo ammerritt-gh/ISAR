@@ -7,6 +7,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 
 from isar.session.inter_spectra.graph import Link, LinkGraph
+from isar.session.inter_spectra.q_provider import INVALID_CELL, NO_HKL
 
 
 @dataclass(frozen=True)
@@ -111,8 +112,10 @@ def plan_anchored(g: LinkGraph, anchors: Collection[str], locks: Collection[str]
             continue
         if not n.eligible:
             not_reached[k] = n.reason or "not eligible"
-        elif "q: no accepted hkl" in g.unlinked.get(k, ()) and not adj[k]:
-            not_reached[k] = "no accepted hkl"
+        elif f"q: {NO_HKL}" in g.unlinked.get(k, ()) and not adj[k]:
+            not_reached[k] = NO_HKL
+        elif f"q: {INVALID_CELL}" in g.unlinked.get(k, ()) and not adj[k]:
+            not_reached[k] = INVALID_CELL
         else:
             not_reached[k] = "no path to an anchor within the scope"
 

@@ -15,7 +15,7 @@ from inter_synthetic import DETS, build, point, scan_nodes
 from isar.intake.gpi import check_gpi
 from isar.session.inter_spectra.layout import BL43_GRID
 from isar.session.inter_spectra.preview import preview_anchored, preview_simultaneous
-from isar.session.inter_spectra.q_provider import q_coordinates
+from isar.session.inter_spectra.q_provider import INVALID_CELL, q_coordinates
 from isar.session.inter_spectra.rings import plan_anchored
 from isar.session.inter_spectra.schedule import plan_simultaneous
 from isar.session.workspace import Workspace
@@ -111,3 +111,18 @@ def test_a_simultaneous_spectrum_without_hkl_says_so_in_the_preview():
     g = build(nodes, coords=coords, kinds=("q", "T"))
     pv = preview_simultaneous(g, plan_simultaneous(g, ()))
     assert not pv.can_start and "no accepted hkl" in pv.blocked
+
+
+def test_an_invalid_lattice_epoch_is_the_reason_in_the_simultaneous_preview():
+    nodes = scan_nodes(dets=("a03", "a04"))
+    g = build(nodes, kinds=("q", "T"), q_reasons={"E:10:a03": INVALID_CELL, "E:10:a04": INVALID_CELL})
+    pv = preview_simultaneous(g, plan_simultaneous(g, ()))
+    assert not pv.can_start and pv.blocked == f"the selection has no linked spectra: {INVALID_CELL}"
+
+
+def test_an_invalid_lattice_epoch_is_the_reason_in_the_anchored_rings_and_notes():
+    nodes = scan_nodes(dets=("a03", "a04"))
+    g = build(nodes, coords={"E:10:a03": point((0, 0, 0))}, kinds=("q", "T"), q_reasons={"E:10:a04": INVALID_CELL})
+    plan = plan_anchored(g, ["E:10:a03"], [], [])
+    assert plan.not_reached == {"E:10:a04": INVALID_CELL}
+    assert f"q-links unavailable: {INVALID_CELL}; spreading in T only" in preview_anchored(g, plan, "qT").notes

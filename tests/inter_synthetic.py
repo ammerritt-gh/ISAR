@@ -31,7 +31,7 @@ def grid_coords(scan=SCAN, dets=DETS) -> dict:
             for r, row in enumerate(BL43_GRID.rows) for c, d in enumerate(row) if d in dets}
 
 
-def build(nodes, ns=None, *, scope=None, kinds=("q",), coords=None, tol=1e-6, grid=BL43_GRID):
+def build(nodes, ns=None, *, scope=None, kinds=("q",), coords=None, tol=1e-6, grid=BL43_GRID, q_reasons=None):
     ns = ns or NodeSet(nodes=nodes, series={}, slots={}, repeats=())
     return build_graph(nodes, ns, scope=set(nodes) if scope is None else set(scope), kinds=frozenset(kinds),
-                       grid=grid, coords=coords or {}, collinearity_tol=tol)
+                       grid=grid, coords=coords or {}, collinearity_tol=tol, q_reasons=q_reasons)

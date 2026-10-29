@@ -6,6 +6,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from isar.session.inter_spectra.graph import Direction, LinkGraph
+from isar.session.inter_spectra.q_provider import INVALID_CELL, NO_HKL
 from isar.session.inter_spectra.rings import AnchoredPlan
 from isar.session.inter_spectra.schedule import SimultaneousPlan
 
@@ -31,7 +32,9 @@ def _q_cause(g: LinkGraph) -> str:
     why = {w for v in g.unlinked.values() for w in v}
     if "q: no analyzer layout for this instrument" in why:
         return Q_NO_LAYOUT
-    if "q: no accepted hkl" in why:
+    if f"q: {INVALID_CELL}" in why:
+        return INVALID_CELL
+    if f"q: {NO_HKL}" in why:
         return Q_NO_HKL
     return Q_NO_PARTNER
 

@@ -373,10 +373,10 @@ class _Run:
         qc = q_provider.q_coordinates(self.root, scope)        # a module attribute: a timing tool may supply its own
         self.epochs = {**{scan: label for scan, (_cell, label) in qc.lattices.items()},
                        **{k.rsplit(":", 1)[0]: why for k, why in qc.reasons.items()
-                          if why not in ("no accepted hkl", "unknown spectrum")}}
+                          if why not in (q_provider.NO_HKL, "unknown spectrum")}}
         self.graph = build_graph(ns.nodes, ns, scope=scope, kinds=kinds, grid=grid_for(frozen.card.policy.plugin),
                                  coords=qc.points if "q" in kinds else {},
-                                 collinearity_tol=self.settings.collinearity_tol)
+                                 collinearity_tol=self.settings.collinearity_tol, q_reasons=qc.reasons)
         if "q" in kinds and spec.kind == "anchored":       # E17: a spectrum without a point says why
             for k, why in qc.reasons.items():
                 if k in scope and k not in spec.anchors and not self.graph.links_of(k):

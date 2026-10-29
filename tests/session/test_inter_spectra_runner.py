@@ -23,12 +23,14 @@ import pytest
 import intake_fixtures as fx
 import isar
 from inter_fixtures import build_inter_workspace
+from inter_q_fixtures import epoch, set_epochs
 from isar.intake import inputs, inter_values, scans as intake_scans, store
 from isar.schema.card import load_state
 from isar.session import writer
 from isar.session.inter_spectra import records, runner
 from isar.session.inter_spectra.graph import anchored_scope
 from isar.session.inter_spectra.nodes import read_nodes
+from isar.session.inter_spectra.q_provider import INVALID_CELL
 from isar.session.workspace import Workspace
 
 HERE = Path(__file__).resolve().parent
@@ -238,6 +240,15 @@ def test_spread_in_q_with_no_accepted_hkl_leaves_every_other_spectrum_unreached(
     assert info.unreached == {k["a04", 100.0]: "no accepted hkl", k["a05", 100.0]: "no accepted hkl"}
     assert not [r for r in log.refits if r.batch == spec.batch_id]
     assert {d["reason"] for d in info.end["not_reached"]} == {"no accepted hkl"}
+
+
+def test_spread_in_q_on_an_invalid_epoch_names_the_epoch_not_the_hkl(tmp_path):
+    ws = _workspace(tmp_path, (100, 200), 3)
+    set_epochs(ws, epoch(1, a=0.0))
+    k = _keys(ws)
+    spec = _anchored(ws, [k["a03", 100.0]], "q")
+    log = Bench(ws).run(spec)
+    assert log.batches[spec.batch_id].unreached == {k["a04", 100.0]: INVALID_CELL, k["a05", 100.0]: INVALID_CELL}
 
 
 def test_the_fingerprint_the_runner_stamps_is_the_one_the_writer_checks(tmp_path):

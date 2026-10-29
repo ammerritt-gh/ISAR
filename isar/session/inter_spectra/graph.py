@@ -12,7 +12,7 @@ from typing import Literal
 
 from isar.session.inter_spectra.layout import Grid
 from isar.session.inter_spectra.nodes import NodeSet, SpectrumNode
-from isar.session.inter_spectra.q_provider import QPoint
+from isar.session.inter_spectra.q_provider import NO_HKL, QPoint
 
 Kind = Literal["T", "q"]
 Direction = Literal["q", "T", "qT"]
@@ -72,7 +72,8 @@ def _curvature(members, pts, tol: float, line: str):
 
 
 def build_graph(nodes: Mapping[str, SpectrumNode], ns: NodeSet, *, scope: Collection[str], kinds: frozenset[Kind],
-                grid: Grid | None, coords: Mapping[str, QPoint], collinearity_tol: float) -> LinkGraph:
+                grid: Grid | None, coords: Mapping[str, QPoint], collinearity_tol: float,
+                q_reasons: Mapping[str, str] | None = None) -> LinkGraph:
     missing = [k for k in scope if k not in nodes]
     if missing:
         raise KeyError(missing[0])
@@ -192,7 +193,7 @@ def build_graph(nodes: Mapping[str, SpectrumNode], ns: NodeSet, *, scope: Collec
             if grid is None:
                 reasons[k].append("q: no analyzer layout for this instrument")
             elif k not in coords:
-                reasons[k].append("q: no accepted hkl")
+                reasons[k].append(f"q: {(q_reasons or {}).get(k, NO_HKL)}")
             elif k not in touching_q:
                 reasons[k].append("q: no neighbour in the selection")
         if "T" in kinds and k not in touching_t:
