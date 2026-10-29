@@ -210,7 +210,7 @@ def test_every_spectrum_has_a_record_and_both_passes_are_labelled(ws):
     assert a["deep"]["chosen_label"] == "3dho" and a["deep"]["trust"] == "untrusted"
     text = (summary.folder / "fits.json").read_text(encoding="utf-8")
     assert not any(k in text for k in ("result_rule", "second_opinion", "result_source"))
-    assert "result_source" not in rows[0] and doc["passes"]["exported"] == ["fast", "deep"]
+    assert "result_source" not in rows[0] and doc["passes"]["exported"] == ["fast", "deep", "inter"]
 
     # (k) deep with no rows, reason recorded; trust read from the record
     f, g, i = rec["E:6:ana"]["deep"], rec["E:7:ana"]["deep"], rec["E:9:ana"]["deep"]

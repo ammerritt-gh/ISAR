@@ -636,7 +636,15 @@ the last one did.
 refits nothing, reparses nothing and saves nothing, and an earlier export is never overwritten. The
 folder holds:
 
-- `modes.csv`: one row per fitted mode per pass. The `pass` column says `fast` or `deep`. `trust` is the
+- `modes.csv`: one row per fitted mode per pass. The `pass` column says `fast`, `deep` or `inter` (the
+  inter-spectra fit, written only for a spectrum whose authoritative fit is a refit). Four trailing columns
+  say which fit ISAR uses: `authoritative` (`true` on the row whose fit is in use, `false` on the others,
+  empty on deep rows), `fit_source` (the spectrum's fit in use in words, such as `Fast solo`,
+  `Batch 2 · sweep 3`, `Your pick: ...` or `Locked: ...`), `fit_id` (the row's own fit: `fast` or the refit's
+  id) and `flagged` (inter rows: sent to a person for review, meaning a `warn` or `serious` reason; a repair
+  such as a neighbour-supported split is listed in `fits.json` but not flagged). An inter row's errors are conditional, so
+  its `uncertainty_kind` is `hesse_conditional`: the error holds the neighbours' modes fixed and is not
+  comparable with a solo error. `trust` is the
   deep record's own flag on deep rows; fast rows say `not assessed`, because the fast pass stores no trust
   flag. `count_state` is that row's own pass's state. A deep row leaves empty the cells its record does
   not store (amplitudes, heights, peak positions and the per-peak errors). An empty cell means missing,
@@ -650,15 +658,20 @@ folder holds:
   could not be judged), `used` (the inputs the pass used, as recorded) and `changed` (each input that
   differs now: `input`, `from`, `to` and, for temperature and slit, `to_source` of `user`, `file` or
   `missing`). The top-level `currentness.assessed` is true only for a BL43LXU experiment that holds
-  fit-input records, and false for any other instrument.
+  fit-input records, and false for any other instrument. Each record also has an `inter_spectra` block
+  (null when the spectrum has no inter-spectra entry): the `authoritative` fit with its source, label,
+  staleness and lock, its `flag`, `why_changed`, the refit's drawn `fit`, and the `history` of the
+  spectrum's fits.
 - `spectra/`: one CSV per spectrum with the data ISAR holds now. Its `#` header lines give the exposure
   the stored fit used, or `exposure: not stored` where ISAR stored none. The columns are the energy,
   counts, sigma (the square root of the counts, zero at zero counts, no floor) and the QC mask.
 - `resolution/`: one CSV per resolution curve a fit used.
 - `README.txt`: units and conventions.
 
-Nothing picks one pass over the other: Scan(s) draws no fit by default, and its Fit control lets you choose the stored Fast or Deep pass; the export carries
-both passes with their labels. Currentness: for a BL43LXU experiment each pass is judged by the inputs it recorded when it ran (data,
+The export carries every pass with its label and marks the authoritative one per spectrum (`authoritative`,
+`fit_source`); the fast and deep rows are exported as before, and `report/results.csv`, `report/modes.csv`
+and `report/report.json` stay the fast pass. Scan(s) draws no fit by default, and its Fit control lets you
+choose the stored Fast or Deep pass. Currentness: for a BL43LXU experiment each pass is judged by the inputs it recorded when it ran (data,
 temperature, slit, Q, exclusions, dead analyzers, counts accepted, the resolution folder and curve, and the
 calibration), as the `inputs` blocks above say. A fit that is out of date keeps its stored result until the
 next time its analyzer is added to the queue; the export labels it and refits nothing. `fit_data_mismatch` still flags a spectrum

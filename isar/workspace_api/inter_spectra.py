@@ -43,6 +43,13 @@ class FlagReason:
 class FlagInfo:
     severity: Severity; score: float | None; cost_of_coupling: float | None; link_mismatch: float | None
     reasons: tuple[FlagReason, ...]
+    flagged: bool = False                 # on the review list: refit_flagged's rule, never inferred from severity
+
+
+def is_flagged(flag: FlagInfo | None) -> bool:
+    """The review list: the refit's stored decision, or a reason the facade adds whatever the score. A warn note
+    such as release_fit_failed is listed, not flagged; an info reason is a repair (design, Flags)."""
+    return flag is not None and flag.flagged
 
 
 @dataclass(frozen=True)
@@ -162,30 +169,47 @@ def _load(root, only: str | None = None) -> _Ctx:
     return _Ctx(root, log, user, solo, now, res, {r.fit: r for r in log.refits}, stages)
 
 
+def _added_reasons(log: records.InterLog, stages: Mapping[tuple, list], line: records.RefitLine) -> list[FlagReason]:
+    """The reasons the facade adds on its own, whatever the refit's score: a seam disagreement its ring or sweep
+    measured, and a batch that did not settle. Each puts the refit on the review list."""
+    out = []
+    for st in stages.get((line.batch, line.stage, line.index), ()):
+        for seam in st.seams:
+            if line.unit in (seam.get("a"), seam.get("b")):
+                f = seam.get("flag") or {}
+                out.append(FlagReason(f.get("code", "seam_disagreement"), f.get("severity", "warn"), f.get("text", "")))
+    info = log.batches.get(line.batch)
+    if info is not None and info.end and info.end.get("state") == "did_not_settle":
+        out.append(FlagReason("did_not_settle", "serious", info.end.get("reason") or ""))
+    return out
+
+
+def refit_flagged(log: records.InterLog, line: records.RefitLine) -> bool:
+    """Whether one stored refit is on the review list (a stale lock is added only for the fit in use, in _flag)."""
+    stages: dict[tuple, list] = {}
+    for st in log.stages:
+        stages.setdefault((st.batch, st.stage, st.index), []).append(st)
+    return bool(line.flag and line.flag.flagged) or bool(_added_reasons(log, stages, line))
+
+
 def _flag(c: _Ctx, line: records.RefitLine, payload: dict | None, *, stale_locked: bool = False) -> FlagInfo | None:
     """The refit's own flag, plus the seam disagreement its ring or sweep measured, plus a batch that did not
     settle, plus a stale locked fit. A spectrum on its solo fit is never flagged here. The score F = R + max U
     (C-refit): cost_of_coupling is R and link_mismatch the largest U, both from the stored refit."""
     reasons = [FlagReason(r["code"], r["severity"], r.get("text", "")) for r in (line.flag.reasons if line.flag else ())]
-    for st in c.stages.get((line.batch, line.stage, line.index), ()):
-        for seam in st.seams:
-            if line.unit in (seam.get("a"), seam.get("b")):
-                f = seam.get("flag") or {}
-                reasons.append(FlagReason(f.get("code", "seam_disagreement"), f.get("severity", "warn"),
-                                          f.get("text", "")))
-    info = c.log.batches.get(line.batch)
-    if info is not None and info.end and info.end.get("state") == "did_not_settle":
-        reasons.append(FlagReason("did_not_settle", "serious", info.end.get("reason") or ""))
+    added = _added_reasons(c.log, c.stages, line)
     if stale_locked:
-        reasons.append(FlagReason("stale_locked_fit", "serious", ""))
+        added.append(FlagReason("stale_locked_fit", "serious", ""))
+    reasons += added
     unique = list(dict.fromkeys(reasons))
-    if not unique and not (line.flag and line.flag.flagged):
+    flagged = bool(added) or bool(line.flag and line.flag.flagged)
+    if not unique and not flagged:
         return None
     severity = max((r.severity for r in unique), key=_SEV.__getitem__, default="warn")
     came_out = (payload or {}).get("came_out") or {}
     gaps = [float(u) for u in (came_out.get("U") or {}).values() if u is not None]
     return FlagInfo(severity, line.flag.score if line.flag else None, came_out.get("R"), max(gaps, default=None),
-                    tuple(unique))
+                    tuple(unique), flagged)
 
 
 def _label(c: _Ctx, r: authority.Resolution) -> str:

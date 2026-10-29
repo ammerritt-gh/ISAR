@@ -17,6 +17,8 @@ from pathlib import Path
 from isar.analyze import gold as gold_mod
 from isar.report import fit_figures
 from isar.report.findings import FindingsDoc
+from isar.session.inter_spectra import authority
+from isar.workspace_api.inter_spectra import inter_overview, is_flagged
 
 
 def _outcomes(session):
@@ -26,6 +28,30 @@ def _outcomes(session):
         for det, oc in (e.detectors or {}).items():
             out.append((e.scan_number, det, e.status, oc))
     return out
+
+
+def _triage_rows(session, card, workspace):
+    """(scan, detector, status, outcome, fit label, inter disposition) per detector: the authoritative fit where a
+    refit is in use (C-authority: the resolver's fit and the facade's label and flag, nothing re-derived here).
+    The disposition is None on a solo fit; a refit row's outcome is its overlay, its solo verdict blanked."""
+    solo = {e.scan_id: next(iter(e.detectors.values())) for e in session.scans.values()
+            if len(e.detectors or {}) == 1}
+    eff = authority.effective(workspace.root, solo, card.state.tabulated_calibration)
+    ov = inter_overview(workspace.root).by_key if eff else {}
+    rows = []
+    for e in sorted(session.scans.values(), key=lambda e: e.scan_number):
+        single = len(e.detectors or {}) == 1
+        for det, oc in (e.detectors or {}).items():
+            label = ov[e.scan_id].label if e.scan_id in ov else "Fast solo"
+            a = eff.get(e.scan_id) if single else None
+            if a is None or a.line is None:
+                rows.append((e.scan_number, det, e.status, oc, label, None))
+                continue
+            drawn = {**a.outcome, "prior_used": None}           # the solo prior does not describe the refit
+            flagged = e.scan_id in ov and is_flagged(ov[e.scan_id].flag)
+            rows.append((e.scan_number, det, e.status, drawn, label,
+                         "flagged" if flagged else fit_figures.INTER_FIT_DISPOSITION))
+    return rows
 
 
 def _scan_json(scan, det, status, oc) -> dict:
@@ -92,7 +118,8 @@ def write_run_report(session, card, workspace, *, formats=("html", "markdown")) 
         doc.bullets(gaps)
 
     # Dispersion figure (from the ledger; no refitting).
-    all_oc = [oc for _n, _d, _s, oc in _outcomes(session)]
+    triage = _triage_rows(session, card, workspace)
+    all_oc = [oc if inter is None else {**oc, "disposition": inter} for _n, _d, _s, oc, _f, inter in triage]
     if all_oc:
         png = fit_figures.dispersion_figure(all_oc)
         (fig_dir / "dispersion.png").write_bytes(png)
@@ -100,10 +127,11 @@ def write_run_report(session, card, workspace, *, formats=("html", "markdown")) 
         doc.figure_block("run/dispersion", "figures/dispersion.png",
                          alt="omega0 vs Q, colored by disposition")
 
-    # Triage table.
+    # Triage table. The fit column appears only when a refit is in use, so a workspace without one renders as before.
     doc.section("Triage table")
+    show_fit = any(inter is not None for *_, inter in triage)
     rows = []
-    for scan, det, status, oc in _outcomes(session):
+    for scan, det, status, oc, fit, inter in triage:
         iv = oc.get("interval")
         # Rulings S3 / R3: an interval_reliable=False fit is a γ-at-bound degenerate spike — its
         # numeric range (e.g. [3.15, 3.15] conf 1.00) is confident nonsense the flag exists to prevent.
@@ -116,6 +144,8 @@ def write_run_report(session, card, workspace, *, formats=("html", "markdown")) 
         cal = oc.get("calib") or {}
         verdict_cell = oc.get("verdict", "")
         disp_cell = oc.get("disposition", "")
+        if inter is not None:
+            verdict_cell, disp_cell = "inter-spectra", inter
         if oc.get("pooled"):
             # Triage-view fix: a pooled master must never render in the junk/reject section beside a
             # "junk"/"reject" label. Override the DISPLAY cells only (the underlying disposition value
@@ -130,15 +160,18 @@ def write_run_report(session, card, workspace, *, formats=("html", "markdown")) 
             disp_cell = ("pooled — uncertifiable" if oc.get("disposition") == "reject"
                          else f"pooled (master, {oc.get('n_members')} members)")
         rows.append([
-            scan, det, verdict_cell, disp_cell,
+            scan, det, verdict_cell, disp_cell, *([fit] if show_fit else []),
             _fmt(oc.get("omega0"), 3), ivs, _fmt(oc.get("confidence"), 2),
             oc.get("best_label") or "—",
             (f"{pr.get('source')}~{_fmt(pr.get('omega0'),2)}" if pr else "—"),
             cal.get("resolution_source", "—"),
         ])
     if rows:
-        doc.table(["scan", "det", "verdict", "disp", "ω₀", "68% interval", "conf",
+        doc.table(["scan", "det", "verdict", "disp", *(["fit"] if show_fit else []), "ω₀", "68% interval", "conf",
                    "model", "prior", "resolution"], rows)
+        if show_fit:
+            doc.para("Rows marked inter-spectra show the refit in use: its ω₀ and interval are conditional on the "
+                     "neighbours and the chosen model, and the solo fit's verdict does not apply to it.")
     else:
         doc.para("No fitted scans this run.")
 

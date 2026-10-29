@@ -9,11 +9,13 @@ import io
 
 import numpy as np
 
+INTER_FIT_DISPOSITION = "inter-spectra fit"    # an unflagged refit in use; the run report's triage row writes it too
 _DISPOSITION_COLOR = {
     "resolved": "#2266cc",
     "flagged": "#e08a00",
     "reject": "#cc3333",
     "abstain": "#999999",
+    INTER_FIT_DISPOSITION: "#7b3fb0",     # a refit in use: its disposition, not the solo fit's
 }
 
 
