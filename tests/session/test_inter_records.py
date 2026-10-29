@@ -275,7 +275,8 @@ def test_the_fingerprint_file_fit_stamps_is_the_one_save_inter_recomputes(ws):
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(currentness, "judge", spy)
         file_fit.fit_file(ws, file_fit.FileItem("i1", unit, "fast", 1), progress=None, emit=results.append)
-    assert writer.save_results(ws, [r.payload for r in results if r.payload is not None]) == [None, None]
+    # the stamped fast solo is current, so file_fit computes the same fingerprint and refits nothing
+    assert [r.status for r in results] == ["already_current"]
     from isar.session.workspace import Workspace
     _, session = Workspace.open(ws).load()
     (stamped,) = {now.inputs_hash for now in seen}
