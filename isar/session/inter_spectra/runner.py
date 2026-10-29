@@ -393,7 +393,7 @@ class _Run:
         needed = sorted({*scope, *(c.unit for u in scope for r in by_unit.get(u, ()) for c in r.conditioned_on)})
         self.now = now = records.inputs_now_from(rows, index, frozen.card.state.tabulated_calibration, needed)
         self.lines = {r.fit: r for r in log0.refits}
-        self.res ={u: authority.resolve(u, refits=by_unit.get(u, ()), pick=user.picks.get(u), lock=user.locks.get(u),
+        self.res = {u:authority.resolve(u, refits=by_unit.get(u, ()), pick=user.picks.get(u), lock=user.locks.get(u),
                                          has_fast=authority.has_fast_solo(frozen.session.get(u), u), inputs_now=now)
                     for u in scope}
         locked = {u for u in scope if user.locks.get(u) is not None and user.locks[u].locked}
@@ -856,7 +856,7 @@ class _Run:
                 if not snaps2:                           # every member left during the round: nothing to save
                     break
                 self.sweeps = n
-                entries =[self.entry(k, snaps2[k], R_all[k], self.identity_flags(ids, k), stage1.pop(k, None))
+                entries = [self.entry(k, snaps2[k], R_all[k], self.identity_flags(ids, k), stage1.pop(k, None))
                            for k in snaps2]
                 verdict = self.save_stage("sweep", n, entries, [])
                 for k, snap in snaps2.items():
@@ -874,7 +874,7 @@ class _Run:
                                                      self.records_mod.REFUSED["inputs_changed"]):
                             active.discard(k)
                 cut |= self.refused_neighbours(verdict, snaps2)
-                total =self.total(A, held, data, unary)     # the stopping cost of the state the writer accepted
+                total = self.total(A, held, data, unary)     # the stopping cost of the state the writer accepted
                 self.stage_timing("sweep", n, t_sweep, width, len(snaps2))
                 self.progress("save")
                 quiet =quiet + 1 if move <= s.sweep_tol_meV else 0
