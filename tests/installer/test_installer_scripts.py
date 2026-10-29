@@ -988,3 +988,28 @@ def test_latest_logs_an_outcome_after_the_release_installer_returns():
     j = tail.index("OUTCOME=%OUTCOME%")
     assert j < tail.index("exit /b %RC%")
     assert 'if "%RC%"=="0" set "OUTCOME=installed"' in tail and 'set "OUTCOME=failed"' in tail
+
+
+def test_running_recheck_after_closing_isar_clears_the_refusal(tmp_path):
+    """The running check refuses; the user closes ISAR and presses R. The recheck must clear the refusal,
+    or the advertised retry can never succeed."""
+    env = _sandbox(tmp_path)
+    base = _plain(tmp_path) / "b"
+    (base / "env").mkdir(parents=True)
+    shutil.copyfile(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe", base / "env" / "cmd.exe")
+    text = _text(ENGINE)
+    head = [f'set "GB={base}"', 'set "WORK=%TEMP%"', 'set "LOG=%TEMP%\\snip.log"']
+    gate = _label_block(text, "running_gate")
+    proc = subprocess.Popen([str(base / "env" / "cmd.exe"), "/d", "/c", "ping -n 60 127.0.0.1 >nul"],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            creationflags=0x08000000)
+    try:
+        rc, out = _run_snippet(tmp_path, [*head, 'set "YES=yes"', "call :running_gate", "echo GATE=%GATE%",
+                                          "exit /b 0", *gate], env)
+    finally:
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+        proc.wait(timeout=30)
+    assert rc == 0 and "GATE=refuse" in out, out
+    rc, out = _run_snippet(tmp_path, [*head, 'set "GATE=refuse"', 'set "ERR=ISAR was running"', "call :running_again",
+                                      "echo GATE=%GATE%", "echo ERR=%ERR%", "exit /b 0", *gate], env)
+    assert rc == 0 and "GATE=ok" in out and re.search(r"^ERR=\r?$", out, re.M), out

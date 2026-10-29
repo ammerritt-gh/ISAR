@@ -1740,12 +1740,18 @@ set "PSI_A=%GB%\env\"
 del /f /q "%WORK%\running.txt" >nul 2>nul
 powershell -NoProfile -NonInteractive -Command "try { $b=[IO.Path]::GetFullPath($env:PSI_A); $n=0; foreach ($p in @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)) { $e=$p.ExecutablePath; if ($e -and $e.StartsWith($b, [StringComparison]::OrdinalIgnoreCase)) { 'ISAR_RUNNING=' + $p.ProcessId; $n++ } }; 'COUNT=' + $n } catch { 'ERROR ' + $_.Exception.Message }" > "%WORK%\running.txt" 2>nul <nul
 findstr /b /l /c:"COUNT=0" "%WORK%\running.txt" >nul 2>nul
-if not errorlevel 1 goto :eof
+if not errorlevel 1 goto running_clear
 findstr /b /l /c:"COUNT=" "%WORK%\running.txt" >nul 2>nul
 if not errorlevel 1 goto running_found
 >>"%LOG%" type "%WORK%\running.txt"
 set "ERR=could not check whether ISAR is running (PowerShell did not answer); see the log"
 set "GATE=refuse"
+goto :eof
+:: A clean recheck clears the refusal and its message, so the retry can go ahead.
+:running_clear
+>>"%LOG%" echo(No ISAR from this installation is running now.
+set "GATE=ok"
+set "ERR="
 goto :eof
 :running_found
 >>"%LOG%" findstr /b /l /c:"ISAR_RUNNING=" "%WORK%\running.txt"
