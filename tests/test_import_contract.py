@@ -117,6 +117,7 @@ WORKSPACE_API_ALLOWED = {
     "isar.intake.store",
     "isar.intake.settings",
     "isar.intake.curves",
+    "isar.intake.gpi",
     "isar.intake.inputs",
     "isar.intake.scans",
     "isar.intake.fit_inputs",
