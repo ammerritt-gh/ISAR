@@ -28,7 +28,7 @@ setlocal DisableDelayedExpansion
 :: - This file must stay a .bat: there a successful "set" leaves ERRORLEVEL
 ::   alone, so "set ERR=...", then "if errorlevel 1", reads the command before.
 
-set "ISAR_RELEASE=v0.1.0"
+set "ISAR_RELEASE=v0.0.1"
 set "INSTALLER_BUILD=1"
 set "LAYOUT=1"
 set "GH_REPO=ammerritt-gh/ISAR"
