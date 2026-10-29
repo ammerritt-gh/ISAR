@@ -22,6 +22,7 @@ import json
 import math
 import time
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -29,7 +30,8 @@ from scipy.integrate import quad
 from scipy.special import logsumexp
 
 from isar.analyze import fast_pass, loop, prior
-from isar.analyze.components import ConstantBackground, Elastic, PhononDHO, QuasiElastic
+from isar.analyze.components import (QE_WEIGHT_CONVENTION, CentralQE, ConstantBackground, Elastic, PhononDHO,
+                                     QuasiElastic)
 from isar.analyze.coupled import engine as cc
 from isar.analyze.coupled import rules
 from isar.analyze.coupled.identity import ModeObs, _carried_ids, match_link, new_branch_id
@@ -546,7 +548,8 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
     terms = [b.ln_model_prior + b.ln_z + charge(b) for b in priced]
     best = priced[int(np.argmax(terms))]
     ln_z = float(logsumexp(terms)) + rules.ln_w0(k, k - u, len(spec.pool), spec.ceiling + 1)
-    mode = (best.model.variant.elastic, best.model.variant.background, tuple(best.model.delta),
+    v = best.model.variant
+    mode = (v.elastic, v.background, v.qe, tuple(best.model.delta),
             tuple(float(v) for v in best.theta_map))
     return Priced(job.key, k, slots, ln_z, best.status, mode, None, eng.n_fits, time.perf_counter() - t0)
 
@@ -600,7 +603,7 @@ def _incoming_state(eng, spec: _Spec):
     sel = _selected_model(spec.snap.own_record)
     if sel is None or sel.get("n_peaks") != spec.n0:
         return None
-    variant = eng.variant(spec.n0, sel.get("elastic"), sel.get("background"))
+    variant = eng.variant(spec.n0, sel.get("elastic"), sel.get("background"), sel.get("qe", False))
     model = None if variant is None else eng.model(variant, tuple(sel.get("delta_modes") or ()))
     p = sel.get("map_params") or sel.get("params") or {}
     if model is None or any(p.get(n) is None for n in model.names):
@@ -620,7 +623,7 @@ def _materially_moved(eng, model, theta, old) -> bool:
     mu_old, mu = eng.mean(model, old[1]), eng.mean(model, theta)
     if np.max(np.abs(mu - mu_old) / np.maximum(1.0, mu_old), initial=0.0) > MEAN_REL_TOL:
         return True
-    energies = {a for a, _g, _c in model.modes}
+    energies = {a for a, _g, _c in model.modes} | {model.qe_w}   # the QE width is a flat nuisance: the mean test covers it
     return any(abs(theta[i] - old[1][i]) / max(abs(old[1][i]), 1.0) > PARAM_REL_TOL
                for i in model.free if i not in energies)
 
@@ -658,7 +661,7 @@ def _regime(fs, fwhm, e, g, corr) -> str:
 def _manifest(model, theta) -> dict | None:
     """``isar.model_manifest/2`` of the refit, the shape predictive_artifact.model_manifest_of writes."""
     kinds = {PhononDHO: "phonon_dho", Elastic: "elastic", QuasiElastic: "quasielastic",
-             ConstantBackground: "constant_background"}
+             ConstantBackground: "constant_background", CentralQE: "central_qe"}
     components = []
     for c in model.hyp.build().components:
         kind = kinds.get(type(c))
@@ -667,6 +670,8 @@ def _manifest(model, theta) -> dict | None:
         item = {"type": kind, "prefix": str(c.prefix)}
         if isinstance(c, PhononDHO):
             item["peak"] = str(c.peak)
+        if isinstance(c, CentralQE) and c.width is not None:
+            item["width"] = float(c.width)         # a pinned width is part of the model
         components.append(item)
     return {"schema": MANIFEST_SCHEMA, "components": components,
             "parameters": {n: float(v) for n, v in zip(model.names, theta)}}
@@ -747,8 +752,8 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
     starts = [] if old is None else [old]
     win = cached.get(spec.key(k, slots)) or next((p for p in priced if p.count == k and tuple(p.slots) == slots), None)
     if win is not None and win.mode is not None:
-        el, bg, delta, theta = win.mode
-        variant = eng.variant(k, el, bg)
+        el, bg, qe, delta, theta = win.mode
+        variant = eng.variant(k, el, bg, qe)
         model = None if variant is None else eng.model(variant, delta)
         if model is not None:
             starts.append((model, np.array(theta, dtype=float)))
@@ -971,6 +976,23 @@ def _why(status, reason, n0, k, slots, incoming, J_old, J) -> str:
     return f"The refit was not kept: {words.get(reason, reason)}."
 
 
+def _qe_of(eng, model, theta, full):
+    """The refit's central QE as the fast pass's record carries it (None without one)."""
+    if model.qe_h is None:
+        return None
+    height, width = float(theta[model.qe_h]), model.qe_width(theta)
+
+    def sd(i):
+        v = None if full is None or i is None else float(full[i, i])
+        return math.sqrt(v) if v is not None and v > 0 else None
+    used = np.asarray(eng.ctx.x_used, dtype=float) - float(eng.ctx.center)
+    return asdict(fast_pass.QEResult(
+        height=height, width=width, pinned=model.qe_w is None,
+        weight=CentralQE().spectral_weight({"h": height, "width": width}, eng.ctx),
+        window=(float(used.min()), float(used.max())), convention=QE_WEIGHT_CONVENTION,
+        sigma_height=sd(model.qe_h), sigma_width=sd(model.qe_w)))
+
+
 def _record(eng, spec, a, model, theta, cov, sd, rel_sd, modes, ids, D, status):
     """The refit as a fast-pass-shaped record and its drawable overlay (N3), modes canonicalised to
     ascending energy for output only (branch ids, masks and covariance permuted with them, spec 3); and
@@ -1010,12 +1032,15 @@ def _record(eng, spec, a, model, theta, cov, sd, rel_sd, modes, ids, D, status):
         "selected_model_id": f"{label}#0", "selected_label": label,
         "models": [{"model_id": f"{label}#0", "label": label, "n_peaks": a.count,
                     "elastic": cmodel.variant.elastic, "background": cmodel.variant.background,
+                    "qe": cmodel.variant.qe, "on_demand": cmodel.variant.on_demand,
+                    "removed": list(cmodel.variant.removed),
                     "delta_modes": list(delta), "free": [cmodel.names[i] for i in cmodel.free],
                     "cost": D, "evidence_status": "conditional", "probability": p_k,
                     "params": params, "map_params": params}],
         "peaks": peaks,
         "elastic_height": None if cmodel.el is None else float(ctheta[cmodel.el]),
         "background": None if cmodel.bg is None else float(ctheta[cmodel.bg]),
+        "qe": _qe_of(eng, cmodel, ctheta, full),
         "grouped_intensity": [], "flags": [], "flag_statistics": {},
         "errors": "conditional" if cov is not None else "unavailable"})
     basin = fast_pass._Basin(cmodel, 0, ctheta, D, eng.sat - D / 2, 0.0, "coupled", status="ok")

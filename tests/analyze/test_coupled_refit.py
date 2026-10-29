@@ -456,3 +456,37 @@ def test_the_objective_reported_includes_the_soft_constraint_once():
     # the block's J is D + every penalty + the soft square; unary must carry the square, not drop it
     assert r.unary >= z - 1e-9
     assert r.J == pytest.approx(r.D + sum(r.P.values()) + r.unary, rel=1e-9, abs=1e-9)
+
+
+# BL43LXU: the fast pass's central QE is a per-spectrum nuisance of the coupled refit -----------------------
+def test_the_coupled_refit_carries_the_central_qe_as_a_nuisance():
+    from isar.analyze import fast_pass, prior
+    from isar.analyze.components import CentralQE, CompositeModel, ConstantBackground, Elastic, PhononDHO
+    from isar.synth import bl43_curves
+    x = np.arange(-5.0, 10.0, 0.25)
+    ctx0 = ScanContext(x=x, counts=np.ones(x.size), mask=np.ones(x.size, bool), T=97.0, center=0.0,
+                       gauss_fwhm=0.0, lorentz_fwhm=0.0, instrument="BL43LXU", energy_status="absolute",
+                       resolution_curve=bl43_curves.curve("a06"))
+    mean = CompositeModel([PhononDHO(), Elastic(), CentralQE(), ConstantBackground()]).evaluate(
+        x, [5.0, 0.6, 40.0, 200.0, 20.0, 40.0, 3.0], ctx0)
+    ctx = replace(ctx0, counts=np.random.default_rng(3).poisson(mean).astype(float))
+    fs = FastPassSettings(mode_ceiling=1)
+    base = fast_pass._Engine(ctx, fs)
+    slot = cc.MatchedDensity(base.sp.energy, "u", [], {})
+    eng = R._Labelled(ctx, fs, [slot])
+    v = next(v for v in eng.variants[1] if v.qe and v.elastic and v.background)
+    out = eng.fit(v, [(5.0, 0.6, 40.0, False)], "own")            # StopIteration in _start before the fix
+    assert out is not None
+    theta = out[0].theta
+    model = eng.model(v, ())
+    assert model.qe_h is not None and model.qe_w is not None and np.isfinite(theta[model.qe_w])
+    # the coupled prior is the fast pass's with only the energy factor swapped for the slot's density
+    bmodel = base.model(base.variant(1, True, True, True), ())
+    assert bmodel.names == model.names
+    energy = sum(base.sp.ln_energies([theta[a] for a in grp]) for grp in model.groups)
+    ref = base.ln_prior(bmodel, theta) - energy
+    assert eng.ln_prior(model, theta) - slot.ln_pdf(float(theta[model.modes[0][0]])) == pytest.approx(ref)
+    sp = base.sp                                                  # and that remainder includes the QE's two factors
+    assert ref == pytest.approx(sp.ln_width(theta[model.modes[0][1]]) + sp.ln_height(theta[model.modes[0][2]])
+                                + sp.ln_height(theta[model.el]) + sp.ln_background(theta[model.bg])
+                                + sp.ln_height(theta[model.qe_h]) + sp.ln_qe_width(theta[model.qe_w]))
