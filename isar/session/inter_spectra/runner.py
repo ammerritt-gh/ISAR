@@ -764,13 +764,15 @@ class _Run:
         self.stage_name, self.sweeps, self.rounds = "plan", 0, 0
         self.progress("plan")
 
+        cut: set = set()                                 # members the writer will no longer accept a condition on
+
         def terms_of(k, state):
             """Every term of ``k`` whose other members all have a held value (an unusable one conditions none)."""
             out = []
             for i in plan.terms_of.get(k, ()):
                 t = plan.terms[i]
                 others = [m for m in t.members if m != k]
-                if all(m in state for m in others):
+                if all(m in state and m not in cut for m in others):
                     out.append(TermInput(t, tuple(state[m] for m in others)))
             return out
 
@@ -849,6 +851,8 @@ class _Run:
                             data[k], unary[k] = r.D, r.unary
                         elif isinstance(r, Exception) or r.status == "failed":
                             move = math.inf              # rules.settled: a failed block is never quiet
+                if not snaps2:                           # every member left during the round: nothing to save
+                    break
                 self.sweeps = n
                 entries =[self.entry(k, snaps2[k], R_all[k], self.identity_flags(ids, k), stage1.pop(k, None))
                            for k in snaps2]
@@ -867,7 +871,8 @@ class _Run:
                         if verdict["refused"][k] in (self.records_mod.REFUSED["locked"],
                                                      self.records_mod.REFUSED["inputs_changed"]):
                             active.discard(k)
-                total = self.total(A, held, data, unary)     # the stopping cost of the state the writer accepted
+                cut |= self.refused_neighbours(verdict, snaps2)
+                total =self.total(A, held, data, unary)     # the stopping cost of the state the writer accepted
                 self.stage_timing("sweep", n, t_sweep, width, len(snaps2))
                 self.progress("save")
                 quiet =quiet + 1 if move <= s.sweep_tol_meV else 0
@@ -883,6 +888,28 @@ class _Run:
             self.end("did_not_settle", f"did not settle within {s.sweep_cap} sweeps; its results are kept")
         else:
             self.end(outcome)
+
+    def refused_neighbours(self, verdict: dict, snaps: dict) -> set:
+        """E9/E11: the neighbours a sweep's refusals name that no later sweep can condition on: one whose inputs
+        changed, or one whose fit the user picked since the start (the writer refuses every other fit of it for
+        the rest of the batch). A neighbour whose own refit went back, or a new lock (a fixed neighbour from the
+        next sweep), stays."""
+        plain = (self.records_mod.REFUSED["locked"], self.records_mod.REFUSED["inputs_changed"])
+        fits = {s.fit_id for k, s in snaps.items() if k in verdict["refused"] and verdict["refused"][k] not in plain}
+        if not fits:
+            return set()
+        locks = self.read_user(self.root).locks
+        out = set()
+        for line in self.records_mod.read_log(self.root).refits:
+            a = line.accept
+            if line.fit not in fits or a is None or a.detail is None:
+                continue
+            n = a.detail
+            if a.reason == "neighbour_inputs_changed" or (
+                    a.reason == "neighbour_fit_changed" and n not in verdict["refused"]
+                    and not (n in locks and locks[n].locked)):
+                out.add(n)
+        return out
 
     def total(self, A: dict, held: dict, data: dict, unary: dict) -> float | None:
         """The one shared objective over the stage's factor set at the held energies (spec 4). A factor whose

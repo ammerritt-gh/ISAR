@@ -327,19 +327,38 @@ def test_a_count_change_in_a_later_round_reopens_the_sweeps(tmp_path):
 
 def test_refused_members_of_one_group_go_back_and_the_sweep_is_not_quiet(tmp_path):
     """The user picks a fit for y during sweep 1: x and z (one group, both conditioned on y's batch refit) are
-    refused at save. Both held values go back (sweep 2 starts each from its incoming fit), and no sweep with a
-    refusal is quiet, so the batch never settles on them (the cap ends it) though no toy moves anything."""
+    refused at save. Both held values go back (y's sweep 2 is conditioned on their incoming fits), and that
+    sweep is not quiet. The writer would refuse any other fit of y for the rest of the batch, so nothing
+    conditions on y again: x and z (y their only neighbour) leave, not refused sweep after sweep to the cap,
+    and the batch settles on y."""
     ws, x, y, z = _chain(tmp_path, ({"toy": "keep"}, {"toy": "keep"}, {"toy": "keep"}))
-    assert inter_values.save_settings(ws, {"sweep_cap": 3}).ok
+    assert inter_values.save_settings(ws, {"sweep_cap": 6}).ok
     bench = Bench(ws, _when("sweep", 1, "refine", lambda: inter_values.pick_fit(ws, y, "fast")))
     spec = _simultaneous(ws, (x, y, z))
     log = bench.run(spec)
     lines = _lines(ws, spec.batch_id)
-    refused = {r.unit for r, _ in lines if r.index == 1 and r.accept.decision == "declined"}
+    refused = {r.unit for r, _ in lines if r.accept.decision == "declined"}
     assert refused == {x, z}
-    assert {r.unit: p["came_in"]["own"]["fit"] for r, p in lines if r.index == 2 and r.unit in (x, z)} == \
-        {x: "fast", z: "fast"}
-    assert log.batches[spec.batch_id].end["state"] == "did_not_settle"
+    assert {r.unit for r, _ in lines if r.index > 1} == {y}
+    (y2,) = [r for r, _ in lines if r.index == 2]
+    assert {(c.unit, c.fit) for c in y2.conditioned_on} == {(x, "fast"), (z, "fast")}
+    end = log.batches[spec.batch_id].end
+    assert end["state"] == "settled" and end["sweeps"] < 6
+
+
+def test_a_neighbour_whose_inputs_changed_conditions_no_later_sweep(tmp_path):
+    """y's scan is recalibrated during sweep 1: y is refused (its inputs changed), x and z for conditioning on
+    it. y's held value was made from the old inputs, so nothing conditions on it again and the batch stops
+    instead of refusing x and z every sweep to the cap."""
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"}, {"toy": "keep"}, {"toy": "keep"}))
+    scan, det = y.rsplit(":", 1)
+    bench = Bench(ws, _when("sweep", 1, "refine", lambda: _calibrate(ws, scan, det, 0.5)))
+    spec = _simultaneous(ws, (x, y, z))
+    log = bench.run(spec)
+    lines = _lines(ws, spec.batch_id)
+    assert {(r.unit, r.accept.reason) for r, _ in lines} == {
+        (y, "inputs_changed"), (x, "neighbour_inputs_changed"), (z, "neighbour_inputs_changed")}
+    assert log.batches[spec.batch_id].end["sweeps"] == 1
 
 
 def test_the_stopping_cost_is_summed_on_the_state_the_writer_accepted(tmp_path):
