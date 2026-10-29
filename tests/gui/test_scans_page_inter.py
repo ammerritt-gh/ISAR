@@ -324,3 +324,59 @@ def test_overlay_draws_no_fit_so_the_bar_says_none(setup, reads):
     assert not any(c.key == ONE_MODE for c in drawn.curves)
     assert page._drawn_state.inter.info == "No fit is shown"
     assert not page.inter_bar.lock_button.isEnabled()
+
+
+
+CELLS = ([(fit, layout, authority) for fit in ("none", "fast", "deep")
+          for layout in ("single", "offset", "overlay") for authority in ("solo", "refit")]
+         + [(fit, "waterfall", "refit") for fit in ("none", "fast", "deep")])
+
+
+def _drawn_kind(fit, layout, authority):
+    """What the plot must draw for the spectrum on show: None, 'deep', 'refit' or 'solo'."""
+    if layout == "waterfall":
+        return "refit"
+    if layout == "overlay" or fit == "none":
+        return None
+    if fit == "deep":
+        return "deep"
+    return "refit" if authority == "refit" else "solo"
+
+
+@pytest.mark.parametrize("fit,layout,authority", CELLS)
+def test_bar_legend_and_drawn_curve_name_the_same_fit(setup, reads, fit, layout, authority):
+    page, inter = setup
+    if authority == "refit":
+        inter.overview = make_overview(by_key={ONE_MODE: _row(ONE_MODE, "r2")})
+        inter.histories[ONE_MODE] = make_history(_refit("r1", "ring 1"), _refit("r2", "ring 2", authoritative=True))
+    else:
+        inter.histories[ONE_MODE] = make_history(_refit("r2", "ring 2"))
+    page.vm.set_fit(fit)
+    if layout == "overlay":
+        page.vm.set_layout("overlay")
+    drawn = _select(page, ONE_MODE, *(() if layout in ("single", "waterfall") else (TWO_MODE,)), active=ONE_MODE)
+    if layout == "waterfall":
+        page.vm.set_waterfall(True)
+        page.flush_redraw()
+        drawn = page.drawn()
+    kind = _drawn_kind(fit, layout, authority)
+    info = page._drawn_state.inter.info
+    active = [line.text for line in drawn.legend if line.bold]
+    curves = [c for c in drawn.curves if c.key == ONE_MODE]
+    if kind is None:
+        assert info == "No fit is shown" and not curves and not any(CONDITIONAL_ERRORS in t for t in active)
+    elif kind == "deep":
+        assert info == "Showing the Deep solo fit"
+        assert curves and [c.style for c in curves if c.role == "total"] == ["dashed"]
+        assert "Batch 1" not in active[0] and CONDITIONAL_ERRORS not in active[0]
+    elif kind == "refit":
+        assert info.startswith("Showing Batch 1 · ring 2") and curves
+        assert "Batch 1 · ring 2" in active[0] and CONDITIONAL_ERRORS in active[0]
+    else:
+        assert info.startswith("Showing Fast solo") and curves
+        assert "Batch" not in active[0] and CONDITIONAL_ERRORS not in active[0]
+    # Lock acts on the viewed fit, so it is offered only while that fit is the one on the plot
+    viewed_kind = "refit" if authority == "refit" else "solo"
+    assert page.inter_bar.lock_button.isEnabled() == (kind == viewed_kind)
+
+
