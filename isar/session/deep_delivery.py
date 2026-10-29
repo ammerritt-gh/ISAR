@@ -14,6 +14,7 @@ import time
 from dataclasses import asdict, dataclass, replace
 
 from isar.analyze import deep_pass, errors, loop
+from isar.analyze.components import QE_WEIGHT_CONVENTION, CentralQE
 from isar.analyze.progress import ProgressFn, emitter, relay
 from isar.session.state import canonical_hash
 
@@ -118,6 +119,12 @@ def _chosen(m, entry, record: dict, request: DeepRequest, executor) -> dict:
     else:
         (out["source"], result), = fits.items()
     out["params"] = dict(result.params)
+    if "qe.h" in out["params"]:                    # the chosen model carries a central QE (BL43LXU)
+        qe = next(c for c in problem.hyp.build().components if isinstance(c, CentralQE))
+        local, cctx = {"h": out["params"]["qe.h"], "width": out["params"].get("qe.width")}, problem.ctx
+        out["qe"] = {"height": local["h"], "width": qe.width_of(local), "pinned": qe.width is not None,
+                     "weight": qe.spectral_weight(local, cctx), "convention": QE_WEIGHT_CONVENTION,
+                     "window": (min(cctx.x_used) - cctx.center, max(cctx.x_used) - cctx.center)}
     from isar.session.predictive_artifact import model_manifest_of
     out["model_manifest"] = model_manifest_of(result, {label: problem.hyp})
     try:

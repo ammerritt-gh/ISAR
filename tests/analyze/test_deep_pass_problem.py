@@ -15,12 +15,12 @@ import pytest
 
 from isar.analyze import deep_pass as dp
 from isar.analyze import evidence, fast_pass, loop, prior
-from isar.analyze.components import (CentralQE, CompositeModel, ConstantBackground,
+from isar.analyze.components import (QE_WEIGHT_CONVENTION, CentralQE, CompositeModel, ConstantBackground,
                                      Elastic, PhononDHO)
 from isar.analyze.context import ScanContext
 from isar.analyze.errors.bayes import EvidenceProblem
 from isar.analyze.fast_pass import FastPassSettings
-from isar.session import scan_delivery
+from isar.session import deep_delivery, scan_delivery
 from isar.synth import bl43_curves, count_bench
 
 
@@ -182,3 +182,18 @@ def test_the_deep_pass_samples_the_label_each_group_priced(case):
             assert density == pytest.approx(prior.resolve_prior_for(ctx).ln_qe_width(w)), e.label
             qe_checked += 1
     assert any(m["on_demand"] for m in models if m["label"] in want) == (case == "phonon") and qe_checked > 0
+
+
+def test_the_deep_summary_publishes_the_chosen_central_qe(monkeypatch):
+    ctx, record = _bl43_record("central_qe")
+    entry = next(e for e in dp.models_from_record(ctx, record, dp.plain_hypotheses(ctx, 1))
+                 if "qe.width" in [p.name for p in e.problem.bundle.params])
+    monkeypatch.setattr(deep_delivery.errors, "attach", lambda *args, **kwargs: None)   # errors: not this test's
+    out = deep_delivery._chosen(dp.ModelEvidence(entry.label, entry.count, "reference"), entry, record,
+                                deep_delivery.DeepRequest(), None)
+    qe, p = out["qe"], out["params"]
+    assert qe["convention"] == QE_WEIGHT_CONVENTION and qe["pinned"] is False
+    assert (qe["height"], qe["width"]) == (p["qe.h"], p["qe.width"])
+    assert qe["weight"] == pytest.approx(
+        CentralQE().spectral_weight({"h": p["qe.h"], "width": p["qe.width"]}, entry.problem.ctx))
+    assert qe["window"] == (QX.min(), QX.max())
