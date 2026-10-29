@@ -289,12 +289,13 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
             "parameter_prior": "per_parameter_truncated_ppf",
             "parameters": [by_name[n].spec() for n in sampled],
             "hard_fixed": {names[i]: float(template[i]) for i in prob.fixed_pos},
-            # Each group of exchangeable mode energies is sampled as ordered statistics (N!/W^N,
-            # the Laplace lane's logpdf_ordered), so N swapped labellings are one solution, not N!.
+            # Each group of exchangeable mode energies is sampled as ordered statistics of its
+            # penalised energy density (N! prod g(E_i), the Laplace lane's logpdf_ordered), so N
+            # swapped labellings are one solution, not N!.
             "mode_energy_order": [[sampled[i] for i in g] for g in prior_bundle._energy_groups()],
             "omega_loglike_term": None,
         }
-        semantics_id = "isar.catalogue_prior_bundle_nested_prior/3"
+        semantics_id = "isar.catalogue_prior_bundle_nested_prior/4"
     else:
         prior_specification = {
             "prior_kind": "optimizer_bound_data_dependent",

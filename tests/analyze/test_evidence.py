@@ -438,6 +438,38 @@ def test_unseen_informative_prior_triggers_map_refit(clean):
     assert rec.validity["map_refit"]["success"] is True
 
 
+def _widened(fit, name, sd):
+    """``fit`` with ``name``'s posterior sd set to ``sd``, its correlations kept."""
+    names = list(fit.params)
+    i = names.index(name)
+    cov = np.array(fit.parameter_covariance, dtype=float)
+    scale = np.ones(len(names))
+    scale[i] = sd / math.sqrt(cov[i, i])
+    return replace(fit, parameter_covariance=cov * np.outer(scale, scale))
+
+
+def test_an_energy_posterior_reaching_the_ramp_takes_the_map_refit(clean):
+    # The fit never saw the near-zero energy penalty (recipe /6). With FWHM 1 the ramp's top corner
+    # ends at 1.05 meV: a posterior wholly above it (5 - 3 x 1.25 = 1.25) stays at rung 1; one
+    # reaching it (5 - 3 x 1.4 = 0.8) or a fitted energy below it goes to the MAP refit.
+    ctx, hyp, fit = clean
+    bundle = _bundle(hyp, ctx)
+    ramp = bundle.by_name()["phonon.omega0"]
+    assert ramp.kind == "energy_ramp" and ramp.energy.start + ramp.energy.corner == \
+        pytest.approx(1.05)
+    above = E.structure_evidence(hyp, ctx, _widened(fit, "phonon.omega0", 1.25), bundle)
+    assert above.evidence_method == "laplace" and above.validity["unseen_informative"] == []
+    reaching = E.structure_evidence(hyp, ctx, _widened(fit, "phonon.omega0", 1.4), bundle)
+    assert reaching.validity["unseen_informative"] == ["phonon.omega0"]
+    assert reaching.evidence_method == "laplace_map" and "map_refit" in reaching.validity
+    low = replace(fit, params=dict(fit.params, **{"phonon.omega0": 0.6}))
+    below = E.structure_evidence(hyp, ctx, low, bundle, escalation="defer")
+    assert below.validity["unseen_informative"] == ["phonon.omega0"]
+    assert "map_refit" in below.validity                     # rung 2 ran; it never sampled
+    off = _bundle(hyp, replace(ctx, gauss_fwhm=1e-3))       # a ramp far below the posterior
+    assert E.structure_evidence(hyp, ctx, low, off).validity["unseen_informative"] == []
+
+
 def test_map_refit_agrees_with_dynesty(clean):
     """The escalated lane and the analytic lane answer the same integral: on a well-behaved
     scan laplace_map ≈ dynesty within sampler error (coarse budget ⇒ coarse tolerance)."""

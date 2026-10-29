@@ -102,12 +102,13 @@ def test_cached_prior_groups_preserve_hard_fixed_ordered_problem(monkeypatch, de
     for u in (np.zeros(ndim), np.full(ndim, 0.3), np.ones(ndim)):
         expected = np.array([p.ppf(v) for p, v in zip(bundle.params, u)])
         first = bundle.params[group[0]]
-        expected[group] = prior.ordered_energy_transform(u[group], first.lo, first.hi)
+        assert first.kind == "energy_ramp"
+        expected[group] = prior.ordered_energy_transform(u[group], first.energy)
         actual = transform(u)
         np.testing.assert_array_equal(actual, expected)
         values = dict(zip(names, actual))
         reference = sum(p.logpdf(values[p.name]) for i, p in enumerate(bundle.params) if i not in group)
-        reference += prior.ordered_energy_log_prior(actual[group], first.lo, first.hi)
+        reference += prior.ordered_energy_log_prior(actual[group], first.energy)
         assert bundle.logpdf_ordered(values) == reference
         assert math.isfinite(loglike(actual))
         if delta:

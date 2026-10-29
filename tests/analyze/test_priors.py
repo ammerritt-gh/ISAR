@@ -38,15 +38,25 @@ def test_default_is_normalized_flat_over_bounds():
     bundle = catalogue.resolve_priors(_composite(), _ctx(), _BOUNDS)
     assert [p.name for p in bundle.params] == ["phonon.omega0", "phonon.Gamma",
                                                "phonon.h", "bg.BG"]
-    # re-pin (recipe /5): the width default is the softened log-uniform, not flat
+    # re-pin (recipe /5): the width default is the softened log-uniform, not flat; (recipe /6) the
+    # energy default is the penalised energy density at the context's resolution FWHM
     got = {q.name: (q.kind, q.origin) for q in bundle.params}
     assert got["phonon.Gamma"] == ("softlog", "default_softlog")
-    assert all(v == ("flat", "default_flat") for n, v in got.items() if n != "phonon.Gamma")
+    assert got["phonon.omega0"] == ("energy_ramp", "default_energy")
+    assert all(v == ("flat", "default_flat") for n, v in got.items()
+               if n not in ("phonon.Gamma", "phonon.omega0"))
     p = bundle.by_name()["phonon.omega0"]
-    total, _ = quad(lambda v: math.exp(p.logpdf(v)), p.lo, p.hi)
+    from isar.analyze import prior
+    assert p.energy == prior.energy_prior(1e-3, 10.0, 1.0, prior.PriorSettings())
+    total, _ = quad(lambda v: math.exp(p.logpdf(v)), p.lo, p.hi, points=[0.2, 0.3, 0.95, 1.05])
     assert abs(total - 1.0) < 1e-9
     assert p.logpdf(p.lo - 1.0) == float("-inf")
+    assert p.logpdf(0.1) == pytest.approx(p.logpdf(5.0) - 7.5)     # the ceiling below 1/4 FWHM
+    assert p.ppf(0.0) == p.lo and p.ppf(1.0) == p.hi
     assert bundle.nontrivial == ()
+    p = bundle.by_name()["bg.BG"]
+    total, _ = quad(lambda v: math.exp(p.logpdf(v)), p.lo, p.hi)
+    assert abs(total - 1.0) < 1e-9
 
 
 def test_gaussian_prior_matches_truncated_scipy():
@@ -97,7 +107,7 @@ def test_softlog_is_normalised_on_zero_to_hi_and_sheds_the_mass_below_lo():
     assert p.logpdf(0.5e-3) == float("-inf") and p.logpdf(20.5) == float("-inf")
     # one width density on both paths: the fast pass's SpectrumPrior is the same function
     from isar.analyze.prior import resolve_prior
-    sp = resolve_prior([5.0, 9.0], [1.0, 9.0])
+    sp = resolve_prior([5.0, 9.0], [1.0, 9.0], fwhm=1.0)
     for v in (1e-3, 0.3, 4.0, 19.0):
         assert p.logpdf(v) == pytest.approx(sp.ln_width(v), abs=1e-12)
 
@@ -151,7 +161,9 @@ def test_bundle_logpdf_sums_and_spec_is_declarative():
     spec = bundle.spec()
     assert [row["name"] for row in spec] == [p.name for p in bundle.params]
     assert all(set(row) == {"name", "kind", "mu", "sigma", "lo", "hi", "origin",
-                            "origin_detail"} for row in spec)
+                            "origin_detail", "energy"} for row in spec)
+    # the energy row carries the ramp, so the sampler's prior fingerprint moves with it
+    assert spec[0]["energy"] == bundle.params[0].energy.spec() and spec[1]["energy"] is None
     assert bundle.nontrivial == (bundle.by_name()["phonon.h"],)
 
 

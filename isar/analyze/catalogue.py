@@ -40,7 +40,7 @@ from typing import Callable
 
 import numpy as np
 
-from isar.analyze.prior import PriorSettings
+from isar.analyze.prior import EnergyPrior, PriorSettings, energy_prior, resolution_fwhm
 
 from isar.analyze import phonon
 from isar.analyze.components import ConstantBackground, Elastic, PhononDHO, QuasiElastic
@@ -408,8 +408,13 @@ class ResolvedPrior:
 
     ``origin`` ∈ ``"transport"`` (a soft constraint from ``ctx.constraints`` — it IS the prior
     for that parameter, the applied-exactly-once rule), ``"identity"`` (declared by a catalogue
-    entry), ``"default_flat"`` (normalized flat over the optimizer bounds) or ``"default_softlog"``
-    (the recipe's width prior, below).
+    entry), ``"default_flat"`` (normalized flat over the optimizer bounds), ``"default_softlog"``
+    (the recipe's width prior, below) or ``"default_energy"`` (the recipe's mode-energy prior).
+
+    ``kind == "energy_ramp"`` is the recipe's mode-energy density, flat times the near-zero
+    penalty and renormalised on ``[lo, hi]``: ``energy`` (an
+    :class:`~isar.analyze.prior.EnergyPrior`) is that density, the one the fast pass's
+    :meth:`isar.analyze.prior.SpectrumPrior.ln_energies` uses; ``mu`` and ``sigma`` are ``None``.
 
     ``kind == "softlog"`` is the recipe's softened log-uniform width density
     ``1/(x + mu) / ln((hi + mu)/mu)`` with ``mu`` the knee (meV) and ``sigma`` ``None``. It is
@@ -420,13 +425,14 @@ class ResolvedPrior:
     STAT eligibility rules read)."""
 
     name: str
-    kind: str                       # "gaussian" | "lognormal" | "flat" | "softlog"
+    kind: str                       # "gaussian" | "lognormal" | "flat" | "softlog" | "energy_ramp"
     mu: float | None
     sigma: float | None
     lo: float
     hi: float
     origin: str
     origin_detail: str | None = None
+    energy: EnergyPrior | None = None   # kind "energy_ramp" only
 
     def _dist(self):
         from scipy import stats
@@ -449,6 +455,8 @@ class ResolvedPrior:
             return -math.log(span) if span > 0 else 0.0
         if self.kind == "softlog":
             return -math.log(v + self.mu) - math.log(math.log((self.hi + self.mu) / self.mu))
+        if self.kind == "energy_ramp":
+            return self.energy.log_pdf(v)
         dist = self._dist()
         z = self._trunc_mass(dist)
         if not (z > 0):
@@ -465,6 +473,8 @@ class ResolvedPrior:
             # logpdf by -ln(1 - mass below lo), ~0.0016 nats per free width; upgrade if that
             # offset ever matters between the Laplace and nested lanes.
             return (self.lo + self.mu) * ((self.hi + self.mu) / (self.lo + self.mu)) ** u - self.mu
+        if self.kind == "energy_ramp":
+            return float(self.energy.ppf(u))
         dist = self._dist()
         c_lo = float(dist.cdf(self.lo))
         z = self._trunc_mass(dist)
@@ -476,7 +486,8 @@ class ResolvedPrior:
         """Fingerprintable declaration of this prior (no evaluation state)."""
         return {"name": self.name, "kind": self.kind, "mu": self.mu, "sigma": self.sigma,
                 "lo": self.lo, "hi": self.hi, "origin": self.origin,
-                "origin_detail": self.origin_detail}
+                "origin_detail": self.origin_detail,
+                "energy": None if self.energy is None else self.energy.spec()}
 
 
 @dataclass(frozen=True)
@@ -498,7 +509,8 @@ class PriorBundle:
 
     def _energy_groups(self) -> list[list[int]]:
         """Positions of the mode energies (``*.omega0``) the ordered-energy prior can order, one
-        list per group of exchangeable modes: each carries one plain flat energy prior, and every
+        list per group of exchangeable modes: each carries one plain energy prior (the recipe's
+        ``"energy_ramp"`` default, or a declared flat one), and every
         one of its other parameters carries the same prior as the others of its group (a prior on
         one mode's h or Gamma alone singles it out). The recipe's default width prior is not part
         of that comparison: a delta mode (Γ hard-fixed, no width prior) and a finite-width mode
@@ -511,7 +523,7 @@ class PriorBundle:
         # The bundle is frozen; grouping depends on its priors, never on sampled values.
         groups = {}
         for i, p in enumerate(self.params):
-            if p.name.endswith(".omega0") and p.kind == "flat":
+            if p.name.endswith(".omega0") and p.kind in ("flat", "energy_ramp"):
                 groups.setdefault(self._mode_priors(i), []).append(i)
         indices = tuple(np.asarray(g, dtype=int) for g in groups.values() if len(g) >= 2)
         for group in indices:
@@ -519,9 +531,24 @@ class PriorBundle:
         return indices
 
     @cached_property
+    def _group_densities(self):
+        """Each ordered group's one-energy density, from its first member (one key, one prior)."""
+        out = []
+        for g in self._energy_group_indices:
+            first = self.params[g[0]]
+            out.append(first.energy if first.energy is not None
+                       else EnergyPrior.flat(first.lo, first.hi))
+        return tuple(out)
+
+    @cached_property
     def _ungrouped_priors(self):
         grouped = {i for group in self._energy_group_indices for i in group}
         return tuple(p for i, p in enumerate(self.params) if i not in grouped)
+
+    @cached_property
+    def _ungrouped_positions(self):
+        grouped = {i for group in self._energy_group_indices for i in group}
+        return tuple(i for i in range(len(self.params)) if i not in grouped)
 
     def _mode_priors(self, energy_index: int) -> tuple:
         """The density of every parameter prior of the mode whose energy is at ``energy_index``
@@ -534,31 +561,31 @@ class PriorBundle:
 
     def logpdf_ordered(self, named_values: dict) -> float:
         """:meth:`logpdf` with each group of exchangeable mode energies under the normalised
-        ordered-energy prior (``N!/W^N``, :func:`isar.analyze.prior.ordered_energy_log_prior`)
-        instead of one flat factor per label. The Laplace lane of the ordered prior;
-        :meth:`transform_ordered` is its sampler."""
+        ordered-energy prior (``N! prod g(E_i)``, g the group's one-energy density,
+        :func:`isar.analyze.prior.ordered_energy_log_prior`) instead of one factor per label. The
+        Laplace lane of the ordered prior; :meth:`transform_ordered` is its sampler."""
         from isar.analyze.prior import ordered_energy_log_prior
 
-        groups = self._energy_group_indices
         total = float(sum(p.logpdf(named_values[p.name]) for p in self._ungrouped_priors))
-        for g in groups:
-            first = self.params[g[0]]
+        for g, density in zip(self._energy_group_indices, self._group_densities):
             total += ordered_energy_log_prior(
-                [named_values[self.params[i].name] for i in g], first.lo, first.hi)
+                [named_values[self.params[i].name] for i in g], density)
         return total
 
     def transform_ordered(self, u) -> np.ndarray:
         """Nested-sampling prior transform, ``u`` in ``params`` order: each parameter's own ``ppf``,
         except each group of exchangeable mode energies, which are the ascending order statistics of
-        uniforms (:func:`isar.analyze.prior.ordered_energy_transform`), assigned to the group's
-        modes in component order. Samples :meth:`logpdf_ordered`."""
+        the group's one-energy density (uniform order statistics through its inverse CDF,
+        :func:`isar.analyze.prior.ordered_energy_transform`), assigned to the group's modes in
+        component order. Samples :meth:`logpdf_ordered`."""
         from isar.analyze.prior import ordered_energy_transform
 
         u = np.asarray(u, dtype=float)
-        out = np.array([p.ppf(v) for p, v in zip(self.params, u)], dtype=float)
-        for g in self._energy_group_indices:
-            first = self.params[g[0]]
-            out[g] = ordered_energy_transform(u[g], first.lo, first.hi)
+        out = np.empty(len(self.params), dtype=float)
+        for i in self._ungrouped_positions:
+            out[i] = self.params[i].ppf(u[i])
+        for g, density in zip(self._energy_group_indices, self._group_densities):
+            out[g] = ordered_energy_transform(u[g], density)
         return out
 
     @property
@@ -567,8 +594,9 @@ class PriorBundle:
         # shortcut: the softlog knee's curvature 1/(Γ+0.12)² is ignored by the unseen-informative
         # test; it can rival the likelihood's only for a width below about 0.1 meV, where the
         # campaign path already takes the Γ-floor rung; upgrade if the campaign path prices such
-        # widths.
-        return tuple(p for p in self.params if p.kind not in ("flat", "softlog"))
+        # widths. The near-zero energy penalty ("energy_ramp") has no width to compare; the
+        # evidence ladder's rung 1 tests it on its own (evidence.structure_evidence).
+        return tuple(p for p in self.params if p.kind not in ("flat", "softlog", "energy_ramp"))
 
 
 def _resolve_value(value, ctx, *, what: str) -> float:
@@ -609,13 +637,16 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=(),
     rule): a transported soft constraint from ``ctx.constraints`` IS the prior (truncated
     Gaussian on the optimizer bounds); else an ``entry``-declared :class:`ParamPrior` matched by
     suffix; else the recipe default: the softened log-uniform density for a ``.Gamma``
-    (``default_softlog``), normalized flat over the bounds for anything else. ``exclude`` names the hard-fixed parameters
+    (``default_softlog``), the penalised mode-energy density for a ``.omega0`` (``"energy_ramp"``,
+    ``default_energy``: :func:`isar.analyze.prior.energy_prior` on the bounds, at the context's
+    resolution FWHM), normalized flat over the bounds for anything else. ``exclude`` names the hard-fixed parameters
     (no prior factor; k already reduced). ``bounds`` is the per-parameter (lo, hi) list in
     ``composite.param_names()`` order, exactly as :func:`isar.analyze.loop.build_problem` built
-    them. ``prior_settings`` (a :class:`~isar.analyze.prior.PriorSettings`, ``None``: recipe v5)
-    sets the default width density as :meth:`isar.analyze.prior.SpectrumPrior.ln_width` has it: the
-    softened log-uniform with the settings' knee, or flat when ``width_kind`` is ``"flat"`` or under
-    ``legacy_v4``. The bounds are the caller's (``prior.mode_bounds(names, ctx, prior_settings)``).
+    them. ``prior_settings`` (a :class:`~isar.analyze.prior.PriorSettings`, ``None``: the recipe
+    defaults) sets the default width density as :meth:`isar.analyze.prior.SpectrumPrior.ln_width`
+    has it: the softened log-uniform with the settings' knee, or flat when ``width_kind`` is
+    ``"flat"`` or under ``legacy_v4``; and the energy penalty's ramp. The bounds are the caller's
+    (``prior.mode_bounds(names, ctx, prior_settings)``).
     """
     settings = prior_settings or PriorSettings()
     constraints = getattr(ctx, "constraints", None)
@@ -626,6 +657,7 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=(),
 
     resolved = []
     matched_suffixes = set()
+    fwhm = None                      # read once, only when a default mode energy needs it
     for name, (lo, hi) in zip(composite.param_names(), bounds):
         if name in excluded:
             continue
@@ -659,6 +691,12 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=(),
             else:
                 resolved.append(ResolvedPrior(name, "softlog", settings.width_knee, None,
                                               lo, hi, "default_softlog"))
+        elif suffix == "omega0":
+            if fwhm is None:
+                fwhm = resolution_fwhm(ctx)
+            resolved.append(ResolvedPrior(name, "energy_ramp", None, None, lo, hi,
+                                          "default_energy",
+                                          energy=energy_prior(lo, hi, fwhm, settings)))
         else:
             resolved.append(ResolvedPrior(name, "flat", None, None, lo, hi, "default_flat"))
     # A declared suffix no free parameter carries is a stale/misspelled declaration — silent

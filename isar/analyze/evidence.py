@@ -440,9 +440,15 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
     sig_post = np.sqrt(np.diag(sigma_free))
     narrow = [p.name for p in bundle.nontrivial if p.origin != "transport"
               and _effective_sigma(p) < CURVATURE_RATIO * sig_post[free_names.index(p.name)]]
+    # The near-zero energy penalty is unseen too: inside the ramp its slope moves the posterior
+    # off θ̂ (Laplace-at-θ̂ misprices by about c²σ²/2), so a free energy whose posterior reaches
+    # the ramp (θ̂ − 3σ below its top corner) takes the MAP refit; one wholly above sees no penalty.
+    narrow += [p.name for p in bundle.params if p.kind == "energy_ramp" and p.energy.ceiling > 0
+               and float(fit_result.params[p.name]) - 3.0 * sig_post[free_names.index(p.name)]
+               < p.energy.start + p.energy.corner]
     validity["unseen_informative"] = narrow
     if not narrow:
-        # Ordered mode energies (N!/W^N): the Gaussian at θ̂ covers one labelling, so the prior is
+        # Ordered mode energies (N! prod g): the Gaussian at θ̂ covers one labelling, so the prior is
         # the ordered one, or lnZ undercounts every N-mode model by ln N! against the sampler.
         ln_prior = bundle.logpdf_ordered(fit_result.params)
         try:
