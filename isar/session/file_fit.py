@@ -12,7 +12,8 @@ emits it before any deep work. Its sampling pool is sized to the distinct models
 (:func:`isar.analyze.deep_pass.stage_width`); when that is fewer cores than it was given it says so first
 (status ``"cores"``).
 
-``freeze``, ``prepare_scan`` and ``prepare_unit`` are that preparation, split so the batch runner reuses it.
+``freeze``, ``prepare_scan`` and ``prepare_unit`` are that preparation, split so the batch runner reuses it;
+``fit_context`` is the spectrum's context a coupled refit reads.
 """
 from __future__ import annotations
 
@@ -169,6 +170,33 @@ def prepare_unit(frozen: Frozen, scan_prep, unit_key: str, passes) -> Prepared:
                     source_by_name=source_by_name, sp=sp, up=up)
 
 
+@dataclass(frozen=True)
+class FitContext:
+    """A refit's ``Snapshot.context`` (C-refit): the spectrum's fast-pass context with the card's own fast-pass
+    settings and structure whitelist, as the fast pass fits it."""
+    ctx: object                  # ScanContext
+    settings: object             # FastPassSettings (guidelines.fast_pass_settings of the card)
+    structures: tuple | None     # the card's structure labels for this scan; None: every structure
+
+
+def fit_context(prep: Prepared) -> FitContext | tuple[str, str]:
+    """The spectrum's fit context, or ``(status, reason)`` when it cannot be fitted: held or failed by the gate,
+    or undersampled after the guideline masks. Resolved as the fast pass resolves it (prior, context, labels)."""
+    rec, det, q, T, sample, scan_id, chash, ghash, _seed = prep.task
+    base = dict(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
+                content_hash=chash, guidelines_hash=ghash)
+    gated, calres = scan_delivery._gate_scan(rec, det, prep.card, prep.g, prep.view, prep.exclusions, base)
+    if gated is not None:
+        return "held", "; ".join(map(str, gated.reasons))
+    working = scan_delivery._resolve_prior_and_context(rec, det, q, T, sample, scan_id, prep.card, prep.g,
+                                                       calres, base)
+    if isinstance(working, ScanEntry):
+        return "failed", "; ".join(map(str, working.reasons))
+    ctx, labels = working[0], working[6]
+    settings = guide_mod.fast_pass_settings(prep.card)
+    return FitContext(ctx, settings, scan_delivery._structure_whitelist(labels, ctx, settings.mode_ceiling)[0])
+
+
 def _fit(root: Path, item: FileItem, progress, emit) -> None:
     def result(pass_kind, status, reason=None, payload=None, cores=None):
         emit(FileResult(item.item_id, item.unit_key, pass_kind, status, reason, payload, cores))
@@ -239,8 +267,7 @@ def _fit(root: Path, item: FileItem, progress, emit) -> None:
     n = min(item.cores, deep_pass.stage_width(oc["fast_pass"]))
     if n < item.cores:
         result("cores", "cores", cores=n)
-    record, timing, stop = _deep_stage(fast_entry, oc, task, nop_card, g, view, exclusions,
-                                       replace(request, workers=n), progress)
+    record, timing, stop = _deep_stage(fast_entry, oc, prep, replace(request, workers=n), progress)
     if stop is not None:
         return result("deep", *stop)
     with_deep = copy.deepcopy(fast_entry)
@@ -305,19 +332,13 @@ def _parse_unit_record(card, session, prev: ScanEntry, exp: str, scan: int):
     return rec, {**{Path(f).name: str(Path(f).resolve()) for f in sub.measurement_files}, **source_by_name}
 
 
-def _deep_stage(fast_entry, oc, task, card, g, view, exclusions, request, progress) -> tuple:
+def _deep_stage(fast_entry, oc, prep, request, progress) -> tuple:
     """``(record, timing, None)`` of the deep pass on the fast record ``oc`` builds on, run on
     ``request.workers`` cores; ``(None, None, (status, reason))`` when the unit cannot be sampled."""
-    rec, det, q, T, sample, scan_id, chash, ghash, _seed = task
-    base = dict(scan_id=scan_id, scan_number=rec.scan_number, scan_type=rec.scan_type,
-                content_hash=chash, guidelines_hash=ghash)
-    gated, calres = scan_delivery._gate_scan(rec, det, card, g, view, exclusions, base)
-    if gated is not None:
-        return None, None, ("held", "Deep pass not run: " + "; ".join(map(str, gated.reasons)))
-    working = scan_delivery._resolve_prior_and_context(rec, det, q, T, sample, scan_id, card, g, calres, base)
-    if isinstance(working, ScanEntry):
-        return None, None, ("failed", "Deep pass not run: " + "; ".join(map(str, working.reasons)))
-    ctx = working[0]
+    fitted = fit_context(prep)
+    if isinstance(fitted, tuple):
+        return None, None, (fitted[0], "Deep pass not run: " + fitted[1])
+    ctx = fitted.ctx
     # A stored fast pass a hard-fix escalation replaced (a batch with a prior) is refused, as _process_one does.
     hard_fix = any(str(r).startswith("hard-fix escalation")
                    for r in [*(oc.get("reasons") or ()), *(fast_entry.reasons or ())])

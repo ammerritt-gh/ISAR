@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 import intake_fixtures as fx
@@ -162,6 +163,33 @@ def test_a_deep_item_on_a_fresh_unit_runs_the_fast_stage_once_and_first(tmp_path
     assert save_results(ws.root, [r.payload for r in out]) == [None, None]
     entry = ws.load()[1].get(unit)
     assert entry.status == "fitted" and entry.detectors["a04"]["deep_pass"]["state"] == "search_limited"
+
+
+def _same_context(a, b) -> bool:
+    arrays = all(np.array_equal(getattr(a, k), getattr(b, k)) for k in ("x", "counts", "mask"))
+    keys = ("T", "center", "gauss_fwhm", "energy_status", "acoustic_omega")
+    scalars = [(getattr(a, k), getattr(b, k)) for k in keys]
+    return arrays and all(x == y for x, y in scalars)
+
+
+def test_prepare_unit_gives_the_context_the_deep_pass_fits_on(tmp_path, monkeypatch, no_sampling):
+    """Check 4 of S1U6: the context a refit reads, from prepare_unit alone, is the one the deep pass fits on."""
+    ws, _data, scan = _ingested(tmp_path)
+    unit = f"{scan}:a04"
+    _save(ws, _fit(ws, unit))
+    fitted_on = []
+    real = deep_delivery.deliver
+    monkeypatch.setattr(deep_delivery, "deliver",
+                        lambda fit, ctx, request, **kw: (fitted_on.append(ctx), real(fit, ctx, request, **kw))[1])
+    _fit(ws, unit, "deep")
+    (ctx,) = fitted_on
+    frozen = file_fit.freeze(ws.root)
+    exp, scan_no, _det = unit.rsplit(":", 2)
+    prep = file_fit.prepare_unit(frozen, file_fit.prepare_scan(frozen, exp, int(scan_no), frozen.session.get(unit)),
+                                 unit, ("fast", "deep"))
+    got = file_fit.fit_context(prep)
+    assert isinstance(got, file_fit.FitContext) and _same_context(ctx, got.ctx)
+    assert got.settings.mode_ceiling == 1          # the card's own fast-pass settings (max_modes = 1 here)
 
 
 def test_a_dead_analyzer_is_held_and_its_deep_pass_is_not_run(tmp_path):
