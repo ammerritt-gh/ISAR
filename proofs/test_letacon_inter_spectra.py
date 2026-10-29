@@ -105,12 +105,15 @@ def _key(nodes, T: int, det: str) -> str:
     pytest.fail(f"no spectrum of analyzer {det} at {T} K in the import record", pytrace=False)
 
 
-def _as_flag(info) -> Flag | None:
-    """A facade flag (what the scan list shows) as the proof's Flag; reason codes and severities are kept."""
+def _as_flag(info, line) -> Flag | None:
+    """A facade flag (what the scan list shows) as the proof's Flag. A reason the refit line stores keeps its branch
+    ids; one the facade adds (a seam, a drift, a stale lock) names no branch: ids None."""
     if info is None:
         return None
+    stored = {(r.get("code"), r.get("text", "")): r["ids"] for r in (line.flag.reasons if line and line.flag else ())}
     return Flag(info.score, info.flagged,
-                tuple({"code": r.code, "severity": r.severity, "text": r.detail, "ids": []} for r in info.reasons))
+                tuple({"code": r.code, "severity": r.severity, "text": r.detail,
+                       "ids": stored.get((r.code, r.detail))} for r in info.reasons))
 
 
 def _authoritative_line(log, by_key, key):
@@ -384,15 +387,14 @@ def test_moving_mode_is_flagged_and_flat_modes_are_quiet(simultaneous_run, ws, n
     analyzer, moving = exp["analyzer"], exp["moving_mode"]
     flats, tol = tuple(exp["flat_modes"]), exp.get("match_tolerance_meV")
     log, by_key, fast = records.read_log(ws), inter_overview(ws).by_key, _fits(ws)
-    spectrum_flags, branch_flags, matches, shifts = {}, {}, {}, {}
+    spectrum_flags, matches, shifts = {}, {}, {}
     for T in TEMPERATURES:
         key = _key(nodes, T, analyzer)
         line = _authoritative_line(log, by_key, key)
         fast_fp = fast[(T, analyzer)][1]
         paper = {name: ref["omega0"] for name, ref in exp["paper"][str(T)].items()}
         matches[T] = chk.match_modes(_peaks_of(ws, line, fast_fp), paper, tol)
-        spectrum_flags[T] = _as_flag(by_key[key].flag) if key in by_key else None
-        branch_flags[T] = line.flag if line is not None else None
+        spectrum_flags[T] = _as_flag(by_key[key].flag, line) if key in by_key else None
         fast_match = chk.match_modes(fast_fp.get("peaks") or [], paper, tol)
         for name in flats:
             if matches[T].get(name) and fast_match.get(name):
@@ -404,7 +406,7 @@ def test_moving_mode_is_flagged_and_flat_modes_are_quiet(simultaneous_run, ws, n
             print(f"  paper {name}: E0 {ref['omega0']:6.2f}  matched "
                   f"{'-' if m is None else format(m['omega0'], '6.2f') + ' ' + m.get('mode_status', '')}")
     moving_v = chk.moving_is_flagged(spectrum_flags, matches, tol, moving=moving)
-    flats_v = chk.flats_are_quiet(branch_flags, matches, flats=flats)
+    flats_v = chk.flats_are_quiet(spectrum_flags, matches, flats=flats)     # the flags the user sees (facade)
     worst = max((v for per in shifts.values() for v in per.values()), default=None)
     print(f"\nmoving: {moving_v.why}\nflats: {flats_v.why}\nflat-mode shift from the fast solo, worst: "
           f"{'none matched' if worst is None else format(worst, '.2f') + ' meV'}")
@@ -423,7 +425,7 @@ def test_other_analyzers_flag_map_and_numbers(simultaneous_run, ws, nodes, expec
     keys = {(round(n.T), n.detector): k for k, n in nodes.nodes.items() if n.T is not None}
     flags = {}
     for pos, key in keys.items():
-        flags[pos] = _as_flag(by_key[key].flag) if key in by_key and by_key[key].flag is not None \
+        flags[pos] = _as_flag(by_key[key].flag, None) if key in by_key and by_key[key].flag is not None \
             else Flag(None, False, ())
     grid = grid_for(load_policy(ws / POLICY_NAME).plugin)
     text = chk.flag_map(flags, grid.position) if grid is not None else "(no analyzer layout for this instrument)"

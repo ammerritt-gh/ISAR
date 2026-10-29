@@ -39,12 +39,14 @@ def match_modes(modes: list[dict], paper: Mapping[str, float], tol: float | None
 
 
 def flags_on(flag: Flag | None, mode: Mapping | None, *, min_severity: str) -> list[dict]:
-    """The reasons of a refit's flag attributed to ``mode``'s branch (a reason names its branches in ``ids``),
-    at or above ``min_severity``. A score reason names the spectrum, not a branch, so it is never attributed."""
+    """The reasons of a flag attributed to ``mode``'s branch (a reason names its branches in ``ids``), at or above
+    ``min_severity``. A score reason names the spectrum, not a branch, so it is never attributed. A reason with
+    ``ids`` None names no branch (the facade adds seam and drift reasons so), so it counts against every mode."""
     if flag is None or mode is None:
         return []
     floor = SEVERITIES.index(min_severity)
-    return [r for r in flag.reasons if mode["branch"] in r["ids"] and SEVERITIES.index(r["severity"]) >= floor]
+    return [r for r in flag.reasons if (r["ids"] is None or mode["branch"] in r["ids"])
+            and SEVERITIES.index(r["severity"]) >= floor]
 
 
 def _codes(reasons) -> str:

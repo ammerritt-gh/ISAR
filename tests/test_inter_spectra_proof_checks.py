@@ -22,7 +22,8 @@ def test_import_root_is_the_worktree():
 
 
 def reason(code, severity, ids):
-    return {"code": code, "severity": severity, "text": "synthetic", "ids": list(ids), "values": {}}
+    return {"code": code, "severity": severity, "text": "synthetic", "ids": None if ids is None else list(ids),
+            "values": {}}
 
 
 def flag(*reasons):
@@ -99,6 +100,14 @@ def test_a_serious_flag_on_a_flat_mode_fails_and_an_info_flag_is_allowed():
     # a reason on the moving mode is not a flat-mode failure
     on_b = {302.0: flag(reason("identity_ambiguous", "serious", ["b1"])), 97.0: None}
     assert chk.flats_are_quiet(on_b, matches(FITTED)).ok
+
+
+def test_a_reason_the_facade_adds_with_no_branch_counts_against_every_flat_mode():
+    # a seam or drift reason names no branch: it may sit on a flat mode, so it counts against each one
+    seam = {302.0: flag(reason("seam_disagreement", "warn", None)), 97.0: None}
+    assert not chk.flats_are_quiet(seam, matches(FITTED)).ok
+    info = {302.0: flag(reason("seam_disagreement", "info", None)), 97.0: None}
+    assert chk.flats_are_quiet(info, matches(FITTED)).ok
 
 
 def test_accounting_is_an_identity_that_an_off_by_one_breaks():
