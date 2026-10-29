@@ -502,3 +502,19 @@ def test_the_facade_names_are_exported_from_the_package():
     for name in ("inter_overview", "inter_history", "batch_preview", "fit_view_of", "InterOverview", "SpectrumInter",
                  "FitEntry", "BatchRequest", "BatchPreview"):
         assert getattr(w, name) is getattr(facade, name)
+
+
+def test_the_review_flag_is_the_stored_decision_or_a_facade_added_reason_never_severity(root):
+    from isar.workspace_api.inter_spectra import is_flagged
+    k1, k2, k3 = spectrum_keys(root)[:3]
+    h = _hashes(root, [k1, k2, k3])
+    note = {"score": 1.0, "flagged": False,
+            "reasons": [{"code": "release_fit_failed", "severity": "warn", "text": "release fit failed"}]}
+    stored = {"score": 60.0, "flagged": True, "reasons": []}
+    save(root, B1, [_refit(k1, F1, h[k1], flag=note), _refit(k2, F2, h[k2], flag=stored)])
+    by = inter_overview(root).by_key
+    assert [r.code for r in by[k1].flag.reasons] == ["release_fit_failed"] and by[k1].flag.severity == "warn"
+    assert not by[k1].flag.flagged and not is_flagged(by[k1].flag)       # a warn note is listed, not flagged
+    assert by[k2].flag.flagged and is_flagged(by[k2].flag)               # the stored decision stands
+    save(root, B2, [_refit(k3, F3, h[k3], flag=note)], stage="sweep", index=3, end="did_not_settle")
+    assert inter_overview(root).by_key[k3].flag.flagged                  # did not settle: flagged whatever the score

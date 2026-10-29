@@ -140,6 +140,18 @@ def test_a_repair_is_listed_as_a_reason_but_is_not_flagged_for_review(ws_root):
     assert block["history"][-1]["flagged"] is False
 
 
+def test_a_warn_note_on_an_unflagged_refit_is_not_flagged_in_the_export(ws_root):
+    k1 = spectrum_keys(ws_root)[0]
+    note = {"score": 1.0, "flagged": False,
+            "reasons": [{"code": "release_fit_failed", "severity": "warn", "text": "release fit failed"}]}
+    _save_ring(ws_root, "b000000000001", [(F1, k1)], number_flag=note)
+    _, doc, rec, rows = _export(ws_root)
+    assert _by_pass(rows, k1)["inter"]["flagged"] == "false"
+    block = rec[k1]["inter_spectra"]
+    assert [r["code"] for r in block["flag"]["reasons"]] == ["release_fit_failed"]
+    assert block["history"][-1]["flagged"] is False
+
+
 def test_a_fast_solo_lock_before_any_batch_is_exported_as_locked(ws_root):
     k1 = spectrum_keys(ws_root)[0]
     assert inter_values.set_lock(ws_root, k1, locked=True, fit_id="fast").ok     # no batch has run yet
