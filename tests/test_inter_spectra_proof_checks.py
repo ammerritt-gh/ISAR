@@ -29,12 +29,14 @@ def flag(*reasons):
     return Flag(score=None, flagged=bool(reasons), reasons=tuple(reasons))
 
 
-def modes(*energies):
-    return [{"branch": f"b{i}", "omega0": e} for i, e in enumerate(energies)]
+def modes(*energies, held=()):
+    return [{"branch": f"b{i}", "omega0": e, "mode_status": "held_by_neighbours" if i in held
+             else "determined_by_own_data"} for i, e in enumerate(energies)]
 
 
 # refit modes at two temperatures: A, B, C, D each refitted to a branch (b0..b3)
 FITTED = modes(3.1, 5.9, 9.05, 12.0)
+HELD_B = modes(3.1, 5.9, 9.05, 12.0, held=(1,))             # B sits where its neighbours put it
 MISSING_B = modes(3.1, 9.05, 12.0)                          # no mode near 6 meV
 
 
@@ -58,15 +60,22 @@ def test_b_flagged_is_ok_and_a_warn_flag_on_b_is_not_a_serious_one():
     assert not chk.moving_is_flagged(warn_only, matches(FITTED), None).ok
 
 
-def test_a_score_reason_names_the_spectrum_so_it_never_flags_b():
+def test_a_serious_score_flag_on_the_spectrum_holding_b_is_ok():
+    # the spectrum is the unit of the flag: a score reason names the spectrum, and it flags B's spectrum
     events = {302.0: flag(reason("score_over_threshold", "serious", ["E:1:a06"])), 97.0: None}
-    assert not chk.moving_is_flagged(events, matches(FITTED), None).ok
+    assert chk.moving_is_flagged(events, matches(FITTED), None).ok
 
 
 def test_b_unflagged_and_unmatched_is_not_ok():
     events = {302.0: None, 97.0: None}
     verdict = chk.moving_is_flagged(events, matches(MISSING_B), 0.5)
     assert not verdict.ok and "matched at no temperature" in verdict.why
+
+
+def test_b_matched_and_held_by_its_neighbours_is_ok_without_a_flag():
+    events = {302.0: None, 97.0: None}
+    assert chk.moving_is_flagged(events, matches(HELD_B), None).ok
+    assert not chk.moving_is_flagged(events, matches(FITTED), None).ok
 
 
 def test_b_unflagged_but_refitted_within_tolerance_is_ok_only_when_tolerance_is_set():
