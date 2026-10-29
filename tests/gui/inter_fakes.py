@@ -38,7 +38,7 @@ class FakeInterState(QObject):
 
     @property
     def settings(self):
-        return self.overview.settings if self.overview else InterSettings().to_values()
+        return self.overview.settings if self.overview else {}     # before the first overview read: nothing saved yet
 
     def row(self, key: str) -> SpectrumInter | None:
         return self.overview.by_key.get(key) if self.overview else None
