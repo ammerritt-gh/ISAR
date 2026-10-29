@@ -29,7 +29,10 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
-from isar.analyze.phonon import EPS_OMEGA0, GAMMA_FLOOR, GAMMA_MAX, GAMMA_MAX_V4
+from scipy import special
+
+from isar.analyze.phonon import (EPS_OMEGA0, GAMMA_FLOOR, GAMMA_MAX, GAMMA_MAX_V4,
+                                 central_qe_admissible)
 
 
 @dataclass(frozen=True)
@@ -190,6 +193,7 @@ class SpectrumPrior:
     energy: EnergyPrior       # each mode energy's density on [e_lo, e_hi] (the near-zero penalty)
     fwhm: float               # meV, the resolution FWHM the penalty is measured in
     v4_height_hi: float | None = None   # legacy_v4 arm only: amplitude_scale(ctx) x recipe_exposure(ctx)
+    qe_width: QEWidthPrior | None = None   # the central QE's width density (BL43LXU only)
 
     # ---- bounds (used as TRF bounds; the support of each density) ----
     @property
@@ -213,7 +217,7 @@ class SpectrumPrior:
         return (0.0, self.settings.width_cap)
 
     def bounds(self, kind: str) -> tuple[float, float]:
-        """kind in {"h", "omega0", "Gamma", "elastic", "bg"}."""
+        """kind in {"h", "omega0", "Gamma", "elastic", "bg", "qe_width"}."""
         if kind in ("h", "elastic"):
             return (0.0, self.height_hi)
         if kind == "bg":
@@ -222,6 +226,10 @@ class SpectrumPrior:
             return (self.e_lo, self.e_hi)
         if kind == "Gamma":
             return self._width_support()
+        if kind == "qe_width":
+            if self.qe_width is None:
+                raise ValueError("this spectrum has no central QE width prior (BL43LXU only)")
+            return (self.qe_width.lo, self.qe_width.hi)
         raise ValueError(f"no prior for parameter kind {kind!r}")
 
     # ---- log densities ----
@@ -240,6 +248,12 @@ class SpectrumPrior:
             return -math.log(hi - lo)
         return -math.log(g + s.width_knee) - math.log(math.log((hi + s.width_knee)
                                                               / s.width_knee))
+
+    def ln_qe_width(self, w: float) -> float:
+        """The central QE's intrinsic-width log density (:class:`QEWidthPrior`)."""
+        if self.qe_width is None:
+            raise ValueError("this spectrum has no central QE width prior (BL43LXU only)")
+        return self.qe_width.log_pdf(w)
 
     def ln_energies(self, energies) -> float:
         """ln(k! prod g(E_i)) on the ordered region, g the penalised energy density
@@ -272,6 +286,9 @@ class SpectrumPrior:
                "energy_support_meV": [float(self.e_lo), float(self.e_hi)],
                "energy_penalty": self.energy.spec() | {"fwhm_meV": float(self.fwhm)},
                "settings": asdict(self.settings)}
+        if self.qe_width is not None:
+            out["qe_width_prior"] = self.qe_width.spec() | {"fwhm_meV": float(self.fwhm),
+                                                            "recipe": CENTRAL_QE_RECIPE_VERSION}
         return out
 
 
@@ -311,6 +328,8 @@ def resolve_prior_for(ctx, settings: PriorSettings | None = None) -> SpectrumPri
                        exposure_scale=ctx.exposure_used)
     if s.legacy_v4:
         sp = dataclasses.replace(sp, v4_height_hi=amplitude_scale(ctx) * recipe_exposure(ctx))
+    if central_qe_admissible(ctx):
+        sp = dataclasses.replace(sp, qe_width=qe_width_prior(sp.fwhm))
     return sp
 
 
@@ -324,6 +343,7 @@ def mode_bounds(names, ctx, settings: PriorSettings | None = None) -> list[tuple
       absolute ``GAMMA_FLOOR``) to the width cap (``GAMMA_MAX`` = 20 meV).
     * ``.h`` (phonon and elastic heights, counts per point): ``(0, margin x max count)``.
     * ``.BG`` (flat background, counts per point): ``(0, max count)``.
+    * ``.width`` (the central QE's intrinsic FWHM, BL43LXU): the :class:`QEWidthPrior` support.
     * ``.QE`` (area): v4's rule, ``(0, amplitude_scale x exposure x resolution width)``; the
       quasi-elastic line is out of the recipe's scope and its coefficient is an area, not a height.
 
@@ -339,6 +359,8 @@ def mode_bounds(names, ctx, settings: PriorSettings | None = None) -> list[tuple
             out.append((min(GAMMA_FLOOR, WIDTH_FLOOR_FRACTION * width), sp.bounds("Gamma")[1]))
         elif name.endswith(".h"):
             out.append(sp.bounds("h"))
+        elif name.endswith(".width"):
+            out.append(sp.bounds("qe_width"))
         elif name.endswith(".QE"):
             out.append((0.0, amplitude_scale(ctx) * recipe_exposure(ctx) * width))
         elif name.endswith(".BG"):
@@ -563,6 +585,142 @@ def ordered_energy_transform(u, ep: EnergyPrior) -> np.ndarray:
         for i in range(n - 2, -1, -1):              # then the largest of the i + 1 left below it
             t[i] = t[i + 1] * u[i] ** (1.0 / (i + 1))
     return ep.ppf(t)
+
+
+# ----------------------------------------------------------------------------
+# The central quasi-elastic width prior (BL43LXU only)
+# ----------------------------------------------------------------------------
+# The QE's intrinsic FWHM W has a proper density on [floor, knee + tail/slope], in units of the
+# spectrum's resolution FWHM: flat from the floor to the knee, then exp(-slope (W - knee)) (1 nat per
+# FWHM above 2 FWHM), the knee rounded over +-corner so the fast pass's finite-difference optimiser
+# and Hessian never sit on a slope discontinuity. On each of the three pieces the CDF and its
+# inverse are closed form (Gaussian piece: erf / erfinv), so the Laplace density (QEWidthPrior.log_pdf)
+# and the nested-sampling transform (QEWidthPrior.ppf) are one implementation.
+# Bump CENTRAL_QE_RECIPE_VERSION when the QE's model or the BL43LXU fast pass changes BL43LXU numbers.
+CENTRAL_QE_RECIPE_VERSION = "isar.central-qe-recipe/1"
+
+
+@dataclass(frozen=True)
+class QEWidthSettings:
+    """The QE width prior's numbers, in resolution FWHM (slope in nats per FWHM). Not part of
+    :class:`PriorSettings` (whose ``asdict`` every signature hashes) and not a card setting.
+    ``floor_fwhm``, ``knee_fwhm`` and ``slope`` are operator rulings (2026-10-29); ``corner_fwhm`` and
+    ``tail_nats`` are algorithm settings: the corner is the half-width the near-zero ramp uses, and
+    the support ends where the penalty reaches ``tail_nats`` (e^-40 of the mass is dropped)."""
+    floor_fwhm: float = 0.25
+    knee_fwhm: float = 2.0
+    slope: float = 1.0
+    corner_fwhm: float = 0.05
+    tail_nats: float = 40.0
+
+    def __post_init__(self):
+        vals = (self.floor_fwhm, self.knee_fwhm, self.slope, self.corner_fwhm, self.tail_nats)
+        if not all(math.isfinite(float(v)) for v in vals):
+            raise ValueError(f"QE width settings must be finite, got {self!r}")
+        if not (self.slope > 0 and self.tail_nats > 0 and self.corner_fwhm > 0
+                and 0 <= self.floor_fwhm < self.knee_fwhm - self.corner_fwhm):
+            raise ValueError(f"invalid QE width settings {self!r}")
+
+
+@dataclass(frozen=True)
+class QEWidthPrior:
+    """The QE intrinsic-width density on ``[lo, hi]`` (meV): ``exp(-slope u(W))`` renormalised, with
+    ``u`` = 0 for ``W <= knee - corner``, ``W - knee`` for ``W >= knee + corner`` and
+    ``(W - knee + corner)**2 / (4 corner)`` between (C1). ``slope`` is in nats per meV. Zero outside
+    ``[lo, hi]``; ``hi = knee + tail_nats / slope`` (:func:`qe_width_prior`)."""
+    lo: float
+    knee: float
+    hi: float
+    slope: float
+    corner: float
+
+    def __post_init__(self):
+        vals = (self.lo, self.knee, self.hi, self.slope, self.corner)
+        if not all(math.isfinite(float(v)) for v in vals):
+            raise ValueError(f"QE width prior must be finite, got {self!r}")
+        if not (self.slope > 0 and self.corner > 0 and 0 <= self.lo < self.knee - self.corner
+                and self.hi > self.knee + self.corner):
+            raise ValueError(f"invalid QE width prior {self!r}")
+        s, c = float(self.slope), float(self.corner)
+        a = s / (4.0 * c)                                  # the Gaussian piece exp(-a t^2), t in [0, 2c]
+        flat = (self.knee - c) - self.lo
+        corner = 0.5 * math.sqrt(math.pi / a) * math.erf(math.sqrt(a) * 2.0 * c)
+        tail = (math.exp(-s * c) - math.exp(-s * (self.hi - self.knee))) / s
+        z = flat + corner + tail
+        for name, value in (("_a", a), ("_m_flat", flat), ("_m_corner", corner), ("_z", z),
+                            ("_ln_z", math.log(z))):
+            object.__setattr__(self, name, value)
+
+    def penalty(self, w: float) -> float:
+        """The log-prior penalty ``slope u(W)`` (nats, >= 0), any real ``w``."""
+        t = float(w) - self.knee
+        if t <= -self.corner:
+            return 0.0
+        if t >= self.corner:
+            return self.slope * t
+        return self.slope * (t + self.corner) ** 2 / (4.0 * self.corner)
+
+    def log_pdf(self, w: float) -> float:
+        """The normalised log density at ``w``; -inf outside ``[lo, hi]``."""
+        w = float(w)
+        if not self.lo <= w <= self.hi:
+            return -math.inf
+        return -self.penalty(w) - self._ln_z
+
+    def _cdf1(self, w: float) -> float:
+        w = min(max(float(w), self.lo), self.hi)
+        s, c = self.slope, self.corner
+        edge = self.knee - c
+        if w <= edge:
+            mass = w - self.lo
+        elif w <= self.knee + c:
+            mass = self._m_flat + 0.5 * math.sqrt(math.pi / self._a) * math.erf(
+                math.sqrt(self._a) * (w - edge))
+        else:
+            mass = (self._m_flat + self._m_corner
+                    + (math.exp(-s * c) - math.exp(-s * (w - self.knee))) / s)
+        return min(max(mass / self._z, 0.0), 1.0)
+
+    def _ppf1(self, u: float) -> float:
+        target = min(max(float(u), 0.0), 1.0) * self._z
+        s, c = self.slope, self.corner
+        if target <= self._m_flat:
+            w = self.lo + target
+        elif target <= self._m_flat + self._m_corner:
+            r = target - self._m_flat
+            arg = min(r * 2.0 * math.sqrt(self._a / math.pi), 1.0 - 1e-16)
+            w = self.knee - c + float(special.erfinv(arg)) / math.sqrt(self._a)
+        else:
+            r = target - self._m_flat - self._m_corner
+            w = self.knee - math.log(max(math.exp(-s * c) - s * r, 1e-300)) / s
+        return min(max(w, self.lo), self.hi)
+
+    def cdf(self, w) -> np.ndarray:
+        """The CDF at ``w`` (vectorised): 0 at and below ``lo``, 1 at and above ``hi``."""
+        w = np.asarray(w, dtype=float)
+        return np.array([self._cdf1(v) for v in w.ravel().tolist()]).reshape(w.shape)
+
+    def ppf(self, u) -> np.ndarray:
+        """The inverse CDF at ``u`` in [0, 1] (vectorised), closed form on every piece."""
+        u = np.asarray(u, dtype=float)
+        return np.array([self._ppf1(v) for v in u.ravel().tolist()]).reshape(u.shape)
+
+    def spec(self) -> dict:
+        """The five fields as floats (JSON-able)."""
+        return {"lo": float(self.lo), "knee": float(self.knee), "hi": float(self.hi),
+                "slope": float(self.slope), "corner": float(self.corner)}
+
+
+def qe_width_prior(fwhm: float, settings: QEWidthSettings | None = None) -> QEWidthPrior:
+    """The QE width density for a spectrum of total resolution FWHM ``fwhm`` (meV): the one
+    constructor every lane (fast pass, nested sampler, provenance) calls."""
+    s = settings or QEWidthSettings()
+    w = float(fwhm)
+    if not (math.isfinite(w) and w > 0.0):
+        raise ValueError(f"QE width prior needs a positive finite resolution FWHM, got {fwhm!r}")
+    slope = s.slope / w
+    knee = s.knee_fwhm * w
+    return QEWidthPrior(s.floor_fwhm * w, knee, knee + s.tail_nats / slope, slope, s.corner_fwhm * w)
 
 
 # ----------------------------------------------------------------------------

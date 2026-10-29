@@ -112,7 +112,7 @@ def test_catalogue_entries_present():
 def test_quasielastic_is_its_own_phenomenon():
     """QE is measured in its own right, so it is an entry — not a second local model of elastic."""
     assert [m.name for m in catalogue.entry("elastic").local_models] == ["sharp"]
-    assert [m.name for m in catalogue.entry("quasielastic").local_models] == ["broad"]
+    assert [m.name for m in catalogue.entry("quasielastic").local_models] == ["broad", "central"]
 
 
 # --- multimode enumeration is catalogue-driven (PR-b), pinned to the legacy list -------------
