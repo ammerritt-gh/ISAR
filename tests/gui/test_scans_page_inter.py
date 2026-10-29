@@ -269,3 +269,17 @@ def test_choosing_a_refit_leaves_overlay_so_its_curve_shows(setup, reads):
     page.flush_redraw()
     assert page.vm.layout == "offset"
     assert next(t for t in page._drawn_state.traces if t.active).curves
+
+
+def test_waterfall_marks_the_fit_chosen_in_the_menu(setup, reads):
+    page, inter = setup
+    inter.histories[ONE_MODE] = make_history(_refit("r1", "ring 1"), _refit("r2", "ring 2", authoritative=True))
+    inter.overview = make_overview(by_key={ONE_MODE: _row(ONE_MODE, "r2")})
+    _select(page, ONE_MODE)
+    page.inter_bar.waterfall_button.click()
+    page.flush_redraw()
+    assert [t.active for t in page._drawn_state.traces] == [True, False, False]
+    page.vm.choose_fit("r1")
+    page.flush_redraw()
+    labels = [t.identity for t in page._drawn_state.traces if t.active]
+    assert labels == ["Batch 1 · ring 1"]

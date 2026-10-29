@@ -319,17 +319,18 @@ class ScansPageViewModel(ViewModel):
         reset_range = frame != self._frame
         self._frame = frame
         common = dict(body=body, view=view, reset_range=reset_range, step_auto=self.hand_step is None)
+        viewed = self.chosen.get(self._active) or (row.fit_id if row else 'fast')
         if body != PLOT:
             state = PageState(**common,
                 over_limit_note=(f'{n} spectra selected — the plot shows at most 10. '
                                  'Select fewer, or recall a group' if body == LIST else ''),
                 over_limit=self._groups(snapshot, keys) if body == LIST else ())
         else:
-            state = self._plot_state(common, labels, n)
+            state = self._plot_state(common, labels, n, viewed)
         from dataclasses import replace
         bar = None
         if inter is not None and self._active is not None and body == PLOT:
-            bar = bar_state(history, self.chosen.get(self._active) or (row.fit_id if row else 'fast'),
+            bar = bar_state(history, viewed,
                             locked=bool(row and row.locked), locked_fit=row.locked_fit_id if row else None,
                             waterfall_off=wf_off, waterfall_on=wf)
         state = replace(state, inter=bar, fit_value=self.fit, scale_value=self.scale,
@@ -379,7 +380,7 @@ class ScansPageViewModel(ViewModel):
             picked = [e for e in picked if e.fit_id in keep]
         return tuple(picked), total
 
-    def _plot_state(self, common, labels, n):
+    def _plot_state(self, common, labels, n, viewed):
         traces, drawn_keys, not_drawn, deep_summaries, refit_flags = [], [], [], [], []
         wf = self._wf_on
         fit_pass = 'fast' if wf else self.fit
@@ -422,7 +423,7 @@ class ScansPageViewModel(ViewModel):
                         note = ' · '.join(parts + ([note] if note else []))
             tag = ' (beamline zero)' if bundle.zero == ZERO_BEAMLINE else ''
             identity = fit_label if wf else labels[bundle.key] + tag
-            active = self._wf_entries[index].authoritative if wf else bundle.key == self.selection.active
+            active = self._wf_entries[index].fit_id == viewed if wf else bundle.key == self.selection.active
             traces.append(ScansTrace(identity, note, scaled.x, scaled.y, scaled.yerr,
                                      scaled.kept, scaled.fine_x, curves, fit_pass == 'deep', active))
             drawn_keys.append(bundle.key)
