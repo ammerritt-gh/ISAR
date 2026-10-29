@@ -9,6 +9,10 @@ rem                                run it only when you have named a golden gate
 rem   tools\run-isar-proofs.bat letacon   ONLY the le Tacon fast-pass proof (sets ISAR_LETACON=1): two
 rem                                28-spectrum batches plus the prior sensitivity check, one to two
 rem                                hours; results land in out\letacon_fast_pass\<timestamp>\
+rem   tools\run-isar-proofs.bat inter     ONLY the le Tacon inter-spectra proof (sets ISAR_LETACON_INTER=1):
+rem                                302 K and 97 K in one workspace, an anchored and a simultaneous batch
+rem                                through the analysis service; hours; results land in
+rem                                out\letacon_inter_spectra\<timestamp>\
 rem
 rem Set MICROMAMBA_EXE to override the micromamba location, or ISAR_ENV to force an environment.
 rem The environment needs pytest (pip install -e ".[test]").
@@ -28,25 +32,37 @@ if errorlevel 1 goto nopytest
 
 if /i "%~1"=="golden" goto golden
 if /i "%~1"=="letacon" goto letacon
+if /i "%~1"=="inter" goto inter
 
 echo Running the proofs against real_data\ ...
 rem Clear ISAR_GOLDEN so a switch inherited from an earlier gate cannot run the sealed scenarios.
 set "ISAR_GOLDEN="
 set "ISAR_LETACON="
+set "ISAR_LETACON_INTER="
 "%MM%" run -n %ISAR_ENV% python -m pytest proofs -q
 goto done
 
 :golden
 echo Running the sealed golden scenarios (ISAR_GOLDEN=1) ...
 set "ISAR_GOLDEN=1"
+set "ISAR_LETACON_INTER="
 "%MM%" run -n %ISAR_ENV% python -m pytest proofs\test_golden_scenarios.py -m golden -q
 goto done
 
 :letacon
 echo Running the le Tacon fast-pass proof (ISAR_LETACON=1): one to two hours, results in out\letacon_fast_pass ...
 set "ISAR_GOLDEN="
+set "ISAR_LETACON_INTER="
 set "ISAR_LETACON=1"
 "%MM%" run -n %ISAR_ENV% python -m pytest proofs\test_letacon_fast_pass.py -q -s
+goto done
+
+:inter
+echo Running the le Tacon inter-spectra proof (ISAR_LETACON_INTER=1): hours, results in out\letacon_inter_spectra ...
+set "ISAR_GOLDEN="
+set "ISAR_LETACON="
+set "ISAR_LETACON_INTER=1"
+"%MM%" run -n %ISAR_ENV% python -m pytest proofs\test_letacon_inter_spectra.py -q -s
 goto done
 
 :done
