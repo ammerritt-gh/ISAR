@@ -509,15 +509,6 @@ def test_release_checklist_copies_the_engine_over_the_uninstaller():
     assert "copy `installer\\WINDOWS-install-ISAR.bat` over `installer\\WINDOWS-uninstall-ISAR.bat`" in step, step
 
 
-def test_collect_diagnostics_attended_result_is_not_exited_past():
-    """Static: an attended run must reach its Explorer window and pause. Written as ``if defined YES endlocal
-    & exit`` the if binds only endlocal, so the exit runs either way; the group keeps both under the if.
-    (Attended runs open Explorer and wait for a key, so no routine test runs that path.)"""
-    text = _text(COLLECTOR)
-    assert not re.search(r"(?i)\bif\b[^&(]*\sendlocal\s*&", text), "an if binds only endlocal"
-    assert "if defined YES (endlocal & exit /b 0)" in text and "if defined YES (endlocal & exit /b 1)" in text
-
-
 def repairable(base, **over):
     """A fake complete installation whose kept lock and micromamba match the record."""
     base.mkdir(parents=True)

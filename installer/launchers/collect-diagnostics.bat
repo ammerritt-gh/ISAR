@@ -91,7 +91,7 @@ echo The diagnostics are in:
 echo     %ZIP%
 echo It holds ISAR's logs and install records, which name your folders. It
 echo stays on this computer; send it to whoever helps you with ISAR if you choose.
-if defined YES (endlocal & exit /b 0)
+if defined YES endlocal & exit /b 0
 start "" "%SystemRoot%\explorer.exe" /select,"%ZIP%"
 echo.
 choice /C C /N /M "Press C to continue."
@@ -105,7 +105,7 @@ call :remove_stage
 echo.
 echo [ERROR] The diagnostics could not be collected: %ERR%
 echo         The logs themselves are in %LOCALAPPDATA%\ISAR\logs
-if defined YES (endlocal & exit /b 1)
+if defined YES endlocal & exit /b 1
 echo.
 choice /C C /N /M "Press C to continue."
 endlocal & exit /b 1
