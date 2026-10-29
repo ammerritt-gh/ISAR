@@ -127,8 +127,9 @@ def write_run_report(session, card, workspace, *, formats=("html", "markdown")) 
         doc.figure_block("run/dispersion", "figures/dispersion.png",
                          alt="omega0 vs Q, colored by disposition")
 
-    # Triage table.
+    # Triage table. The fit column appears only when a refit is in use, so a workspace without one renders as before.
     doc.section("Triage table")
+    show_fit = any(inter is not None for *_, inter in triage)
     rows = []
     for scan, det, status, oc, fit, inter in triage:
         iv = oc.get("interval")
@@ -159,16 +160,16 @@ def write_run_report(session, card, workspace, *, formats=("html", "markdown")) 
             disp_cell = ("pooled — uncertifiable" if oc.get("disposition") == "reject"
                          else f"pooled (master, {oc.get('n_members')} members)")
         rows.append([
-            scan, det, verdict_cell, disp_cell, fit,
+            scan, det, verdict_cell, disp_cell, *([fit] if show_fit else []),
             _fmt(oc.get("omega0"), 3), ivs, _fmt(oc.get("confidence"), 2),
             oc.get("best_label") or "—",
             (f"{pr.get('source')}~{_fmt(pr.get('omega0'),2)}" if pr else "—"),
             cal.get("resolution_source", "—"),
         ])
     if rows:
-        doc.table(["scan", "det", "verdict", "disp", "fit", "ω₀", "68% interval", "conf",
+        doc.table(["scan", "det", "verdict", "disp", *(["fit"] if show_fit else []), "ω₀", "68% interval", "conf",
                    "model", "prior", "resolution"], rows)
-        if any(inter is not None for *_, inter in triage):
+        if show_fit:
             doc.para("Rows marked inter-spectra show the refit in use: its ω₀ and interval are conditional on the "
                      "neighbours and the chosen model, and the solo fit's verdict does not apply to it.")
     else:

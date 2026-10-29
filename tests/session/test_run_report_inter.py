@@ -111,6 +111,43 @@ def test_a_refit_in_use_is_its_triage_row_with_its_label_and_flag(ws_root):
     assert (ws_root / "report" / "figures" / "dispersion.png").exists()
 
 
+# The report of the base renderer (before the fit column, c06ebd0a) on this fixture with no inter files: a workspace
+# with no refit in use must render exactly this, so the fit column appears only when a refit is in use.
+BASE_NO_INTER_MD = """\
+# ISAR run report — SP8/BL43LXU
+
+
+## Summary
+
+Experiment plugin `sp8_bl43`, format processed. 6 scans in the ledger.
+
+- **fitted**: 6
+
+Dispositions (delivered = resolved + flagged): resolved=6
+
+
+## Dispersion summary
+
+![omega0 vs Q, colored by disposition](figures/dispersion.png)
+
+
+## Triage table
+
+| scan | det | verdict | disp | ω₀ | 68% interval | conf | model | prior | resolution |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1053740514 | a03 | resolved | resolved | 5.000 | — | — | 1 DHO | — | — |
+| 1053740514 | a04 | resolved | resolved | 5.000 | — | — | 1 DHO | — | — |
+| 1053740514 | a05 | resolved | resolved | 5.000 | — | — | 1 DHO | — | — |
+| 1552071808 | a03 | resolved | resolved | 5.000 | — | — | 1 DHO | — | — |
+| 1552071808 | a04 | resolved | resolved | 5.000 | — | — | 1 DHO | — | — |
+| 1552071808 | a05 | resolved | resolved | 5.000 | — | — | 1 DHO | — | — |
+"""
+
+
+def test_a_workspace_with_no_refit_in_use_renders_the_base_report_byte_for_byte(ws_root):
+    assert _write(ws_root)[0] == BASE_NO_INTER_MD
+
+
 def test_a_repair_row_is_not_on_the_review_list(ws_root):
     k1 = spectrum_keys(ws_root)[0]
     _save_ring(ws_root, "b000000000001", [(F1, k1)], number_flag=REPAIR)
@@ -147,7 +184,7 @@ def test_a_refit_without_its_own_interval_shows_none_not_the_solo_one(ws_root):
 def test_report_json_and_the_solo_head_do_not_change_and_unrefitted_rows_say_fast_solo(ws_root):
     k1 = spectrum_keys(ws_root)[0]
     md0, json0, _ = _write(ws_root)
-    assert {r["fit"] for r in _triage(md0)} == {"Fast solo"}
+    assert all("fit" not in r for r in _triage(md0))                              # no refit in use: no fit column
     _save_ring(ws_root, "b000000000001", [(F1, k1)], number_flag=FLAG)
     md1, json1, _ = _write(ws_root)
     assert json1 == json0                                                          # report.json is the solo fit's
@@ -162,15 +199,14 @@ def test_a_pick_of_the_solo_fit_keeps_the_solo_row_bit_for_bit(ws_root):
     _save_ring(ws_root, "b000000000001", [(F1, k1)])
     assert inter_values.pick_fit(ws_root, k1, "fast").ok
     row = _row(_write(ws_root)[0], ws_root, k1)
-    assert row["fit"] == "Your pick: Fast solo"
-    assert {c: v for c, v in row.items() if c != "fit"} == {c: v for c, v in solo.items() if c != "fit"}
+    assert row == solo                                    # no refit in use: no fit column, the solo row as it was
 
 
-def test_a_stale_refit_gives_way_to_the_solo_row_and_says_why(ws_root):
+def test_a_stale_refit_gives_way_to_the_solo_row(ws_root):
     k1 = spectrum_keys(ws_root)[0]
     solo = _row(_write(ws_root)[0], ws_root, k1)
     _save_ring(ws_root, "b000000000001", [(F1, k1)])
     assert values.save_value(ws_root, "temperature", 97, [k1.rsplit(":", 1)[0]]).ok
     row = _row(_write(ws_root)[0], ws_root, k1)
-    assert row["fit"].startswith("Fast solo (Batch 1 · ring 1 is out of date")
+    assert "fit" not in row                               # the stale refit is not in use, so no fit column
     assert row["verdict"] == solo["verdict"] and row["ω₀"] == solo["ω₀"]
