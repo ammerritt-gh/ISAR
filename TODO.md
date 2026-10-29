@@ -17,7 +17,7 @@ ISAR = analysis authority). Forward workstreams live in their own plans:
 [SPEEDUP](docs/plans/speedup.md), [STEERING roadmap §10](docs/design/steering.md),
 [BACKGROUND](docs/plans/background.md), [EIG](docs/design/eig.md).
 
-Last updated: 2026-10-27.
+Last updated: 2026-10-29.
 
 ---
 
@@ -111,6 +111,15 @@ Things that are wrong now, as opposed to things not yet built.
       low-q rescue in `isar/session/scan_delivery.py`) uses the recipe; file fitting never does.
       **Acceptance:** a functional tie (`h = A × height(ω₀, Γ)`, re-evaluated at every model
       evaluation) restores the brightness pin, if a campaign needs it.
+
+- [ ] **DEFECT-11 — OP1 pooled-mode replay regressed.** `tests/slow/test_op1_branch_replay.py::test_op1_pooled_modes_replay_as_optic_and_acoustic_tracks`
+      expects an optic mode at 7.774 meV at the replayed index and the fit no longer gives it. It was
+      already failing before `cadd6592` (prior /6). The test was last edited 2026-08-07;
+      `test_workspaces/OP1/session.json` has been unchanged since 2026-07-18, so a code change in
+      between broke it. The culprit commit is not known (not bisected). The test reads a local-only
+      workspace, so it is in effect a proof and may belong in `proofs/`. Pinned `xfail(strict=False)`.
+      **Acceptance:** the cause is found and the test passes unpinned, or it moves to `proofs/` with a
+      justified expectation.
 
 ---
 
@@ -453,6 +462,18 @@ the steering roadmap ([design/steering.md](docs/design/steering.md) §10). Only 
       tripwire was deleted 2026-10-29; the attachment-semantics design discussion comes first.
       **Acceptance:** on the FCC world, with vs without a declared acoustic hypothesis, the real closed
       loop places at least one scan differently, pinned by a new A/B test.
+- [ ] **DRV-7 — Scene and prior /6 conflict on the zone-centre endpoint.** The two endpoint tests in
+      `tests/scene/test_worlds_scene.py` (`test_the_endpoint_world_terminates_the_acoustic_track_at_the_declared_zone_centre`,
+      `test_the_zone_centre_exemption_does_not_spread_to_the_rest_of_the_path`) fail since `cadd6592`
+      (prior /6, near-zero penalty); all nine tests in that file pass at `cadd6592~1`. The fitter no
+      longer reports the acoustic mode at H = 2.05 (truth 0.31 meV against a ~1.32 meV FWHM
+      resolution), so the acoustic track starts at H = 2.10 and the gap toward the declared zone centre
+      is `blocked_unresolved`, not a structural endpoint. At H = 2.10 the fitted energy is 0.95 meV
+      against a truth of 0.62 (one probe run, not a measured bias). Undecided, parked for the later scene
+      pass: the scene's endpoint rule adapts; or the prior's near-zero penalty yields at a declared zone
+      centre. Pinned `xfail(strict=False)`; no expected value was changed.
+      **Acceptance:** the two endpoint tests pass unpinned, or are re-pinned by a decision recorded in
+      `docs/design/scene.md`.
 
 ---
 
@@ -474,6 +495,12 @@ None of these change a reported number; all are cost or hygiene.
       explicit single-writer contract or a workspace lock first — today's always-reload is what
       makes mid-campaign human card edits safe.
       **Acceptance:** a single-writer contract exists and residency is enabled behind it.
+- [ ] **PERF-4 — Heavy fixtures inside the routine gate.** Four fixtures make the ~90 s gate slower,
+      not wrong: a 32 s mocked campaign-loop test in `tests/drive/test_loop.py`, a 26 s fixture rebuilt
+      per worker in `tests/session/test_master_predictive.py`, a 23 s GUI fixture in
+      `tests/gui/test_scan_list_marks.py`, and a 15 s fixture in
+      `tests/report/test_campaign_diagnostic_characterization.py`. The gate already meets its target.
+      **Acceptance:** each is shared, cached or slimmed, or left with a recorded reason.
 - [ ] **INT-1 — Centralize steering string constants.** `fit_kind` literals ("unconstrained",
       "soft_prior", "branch_conditional", "stokes_only", "descriptor_only") are spread over 8
       files, and "acoustic"/"optic" is duplicated as two independent `BRANCH_ID` constants
