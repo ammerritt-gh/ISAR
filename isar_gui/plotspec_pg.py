@@ -221,7 +221,7 @@ def _draw_series(rs: RenderedSpec, s, legend_entries: list) -> None:
         z = 1
     dashed = bool(styles & {"rival", "provisional", "dashed"})
     dotted = "dotted" in styles
-    hollow = "provisional" in styles
+    hollow = bool(styles & {"provisional", "hollow"})
     label = _series_label(s)
     x = np.asarray(s.x, dtype=float)
     y = np.asarray(s.y, dtype=float)
@@ -417,7 +417,8 @@ def _draw_region(rs: RenderedSpec, region) -> None:
 def _draw_annotation(rs: RenderedSpec, a) -> None:
     if a.xy is not None:
         color = "red" if a.role is State.UNRELIABLE else _GREY_025
-        text = pg.TextItem(a.text, color=color, anchor=a.anchor or (0, 1))
+        text = pg.TextItem(a.text, color=color, anchor=a.anchor or (0, 1),
+                           ensureInBounds=a.anchor is not None and a.anchor[1] < 0)
         if a.bold:
             text.setHtml(f'<span style="color:{color}; font-weight:bold">{escape(a.text)}</span>')
         if a.tooltip is not None:

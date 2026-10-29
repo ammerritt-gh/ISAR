@@ -34,10 +34,10 @@ def test_stack_data_geometry_and_masked_spike():
     spike = replace(ts[1], y=np.array([0., 2., 100.]), kept=np.array([True, True, False]))
     assert stack_step((ts[0], spike, ts[2])) == pytest.approx(4.8)
     plotted = build(ts)
-    np.testing.assert_allclose([s.y for s in plotted.series], [[10.6, 14.6, 11.6], [4.8, 6.8, 5.8], [3, 3, 3]])
-    assert [a.xy for a in plotted.annotations] == [(2., 11.6), (2., 5.8), (2., 3.)]
-    assert all(a.anchor == (1, 1) for a in plotted.annotations)
-    assert all(np.array_equal(s.yerr, np.ones(3)) for s in plotted.series)
+    np.testing.assert_allclose([s.y for s in plotted.series if s.role is ps.Role.DATA], [[10.6, 14.6, 11.6], [4.8, 6.8, 5.8], [3, 3, 3]])
+    assert [a.xy for a in plotted.annotations] == [(2., 9.6), (2., 4.8), (2., 0.)]
+    assert all(a.anchor == (1, -0.15) for a in plotted.annotations)
+    assert all(np.array_equal(s.yerr, np.ones(3)) for s in plotted.series if s.role is ps.Role.DATA)
     np.testing.assert_array_equal(build(ts, step=1).series[0].y, [3, 7, 4])
     masked = build((spike,))
     assert masked.markers[0].y == 100
@@ -62,11 +62,12 @@ def test_overlay_is_data_only_and_preserves_identity_symbols():
 
 def test_curve_roles_stay_in_order_and_background_is_dotted():
     plotted = build(deep_traces())
+    plotted.series = [s for s in plotted.series if s.label is not None]
     assert [s.label for s in plotted.series] == ['A', 'B', 'Total', 'Total', 'Mode 1', 'Mode 1', 'Mode 2', 'Background', 'Background']
     assert plotted.series[1].legend_bold
     assert all(s.legend_group == 'Spectra' for s in plotted.series[:2])
     assert all(s.legend_group == 'Curves · Deep (untrusted)' for s in plotted.series[2:])
-    assert [s.style for s in plotted.series[2:]] == ['heavy dashed', 'heavy dashed', 'dashed', 'dashed', 'dashed', 'dotted', 'dotted']
+    assert [s.style for s in plotted.series[2:]] == ['heavy dashed', 'heavy dashed', 'heavy dashed', 'heavy dashed', 'heavy dashed', 'dotted', 'dotted']
     assert plotted.series[4].color == plotted.series[5].color
 
 

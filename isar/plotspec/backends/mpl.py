@@ -113,7 +113,7 @@ def _draw_series(ax, s) -> None:
         z = 1
     dashed = bool(styles & {"rival", "provisional", "dashed"})
     dotted = "dotted" in styles
-    hollow = "provisional" in styles
+    hollow = bool(styles & {"provisional", "hollow"})
     label = s.label
     if s.tier is not None and label is None:
         label = f"{s.tier.value}{' (certifying)' if s.certifying else ''}"
@@ -206,8 +206,11 @@ def _draw_marker(ax, m, label=None) -> None:
 def _draw_annotation(ax, a) -> None:
     if a.xy is not None:
         color = "red" if a.role is State.UNRELIABLE else "0.2"
+        below = a.anchor is not None and a.anchor[1] <= 0
         ax.annotate(a.text, xy=a.xy, fontsize=7, color=color,
-                    xytext=(4, 4), textcoords="offset points")
+                    ha="right" if a.anchor and a.anchor[0] == 1 else "left",
+                    va="top" if below else "bottom",
+                    xytext=(0, -2) if below else (4, 4), textcoords="offset points")
     else:
         # Un-anchored notes (e.g. exclusion counts) go in a corner text box.
         ax.text(0.99, 0.02, a.text, transform=ax.transAxes, ha="right", va="bottom",

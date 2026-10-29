@@ -547,6 +547,7 @@ class ScansCurve:
     kind: str
     number: int | None
     values: np.ndarray
+    centers: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -578,7 +579,9 @@ def stack_step(traces: Sequence[ScansTrace]) -> float:
 
 def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
                ylabel: str, curves_header: str | None,
-               xlabel: str = "Energy transfer (meV)") -> ps.PlotSpec:
+               xlabel: str = "Energy transfer (meV)",
+               zero_lines: bool = True, peak_lines: bool = True,
+               filled_symbols: bool = False) -> ps.PlotSpec:
     """Draw already-scaled spectra. This builder performs display offsets only."""
     if view not in {"single", "offset", "overlay"}:
         raise ValueError(f"unknown scans view: {view}")
@@ -608,6 +611,7 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
         spec.series.append(ps.Series(
             x=x[shown], y=y[shown] + offset, yerr=err[shown], label=label,
             role=ps.Role.DATA, symbol=ps.SYMBOLS[i],
+            style=None if filled_symbols else "hollow",
             color=ps.TRACE_COLORS[i] if view == "overlay" else ps.DATA_NEUTRAL,
             legend_group="Spectra", legend_bold=trace.active))
         for px, py in zip(x[~kept & finite], y[~kept & finite]):
@@ -618,8 +622,16 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
             label = trace.identity
             short = label if len(label) <= 28 else label[:13] + "…" + label[-14:]
             spec.annotations.append(ps.Annotation(
-                short, xy=(float(x[last]), float(y[last] + offset)), anchor=(1, 1),
+                short, xy=(float(x[last]), float(offset)), anchor=(1, -0.15),
                 tooltip=label, bold=trace.active))
+    if zero_lines and view == "offset":
+        for trace, offset in zip(traces, offsets):
+            x = np.asarray(trace.x)
+            x = x[np.isfinite(x)]
+            if x.size:
+                spec.series.append(ps.Series(
+                    x=np.array([x.min(), x.max()]), y=np.array([offset, offset]),
+                    role=ps.Role.COMPONENT, color="#999999", style="dotted"))
     # Canonical role order is independent of what the first trace happens to contain.
     rank = {"total": 0, "mode": 1, "elastic": 2, "quasielastic": 3, "background": 4}
     curves = [(curve, trace, offset) for trace, offset in zip(traces, offsets)
@@ -631,7 +643,7 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
         color_key = (f"mode{((curve.number or 1) - 1) % 6 + 1}"
                      if curve.kind == "mode" else curve.kind)
         style = []
-        if curve.kind == "total":
+        if curve.kind in {"total", "mode"}:
             style.append("heavy")
         if curve.kind == "background":
             style.append("dotted")
@@ -642,6 +654,14 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
             label=curve.name, role=ps.Role.FIT if curve.kind == "total" else ps.Role.COMPONENT,
             style=" ".join(style) or None, color=ps.CURVE_COLORS[color_key],
             legend_group=curves_header))
+        if peak_lines and curve.kind == "mode":
+            grid = np.asarray(trace.curve_x)
+            for center in curve.centers:
+                if grid[0] <= center <= grid[-1]:
+                    height = float(np.interp(center, grid, curve.values))
+                    spec.series.append(ps.Series(
+                        x=np.array([center, center]), y=np.array([offset, offset + height]),
+                        role=ps.Role.COMPONENT, color=ps.CURVE_COLORS[color_key]))
     return spec
 
 

@@ -87,6 +87,9 @@ class ScansPageViewModel(ViewModel):
         self.layout = 'offset'
         self.scale = 'normalised'
         self.hand_step = None
+        self.zero_lines = True
+        self.peak_lines = True
+        self.filled_symbols = False
         self._store = None
         self._reference = None
         self._reference_snapshot = None
@@ -105,6 +108,11 @@ class ScansPageViewModel(ViewModel):
         if getattr(self, name) != value:
             setattr(self, name, value)
             self.refreshed.emit()
+
+    def set_display_option(self, name, value):
+        if name not in ("zero_lines", "peak_lines", "filled_symbols"):
+            raise ValueError(f"unknown display option: {name}")
+        self._set(name, value, (True, False))
 
     def set_fit(self, value):
         self._set('fit', value, PASSES)
@@ -136,12 +144,17 @@ class ScansPageViewModel(ViewModel):
         self.refreshed.emit()
 
     def save_view_state(self, session):
-        session.view_state[STATE_KEY] = {'fit': self.fit, 'layout': self.layout, 'scale': self.scale}
+        session.view_state[STATE_KEY] = {'fit': self.fit, 'layout': self.layout, 'scale': self.scale,
+            'zero_lines': self.zero_lines, 'peak_lines': self.peak_lines,
+            'filled_symbols': self.filled_symbols}
 
     def load_view_state(self, session):
         outer = getattr(session, 'view_state', None)
         saved = outer.get(STATE_KEY) if isinstance(outer, dict) else None
         saved = saved if isinstance(saved, dict) else {}
+        for name, default in (("zero_lines", True), ("peak_lines", True), ("filled_symbols", False)):
+            value = saved.get(name, default)
+            setattr(self, name, value if isinstance(value, bool) else default)
         for name, choices, default in (('fit', PASSES, 'none'), ('layout', LAYOUTS, 'offset'),
                                         ('scale', SCALES, 'normalised')):
             value = saved.get(name)
@@ -214,6 +227,7 @@ class ScansPageViewModel(ViewModel):
             revisions = ()
         signature = (keys, revisions, tuple(labels.items()), self.selection.active,
                      self.fit, self.layout, self.scale, self.hand_step, reference,
+                     self.zero_lines, self.peak_lines, self.filled_symbols,
                      self._groups(snapshot, keys) if body == LIST else ())
         if signature == self._signature:
             return self._state
@@ -263,7 +277,7 @@ class ScansPageViewModel(ViewModel):
                     note = result.text
                 else:
                     curves = (ScansCurve('Total', 'total', None, result.total),) + tuple(
-                        ScansCurve(c.name, c.role, c.mode_number, c.values) for c in result.components)
+                        ScansCurve(c.name, c.role, c.mode_number, c.values, c.centers) for c in result.components)
                     note = summary.outdated_text or summary.unjudged_text
                     residuals = result.residuals
                     if self.fit == 'deep':
@@ -292,7 +306,9 @@ class ScansPageViewModel(ViewModel):
         raw_axis = bool(traces) and not zeroed_present
         main = scans_spec(traces=traces, view=common['view'] if traces else 'offset', step=step,
                           ylabel=ylabel, curves_header=header,
-                          xlabel=NOT_ZEROED_LABEL if raw_axis else ENERGY_LABEL)
+                          xlabel=NOT_ZEROED_LABEL if raw_axis else ENERGY_LABEL,
+                          zero_lines=self.zero_lines, peak_lines=self.peak_lines,
+                          filled_symbols=self.filled_symbols)
         residual = (scans_residual_spec(trace=traces[0], residuals=residuals,
                                        ylabel=f'data − fit ({y_unit})')
                     if common['view'] == 'single' and traces and traces[0].curves else None)

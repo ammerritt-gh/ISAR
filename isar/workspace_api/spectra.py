@@ -92,6 +92,7 @@ class CurveComponent:
     name: str
     prefix: str
     values: np.ndarray
+    centers: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -190,7 +191,8 @@ class SpectrumBundle:
             else:
                 components = tuple(CurveComponent(
                     role=component.role, mode_number=component.mode_number, name=component.name,
-                    prefix=component.prefix, values=_readonly(component.values * factor))
+                    prefix=component.prefix, values=_readonly(component.values * factor),
+                    centers=component.centers)
                     for component in value.components)
                 residuals = value.residuals[drawable] * (reference / monitor[drawable])
                 curves[name] = PassCurves(
@@ -569,7 +571,7 @@ def _not_drawn_bundle(key, revision, reason, summaries, *, unit=None, passes=Non
 
 
 def _pass_not_drawn(row, pass_name, fit, resolution, resolution_error, fine_raw, raw_x,
-                    counts, exposure_scale, qe):
+                    counts, exposure_scale, qe, shift):
     if fit is None:
         return NotDrawn(NO_PASS, "no fast pass" if pass_name == "fast" else "no deep pass")
     status = row.fast if pass_name == "fast" else row.deep
@@ -644,7 +646,10 @@ def _pass_not_drawn(row, pass_name, fit, resolution, resolution_error, fine_raw,
                 name = f"Mode {number}"
             components.append(CurveComponent(
                 role=role, mode_number=number, name=name, prefix=prefix,
-                values=_readonly(parts_by_prefix[prefix])))
+                values=_readonly(parts_by_prefix[prefix]),
+                centers=tuple(float(resolution["center"]) - shift + sign * _energy
+                              for sign in (-1, 1))
+                if role == "mode" and _energy is not None else ()))
         scale_values = None if exposure_scale is None else exposure_scale
         mean = total_points if scale_values is None else total_points * scale_values
         residuals = counts - mean
@@ -750,7 +755,7 @@ def _bundle(ws, row, qe, cache, zero_fallback):
         else:
             passes[pass_name] = _pass_not_drawn(
                 row, pass_name, fit, resolution, resolution_error, fine_raw, raw_x,
-                counts, exposure_scale, qe)
+                counts, exposure_scale, qe, shift)
     bundle = SpectrumBundle(
         key=row.key, revision=revision, not_drawn=None, summaries=summaries,
         energy=energy, counts=_readonly(counts), variance=_readonly(variance),

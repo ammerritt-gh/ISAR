@@ -1957,6 +1957,32 @@ class MainWindow(QMainWindow):
         self._cores_action.setToolTip(_CORES_TIP)
         menu.setToolTipsVisible(True)
         self._cores_action.triggered.connect(self._ask_cores)
+        scans_menu = menu.addMenu("Scan(s)")
+        scans_menu.setToolTipsVisible(True)
+        self._scans_display_actions = {}
+        for name, label, tip in (
+            ("zero_lines", "Show scan zero lines", "Dotted grey zero-intensity lines for offset scans."),
+            ("peak_lines", "Show mode centre lines", "Lines from each stored mode centre to its scan zero, on both energy sides, in the mode colour."),
+            ("filled_symbols", "Filled data symbols", "Fill data symbols; turn off for empty symbols that reveal curves behind them."),
+        ):
+            action = scans_menu.addAction(label)
+            action.setCheckable(True)
+            action.setToolTip(tip)
+            action.triggered.connect(lambda checked, option=name: self._set_scans_display(option, checked))
+            self._scans_display_actions[name] = action
+        scans_menu.aboutToShow.connect(self._sync_scans_display)
+
+    def _sync_scans_display(self):
+        for name, action in self._scans_display_actions.items():
+            action.setEnabled(self.scans_page is not None)
+            if self.scans_page is not None:
+                action.setChecked(getattr(self.scans_page.vm, name))
+
+    def _set_scans_display(self, name, checked):
+        if self.scans_page is not None:
+            self.scans_page.vm.set_display_option(name, checked)
+            self.scans_page.save_view_state(self._session)
+            self._autosaver.request()
 
     @staticmethod
     def _cores_max() -> int:

@@ -795,6 +795,8 @@ a persistent legend like `plane (H, 1, 0) × E — integrating |L| < 0.02, |K−
   and merge policy made visible. If the user wants different grouping, the GUI edits the card
   (a class-three write via `fit_correction`/card-edit channel) and triggers re-collation on
   re-run. There is exactly one definition of "a dataset."
+- **Scan(s) viewing controls (2026-10-28).** Config → Scan(s) saves three display preferences: dotted grey scan-zero guides in Offset, mode-coloured vertical lines from the stored mode centres on both energy sides down to each scan zero, and filled versus empty data symbols. Guides default on and symbols default empty. Mode curves use heavier lines; offset labels sit just below their scan zero. These options also reach exported plots through PlotSpec.
+
 - **Display choices are view state.** Scan(s) layout, scale, and stored-pass choice are saved in the GUI session. They do not change card collation or fit results.
 
 ---
