@@ -88,6 +88,7 @@ class InterSettingsDialog(QDialog):
         self._rows = rows(SETTING_DEFS, inter.settings)
         self._editors: dict[str, QWidget] = {}
         self._touched: set[str] = set()     # the names the user edited; only these are sent
+        self._reset: set[str] = set()       # the names whose Use default was pressed and not edited since: sent as None
 
         header = QLabel("These settings belong to this experiment. A batch records the settings it used; changing "
                         "them affects only batches you start afterwards.", self)
@@ -144,13 +145,13 @@ class InterSettingsDialog(QDialog):
             part.setToolTip(d.help)
         _set(editor, row.value)
         signal = editor.currentIndexChanged if isinstance(editor, QComboBox) else editor.valueChanged
-        signal.connect(lambda *_, name=d.name: self._touched.add(name))
+        signal.connect(lambda *_, name=d.name: self._edited(name))
         self._editors[d.name] = editor
 
         use_default = QPushButton("Use default", self)
         use_default.setObjectName(f"inter_{d.name}_default")
         use_default.setToolTip(f"Put {LABELS[d.name]} back to its default value.")
-        use_default.clicked.connect(lambda _=False, e=editor, v=d.default: _set(e, v))
+        use_default.clicked.connect(lambda _=False, name=d.name, e=editor, v=d.default: self._use_default(name, e, v))
         note = QLabel(default_text(row), self)
         note.setObjectName(f"inter_{d.name}_default_text")
         note.setToolTip(_TIPS[d.calibrated])
@@ -163,8 +164,17 @@ class InterSettingsDialog(QDialog):
         box.addWidget(note)
         return box
 
+    def _edited(self, name: str) -> None:
+        self._touched.add(name)
+        self._reset.discard(name)
+
+    def _use_default(self, name: str, editor: QWidget, value: object) -> None:
+        _set(editor, value)     # fires _edited only if the box moves; the reset mark is set either way
+        self._reset.add(name)
+
     def _save(self) -> None:
-        delta = changes(self._rows, {name: _value(self._editors[name]) for name in self._touched})
+        delta = changes(self._rows, {name: _value(self._editors[name]) for name in self._touched - self._reset})
+        delta.update(dict.fromkeys(self._reset, None))     # Use default is sent as None, never inferred from the box
         if not delta:
             self.accept()
             return

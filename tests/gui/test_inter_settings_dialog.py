@@ -158,6 +158,22 @@ def test_use_default_saves_none_for_a_setting_away_from_its_default(qtbot):
     assert inter.calls == [("save_settings", ({"q_tolerance_meV": None},))]
 
 
+def test_use_default_clears_a_saved_value_that_only_looks_like_the_default(qtbot):
+    # 2.00001 is stored; the box shows 2.000, so setting it to the default moves nothing. Use default must still send None.
+    dlg, inter = _dialog(qtbot, q_tolerance_meV=2.00001)
+    dlg.findChild(QPushButton, "inter_q_tolerance_meV_default").click()
+    _save(dlg)
+    assert inter.calls == [("save_settings", ({"q_tolerance_meV": None},))]
+
+
+def test_an_edit_after_use_default_sends_the_edit(qtbot):
+    dlg, inter = _dialog(qtbot, q_tolerance_meV=3.0)
+    dlg.findChild(QPushButton, "inter_q_tolerance_meV_default").click()
+    _editor(dlg, "q_tolerance_meV").setValue(4.0)
+    _save(dlg)
+    assert inter.calls == [("save_settings", ({"q_tolerance_meV": 4.0},))]
+
+
 def test_cancel_writes_nothing(qtbot):
     dlg, inter = _dialog(qtbot)
     _editor(dlg, "sweep_cap").setValue(40)
