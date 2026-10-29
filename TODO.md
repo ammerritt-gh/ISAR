@@ -676,12 +676,15 @@ conditions — these are wants, not commitments.
 - `isar_gui/views/attention_list.py:87` — three near-identical wrapped-label classes (`_Line`, `_Wrapped`,
   `_Cell`), four pluraliser helpers and a `_WARN` style in five files; one `WrappedLabel`, one helper,
   one theme constant. Revisit when any of them next needs a wrapping or minimum-size fix.
+- `isar/session/deep_delivery.py:122` — the deep record's QE summary is built by hand beside
+  `fast_pass._qe_result`, each computing its window from `ctx.x_used - ctx.center`; one
+  `CentralQE.summary(local, ctx)` in `components.py` for both. Revisit if a third consumer reads it.
 
 ---
 
 ## Notes
 
-routine suite 1.6 min, over its 1-min budget
+routine suite 1.8 min, over its 1-min budget
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test
