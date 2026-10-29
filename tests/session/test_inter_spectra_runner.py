@@ -334,6 +334,25 @@ def test_refused_members_of_one_group_go_back_and_the_sweep_is_not_quiet(tmp_pat
     assert log.batches[spec.batch_id].end["state"] == "did_not_settle"
 
 
+def test_the_stopping_cost_is_summed_on_the_state_the_writer_accepted(tmp_path):
+    """x and z are refused in sweep 1 (as above): the shared objective of that sweep carries only y's refit, not
+    the refused ones' data deviance beside their reverted energies."""
+    import types
+    seen = []
+    spy = types.ModuleType("spy_core")
+    spy.__dict__.update({k: v for k, v in vars(fakes).items() if not k.startswith("__")})
+
+    def total_objective(factors, energies, data, unary):
+        seen.append(sorted(data))
+        return fakes.total_objective(factors, energies, data, unary)
+    spy.total_objective = total_objective
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"}, {"toy": "keep"}, {"toy": "keep"}))
+    assert inter_values.save_settings(ws, {"sweep_cap": 2}).ok
+    bench = Bench(ws, _when("sweep", 1, "refine", lambda: inter_values.pick_fit(ws, y, "fast")))
+    bench.run(_simultaneous(ws, (x, y, z)), core=spy)
+    assert seen[0] == [y]
+
+
 def test_a_lock_mid_sweep_is_refused_and_the_member_leaves_the_sweeps(tmp_path):
     ws, x, y, z = _chain(tmp_path, ({"toy": "average"}, {"toy": "keep"}, {"toy": "average"}))
     bench = Bench(ws, _when("sweep", 1, "refine", lambda: inter_values.set_lock(ws, x, locked=True, fit_id="fast")))

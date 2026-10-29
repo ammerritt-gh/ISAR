@@ -816,7 +816,7 @@ class _Run:
                     break
                 t_sweep = time.perf_counter()
                 leave(self.take_new_locks(held))         # E11: a new lock leaves the sweeps as a fixed neighbour
-                before = dict(held)
+                before, before_cost = dict(held), (dict(data), dict(unary))
                 n = self.sweeps + 1
                 self.stage_name, self.index = "sweep", n
                 self.progress("refine")
@@ -848,8 +848,7 @@ class _Run:
                                                               T=self.nodes[k].T)
                             data[k], unary[k] = r.D, r.unary
                 self.sweeps = n
-                total = self.total(A, held, data, unary)
-                entries = [self.entry(k, snaps2[k], R_all[k], self.identity_flags(ids, k), stage1.pop(k, None))
+                entries =[self.entry(k, snaps2[k], R_all[k], self.identity_flags(ids, k), stage1.pop(k, None))
                            for k in snaps2]
                 verdict = self.save_stage("sweep", n, entries, [])
                 for k, snap in snaps2.items():
@@ -857,10 +856,16 @@ class _Run:
                         self.records[snap.fit_id] = R_all[k].fit
                     elif k in verdict["refused"]:        # E9: every refused member goes back, and the sweep is not quiet
                         held[k] = before[k]
+                        for now, was in zip((data, unary), before_cost):
+                            if k in was:
+                                now[k] = was[k]
+                            else:
+                                now.pop(k, None)
                         move = math.inf
                         if verdict["refused"][k] in (self.records_mod.REFUSED["locked"],
                                                      self.records_mod.REFUSED["inputs_changed"]):
                             active.discard(k)
+                total = self.total(A, held, data, unary)     # the stopping cost of the state the writer accepted
                 self.stage_timing("sweep", n, t_sweep, width, len(snaps2))
                 self.progress("save")
                 quiet =quiet + 1 if move <= s.sweep_tol_meV else 0
