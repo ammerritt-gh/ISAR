@@ -30,6 +30,9 @@ WORKSPACE_API_DIR = REPO_ROOT / "isar" / "workspace_api"
 # The intake writers are called in process by the GUI (saves go straight into the running ISAR).
 GUI_ALLOWED = {
     "isar.workspace_api", "isar.geometry", "isar.plotspec", "isar.intake.settings", "isar.intake.values",
+    # The inter-spectra user values: the GUI saves them in process through the checked writers, and reads the
+    # read-side module (the anchors, picks, locks and settings it shows).
+    "isar.intake.inter_values", "isar.intake.inter_spectra",
     # C-schedule: the analysis queue's bookkeeping, which the design gives to the GUI ("the GUI keeps the
     # two queues"). Stdlib only, no I/O, no clock, no threads, imports nothing from isar.
     "isar.session.analysis_queue",
@@ -121,7 +124,21 @@ WORKSPACE_API_ALLOWED = {
     "isar.intake.scans",
     "isar.intake.fit_inputs",
     "isar.intake.readiness",
+    # The inter-spectra read side (S1U1). Each session module is named, not the package: a package prefix
+    # would admit ``isar.session.inter_spectra.runner``, which the facade must never import.
+    "isar.intake.inter_spectra",
+    "isar.analyze.coupled.settings",
+    "isar.session.inter_spectra.nodes",
+    "isar.session.inter_spectra.graph",
+    "isar.session.inter_spectra.records",
+    "isar.session.inter_spectra.authority",
+    "isar.session.inter_spectra.preview",
+    "isar.session.inter_spectra.q_provider",
 }
+
+# The facade's writers and runner, named out by the relative-import test below (the allow-list walk does not
+# resolve relative imports).
+FACADE_BANNED = ("isar.intake.inter_values", "isar.session.inter_spectra.runner")
 
 
 def _constrained(module: str) -> bool:
@@ -227,3 +244,26 @@ def test_the_service_allowance_is_one_name_and_the_queue_module(tmp_path):
     assert offenders("import isar.session.analysis_service\n")                       # so is the whole module
     assert offenders("from isar.session import analysis_service\n")
     assert offenders("from isar.session.driver import run_batch\n")                  # the rest of session stays out
+
+
+def _imported_names(py: Path, package: str) -> list[str]:
+    """Every module an import in ``py`` names, relative imports resolved against ``package``."""
+    names = []
+    for node in ast.walk(ast.parse(py.read_text(encoding="utf-8"), filename=str(py))):
+        if isinstance(node, ast.Import):
+            names += [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            base = node.module or ""
+            if node.level:
+                parts = package.split(".")[: len(package.split(".")) - node.level + 1]
+                base = ".".join(parts + ([base] if base else []))
+            names += [base] + [f"{base}.{alias.name}" for alias in node.names]
+    return names
+
+
+def test_the_facade_never_imports_the_writers_or_the_runner():
+    """The inter-spectra facade reads and never writes or runs: its relative imports count too."""
+    hits = [(py.name, name) for py in _workspace_api_modules()
+            for name in _imported_names(py, "isar.workspace_api")
+            if any(name == banned or name.startswith(banned + ".") for banned in FACADE_BANNED)]
+    assert not hits, hits
