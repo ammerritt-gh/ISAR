@@ -274,7 +274,7 @@ def _kinds(attention) -> dict:
     return {g.kind: g for g in attention.groups} if attention is not None and attention.evaluated else {}
 
 
-def _rf_reason(c, groups) -> str | None:
+def _rf_reason(c, groups, scans) -> str | None:
     if c.folder is None:
         return "no resolution folder is set"
     if c.check_stale:
@@ -285,8 +285,11 @@ def _rf_reason(c, groups) -> str | None:
         return c.problem
     if "resolution_folder" in groups:
         return groups["resolution_folder"].items[0].reason
-    if "curve_missing" in groups:
-        n = len({(i.scan, i.analyzer) for i in groups["curve_missing"].items})
+    # a counts hold stops calibrate before its curve_missing group, so the per-analyzer readiness is counted too
+    missing = {(i.scan, i.analyzer) for i in groups["curve_missing"].items} if "curve_missing" in groups else set()
+    missing |= {(s.scan, a) for s in scans.values() for a, r in s.analyzers.items() if r.curve_kind == "missing"}
+    if missing:
+        n = len(missing)
         return f"{n} analyzer{' has' if n == 1 else 's have'} no resolution curve"
     return None
 
@@ -313,7 +316,8 @@ def folder_status(summary, settings, attention) -> tuple[FolderStatus | None, Fo
     if summary is None or summary.curves is None:
         return None, None
     c, groups = summary.curves, _kinds(attention)
-    rf = _status("Resolution curves folder", c.folder, _HOW.get(c.source), _rf_reason(c, groups))
+    scans = attention.scans if attention is not None and attention.evaluated else {}
+    rf = _status("Resolution curves folder", c.folder, _HOW.get(c.source), _rf_reason(c, groups, scans))
     check = summary.gpi
     saved = getattr(settings, "gpi_folder", None)
     if saved is not None:

@@ -230,6 +230,14 @@ def test_folder_status_missing_curves_rejected_gpi_and_no_folder(tmp_path):
     assert not gpi.good and gpi.path is None and gpi.how is None and gpi.reason == "no gpi folder is chosen"
 
 
+def test_folder_status_a_held_analyzer_with_no_curve_is_not_a_good_rf_folder(tmp_path):
+    # its counts are held before calibrate reaches the curve, so no curve_missing group exists; the rf column crosses
+    root = build_bl43_gpi_workspace(tmp_path, drop_curve="a04", off_integer=("a04",))
+    assert _spectra(_snap(root))["a04"].rf.good is False
+    rf, _gpi = _status(root)
+    assert not rf.good and rf.reason == "1 analyzer has no resolution curve"
+
+
 def test_folder_status_a_new_folder_is_not_good_until_checked(tmp_path):
     root = build_bl43_gpi_workspace(tmp_path)
     other = tmp_path / "elsewhere"
