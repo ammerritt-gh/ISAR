@@ -8,18 +8,23 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtWidgets import QFileDialog
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import QApplication, QFileDialog
 
 import bl43_fixture
 from isar.intake import settings as intake_settings
 from isar.workspace_api.intake_view import FolderStatus
+from isar_gui.gui_store import GuiStore
+from isar_gui.viewmodels.files import FilesViewModel
 from isar_gui.viewmodels.intake import IntakeState
 from isar_gui.views import setup_section as setup_mod
+from isar_gui.views.files_strip import FilesStrip
 from isar_gui.views.setup_section import SetupSection, locate_resolution_folder
 
 REPO = Path(__file__).resolve().parents[2]
@@ -152,3 +157,31 @@ def test_the_panel_renders_to_a_png(qtbot, tmp_path):
     out = tmp_path / "setup-panel.png"
     assert section.grab().save(str(out)) and out.stat().st_size > 0
 
+
+def _strip(qtbot, tmp_path) -> FilesStrip:
+    f = SimpleNamespace(path=r"D:\beam\a.dat", size=1, mtime=1.0, classification="measurement",
+                        n_scans=1, scan_ids=("exp:1",), error=None)
+    ws = SimpleNamespace(files=[f], last_ingest=None, root=tmp_path / "exp_a")
+    strip = FilesStrip()
+    qtbot.addWidget(strip)
+    strip.bind(FilesViewModel(ws, store=GuiStore.load(tmp_path)), True)
+    strip.resize(MIN_WIDTH, 200)
+    strip.show()
+    qtbot.waitExposed(strip)
+    return strip
+
+
+# the default test font, and the Windows style at a large Segoe UI, where a full row cut the label
+@pytest.mark.parametrize("family, point_size, style", [("Sans Serif", 9, "fusion"), ("Segoe UI", 13, "windows11")])
+def test_add_data_keeps_its_whole_text_at_the_minimum_width(qtbot, tmp_path, family, point_size, style):
+    app = QApplication.instance()
+    old_font, old_style = app.font(), app.style().name()
+    app.setStyle(style)
+    app.setFont(QFont(family, point_size))
+    try:
+        strip = _strip(qtbot, tmp_path)
+        assert strip._add.text() == strip._add.full_text() == "Add data ▾"
+        assert strip._add.width() >= strip._add.sizeHint().width()
+    finally:
+        app.setFont(old_font)
+        app.setStyle(old_style)
