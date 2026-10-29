@@ -498,13 +498,15 @@ def _currentness(bl43: bool, has_records: bool) -> dict:
 
 def _inter_state(root: Path, card, session) -> tuple:
     """``(effective, overview, log)`` of the inter-spectra fits: the resolver's answers (a spectrum absent from
-    ``effective`` is its solo fit), the facade's labels and flags, and the stored log. Empty when none exist."""
+    ``effective`` is its solo fit), the facade's labels and flags, and the stored log. The overview is read even
+    when no refit exists, so a lock or pick on a solo fit is exported. Empty when neither exists."""
     outcomes = {e.scan_id: next(iter(e.detectors.values())) for e in session.scans.values()
                 if len(e.detectors or {}) == 1}
     eff = authority.effective(root, outcomes, card.state.tabulated_calibration)
-    if not eff:
+    overview = inter_overview(root)
+    if not eff and not overview.by_key:
         return {}, None, None
-    return eff, inter_overview(root), inter_records.read_log(root)
+    return eff, overview, inter_records.read_log(root)
 
 
 def _inter_rows(e, det, ent, ov) -> list:

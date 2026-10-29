@@ -140,6 +140,17 @@ def test_a_repair_is_listed_as_a_reason_but_is_not_flagged_for_review(ws_root):
     assert block["history"][-1]["flagged"] is False
 
 
+def test_a_fast_solo_lock_before_any_batch_is_exported_as_locked(ws_root):
+    k1 = spectrum_keys(ws_root)[0]
+    assert inter_values.set_lock(ws_root, k1, locked=True, fit_id="fast").ok     # no batch has run yet
+    _, _, rec, rows = _export(ws_root)
+    p = _by_pass(rows, k1)
+    assert set(p) == {"fast"} and (p["fast"]["authoritative"], p["fast"]["fit_source"]) == ("true", "Locked: Fast solo")
+    block = rec[k1]["inter_spectra"]
+    assert block["authoritative"] == {"fit": "fast", "source": "lock", "label": "Locked: Fast solo", "stale": False,
+                                      "locked": True}
+
+
 def test_an_authoritative_refit_with_no_modes_leaves_the_solo_rows_not_authoritative(ws_root):
     k1 = spectrum_keys(ws_root)[0]
     _save_ring(ws_root, "b000000000001", [(F1, k1)], overlay=NO_MODES)
