@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 from isar.analyze.coupled.settings import InterSettings
-from isar.intake import inputs, scans as intake_scans, store
+from isar.intake import gpi, inputs, scans as intake_scans, store
 from isar.intake.inter_spectra import FAST, InterUser, read_inter_settings, read_user
 from isar.schema.card import load_policy, load_state
 from isar.session.inter_spectra import authority, records
@@ -139,7 +139,8 @@ def _inputs_now(root: Path, units) -> dict[str, str | None]:
         return {}
     read = store.read_all(root, store.ENTRIES)
     return records.inputs_now_from(intake_scans.read_scans(root), inputs.index_entries(read.entries, lines=read.lines),
-                                   load_state(root / STATE_NAME).tabulated_calibration, sorted(units))
+                                   load_state(root / STATE_NAME).tabulated_calibration, sorted(units),
+                                   gpi=gpi.entries_in_force(root))
 
 
 def _solo_keys(root: Path) -> frozenset[str]:

@@ -339,7 +339,7 @@ class _Run:
 
     # -- the freeze
     def go(self) -> None:
-        from isar.intake import inputs, scans as intake_scans, store
+        from isar.intake import gpi, inputs, scans as intake_scans, store
         from isar.intake.inter_spectra import read_inter_settings, read_user
         from isar.session import currentness, file_fit
         from isar.session.inter_spectra import authority, q_provider, records
@@ -391,7 +391,8 @@ class _Run:
         for r in log0.refits:
             by_unit.setdefault(r.unit, []).append(r)
         needed = sorted({*scope, *(c.unit for u in scope for r in by_unit.get(u, ()) for c in r.conditioned_on)})
-        self.now = now = records.inputs_now_from(rows, index, frozen.card.state.tabulated_calibration, needed)
+        self.now = now = records.inputs_now_from(rows, index, frozen.card.state.tabulated_calibration, needed,
+                                                 gpi=gpi.entries_in_force(self.root))
         self.lines = {r.fit: r for r in log0.refits}
         self.res = {u:authority.resolve(u, refits=by_unit.get(u, ()), pick=user.picks.get(u), lock=user.locks.get(u),
                                          has_fast=authority.has_fast_solo(frozen.session.get(u), u), inputs_now=now)

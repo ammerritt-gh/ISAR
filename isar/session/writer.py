@@ -24,7 +24,7 @@ import re
 from collections.abc import Sequence
 from pathlib import Path
 
-from isar.intake import fit_inputs, inputs, inter_spectra, scans as intake_scans, store
+from isar.intake import fit_inputs, gpi, inputs, inter_spectra, scans as intake_scans, store
 from isar.schema import _json
 from isar.schema.card import load_state
 from isar.session import calibrations, measurement_store
@@ -272,8 +272,9 @@ def save_inter(workspace_root, payloads: Sequence[dict]) -> list[dict | str]:
                     entries = store.read_all(root, store.ENTRIES)
                     reads.append((intake_scans.read_scans(root),
                                   inputs.index_entries(entries.entries, lines=entries.lines),
-                                  load_state(root / STATE_NAME).tabulated_calibration))
-                now.update(records.inputs_now_from(*reads[0], needed))
+                                  load_state(root / STATE_NAME).tabulated_calibration,
+                                  gpi.entries_in_force(root)))
+                now.update(records.inputs_now_from(*reads[0][:3], needed, gpi=reads[0][3]))
             blobs, lines = [], []
             for r in fresh:
                 accept = None
