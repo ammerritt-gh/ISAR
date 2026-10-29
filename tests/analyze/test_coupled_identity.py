@@ -127,6 +127,24 @@ def test_consistent_loop_shares_ids_and_keeps_old_ids_interpretable():
     assert r.alternatives["aliases"]["fast:W#0"] == ["fast:X#0", "fast:Y#0", "fast:Z#0"]
 
 
+def test_fast_solos_that_name_each_other_resolve_to_one_id():
+    """Simultaneous from fast solos: each spectrum's own id is unknown to its neighbour, so stage 1 changes each
+    slot from unmatched to the neighbour's id (x takes fast:y#0, y takes fast:x#0). Each slot continues its own
+    incoming mode, so the two ids meet in one component instead of swapping; a slot that relabels away from an
+    id its neighbour carries is a real change and continues nothing."""
+    previous = {u: held(u, "fast", [(f"fast:{u}#0", 10.0)]) for u in "xy"}
+    A = {"x": asg("x", "b:round1", ("fast:y#0",), changed=True), "y": asg("y", "b:round1", ("fast:x#0",), changed=True)}
+    r = run(["x", "y"], [link("x", "y")], A, previous, mode="simultaneous", sid="b:round1")
+    assert r.ids[("x", "f_x", 0)] == r.ids[("y", "f_y", 0)] == "fast:x#0"
+    assert {r.status[("x", "f_x", 0)], r.status[("y", "f_y", 0)]} == {"matched"}
+    assert r.alternatives["aliases"] == {"fast:x#0": ["fast:y#0"]} and r.loops == [] and r.flags == {}
+    # the other direction: y carries x's own id, so x naming p instead is a relabel; x's old id is not aliased
+    previous = {"x": held("x", "fast", [("q", 10.0)]), "y": held("y", "fast", [("p", 9.0), ("q", 10.0)])}
+    A = {"x": asg("x", "b:round1", ("p",), changed=True), "y": asg("y", "b:round1", ("p", "q"))}
+    r = run(["x", "y"], [link("x", "y")], A, previous, mode="simultaneous", sid="b:round1")
+    assert r.ids[("x", "f_x", 0)] == "p" and r.alternatives["aliases"] == {}
+
+
 def test_loop_conflict_reports_its_cycle_and_publishes_no_union():
     # Z's incoming association is crossed relative to the rest of the loop.
     units, links, A, previous = _square(z_slots=("fast:W#1", "fast:W#0"))

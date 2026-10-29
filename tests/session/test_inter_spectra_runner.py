@@ -530,15 +530,23 @@ def test_the_real_core_runs_both_batch_kinds_end_to_end(tmp_path):
         assert writer.save_results(ws.root, [r.payload for r in out if r.payload is not None]) == [None, None]
     assert inter_values.save_settings(ws.root, {"sweep_cap": 3}).ok
     k = _keys(ws.root)
-    for spec in (_anchored(ws.root, [k["a03", 100.0], k["a04", 100.0]]),
-                 _simultaneous(ws.root, list(k.values()))):
+    # simultaneous first, straight from the fast solos (no anchored batch before it), then anchored
+    for spec in (_simultaneous(ws.root, list(k.values())),
+                 _anchored(ws.root, [k["a03", 100.0], k["a04", 100.0]])):
         bench = Bench(ws.root)
         log = bench.run(spec, core=None)
         end = log.batches[spec.batch_id].end
         print(spec.kind, end["state"], json.dumps(end["timing"], indent=1))
-        assert end["state"] in ("completed", "settled", "did_not_settle"), end
+        assert end["state"] in ("completed", "settled"), end
         lines = [r for r in log.refits if r.batch == spec.batch_id]
         assert lines and all(r.status in records.ELIGIBLE for r in lines)
         assert all(records.read_payload(ws.root, r)["overlay"]["fast_pass"]["source"] == "inter_refit" for r in lines)
         if spec.kind == "anchored":
             assert end["done"] == 2 and {r.accept.decision for r in lines} == {"authoritative"}
+            continue
+        # the T-linked fast solos share one branch id and keep their coupling factor after E18 (amendment 21)
+        came_out = {r.unit: records.read_payload(ws.root, r)["came_out"] for r in lines if r.index == 1}
+        for det in ("a03", "a04"):
+            cold, hot = came_out[k[det, 100.0]], came_out[k[det, 200.0]]
+            assert cold["assignment"]["slots"] == hot["assignment"]["slots"]
+            assert cold["assignment"]["factors"] and hot["assignment"]["factors"]

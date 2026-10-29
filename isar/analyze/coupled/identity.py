@@ -291,7 +291,10 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
     Support for a stage spectrum's slot is a linked held neighbour carrying the branch (or a dormant
     record of it) outside the stage; anchored, a ring-mate never supports (its matches are seams only).
     A slot of an unchanged assignment continues its own incoming mode at the same index (bookkeeping,
-    simultaneous); an unmatched slot of a changed one keeps the id of the incoming mode nearest in energy
+    simultaneous). Simultaneous, a changed assignment of the same count whose slot newly names a supported
+    neighbour id continues its own incoming mode at that index when no eligible neighbour carries that mode's id
+    (it came in unmatched): the two ids then meet as aliases, so fast solos that name each other share one id
+    instead of swapping. An unmatched slot of a changed one keeps the id of the incoming mode nearest in energy
     that no slot names (one-to-one; a mode with none left is a birth). ``drift`` stays empty here
     (``drift_report`` runs at batch end). Nothing here prices, adds a factor or changes an assignment.
     """
@@ -361,6 +364,12 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
         carried = _carried_ids(a, own, energies[k]) if own is not None else {}
         continues = own is not None and not a.changed and len(own.modes) == a.count
         inherited = continues and a.discrete == "skipped"    # an untriggered decision is not re-tested for support
+        # simultaneous, a changed assignment of the same count: an own id no eligible neighbour carries was
+        # unmatched coming in, so a slot that now names a neighbour's id still continues that own mode
+        unknown = set() if (batch_mode != "simultaneous" or own is None or not a.changed
+                            or len(own.modes) != a.count) else \
+            {md.branch for md in own.modes} - {md.branch for j in elig for md in previous[j].modes} \
+            - {d.branch for j in elig for d in previous[j].dormant} - set(a.slots)
         for m, ref in enumerate(refs):
             b, origin = a.slots[m], a.origins[m]
             confident, close = _slot_support(a, m, settings)
@@ -375,7 +384,8 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
                 continue
             if supported:
                 edge(_obs(ref), ("id", b), kind="assigned", links=via)
-            if continues and (b is None or supported or inherited):
+            recovered = supported and bool(unknown) and own.modes[m].branch in unknown
+            if (continues and (b is None or supported or inherited)) or recovered:
                 edge(_obs(ref), _obs((k, own.fit, m)), kind="continuity", links=[])
 
     members: dict = defaultdict(list)
