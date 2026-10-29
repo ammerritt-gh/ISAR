@@ -16,12 +16,20 @@ deleted: one Log line at startup says where they are and how to keep them.
 Smoke hook: set ``ISAR_GUI_SMOKE_MS=<ms>`` to auto-quit the app after that many milliseconds with
 exit 0 (a ``QTimer.singleShot`` posted after ``exec`` starts). Used by the offscreen live smoke
 check so the shell can be launched end-to-end in CI without a human closing the window.
+
+Self-test hook (``isar/install_check.py`` drives it): with ``ISAR_GUI_SELFTEST_RESULT=<path>`` set,
+the window is hidden unless ``ISAR_GUI_SELFTEST_VISIBLE=1``, no dialog opens, and once the event
+loop has turned a JSON ``{"nonce", "platform", "pid"}`` is written to that path and the app quits.
+``ISAR_GUI_SELFTEST_FORCE=fail`` raises before the window is built; ``=hang`` blocks the loop instead
+of writing the result. Without ``ISAR_GUI_SELFTEST_RESULT`` nothing here changes.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import logging
+import time
 from pathlib import Path
 
 from isar.workspace_api import Workspace, WorkspaceNotFound
@@ -35,16 +43,17 @@ def _install_exception_hook(log_path) -> None:
     def _hook(exc_type, exc, traceback):
         logging.getLogger(__name__).critical(
             "uncaught GUI exception", exc_info=(exc_type, exc, traceback))
-        try:
-            from PySide6.QtWidgets import QMessageBox
-            location = str(log_path) if log_path is not None else "the Log dock and stderr"
-            QMessageBox.critical(
-                None, "ISAR encountered an unexpected error",
-                "ISAR encountered an unexpected error. The details were recorded in " + location
-                + ". You can also open the GUI log folder from Help.")
-        except Exception as dialog_exc:  # noqa: BLE001 — preserve the original exception path
-            logging.getLogger(__name__).error(
-                "could not show uncaught-error dialog: %s", dialog_exc)
+        if not os.environ.get("ISAR_GUI_SELFTEST_RESULT"):  # the self-test never opens a dialog
+            try:
+                from PySide6.QtWidgets import QMessageBox
+                location = str(log_path) if log_path is not None else "the Log dock and stderr"
+                QMessageBox.critical(
+                    None, "ISAR encountered an unexpected error",
+                    "ISAR encountered an unexpected error. The details were recorded in " + location
+                    + ". You can also open the GUI log folder from Help.")
+            except Exception as dialog_exc:  # noqa: BLE001 — preserve the original exception path
+                logging.getLogger(__name__).error(
+                    "could not show uncaught-error dialog: %s", dialog_exc)
         previous(exc_type, exc, traceback)
 
     sys.excepthook = _hook
@@ -86,6 +95,20 @@ def _resolve_recent_workspace() -> "Workspace | None":
     return None
 
 
+def _write_selftest_result(app, path: str, nonce: str) -> None:
+    """Self-test mode: runs after the event loop has turned. Writes the result atomically and quits."""
+    if os.environ.get("ISAR_GUI_SELFTEST_FORCE") == "hang":
+        while True:  # the event loop never returns; the check's timeout kills the process
+            time.sleep(3600)
+    from PySide6.QtGui import QGuiApplication
+
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+        json.dump({"nonce": nonce, "platform": QGuiApplication.platformName(), "pid": os.getpid()}, f)
+    os.replace(tmp, path)
+    app.quit()
+
+
 def _legacy_temp_note() -> str | None:
     """The startup Log line naming leftover temporary workspaces of earlier builds, or ``None``."""
     from isar_gui.workspace_manager import legacy_temp_workspaces, temp_root
@@ -124,12 +147,18 @@ def main(argv=None) -> int:
 
     app = QApplication.instance() or QApplication(argv)
     _install_exception_hook(log_path)
+    selftest = os.environ.get("ISAR_GUI_SELFTEST_RESULT")
+    if selftest and os.environ.get("ISAR_GUI_SELFTEST_FORCE") == "fail":
+        raise RuntimeError("self-test forced failure")
 
     if not explicit:
         # No path given: the most recent openable experiment (an explicit CLI arg suppresses it).
         ws = _resolve_recent_workspace()
 
     window = MainWindow(ws)  # ws may be None -> empty-start
+    if selftest and os.environ.get("ISAR_GUI_SELFTEST_VISIBLE") != "1":
+        from PySide6.QtCore import Qt
+        window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
     if log_path is not None:
         window.log(f"GUI log: {log_path} (Help ▸ Open GUI Log Folder)")
         window.statusBar().showMessage("GUI log ready — Help ▸ Open GUI Log Folder")
@@ -139,6 +168,10 @@ def main(argv=None) -> int:
     # Maximised: the first-start arrangement is sized to the screen's available area.
     window.showMaximized()
     logging.getLogger(__name__).info("main window shown")  # the launcher smoke test waits for this line
+    if selftest:
+        from PySide6.QtCore import QTimer
+        nonce = os.environ.get("ISAR_GUI_SELFTEST_NONCE", "")
+        QTimer.singleShot(0, app, lambda: _write_selftest_result(app, selftest, nonce))
 
     smoke_ms = os.environ.get("ISAR_GUI_SMOKE_MS")
     if smoke_ms:
