@@ -769,3 +769,19 @@ def test_replacement_and_relocation_stop_before_anything(tmp_path, case):
     assert _tree(old) == before, case
     if target != old:
         assert not target.exists(), case
+
+
+# ---------------------------------------------------------------- the latest installer
+
+LATEST = INSTALLER / "WINDOWS-install-ISAR-latest.bat"
+
+
+@pytest.mark.parametrize("args", [["/ref", "acs/job-branch"], ["/test-fail", "selftest"], ["/repair"], ["/uninstall"]])
+def test_latest_refuses_what_names_a_release_or_a_test(tmp_path, args):
+    """Refused before the first GitHub request and before any release installer runs; its own log says so."""
+    env = _sandbox(tmp_path)
+    rc, out = run_bat(LATEST, *args, "/yes", env=env)
+    _log, lines = _last_log(env, "install-latest")
+    assert (rc, lines[-1]) == (2, "OUTCOME=refused"), (args, out, lines[-4:])
+    assert not any(ln.startswith(("GET ", "RUNNING ")) for ln in lines), (args, lines)
+    assert not list(Path(env["TEMP"]).glob("isar-latest-*")), "the working folder was left behind"
