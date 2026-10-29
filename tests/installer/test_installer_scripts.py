@@ -104,7 +104,24 @@ def micromamba_offenders(text):
     return bad
 
 
+def long_path_offenders(text):
+    """ISAR's source holds paths past 260 characters once under <base>\\app: git needs
+    core.longpaths on every call, and a recursive removal goes through the \\\\?\\ form."""
+    bad = []
+    for ln in _code_lines(text):
+        if re.match(r'\s*"%GIT%"\s', ln) and not re.match(r'\s*"%GIT%" -c core\.longpaths=true\s', ln):
+            bad.append(ln)
+        # the private working and staging folders are the scripts' own, under %TEMP%
+        if re.search(r'(?i)\brd\s+/s\b', ln) and not re.search(r"%(WORK|STAGE)%", ln) and '"\\\\?\\' not in ln:
+            bad.append(ln)
+    return bad
+
+
 def test_static_rules_fire_on_broken_snippets():
+    assert long_path_offenders('"%GIT%" -C "%APP%" checkout -q --detach --force %COMMIT%')
+    assert long_path_offenders('if exist "%BASE%\\app\\" rd /s /q "%BASE%\\app" 2>nul')
+    assert not long_path_offenders('"%GIT%" -c core.longpaths=true -C "%APP%" init -q\r\n'
+                                   'if exist "%RM_PATH%\\" rd /s /q "\\\\?\\%RM_PATH%" 2>nul')
     assert crlf_ascii_problems(b"@echo off\nset A=1\r\n")
     assert crlf_ascii_problems("echo J\u00f6rg\r\n".encode("utf-8"))
     assert d2_offenders('set X| findstr /x "X=1" >nul\r\n')
@@ -133,6 +150,7 @@ def test_bat_is_ascii_crlf_and_follows_the_batch_rules(path):
     assert not echo_redirect_offenders(text), echo_redirect_offenders(text)
     assert not missing_labels(text), missing_labels(text)
     assert not micromamba_offenders(text), micromamba_offenders(text)
+    assert not long_path_offenders(text), long_path_offenders(text)
 
 
 def test_bat_files_are_crlf_in_the_index():
@@ -161,6 +179,36 @@ def test_lock_format_check_accepts_the_lock_as_served(tmp_path):
         (work / "isar-win-64.lock").write_bytes(content)
         rc, out = run_bat(probe, env=env)
         assert out.strip() == want, (line, out)
+
+
+def test_remove_entry_removes_a_tree_past_260_characters(tmp_path):
+    """The engine's own :remove_entry, run on an app folder whose deepest path passes 260
+    characters, and on an env that is a junction (the junction goes, its target stays)."""
+    text = _text(ENGINE)
+    start = text.index("\r\n:remove_entry\r\n") + 2
+    helper = text[start:text.index("goto :eof\r\n", start) + len("goto :eof\r\n")]
+    base = _plain(tmp_path) / "b"
+    deep = "\\\\?\\" + str(base / "app")
+    for i in range(6):
+        deep += "\\" + f"d{i}" * 25
+    os.makedirs(deep)
+    with open(deep + "\\f.txt", "w", encoding="utf-8") as fh:
+        fh.write("x")
+    assert len(deep) > 300
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "keep.txt").write_text("not ISAR's\n", encoding="utf-8")
+    mk = subprocess.run(["cmd", "/d", "/c", "mklink", "/J", str(base / "env"), str(target)],
+                        capture_output=True, text=True)
+    assert mk.returncode == 0, mk.stdout + mk.stderr
+    probe = tmp_path / "probe.bat"
+    probe.write_bytes(("@echo off\r\nsetlocal DisableDelayedExpansion\r\nset \"BASE=%s\"\r\n"
+                       "call :remove_entry app\r\ncall :remove_entry env\r\nexit /b 0\r\n%s"
+                       % (base, helper)).encode("ascii"))
+    rc, out = run_bat(probe, env=_sandbox(tmp_path))
+    assert rc == 0, out
+    assert sorted(p.name for p in base.iterdir()) == [], out
+    assert (target / "keep.txt").exists()
 
 
 def test_release_constant_matches_pyproject():

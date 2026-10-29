@@ -595,8 +595,7 @@ call :step_ok_named preflight
 call :step_start remove-env "Removing the old Python environment"
 cd /d "%WORK%"
 set "ENV_REMOVED=yes"
-if exist "%BASE%\env\" rd /s /q "%BASE%\env" 2>nul
-if exist "%BASE%\env" if not exist "%BASE%\env\" del /f /q "%BASE%\env" >nul 2>nul
+call :remove_entry env
 set "ERR=the old environment could not be removed completely (a program may still be using it); close it and run Repair again"
 if exist "%BASE%\env" goto fail
 call :step_ok
@@ -631,8 +630,7 @@ if "%GATE%"=="refuse" set "ERR=a workspace is saved inside ISAR's source folder;
 if not "%GATE%"=="ok" goto fail
 cd /d "%WORK%"
 set "APP_REMOVED=yes"
-if exist "%BASE%\app\" rd /s /q "%BASE%\app" 2>nul
-if exist "%BASE%\app" if not exist "%BASE%\app\" del /f /q "%BASE%\app" >nul 2>nul
+call :remove_entry app
 set "ERR=the old copy of ISAR's source could not be removed completely; close any program using it and run Repair again"
 if exist "%BASE%\app" goto fail
 call :get_source
@@ -925,28 +923,28 @@ if exist "%APP%\.git\" goto source_have_repo
 if not exist "%APP%\" mkdir "%APP%" 2>nul
 set "ERR=could not create %APP%"
 if not exist "%APP%\" goto :eof
-"%GIT%" -C "%APP%" init -q >>"%LOG%" 2>&1 <nul
+"%GIT%" -c core.longpaths=true -C "%APP%" init -q >>"%LOG%" 2>&1 <nul
 set "ERR=git init failed in %APP%"
 if errorlevel 1 goto :eof
-"%GIT%" -C "%APP%" remote add origin "https://github.com/%GH_REPO%.git" >>"%LOG%" 2>&1 <nul
+"%GIT%" -c core.longpaths=true -C "%APP%" remote add origin "https://github.com/%GH_REPO%.git" >>"%LOG%" 2>&1 <nul
 set "ERR=git could not add the ISAR remote"
 if errorlevel 1 goto :eof
 goto source_fetch
 :source_have_repo
 >>"%LOG%" echo(Reusing the git checkout kept in %APP%
-"%GIT%" -C "%APP%" cat-file -e "%COMMIT%^{commit}" >>"%LOG%" 2>&1 <nul
+"%GIT%" -c core.longpaths=true -C "%APP%" cat-file -e "%COMMIT%^{commit}" >>"%LOG%" 2>&1 <nul
 if not errorlevel 1 goto source_fetched
 :source_fetch
-"%GIT%" -C "%APP%" fetch -q --depth 1 origin %COMMIT% >>"%LOG%" 2>&1 <nul
+"%GIT%" -c core.longpaths=true -C "%APP%" fetch -q --depth 1 origin %COMMIT% >>"%LOG%" 2>&1 <nul
 set "ERR=git could not download commit %COMMIT%; check the internet connection and try again"
 if errorlevel 1 goto :eof
 :source_fetched
 call :write_markers
 if defined ERR goto :eof
-"%GIT%" -C "%APP%" checkout -q --detach --force %COMMIT% >>"%LOG%" 2>&1 <nul
+"%GIT%" -c core.longpaths=true -C "%APP%" checkout -q --detach --force %COMMIT% >>"%LOG%" 2>&1 <nul
 set "ERR=git could not check out commit %COMMIT%"
 if errorlevel 1 goto :eof
-"%GIT%" -C "%APP%" rev-parse HEAD > "%WORK%\head.txt" 2>>"%LOG%" <nul
+"%GIT%" -c core.longpaths=true -C "%APP%" rev-parse HEAD > "%WORK%\head.txt" 2>>"%LOG%" <nul
 set "HEAD_NOW="
 set /p "HEAD_NOW=" < "%WORK%\head.txt"
 call :match_hex HEAD_NOW 40
@@ -961,7 +959,7 @@ goto :eof
 :: backslashes, so a workspace scan can tell ISAR's own fixtures from a user's.
 :write_markers
 set "ERR=git could not list the files of commit %COMMIT%"
-"%GIT%" -C "%APP%" ls-tree -r --name-only %COMMIT% > "%WORK%\tree.txt" 2>>"%LOG%" <nul
+"%GIT%" -c core.longpaths=true -C "%APP%" ls-tree -r --name-only %COMMIT% > "%WORK%\tree.txt" 2>>"%LOG%" <nul
 if errorlevel 1 goto :eof
 set "PSI_A=%WORK%\tree.txt"
 set "PSI_B=%BASE%\tracked-workspace-markers.txt"
@@ -1051,6 +1049,16 @@ del /f /q "%WORK%\desk.txt" >nul 2>nul
 powershell -NoProfile -NonInteractive -Command "try { $d=$env:ISAR_TEST_DESKTOP; if (-not $d) { $d=[Environment]::GetFolderPath('Desktop') }; if (-not $d) { throw 'Windows reports no Desktop folder' }; $t=[IO.Path]::Combine($d,'ISAR Launcher.lnk'); Copy-Item -LiteralPath $env:PSI_A -Destination $t -Force -ErrorAction Stop; 'OK A copy of the ISAR Launcher shortcut is on the Desktop: ' + $t } catch { 'FAIL The shortcut could not be copied to the Desktop: ' + $_.Exception.Message }" > "%WORK%\desk.txt" 2>nul <nul
 type "%WORK%\desk.txt" 2>nul
 >>"%LOG%" type "%WORK%\desk.txt"
+goto :eof
+
+:: Removes the owned payload entry %1, a name directly under BASE: a folder
+:: by rd /s /q on its \\?\ form, which reaches paths past 260 characters
+:: (ISAR's source holds some) and removes a junction itself, never what it
+:: points to; a file by del. The caller checks that it is gone.
+:remove_entry
+set "RM_PATH=%BASE%\%~1"
+if exist "%RM_PATH%\" rd /s /q "\\?\%RM_PATH%" 2>nul
+if exist "%RM_PATH%" if not exist "%RM_PATH%\" del /f /q "%RM_PATH%" >nul 2>nul
 goto :eof
 
 :: PATH for running the environment's programs: its activation folders, then
