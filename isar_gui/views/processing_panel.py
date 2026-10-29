@@ -2,8 +2,9 @@
 
 :class:`ProcessingPanel` holds the readiness line, the *Fast-pass all ready (N)* button (the window's one
 analysis entry point), the line for an ingest, export or campaign running in the window, and below them the
-analysis queue (:class:`~isar_gui.views.queue_panel.QueuePanel`), shown once the window hands the panel its
-controller. It only displays what it is handed and emits its one request signal; the window decides what it does.
+inter-spectra box (:class:`~isar_gui.views.inter_batch_box.InterBatchBox`, collapsed until there are anchors) and
+then the analysis queue (:class:`~isar_gui.views.queue_panel.QueuePanel`), shown once the window hands the panel its
+controller. It only displays what it is handed and emits its request signals; the window decides what it does.
 
 :class:`ProcessingRail` is the strip at the display's right edge. While the right panel is collapsed it reads
 "Processing ‹" and, when the queue has work, what is happening and what needs a look ("Processing ‹ · 5 running
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from isar_gui.theme import TONE_COLOR, Tone
 from isar_gui.views.elided_label import ElidedButton
+from isar_gui.views.inter_batch_box import InterBatchBox
 from isar_gui.views.queue_panel import QueuePanel, rail_status
 from isar_gui.views.setup_section import RUN_TEXT, RUN_TIP
 
@@ -25,6 +27,7 @@ RAIL_WIDTH = 24
 
 class ProcessingPanel(QWidget):
     run_requested = Signal()            # "Fast-pass all ready (N)" -> MainWindow.start_analysis
+    batch_requested = Signal(object)    # a BatchRequest from the inter-spectra box -> MainWindow.start_inter_batch
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -41,6 +44,8 @@ class ProcessingPanel(QWidget):
         self._activity.setObjectName("processing_activity")
         self._activity.setToolTip("What ISAR is doing in this experiment besides the analysis queue below.")
         self._activity.setWordWrap(True)
+        self.inter_box = InterBatchBox(self)
+        self.inter_box.batch_requested.connect(self.batch_requested)
         self._queue = QueuePanel(self)
         self._queue.hide()                  # shown once the window hands the panel a controller
 
@@ -50,6 +55,7 @@ class ProcessingPanel(QWidget):
         layout.addWidget(self._run)
         layout.addWidget(self._reason)
         layout.addWidget(self._activity)
+        layout.addWidget(self.inter_box)
         layout.addWidget(self._queue)
         layout.addStretch(1)
         self.set_run_state(False, RUN_TEXT, "Open or create an experiment first.")
@@ -63,9 +69,14 @@ class ProcessingPanel(QWidget):
         """The queue controller the panel shows and drives (``None``: none). The queue takes the room below the
         run controls while it is shown; without one the spacer does."""
         self._queue.set_controller(controller)
+        self.inter_box.set_controller(controller)
         self._queue.setVisible(controller is not None)
         self._layout.setStretch(self._layout.indexOf(self._queue), 1 if controller is not None else 0)
         self._layout.setStretch(self._layout.count() - 1, 0 if controller is not None else 1)
+
+    def set_inter(self, inter, scan_list_vm) -> None:
+        """The window's InterState and scan list: the anchors list, the batch previews and the Start buttons read them."""
+        self.inter_box.set_inter(inter, scan_list_vm)
 
     def set_activity(self, text: str) -> None:
         """The line for an ingest, an export or a campaign running in the window (``""`` hides it)."""
