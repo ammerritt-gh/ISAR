@@ -202,7 +202,7 @@ def test_remove_entry_removes_a_tree_past_260_characters(tmp_path):
                         capture_output=True, text=True)
     assert mk.returncode == 0, mk.stdout + mk.stderr
     probe = tmp_path / "probe.bat"
-    probe.write_bytes(("@echo off\r\nsetlocal DisableDelayedExpansion\r\nset \"BASE=%s\"\r\n"
+    probe.write_bytes(("@echo off\r\nsetlocal DisableDelayedExpansion\r\nset \"GB=%s\"\r\n"
                        "call :remove_entry app\r\ncall :remove_entry env\r\nexit /b 0\r\n%s"
                        % (base, helper)).encode("ascii"))
     rc, out = run_bat(probe, env=_sandbox(tmp_path))
@@ -542,3 +542,203 @@ def test_repair_stops_before_removing_anything(tmp_path, case):
     assert _tree(base) == before, case
     if case == "env-is-a-junction":
         assert (outside / "keep.txt").exists()
+
+
+# ---------------------------------------------------------------- Uninstall, replacement and relocation
+
+PAYLOAD = [".isar-install-root", "INSTALL_INFO.txt", "ISAR-Launcher.bat", "ISAR Launcher.lnk", "launcher",
+           "tracked-workspace-markers.txt", "micromamba", "mamba", "env", "app"]
+
+
+def _shortcut(lnk, target):
+    ps = ("$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:T_LNK); $s.TargetPath=$env:T_TGT; $s.Save()")
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True,
+                       env={**os.environ, "T_LNK": str(lnk), "T_TGT": str(target)})
+    assert r.returncode == 0 and Path(lnk).exists(), r.stderr
+
+
+def full_fake(base, tmp_path, **over):
+    """A complete fake installation: every payload entry, the engine copy in launcher\\, an app
+    tree with a path past 260 characters, a tracked marker listed as ISAR's own, and a junction
+    inside app pointing at a folder outside (which must survive)."""
+    repairable(base, **over)
+    for name in ("mamba", "micromamba"):
+        (base / name).mkdir(exist_ok=True)
+        (base / name / "x.bin").write_bytes(b"x")
+    deep = "\\\\?\\" + str(base / "app")
+    for i in range(6):
+        deep += "\\" + f"d{i}" * 25
+    os.makedirs(deep)
+    with open(deep + "\\f.txt", "w", encoding="utf-8") as fh:
+        fh.write("x")
+    tracked = base / "app" / "docs" / "campaigns" / "c1"
+    tracked.mkdir(parents=True)
+    (tracked / "card.policy.toml").write_text("# ISAR's own fixture\n", encoding="utf-8")
+    (base / "tracked-workspace-markers.txt").write_text("docs\\campaigns\\c1\\card.policy.toml\r\n", encoding="utf-8")
+    outside = tmp_path / "outside-target"
+    outside.mkdir(exist_ok=True)
+    (outside / "keep.txt").write_text("not ISAR's\n", encoding="utf-8")
+    mk = subprocess.run(["cmd", "/d", "/c", "mklink", "/J", str(base / "app" / "linked"), str(outside)],
+                        capture_output=True, text=True)
+    assert mk.returncode == 0, mk.stdout + mk.stderr
+    _shortcut(base / "ISAR Launcher.lnk", base / "ISAR-Launcher.bat")
+    return base
+
+
+def _locator(env, base):
+    loc = Path(env["LOCALAPPDATA"]) / "ISAR"
+    loc.mkdir(parents=True, exist_ok=True)
+    (loc / "install-record.txt").write_text(f"ISAR_BASE={base}\r\nINSTALL_ID={ID}\r\nSTATE=complete\r\n",
+                                            encoding="utf-8")
+    return loc / "install-record.txt"
+
+
+def _last_log(env, op):
+    logs = sorted((Path(env["LOCALAPPDATA"]) / "ISAR" / "logs").glob(f"{op}-*.log"), key=lambda p: p.stat().st_mtime)
+    return logs[-1], logs[-1].read_text(encoding="utf-8", errors="replace").splitlines()
+
+
+def _no_leftovers(env):
+    left = [p.name for p in Path(env["TEMP"]).iterdir() if p.name.startswith(("isar-handoff-", "isar-uninstall-"))]
+    assert not left, f"working or hand-off folders left in TEMP: {left}"
+
+
+
+
+@pytest.mark.parametrize("delete_profile", ["no", "yes"])
+def test_uninstall_through_the_launcher_removes_exactly_the_payload(tmp_path, delete_profile):
+    """The menu's Uninstall: hand-over to a copy in TEMP, then only the owned payload goes (a tree
+    past 260 characters included, a junction's target kept), the unrelated file and the base stay,
+    the own Desktop shortcut and the locator go, and the profile and earlier logs go only on yes."""
+    env = _sandbox(tmp_path)
+    base = full_fake(_plain(tmp_path) / "b", tmp_path)
+    (base / "my-notes.txt").write_text("keep me\n", encoding="utf-8")
+    loc = _locator(env, base)
+    desk = Path(env["ISAR_TEST_DESKTOP"])
+    _shortcut(desk / "ISAR Launcher.lnk", base / "ISAR-Launcher.bat")
+    profile = Path(env["APPDATA"]) / "isar_gui"
+    profile.mkdir()
+    (profile / "session.json").write_text('{"recent_workspaces": ["D:\\\\runs\\\\exp1"]}', encoding="utf-8")
+    logs = Path(env["LOCALAPPDATA"]) / "ISAR" / "logs"
+    logs.mkdir(parents=True)
+    (logs / "install-20200101-000000-00000000.log").write_text("old\n", encoding="utf-8")
+    rc, out = run_bat(base / "ISAR-Launcher.bat", "uninstall", "/yes", "/delete-profile", delete_profile, env=env)
+    log, lines = _last_log(env, "uninstall")
+    assert rc == 0 and lines[-1] == "OUTCOME=uninstalled", (out, lines[-6:])
+    assert sorted(p.name for p in base.iterdir()) == ["my-notes.txt"], out
+    assert (tmp_path / "outside-target" / "keep.txt").exists()
+    assert not (desk / "ISAR Launcher.lnk").exists() and not loc.exists()
+    assert log.name in out and "D:\\runs\\exp1" in out, out
+    for step in ("remove-app", "remove-env", "remove-mamba", "remove-micromamba", "remove-launcher", "remove-records"):
+        assert f"STEP={step} ok" in lines, step
+    kept = delete_profile == "no"
+    assert profile.exists() == kept and (logs / "install-20200101-000000-00000000.log").exists() == kept
+    assert log.exists()
+    _no_leftovers(env)
+
+
+@pytest.mark.parametrize("case", ["no-marker", "mismatched-ids", "bad-record", "workspace-in-app",
+                                  "workspace-in-profile", "isar-running", "env-is-a-junction"])
+def test_uninstall_stops_before_removing_anything(tmp_path, case):
+    env = _sandbox(tmp_path)
+    base = full_fake(_plain(tmp_path) / "b", tmp_path)
+    args, want_line, proc = ["/uninstall", "/dir", str(base), "/yes"], None, None
+    if case == "no-marker":
+        (base / ".isar-install-root").unlink()
+    elif case == "mismatched-ids":
+        (base / ".isar-install-root").write_bytes(b"INSTALL_ID=" + b"f" * 32 + b"\r\n")
+    elif case == "bad-record":
+        (base / "INSTALL_INFO.txt").write_bytes(_record(base, SOURCE_REF="main & echo hacked").encode())
+    elif case == "workspace-in-app":
+        (base / "app" / "my run").mkdir()
+        (base / "app" / "my run" / "card.policy.toml").write_text("# a user's workspace\n")
+        want_line = "WORKSPACE_FOUND=" + str(base / "app" / "my run")
+    elif case == "workspace-in-profile":
+        ws = Path(env["APPDATA"]) / "isar_gui" / "saved"
+        ws.mkdir(parents=True)
+        (ws / "gui.state.json").write_text("{}")
+        args += ["/delete-profile", "yes"]
+        want_line = "WORKSPACE_FOUND=" + str(ws)
+    elif case == "isar-running":
+        shutil.copyfile(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe", base / "env" / "cmd.exe")
+        proc = subprocess.Popen([str(base / "env" / "cmd.exe"), "/d", "/c", "ping -n 60 127.0.0.1 >nul"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                creationflags=0x08000000)
+        want_line = f"ISAR_RUNNING={proc.pid}"
+    elif case == "env-is-a-junction":
+        shutil.rmtree(base / "env")
+        mk = subprocess.run(["cmd", "/d", "/c", "mklink", "/J", str(base / "env"), str(tmp_path / "outside-target")],
+                            capture_output=True, text=True)
+        assert mk.returncode == 0, mk.stdout + mk.stderr
+    before = _tree(base)
+    try:
+        rc, out = run_bat(ENGINE, *args, env=env)
+    finally:
+        if proc:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+            proc.wait(timeout=30)
+    _log, lines = _last_log(env, "uninstall")
+    assert (rc, lines[-1]) == (2, "OUTCOME=refused"), (case, out, lines[-5:])
+    assert not any(ln.startswith("STEP=remove-") for ln in lines), case
+    if want_line:
+        assert want_line in lines, (case, [ln for ln in lines if "=" in ln][-8:])
+    assert _tree(base) == before, case
+    assert (tmp_path / "outside-target" / "keep.txt").exists()
+
+
+
+
+def test_uninstall_after_an_interruption_finishes_the_job(tmp_path):
+    """STATE=removing with app and env already gone (a stop mid-uninstall) is still owned, and a
+    rerun removes the rest."""
+    env = _sandbox(tmp_path)
+    base = full_fake(_plain(tmp_path) / "b", tmp_path, STATE="removing")
+    subprocess.run(["cmd", "/d", "/c", "rd", "/s", "/q", "\\\\?\\" + str(base / "app")], check=True)
+    shutil.rmtree(base / "env")
+    rc, out = run_bat(ENGINE, "/uninstall", "/dir", str(base), "/yes", env=env)
+    assert rc == 0, out
+    assert not base.exists(), out
+
+
+@pytest.mark.parametrize("case", ["same-workspace", "same-running", "relocate-workspace-in-old",
+                                  "relocate-inside-old", "from-the-kept-copy"])
+def test_replacement_and_relocation_stop_before_anything(tmp_path, case):
+    """Install over an owned folder (same folder) or with the locator naming another installation
+    (relocation): the running check, the workspace scan and the overlap rule refuse before any
+    download or change; and the copy kept in launcher\\ never installs."""
+    env = _sandbox(tmp_path)
+    old = full_fake(_plain(tmp_path) / "old", tmp_path)
+    script, target, want_line, proc = ENGINE, _plain(tmp_path) / "new", None, None
+    if case.startswith("same"):
+        target = old
+    else:
+        _locator(env, old)
+    if case in ("same-workspace", "relocate-workspace-in-old"):
+        (old / "app" / "my-run").mkdir()
+        (old / "app" / "my-run" / "card.policy.toml").write_text("# a user's workspace\n")
+        want_line = "WORKSPACE_FOUND=" + str(old / "app" / "my-run")
+    elif case == "same-running":
+        shutil.copyfile(Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe", old / "env" / "cmd.exe")
+        proc = subprocess.Popen([str(old / "env" / "cmd.exe"), "/d", "/c", "ping -n 60 127.0.0.1 >nul"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                creationflags=0x08000000)
+        want_line = f"ISAR_RUNNING={proc.pid}"
+    elif case == "relocate-inside-old":
+        target = old / "nested"
+    elif case == "from-the-kept-copy":
+        script = old / "launcher" / "WINDOWS-install-ISAR.bat"
+    before = _tree(old)
+    try:
+        rc, out = run_bat(script, "/dir", str(target), "/yes", "/ref", "acs/job-branch", env=env)
+    finally:
+        if proc:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+            proc.wait(timeout=30)
+    _log, lines = _last_log(env, "install")
+    assert (rc, lines[-1]) == (2, "OUTCOME=refused"), (case, out, lines[-6:])
+    assert not any(ln.startswith(("STEP=", "GET ")) for ln in lines), (case, lines)
+    if want_line:
+        assert want_line in lines, (case, [ln for ln in lines if "=" in ln][-8:])
+    assert _tree(old) == before, case
+    if target != old:
+        assert not target.exists(), case

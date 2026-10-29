@@ -57,6 +57,15 @@ set "VER_RE=v%D%%D%*\.%D%%D%*\.%D%%D%*"
 set "REF_RE=[%AL%][%AL%._/-]*"
 
 set "SELF_DIR=%~dp0"
+:: Kept now: the argument loop shifts %0 too.
+set "SELF_FILE=%~f0"
+:: A copy of this file whose name holds "uninstall" (WINDOWS-uninstall-ISAR.bat)
+:: is the standalone uninstaller: the name makes /uninstall the action.
+set "SELF_NAME=%~n0"
+set "NAME_UNINSTALL="
+if /i not "%SELF_NAME:uninstall=%"=="%SELF_NAME%" set "NAME_UNINSTALL=yes"
+:: The owned payload folders, as the workspace scan takes them.
+set "PAYLOAD_DIRS=app*env*mamba*micromamba*launcher"
 set "WORK="
 set "LOG=nul"
 set "LOGFILE="
@@ -69,6 +78,7 @@ if /i "%~1"=="/inspect" goto inspect
 :: unknown argument is kept only to be logged through "set", never echoed.
 :: ---------------------------------------------------------------------------
 set "OP=install"
+if defined NAME_UNINSTALL set "OP=uninstall"
 set "OP_COUNT=0"
 set "ARG_DIR="
 set "HAVE_DIR="
@@ -146,6 +156,8 @@ shift
 goto parse_args
 
 :args_done
+if "%OP%"=="uninstall" if exist "%SELF_DIR%..\.isar-install-root" goto handoff
+if "%OP%"=="uninstall" if exist "%SELF_DIR%.isar-install-root" goto handoff
 title ISAR installer
 set "OUTCOME="
 set "ERR="
@@ -170,6 +182,10 @@ if defined ARG_UNKNOWN >>"%LOG%" set ARG_UNKNOWN
 if defined ARG_UNKNOWN goto refuse
 set "ERR=/repair and /uninstall cannot be combined"
 if %OP_COUNT% GTR 1 goto refuse
+set "ERR=this is the ISAR uninstaller: it only uninstalls, and takes /dir, /yes and /delete-profile"
+if defined NAME_UNINSTALL if not "%OP%"=="uninstall" goto refuse
+if defined NAME_UNINSTALL if defined REF goto refuse
+if defined NAME_UNINSTALL if defined TEST_FAIL goto refuse
 if not defined DESKTOP goto desktop_ok
 call :match DESKTOP "yes" "no"
 set "ERR=/desktop takes yes or no"
@@ -205,6 +221,26 @@ if "%OP%"=="repair" goto repair
 if "%OP%"=="uninstall" goto uninstall
 goto install
 
+:: Uninstall removes the folder this file is in, and cmd reads a batch file
+:: line by line as it runs: control passes to a copy in %TEMP%, in this same
+:: console (no call, so nothing returns here; no start, so no second window).
+:: The copy's name makes it an uninstaller, and it removes its folder at exit.
+:handoff
+call :new_ids
+if not defined HEX goto handoff_failed
+set "HANDOFF_DIR=%TEMP%\isar-handoff-%STAMP%-%HEX:~0,8%"
+mkdir "%HANDOFF_DIR%" 2>nul
+copy /y "%SELF_FILE%" "%HANDOFF_DIR%\WINDOWS-uninstall-ISAR.bat" >nul 2>nul
+if not exist "%HANDOFF_DIR%\WINDOWS-uninstall-ISAR.bat" goto handoff_failed
+endlocal & cd /d "%HANDOFF_DIR%" & "%HANDOFF_DIR%\WINDOWS-uninstall-ISAR.bat" %*
+:handoff_failed
+echo.
+echo [ERROR] Uninstall could not copy itself to a working folder in:
+echo         %TEMP%
+echo         Nothing was removed. Download WINDOWS-uninstall-ISAR.bat from the
+echo         ISAR releases page on GitHub and double-click it instead.
+endlocal & exit /b 1
+
 :no_work
 echo.
 echo [ERROR] The installer could not make its working folder in:
@@ -218,6 +254,11 @@ endlocal & exit /b 1
 :install
 set "INSTALL_KIND=release"
 set "SOURCE_REF=%ISAR_RELEASE%"
+set "MODE="
+set "OLD="
+set "ENV_REMOVED="
+set "APP_REMOVED="
+set "OLD_RESULT="
 if defined REF set "INSTALL_KIND=test"
 if defined REF set "SOURCE_REF=%REF%"
 set "ERR="
@@ -294,18 +335,54 @@ if defined ERR goto refuse
 
 :: Two facts decide the mode: who owns the destination, and whether the
 :: locator names another valid installation (which this run would replace).
+:: same: the destination is an owned installation, replaced in place.
+:: relocate: the locator names another one, removed after this one passes its
+:: self-test (a retry finds the destination owned, and replaces it in place).
 set "CB=%BASE%"
 call :classify
 >>"%LOG%" echo(Destination ownership: %OWN% %OWN_STATE% %OWN_WHY%
+set "DEST_ID=%OWN_ID%"
 set "OLD="
 if defined EXISTING if /i not "%EXISTING%"=="%BASE%" set "OLD=%EXISTING%"
 set "ERR=that folder is not an ISAR installation this installer can prove it owns: %OWN_WHY%"
 if "%OWN%"=="foreign" goto refuse
-set "ERR=replacing or moving an existing ISAR installation is not available in this build of the installer"
-if defined OLD goto refuse
-if "%OWN%"=="owned" goto refuse
+set "DEST_OWNED="
+if "%OWN%"=="owned" set "DEST_OWNED=yes"
+set "DEST_PARTIAL="
+if "%OWN%"=="partial" set "DEST_PARTIAL=yes"
 set "MODE=fresh"
-if "%OWN%"=="partial" goto ask_partial
+if defined DEST_OWNED set "MODE=same"
+if defined OLD set "MODE=relocate"
+>>"%LOG%" echo(MODE=%MODE%
+if not defined OLD goto mode_dest
+>>"%LOG%" echo(The installation in %OLD% is removed once this one passes its self-test.
+set "PSI_A=%BASE%"
+set "PSI_B=%OLD%"
+call :inside
+set "ERR=%BASE% lies inside the ISAR installation in %OLD%; choose a folder outside it"
+if "%INSIDE%"=="yes" goto refuse
+set "PSI_A=%OLD%"
+set "PSI_B=%BASE%"
+call :inside
+set "ERR=the ISAR installation in %OLD% lies inside %BASE%; choose another folder"
+if "%INSIDE%"=="yes" goto refuse
+set "GB=%OLD%"
+set "WS_TARGETS=%PAYLOAD_DIRS%"
+call :check_before_removal
+if "%GATE%"=="refuse" goto refuse
+if "%GATE%"=="cancel" goto cancel
+if "%GATE%"=="fail" goto fail
+:mode_dest
+if not defined DEST_OWNED goto mode_checked
+set "GB=%BASE%"
+set "WS_TARGETS=env*app"
+call :check_before_removal
+if "%GATE%"=="refuse" goto refuse
+if "%GATE%"=="cancel" goto cancel
+if "%GATE%"=="fail" goto fail
+:mode_checked
+set "ERR="
+if defined DEST_PARTIAL goto ask_partial
 goto ask_confirm
 
 :ask_partial
@@ -323,16 +400,37 @@ if not "%ANSWER%"=="1" goto cancel
 
 :ask_confirm
 echo.
+if "%MODE%"=="same" goto confirm_same
+if "%MODE%"=="relocate" goto confirm_relocate
 echo ISAR %ISAR_RELEASE% will be installed into:
 echo     %BASE%
 echo It downloads a private micromamba, builds a private Python environment
 echo from ISAR's package lock, downloads ISAR's source and runs a self-test.
 echo Nothing outside that folder is changed, apart from the log and a small
 echo record under %%LOCALAPPDATA%%\ISAR, and a Desktop shortcut if you want one.
+goto confirm_ask
+:confirm_same
+echo The ISAR installation in this folder will be replaced in place:
+echo     %BASE%
+echo Its Python environment is rebuilt from the package lock, and anything
+echo saved inside %BASE%\env goes with it. Its copy of ISAR's source is moved
+echo to the new commit; files you added there that ISAR does not track stay.
+echo Your workspaces elsewhere, your profile and the logs are not touched.
+goto confirm_ask
+:confirm_relocate
+echo ISAR %ISAR_RELEASE% will be installed into:
+echo     %BASE%
+echo and once it passes its self-test, the installation in
+echo     %OLD%
+echo is removed: its copy of ISAR's source, Python environment, package cache
+echo and launcher. Anything saved inside that copy of ISAR goes with it; other
+echo files you put in that folder stay. If the new install fails, the old one
+echo is left as it is.
+:confirm_ask
 if defined YES goto ask_desktop
-choice /C YN /N /M "Install ISAR now? (Y/N): "
+choice /C YN /N /M "Go ahead? (Y/N): "
 set "ANSWER=%ERRORLEVEL%"
->>"%LOG%" echo(Asked: install now? choice code %ANSWER%
+>>"%LOG%" echo(Asked: go ahead with the %MODE% install? choice code %ANSWER%
 set "ERR=you answered No"
 if not "%ANSWER%"=="1" goto cancel
 
@@ -401,10 +499,53 @@ if not defined SHA goto fail
 set "LOCK_SHA256=%SHA%"
 >>"%LOG%" echo(LOCK_SHA256=%LOCK_SHA256%
 call :step_ok
+set "PF_FAIL="
+if defined DEST_OWNED call :preflight_kept
+if defined PF_FAIL goto fail
 call :step_ok_named preflight
 
 :: -- nothing has been removed or written into the folder before this line --
 
+if not defined DEST_OWNED goto records_new
+:: The installation here is replaced in place: once more, right before the
+:: first deletion, ISAR must not be running and no workspace may be inside.
+set "GB=%BASE%"
+set "WS_TARGETS=env*app"
+call :check_before_removal
+if "%GATE%"=="refuse" goto refuse
+if "%GATE%"=="cancel" goto cancel
+if "%GATE%"=="fail" goto fail
+call :step_start records "Marking the installation as being replaced"
+set "CB=%BASE%"
+call :classify
+set "ERR=the folder changed during the preflight: %OWN_WHY%"
+if not "%OWN%"=="owned" goto fail
+if not "%OWN_ID%"=="%DEST_ID%" goto fail
+set "INSTALL_ID=%DEST_ID%"
+set "INSTALLED_AT=%NOW_ISO%"
+set "MAMBA_SHA256_REC=%MM_SHA256%"
+set "REC_STATE=installing"
+call :write_record
+set "RECORDS_WRITTEN=yes"
+set "CB=%BASE%"
+call :classify
+set "ERR=the ownership records did not read back correctly: %OWN_WHY%"
+if not "%OWN%"=="owned" goto fail
+if not "%OWN_ID%"=="%INSTALL_ID%" goto fail
+set "LOC_STATE=installing"
+if not defined OLD call :write_locator
+call :step_ok
+call :step_start remove-env "Removing the old Python environment"
+cd /d "%WORK%"
+set "ENV_REMOVED=yes"
+set "GB=%BASE%"
+call :remove_entry env
+set "ERR=the old environment could not be removed completely (a program may still be using it); close it and run the installer again"
+if exist "%BASE%\env" goto fail
+call :step_ok
+goto records_done
+
+:records_new
 call :step_start records "Writing the ownership records"
 set "CB=%BASE%"
 call :classify
@@ -432,8 +573,9 @@ set "ERR=the ownership records did not read back correctly: %OWN_WHY%"
 if not "%OWN%"=="owned" goto fail
 if not "%OWN_ID%"=="%INSTALL_ID%" goto fail
 set "LOC_STATE=installing"
-call :write_locator
+if not defined OLD call :write_locator
 call :step_ok
+:records_done
 
 call :step_start env-create "Building the Python environment from the lock; this takes several minutes"
 if not exist "%BASE%\micromamba\" mkdir "%BASE%\micromamba" 2>nul
@@ -454,7 +596,7 @@ if defined ERR goto fail
 call :step_ok
 
 call :step_start source "Downloading ISAR's source at commit %COMMIT%"
-call :get_source
+call :source_with_refetch
 if defined ERR goto fail
 call :step_ok
 
@@ -482,11 +624,12 @@ call :classify
 set "ERR=the completed install record did not read back correctly: %OWN_WHY%"
 if not "%OWN%"=="owned" goto fail
 set "LOC_STATE=complete"
-call :write_locator
+if not defined OLD call :write_locator
 
 call :run_selftest
 if "%SELFTEST%"=="pass" set "OUTCOME=installed"
 if not "%SELFTEST%"=="pass" set "OUTCOME=installed-selftest-failed"
+if "%SELFTEST%"=="pass" if defined OLD call :remove_old
 goto finish
 
 :: ===========================================================================
@@ -555,6 +698,7 @@ if not "%ANSWER%"=="1" goto cancel
 set "ERR="
 
 :repair_running
+set "GB=%BASE%"
 call :running_gate
 if "%GATE%"=="refuse" goto refuse
 if "%GATE%"=="cancel" goto cancel
@@ -584,6 +728,7 @@ set "ERR=the downloaded micromamba does not match the checksum this installation
 if not "%SHA%"=="%REC_MM_SHA%" goto fail
 call :step_ok
 :repair_mm_ok
+set "GB=%BASE%"
 set "WS_TARGETS=env"
 call :workspace_gate
 if "%GATE%"=="refuse" goto refuse
@@ -595,6 +740,7 @@ call :step_ok_named preflight
 call :step_start remove-env "Removing the old Python environment"
 cd /d "%WORK%"
 set "ENV_REMOVED=yes"
+set "GB=%BASE%"
 call :remove_entry env
 set "ERR=the old environment could not be removed completely (a program may still be using it); close it and run Repair again"
 if exist "%BASE%\env" goto fail
@@ -614,28 +760,8 @@ if defined ERR goto fail
 call :step_ok
 
 call :step_start source "Putting ISAR's source back at commit %COMMIT%"
-call :get_source
-if not defined ERR goto repair_source_ok
-:: The kept copy could not be brought to the commit: it is downloaded afresh,
-:: after checking that nothing of the user's is saved inside it. Without git
-:: a fresh download fails too, so the kept copy stays.
-if not exist "%BASE%\app" goto fail
-if not exist "%GIT%" goto fail
->>"%LOG%" echo(The kept source could not be restored: %ERR%
->>"%LOG%" echo(It is removed and downloaded again.
-echo   The kept copy of ISAR's source could not be restored; downloading it again.
-set "WS_TARGETS=app"
-call :workspace_gate
-if "%GATE%"=="refuse" set "ERR=a workspace is saved inside ISAR's source folder; move it out of %BASE%\app, then run Repair again"
-if not "%GATE%"=="ok" goto fail
-cd /d "%WORK%"
-set "APP_REMOVED=yes"
-call :remove_entry app
-set "ERR=the old copy of ISAR's source could not be removed completely; close any program using it and run Repair again"
-if exist "%BASE%\app" goto fail
-call :get_source
+call :source_with_refetch
 if defined ERR goto fail
-:repair_source_ok
 call :step_ok
 
 call :step_start isar-install "Installing ISAR into the environment"
@@ -648,9 +774,133 @@ if "%SELFTEST%"=="pass" set "OUTCOME=repaired"
 if not "%SELFTEST%"=="pass" set "OUTCOME=repaired-selftest-failed"
 goto finish
 
+:: ===========================================================================
+:: Uninstall: only the owned payload goes, after the ownership proof, the
+:: running check and the workspace scan; the profile and logs only on a Yes
+:: (default No). The marker and record go last, so a stop can be finished.
+:: ===========================================================================
 :uninstall
-set "ERR=Uninstall is not available in this build of the installer"
-goto refuse
+title ISAR Uninstall
+set "ERR="
+set "MARKED="
+set "RM_DONE="
+set "RM_FAILED="
+set "BASE_LEFT="
+set "DESK_REMOVED="
+echo ============================================================================
+echo   ISAR Uninstall
+echo ============================================================================
+if defined LOGFILE echo   Everything Uninstall does is written to:
+if defined LOGFILE echo       %LOGFILE%
+echo.
+cd /d "%WORK%"
+if defined HAVE_DIR goto un_base_arg
+call :find_existing
+if defined EXISTING goto un_base_found
+set "ERR=no ISAR installation was found from the record this computer keeps; name its folder with /dir"
+if defined YES goto refuse
+set "ASK_TRIES=0"
+:un_ask_base
+echo Which folder is ISAR installed in? It is the folder that holds
+echo ISAR-Launcher.bat and INSTALL_INFO.txt, for example C:\Users\you\ISAR
+set "VBPATH="
+set /p "VBPATH=ISAR folder: "
+>>"%LOG%" echo(Asked for the installation folder; the answer, unchecked:
+>>"%LOG%" set VBPATH
+set /a ASK_TRIES+=1
+if not defined VBPATH goto un_ask_again
+call :validate_base_var
+if not defined VB_REASON goto un_base_check
+echo.
+echo [REFUSED] That folder cannot be an ISAR installation: %VB_REASON%
+echo.
+:un_ask_again
+set "ERR=no ISAR installation folder was given"
+if %ASK_TRIES% GEQ 5 goto cancel
+goto un_ask_base
+:un_base_found
+set "VBPATH=%EXISTING%"
+>>"%LOG%" echo(The locator record names the installation in %EXISTING%
+goto un_base_check
+:un_base_arg
+set "VBPATH=%ARG_DIR%"
+>>"%LOG%" echo(Installation folder given with /dir, unchecked:
+>>"%LOG%" set VBPATH
+:un_base_check
+call :validate_base_var
+set "ERR=the installation folder was refused: %VB_REASON%"
+if defined VB_REASON goto refuse
+set "BASE=%VBPATH%"
+set "GB=%BASE%"
+>>"%LOG%" echo(Installation folder: %BASE%
+set "CB=%BASE%"
+call :classify
+>>"%LOG%" echo(Ownership: %OWN% %OWN_STATE% %OWN_WHY%
+set "ERR=there is no ISAR installation in %BASE%"
+if "%OWN%"=="none" goto refuse
+set "ERR=%BASE% is not an ISAR installation this uninstaller can prove it owns, so nothing in it is removed: %OWN_WHY%"
+if not "%OWN%"=="owned" goto refuse
+:: Every value below was checked against its grammar by :read_record.
+set "INSTALL_KIND=%II_INSTALL_KIND%"
+set "SOURCE_REF=%II_SOURCE_REF%"
+set "COMMIT=%II_SOURCE_COMMIT%"
+set "SHOW_RELEASE=%II_ISAR_RELEASE%"
+set "ERR="
+call :running_gate
+if "%GATE%"=="refuse" goto refuse
+if "%GATE%"=="cancel" goto cancel
+
+echo.
+echo Uninstall removes ISAR from:
+echo     %BASE%
+echo that is its copy of ISAR's source (app), its Python environment (env), its
+echo package cache (mamba), micromamba, the launcher files and shortcut, its
+echo Desktop shortcut and its ownership records. Anything saved inside that
+echo copy of ISAR or its environment goes with it. Other files you put in that
+echo folder stay, and so do your workspaces.
+if "%INSTALL_KIND%"=="test" echo This is a TEST INSTALLATION of %SOURCE_REF% at %COMMIT:~0,8%.
+if defined YES goto un_profile
+choice /C YN /N /M "Uninstall ISAR now? (Y/N): "
+set "ANSWER=%ERRORLEVEL%"
+>>"%LOG%" echo(Asked: uninstall now? choice code %ANSWER%
+set "ERR=you answered No"
+if not "%ANSWER%"=="1" goto cancel
+set "ERR="
+:un_profile
+if defined DEL_PROFILE goto un_profile_decided
+set "DEL_PROFILE=no"
+if defined YES goto un_profile_decided
+echo.
+echo Also delete ISAR's profile and logs? That is the GUI's settings and its
+echo list of recent workspaces, its logs, and the earlier install, launch and
+echo repair logs. Your workspaces are not touched either way.
+set "PROF_ANS="
+set /p "PROF_ANS=Type Y and Enter to delete them, or just Enter to keep them: "
+if not defined PROF_ANS goto un_profile_decided
+call :match PROF_ANS "Y" "y" "Yes" "YES" "yes"
+if "%MATCH%"=="yes" set "DEL_PROFILE=yes"
+:un_profile_decided
+>>"%LOG%" echo(Delete the profile and logs: %DEL_PROFILE%
+call :read_ws_places
+set "WS_TARGETS=%PAYLOAD_DIRS%"
+if "%DEL_PROFILE%"=="yes" call :add_profile_targets
+call :workspace_gate
+if "%GATE%"=="refuse" goto refuse
+if "%GATE%"=="fail" goto fail
+
+:: -- nothing has been removed or changed before this line --
+
+call :mark_removing
+if not defined MR_OK goto fail
+set "MARKED=yes"
+call :remove_payload
+if defined RM_FAILED goto fail
+if "%DEL_PROFILE%"=="yes" call :remove_profile
+if defined RM_FAILED goto fail
+call :remove_records
+if defined RM_FAILED goto fail
+set "OUTCOME=uninstalled"
+goto finish
 
 :: ===========================================================================
 :: Endings. Every outcome goes through :finish.
@@ -672,11 +922,13 @@ goto finish
 cd /d "%SystemRoot%" 2>nul
 if "%OUTCOME%"=="installed" set "ERR="
 if "%OUTCOME%"=="repaired" set "ERR="
+if "%OUTCOME%"=="uninstalled" set "ERR="
 if "%OUTCOME%"=="installed-selftest-failed" set "ERR=the self-test failed"
 if "%OUTCOME%"=="repaired-selftest-failed" set "ERR=the self-test failed"
 set "RC=1"
 if "%OUTCOME%"=="installed" set "RC=0"
 if "%OUTCOME%"=="repaired" set "RC=0"
+if "%OUTCOME%"=="uninstalled" set "RC=0"
 if "%OUTCOME%"=="installed-selftest-failed" set "RC=3"
 if "%OUTCOME%"=="repaired-selftest-failed" set "RC=3"
 if "%OUTCOME%"=="refused" set "RC=2"
@@ -695,8 +947,10 @@ echo ---------------------------------------------------------------------------
 set "BASE_REMOVED="
 if "%BASE_CREATED%"=="yes" if not defined RECORDS_WRITTEN rd "%BASE%" 2>nul
 if "%BASE_CREATED%"=="yes" if not defined RECORDS_WRITTEN if not exist "%BASE%\" set "BASE_REMOVED=yes"
+:: A failed relocation leaves the Desktop as it was: its shortcut opens the
+:: old installation, which still works.
 if "%OUTCOME%"=="installed" call :desktop_copy
-if "%OUTCOME%"=="installed-selftest-failed" call :desktop_copy
+if "%OUTCOME%"=="installed-selftest-failed" if not "%MODE%"=="relocate" call :desktop_copy
 call :end_screen
 >>"%LOG%" echo(OUTCOME=%OUTCOME%
 call :remove_work
@@ -705,9 +959,17 @@ if "%OUTCOME%"=="failed" call :open_notepad
 if "%OUTCOME%"=="installed-selftest-failed" call :open_notepad
 if "%OUTCOME%"=="repaired-selftest-failed" call :open_notepad
 echo.
-if "%OP%"=="install" choice /C C /N /M "Press C to close this window."
-if not "%OP%"=="install" choice /C C /N /M "Press C to continue."
+if not "%OP%"=="repair" choice /C C /N /M "Press C to close this window."
+if "%OP%"=="repair" choice /C C /N /M "Press C to continue."
 :finish_exit
+:: An uninstall handed over to a copy in %TEMP% removes that copy's folder on
+:: its very last line: "(goto)" ends this batch first, so cmd never reads the
+:: deleted file again, and the rest of the line, already parsed, still runs.
+set "SELF_CLEAN="
+for %%I in ("%SELF_DIR%.") do set "SELF_LEAF=%%~nxI"
+for %%I in ("%SELF_DIR%..") do set "SELF_PARENT=%%~fI"
+if /i "%SELF_PARENT%\"=="%TEMP%\" if /i "%SELF_LEAF:~0,13%"=="isar-handoff-" set "SELF_CLEAN=%SELF_PARENT%\%SELF_LEAF%"
+if defined SELF_CLEAN (goto) 2>nul & cd /d "%SystemRoot%" & rd /s /q "\\?\%SELF_CLEAN%" 2>nul & exit /b %RC%
 endlocal & exit /b %RC%
 
 :end_screen
@@ -717,8 +979,10 @@ if "%OUTCOME%"=="installed" echo   ISAR IS INSTALLED AND CHECKED
 if "%OUTCOME%"=="installed-selftest-failed" echo   ISAR IS INSTALLED, BUT ITS SELF-TEST FAILED
 if "%OUTCOME%"=="repaired" echo   ISAR IS REPAIRED AND CHECKED
 if "%OUTCOME%"=="repaired-selftest-failed" echo   ISAR IS REPAIRED, BUT ITS SELF-TEST FAILED
+if "%OUTCOME%"=="uninstalled" echo   ISAR IS UNINSTALLED
 set "OP_WORD=INSTALL"
 if "%OP%"=="repair" set "OP_WORD=REPAIR"
+if "%OP%"=="uninstall" set "OP_WORD=UNINSTALL"
 if "%OUTCOME%"=="failed" echo   THE %OP_WORD% FAILED
 if "%OUTCOME%"=="cancelled" echo   THE %OP_WORD% WAS CANCELLED
 if "%OUTCOME%"=="refused" echo   THE %OP_WORD% WAS REFUSED
@@ -728,7 +992,9 @@ if "%OUTCOME%"=="installed" goto end_installed
 if "%OUTCOME%"=="installed-selftest-failed" goto end_selftest
 if "%OUTCOME%"=="repaired" goto end_repaired
 if "%OUTCOME%"=="repaired-selftest-failed" goto end_repaired_selftest
+if "%OUTCOME%"=="uninstalled" goto end_uninstalled
 if "%OP%"=="repair" if "%OUTCOME%"=="failed" goto end_repair_failed
+if "%OP%"=="uninstall" if "%OUTCOME%"=="failed" goto end_uninstall_failed
 if "%OUTCOME%"=="failed" goto end_failed
 echo Nothing was installed, removed or changed.
 goto end_log
@@ -767,21 +1033,92 @@ goto :eof
 :end_installed
 call :end_where
 echo ISAR passed its self-test. Start it with "ISAR Launcher" in that folder.
-echo Nothing was removed.
+if "%MODE%"=="fresh" echo Nothing was removed.
+if defined ENV_REMOVED call :end_replaced
+if "%MODE%"=="relocate" call :end_old
 goto end_log
 
 :end_selftest
 call :end_where
 echo The files are in place, but ISAR did not pass its self-test:
 call :show_check_failures
-echo Nothing was removed. Try Repair in the launcher; if it fails too, choose
-echo Collect diagnostics there and send the zip it makes.
+if "%MODE%"=="fresh" echo Nothing was removed.
+if defined ENV_REMOVED call :end_replaced
+if "%MODE%"=="relocate" echo The earlier installation in %OLD% was not touched, and still works.
+echo Try Repair in the launcher; if it fails too, choose Collect diagnostics
+echo there and send the zip it makes.
 goto end_log
 
+:end_replaced
+echo The installation already in this folder was replaced in place: its Python
+echo environment was removed and built again, and its source moved to the commit.
+if defined APP_REMOVED echo Its old copy of ISAR's source could not be reused, so it was removed and downloaded again.
+goto :eof
+
+:end_old
+if "%OLD_RESULT%"=="removed" goto end_old_removed
+if "%OLD_RESULT%"=="partial" goto end_old_partial
+echo The earlier installation in %OLD% was kept: %OLD_WHY%
+echo Uninstall it from its own ISAR Launcher when you are ready.
+goto :eof
+:end_old_removed
+echo The earlier installation in %OLD% was removed: %RM_DONE:~2%.
+if defined BASE_LEFT echo Its folder stays, because it still holds files that are not ISAR's.
+goto :eof
+:end_old_partial
+echo The earlier installation in %OLD% was only partly removed: %OLD_WHY%
+if defined RM_DONE echo Removed from it: %RM_DONE:~2%.
+echo Finish it with WINDOWS-uninstall-ISAR.bat, naming that folder.
+goto :eof
+
+:end_uninstalled
+echo Removed from %BASE%: %RM_DONE:~2%, and the ownership records.
+if defined DESK_REMOVED echo Removed: the ISAR Launcher shortcut on the Desktop.
+if defined BASE_LEFT echo Kept: the folder itself, which still holds files that are not ISAR's.
+if not defined BASE_LEFT echo The folder was empty afterwards, so it was removed too.
+call :end_profile
+call :end_places
+goto end_log
+
+:end_uninstall_failed
+if not defined MARKED echo Nothing was removed.
+if not defined MARKED goto end_log
+if defined RM_DONE echo Removed so far: %RM_DONE:~2%.
+echo Uninstall stopped before it finished. The ownership records stay, so the
+echo installation is still recognised: close any program using it and run
+echo Uninstall again to finish.
+call :end_places
+goto end_log
+
+:end_profile
+if "%DEL_PROFILE%"=="yes" goto end_profile_deleted
+echo Kept: ISAR's profile and logs, in %APPDATA%\isar_gui and %LOCALAPPDATA%\ISAR\logs.
+goto :eof
+:end_profile_deleted
+echo Deleted: ISAR's profile and logs, in %APPDATA%\isar_gui, and the earlier
+echo install, launch and repair logs. The log of this run is kept.
+goto :eof
+
+:end_places
+echo Your workspaces were not touched. The places this computer knows of
+echo (not necessarily all of them):
+if exist "%WORK%\ws_places.txt" type "%WORK%\ws_places.txt"
+goto :eof
+
 :end_failed
+if "%MODE%"=="relocate" echo The earlier installation in %OLD% was not touched, and still works.
+if defined ENV_REMOVED goto end_failed_replaced
 if defined RECORDS_WRITTEN goto end_failed_partial
 if defined BASE_REMOVED echo Nothing was installed. The empty folder made for it was removed again.
 if not defined BASE_REMOVED echo Nothing was installed, and nothing was removed.
+goto end_log
+
+:end_failed_replaced
+echo The old Python environment in this folder was removed, and the new install
+echo did not finish:
+echo     %BASE%
+echo Its ownership records stay. Run this installer again into the same folder
+echo to finish the install.
 goto end_log
 
 :end_failed_partial
@@ -903,20 +1240,40 @@ if not exist "%BASE%\env\python.exe" goto :eof
 set "ERR="
 goto :eof
 
+:: The source at the commit; when a kept copy cannot be brought there, it is
+:: removed and downloaded afresh, after checking that nothing of the user's is
+:: saved inside it. Without git a fresh download fails too, so it stays.
+:source_with_refetch
+call :get_source
+if not defined ERR goto :eof
+if not exist "%BASE%\app" goto :eof
+if not exist "%GIT%" goto :eof
+>>"%LOG%" echo(The kept source could not be brought to the commit: %ERR%
+>>"%LOG%" echo(It is removed and downloaded again.
+echo   The kept copy of ISAR's source could not be reused; downloading it again.
+set "GB=%BASE%"
+set "WS_TARGETS=app"
+call :workspace_gate
+if "%GATE%"=="refuse" set "ERR=a workspace is saved inside ISAR's source folder; move it out of %BASE%\app, then try again"
+if not "%GATE%"=="ok" goto :eof
+cd /d "%WORK%"
+set "APP_REMOVED=yes"
+call :remove_entry app
+set "ERR=the old copy of ISAR's source could not be removed completely; close any program using it and try again"
+if exist "%BASE%\app" goto :eof
+call :get_source
+goto :eof
+
 :: Bring <base>\app to the commit with the environment's git: a new checkout
 :: is made, a kept one (Repair) is reused and fetches only when the commit is
 :: missing. The tracked workspace markers are written before the checkout (D4).
 :get_source
 set "ERR="
-call :env_path
 set "GIT=%BASE%\env\Library\bin\git.exe"
 set "ERR=the environment has no git at %GIT%"
 if not exist "%GIT%" goto :eof
 set "ERR="
-type nul > "%WORK%\empty.gitconfig"
-set "GIT_CONFIG_NOSYSTEM=1"
-set "GIT_CONFIG_GLOBAL=%WORK%\empty.gitconfig"
-set "GIT_TERMINAL_PROMPT=0"
+call :git_env
 set "APP=%BASE%\app"
 cd /d "%WORK%"
 if exist "%APP%\.git\" goto source_have_repo
@@ -971,6 +1328,57 @@ set "ERR=the list of ISAR's own workspace-like files could not be written"
 if errorlevel 1 goto :eof
 if not exist "%PSI_B%" goto :eof
 set "ERR="
+goto :eof
+
+:: The environment's PATH, and git with no system or user configuration and
+:: no prompt.
+:git_env
+call :env_path
+type nul > "%WORK%\empty.gitconfig"
+set "GIT_CONFIG_NOSYSTEM=1"
+set "GIT_CONFIG_GLOBAL=%WORK%\empty.gitconfig"
+set "GIT_TERMINAL_PROMPT=0"
+goto :eof
+
+:: Same folder (K4): every locked package is fetched and its checksum checked
+:: into the kept package cache (micromamba --download-only, against a scratch
+:: prefix that is removed again), and the commit is fetched into the kept
+:: source with the old environment's git when that git runs. Neither changes
+:: a working file. PF_FAIL=yes with ERR when the packages could not be had.
+:preflight_kept
+set "PF_FAIL=yes"
+set "CUR_STEP=preflight"
+echo   Downloading and checking every package into the kept package cache.
+if not exist "%BASE%\mamba\" mkdir "%BASE%\mamba" 2>nul
+set "PF_PREFIX=%BASE%\mamba\envs\isar-preflight"
+set "PF_LOCK=%BASE%\mamba\isar-preflight.lock"
+copy /y "%WORK%\isar-win-64.lock" "%PF_LOCK%" >nul 2>nul
+set "ERR=the package lock could not be placed in %BASE%\mamba"
+if not exist "%PF_LOCK%" goto :eof
+set "MM_EXE=%WORK%\micromamba.exe"
+if exist "%PF_PREFIX%\" rd /s /q "\\?\%PF_PREFIX%" 2>nul
+"%MM_EXE%" create -y --no-rc --download-only -r "%BASE%\mamba" -p "%PF_PREFIX%" -f "%PF_LOCK%" >>"%LOG%" 2>&1 <nul
+set "PF_RC=%ERRORLEVEL%"
+if exist "%PF_PREFIX%\" rd /s /q "\\?\%PF_PREFIX%" 2>nul
+del /f /q "%PF_LOCK%" >nul 2>nul
+set "ERR=the packages could not all be downloaded and checked; check the internet connection and the free disk space, then try again"
+if not "%PF_RC%"=="0" goto :eof
+set "PF_FAIL="
+set "ERR="
+set "GIT=%BASE%\env\Library\bin\git.exe"
+if not exist "%BASE%\app\.git\" goto :eof
+if not exist "%GIT%" goto :eof
+call :git_env
+"%GIT%" -c core.longpaths=true --version >>"%LOG%" 2>&1 <nul
+if errorlevel 1 goto preflight_kept_nogit
+echo   Downloading commit %COMMIT:~0,8% into the kept copy of ISAR's source.
+"%GIT%" -c core.longpaths=true -C "%BASE%\app" fetch -q --depth 1 origin %COMMIT% >>"%LOG%" 2>&1 <nul
+if errorlevel 1 >>"%LOG%" echo([WARN] the kept source could not fetch the commit now; it is fetched after the rebuild
+set "PATH=%SYS_PATH%"
+goto :eof
+:preflight_kept_nogit
+>>"%LOG%" echo(The old environment's git does not run; the source is fetched after the rebuild.
+set "PATH=%SYS_PATH%"
 goto :eof
 
 :: ISAR goes in without resolving or replacing any dependency (D6), and with
@@ -1051,14 +1459,234 @@ type "%WORK%\desk.txt" 2>nul
 >>"%LOG%" type "%WORK%\desk.txt"
 goto :eof
 
-:: Removes the owned payload entry %1, a name directly under BASE: a folder
+:: Removes the owned payload entry %1, a name directly under GB: a folder
 :: by rd /s /q on its \\?\ form, which reaches paths past 260 characters
 :: (ISAR's source holds some) and removes a junction itself, never what it
 :: points to; a file by del. The caller checks that it is gone.
 :remove_entry
-set "RM_PATH=%BASE%\%~1"
+set "RM_PATH=%GB%\%~1"
 if exist "%RM_PATH%\" rd /s /q "\\?\%RM_PATH%" 2>nul
-if exist "%RM_PATH%" if not exist "%RM_PATH%\" del /f /q "%RM_PATH%" >nul 2>nul
+if exist "%RM_PATH%" if not exist "%RM_PATH%\" del /f /q /a "%RM_PATH%" >nul 2>nul
+goto :eof
+
+:: The running check, then the workspace scan of WS_TARGETS, on the
+:: installation GB; GATE as those set it.
+:check_before_removal
+call :running_gate
+if not "%GATE%"=="ok" goto :eof
+call :workspace_gate
+goto :eof
+
+:: Removes the owned payload of the installation GB, each entry confirmed
+:: gone: app, env, mamba, micromamba, then the launcher files, its shortcut
+:: and the Desktop shortcut that opens this installation (no other). Stops at
+:: the first entry that stays (RM_FAILED, with ERR); RM_DONE lists what went.
+:remove_payload
+set "RM_FAILED="
+set "RM_DONE="
+cd /d "%WORK%"
+call :remove_step app "its copy of ISAR's source (app)"
+call :remove_step env "its Python environment (env)"
+call :remove_step mamba "its package cache (mamba)"
+call :remove_step micromamba "micromamba"
+if defined RM_FAILED goto :eof
+call :step_start remove-launcher "Removing the launcher files and shortcuts"
+call :remove_entry launcher
+call :remove_entry ISAR-Launcher.bat
+call :remove_entry "ISAR Launcher.lnk"
+set "ERR=the launcher files in %GB% could not all be removed"
+set "RM_FAILED=launcher"
+if exist "%GB%\launcher" goto remove_step_failed
+if exist "%GB%\ISAR-Launcher.bat" goto remove_step_failed
+if exist "%GB%\ISAR Launcher.lnk" goto remove_step_failed
+set "RM_FAILED="
+call :remove_desktop_link
+set "RM_DONE=%RM_DONE%, the launcher files"
+call :step_ok
+goto :eof
+
+:remove_step
+if defined RM_FAILED goto :eof
+call :step_start remove-%~1 "Removing %~2"
+call :remove_entry %~1
+set "ERR=%GB%\%~1 could not be removed completely (a program may still be using it); close it and try again"
+set "RM_FAILED=%~1"
+if exist "%GB%\%~1" goto remove_step_failed
+set "RM_FAILED="
+set "RM_DONE=%RM_DONE%, %~2"
+call :step_ok
+goto :eof
+:remove_step_failed
+>>"%LOG%" echo(STEP=%CUR_STEP% failed
+set "CUR_STEP="
+goto :eof
+
+:: The Desktop shortcut ISAR Launcher.lnk goes only when it opens GB's
+:: ISAR-Launcher.bat (TAVI's rule); any other shortcut of that name stays.
+:remove_desktop_link
+set "PSI_A=%GB%\ISAR-Launcher.bat"
+del /f /q "%WORK%\desk.txt" >nul 2>nul
+powershell -NoProfile -NonInteractive -Command "try { $d=$env:ISAR_TEST_DESKTOP; if (-not $d) { $d=[Environment]::GetFolderPath('Desktop') }; if (-not $d) { 'NONE Windows reports no Desktop folder' } else { $l=[IO.Path]::Combine($d,'ISAR Launcher.lnk'); if (-not [IO.File]::Exists($l)) { 'NONE no ISAR Launcher shortcut on the Desktop' } else { $t=(New-Object -ComObject WScript.Shell).CreateShortcut($l).TargetPath; if ($t -ieq $env:PSI_A) { Remove-Item -LiteralPath $l -Force -ErrorAction Stop; 'REMOVED ' + $l } else { 'KEPT ' + $l + ' opens ' + $t + ', not this installation' } } } } catch { 'ERROR ' + $_.Exception.Message }" > "%WORK%\desk.txt" 2>nul <nul
+>>"%LOG%" type "%WORK%\desk.txt"
+set "DESK_REMOVED="
+findstr /b /l /c:"REMOVED " "%WORK%\desk.txt" >nul 2>nul
+if not errorlevel 1 set "DESK_REMOVED=yes"
+goto :eof
+
+:: STATE=removing in GB's record, every other value as recorded (each one
+:: checked against its grammar by :classify). MR_OK=yes when it reads back.
+:mark_removing
+set "MR_OK="
+set "CB=%GB%"
+call :classify
+set "ERR=%GB% is no longer an ISAR installation this can prove it owns: %OWN_WHY%"
+if not "%OWN%"=="owned" goto :eof
+set "MR_ID=%OWN_ID%"
+set "RF=%GB%\INSTALL_INFO.txt"
+>"%RF%" echo(LAYOUT=%II_LAYOUT%
+>>"%RF%" echo(INSTALL_ID=%II_INSTALL_ID%
+>>"%RF%" echo(STATE=removing
+>>"%RF%" echo(ISAR_BASE=%II_ISAR_BASE%
+>>"%RF%" echo(INSTALL_KIND=%II_INSTALL_KIND%
+>>"%RF%" echo(ISAR_RELEASE=%II_ISAR_RELEASE%
+>>"%RF%" echo(SOURCE_REF=%II_SOURCE_REF%
+>>"%RF%" echo(SOURCE_COMMIT=%II_SOURCE_COMMIT%
+>>"%RF%" echo(LOCK_SHA256=%II_LOCK_SHA256%
+>>"%RF%" echo(MAMBA_SHA256=%II_MAMBA_SHA256%
+>>"%RF%" echo(MAMBA_VERSION=%II_MAMBA_VERSION%
+>>"%RF%" echo(INSTALLER_BUILD=%II_INSTALLER_BUILD%
+>>"%RF%" echo(INSTALLED_AT=%II_INSTALLED_AT%
+set "CB=%GB%"
+call :classify
+set "ERR=the install record in %GB% did not read back correctly after marking it as being removed"
+if not "%OWN%"=="owned" goto :eof
+if not "%OWN_STATE%"=="removing" goto :eof
+if not "%OWN_ID%"=="%MR_ID%" goto :eof
+>>"%LOG%" echo(The record in %GB% now says STATE=removing.
+set "MR_OK=yes"
+set "ERR="
+goto :eof
+
+:: The locator goes when it names GB; then the tracked-marker list, the
+:: record and the marker, last; then GB itself, only when it is now empty
+:: (rd without /s). BASE_LEFT=yes when the folder stays.
+:remove_records
+set "RM_FAILED="
+call :step_start remove-records "Removing the ownership records"
+call :remove_locator
+del /f /q /a "%GB%\tracked-workspace-markers.txt" >nul 2>nul
+del /f /q /a "%GB%\INSTALL_INFO.txt" >nul 2>nul
+del /f /q /a "%GB%\.isar-install-root" >nul 2>nul
+set "ERR=the ownership records in %GB% could not be removed"
+set "RM_FAILED=records"
+if exist "%GB%\tracked-workspace-markers.txt" goto remove_step_failed
+if exist "%GB%\INSTALL_INFO.txt" goto remove_step_failed
+if exist "%GB%\.isar-install-root" goto remove_step_failed
+set "RM_FAILED="
+call :step_ok
+cd /d "%WORK%"
+set "BASE_LEFT=yes"
+rd "%GB%" 2>nul
+if not exist "%GB%\" set "BASE_LEFT="
+goto :eof
+
+:remove_locator
+if not defined LOCALAPPDATA goto :eof
+set "LOC_FILE=%LOCALAPPDATA%\ISAR\install-record.txt"
+if not exist "%LOC_FILE%" goto :eof
+set "LOC_BASE="
+for /f "usebackq tokens=1,* delims==" %%A in ("%LOC_FILE%") do if "%%A"=="ISAR_BASE" set "LOC_BASE=%%B"
+call :match LOC_BASE "%PATHCHARS%%PATHCHARS%*"
+if not "%MATCH%"=="yes" goto :eof
+if /i not "%LOC_BASE%"=="%GB%" goto :eof
+del /f /q "%LOC_FILE%" >nul 2>nul
+>>"%LOG%" echo(Removed the locator record, which named %GB%.
+goto :eof
+
+:: Relocation, after the new installation passed its self-test: the locator
+:: moves to it first, then the old installation goes (the running check and
+:: the workspace scan once more first). OLD_RESULT: removed, kept or partial.
+:remove_old
+set "LOC_STATE=complete"
+call :write_locator
+set "OLD_RESULT=kept"
+set "GB=%OLD%"
+set "WS_TARGETS=%PAYLOAD_DIRS%"
+call :check_before_removal
+set "OLD_WHY=%ERR%"
+set "ERR="
+if not "%GATE%"=="ok" goto remove_old_kept
+>>"%LOG%" echo(STEP=remove-old start
+echo.
+echo [remove-old] Removing the earlier installation in %OLD%
+call :mark_removing
+set "OLD_WHY=%ERR%"
+if not defined MR_OK goto remove_old_kept
+call :remove_payload
+if not defined RM_FAILED call :remove_records
+if defined RM_FAILED goto remove_old_partial
+>>"%LOG%" echo(STEP=remove-old ok
+set "OLD_RESULT=removed"
+set "ERR="
+goto :eof
+:remove_old_kept
+>>"%LOG%" echo(The earlier installation in %OLD% was kept: %OLD_WHY%
+set "ERR="
+goto :eof
+:remove_old_partial
+>>"%LOG%" echo(STEP=remove-old failed
+set "OLD_RESULT=partial"
+set "OLD_WHY=%ERR%"
+set "ERR="
+goto :eof
+
+:: STEP=profile: the GUI profile folders and every earlier log, keeping this
+:: run's own log. Workspaces are never here; the scan has checked.
+:remove_profile
+call :step_start profile "Deleting ISAR's profile and the earlier logs"
+set "PROF_LEFT="
+if defined APPDATA call :remove_abs "%APPDATA%\isar_gui"
+if defined USERPROFILE call :remove_abs "%USERPROFILE%\isar_gui"
+if defined USERPROFILE call :remove_abs "%USERPROFILE%\.isar_gui"
+set "PSI_A="
+if defined LOCALAPPDATA set "PSI_A=%LOCALAPPDATA%\ISAR\logs"
+set "PSI_B=%TEMP%\ISAR-logs"
+set "PSI_C=%LOGFILE%"
+del /f /q "%WORK%\oldlogs.txt" >nul 2>nul
+powershell -NoProfile -NonInteractive -Command "try { $n=0; $keep=[string]$env:PSI_C; foreach ($d in @($env:PSI_A, $env:PSI_B)) { if ($d -and [IO.Directory]::Exists($d)) { foreach ($f in [IO.Directory]::GetFiles($d, '*.log')) { if ($f -ine $keep) { [IO.File]::Delete($f); $n++ } } } }; 'DELETED ' + $n + ' earlier log files' } catch { 'ERROR ' + $_.Exception.Message }" > "%WORK%\oldlogs.txt" 2>nul <nul
+>>"%LOG%" type "%WORK%\oldlogs.txt"
+findstr /b /l /c:"DELETED " "%WORK%\oldlogs.txt" >nul 2>nul
+if errorlevel 1 set "PROF_LEFT=yes"
+set "ERR=ISAR's profile or the earlier logs could not all be deleted; see the log"
+set "RM_FAILED=profile"
+if defined PROF_LEFT goto remove_step_failed
+set "RM_FAILED="
+call :step_ok
+goto :eof
+
+:remove_abs
+set "RA=%~1"
+if not "%RA:~1,2%"==":\" goto :eof
+if exist "%RA%\" rd /s /q "\\?\%RA%" 2>nul
+if exist "%RA%" set "PROF_LEFT=yes"
+if exist "%RA%" >>"%LOG%" echo(Could not delete %RA%
+goto :eof
+
+:add_profile_targets
+if defined APPDATA set "WS_TARGETS=%WS_TARGETS%*%APPDATA%\isar_gui"
+if defined USERPROFILE set "WS_TARGETS=%WS_TARGETS%*%USERPROFILE%\isar_gui*%USERPROFILE%\.isar_gui"
+goto :eof
+
+:: The workspace places the end screen names: the experiments root
+:: (ISAR_EXPERIMENTS_ROOT, else Documents\ISAR as Windows reports Documents)
+:: and the GUI's recent workspaces, read now, before any profile deletion.
+:read_ws_places
+set "PSI_D=%WORK%\ws_places.txt"
+del /f /q "%PSI_D%" "%WORK%\ws_places.ok" >nul 2>nul
+powershell -NoProfile -NonInteractive -Command "try { $o=New-Object Collections.Generic.List[string]; $r=$env:ISAR_EXPERIMENTS_ROOT; if (-not $r) { $r=[IO.Path]::Combine([Environment]::GetFolderPath('MyDocuments'),'ISAR') }; $o.Add('    ' + $r); if ($env:APPDATA) { $s=[IO.Path]::Combine($env:APPDATA,'isar_gui','session.json'); if ([IO.File]::Exists($s)) { $j=ConvertFrom-Json ([IO.File]::ReadAllText($s)); foreach ($w in @($j.recent_workspaces)) { if ($w) { $o.Add('    ' + [string]$w) } } } }; [IO.File]::WriteAllLines($env:PSI_D, [string[]]$o, (New-Object Text.UTF8Encoding $false)); 'ok ' + $o.Count } catch { 'fail ' + $_.Exception.Message }" > "%WORK%\ws_places.ok" 2>nul <nul
+>>"%LOG%" echo(Workspace places named on the end screen:
+>>"%LOG%" type "%WORK%\ws_places.ok"
+if exist "%PSI_D%" >>"%LOG%" type "%PSI_D%"
 goto :eof
 
 :: PATH for running the environment's programs: its activation folders, then
@@ -1068,13 +1696,13 @@ set "EP=%BASE%\env"
 set "PATH=%EP%;%EP%\Library\mingw-w64\bin;%EP%\Library\usr\bin;%EP%\Library\bin;%EP%\Scripts;%EP%\bin;%SYS_PATH%"
 goto :eof
 
-:: Is ISAR from this installation running (any process whose program lies
-:: under <base>\env)? GATE=ok when none, else refuse (with ERR, and under /yes)
+:: Is ISAR from the installation GB running (any process whose program lies
+:: under <GB>\env)? GATE=ok when none, else refuse (with ERR, and under /yes)
 :: or cancel. Attended, the user may close ISAR and check again.
 :running_gate
 set "GATE=ok"
 :running_again
-set "PSI_A=%BASE%\env\"
+set "PSI_A=%GB%\env\"
 del /f /q "%WORK%\running.txt" >nul 2>nul
 powershell -NoProfile -NonInteractive -Command "try { $b=[IO.Path]::GetFullPath($env:PSI_A); $n=0; foreach ($p in @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)) { $e=$p.ExecutablePath; if ($e -and $e.StartsWith($b, [StringComparison]::OrdinalIgnoreCase)) { 'ISAR_RUNNING=' + $p.ProcessId; $n++ } }; 'COUNT=' + $n } catch { 'ERROR ' + $_.Exception.Message }" > "%WORK%\running.txt" 2>nul <nul
 findstr /b /l /c:"COUNT=0" "%WORK%\running.txt" >nul 2>nul
@@ -1101,28 +1729,28 @@ set "ERR=ISAR from this installation was still running"
 set "GATE=cancel"
 goto :eof
 
-:: Workspace scan (D4) of the payload folders named in WS_TARGETS (space
-:: separated, under BASE): every card.policy.toml or gui.state.json, without
-:: following junctions or links, except the files listed in
-:: tracked-workspace-markers.txt under app. GATE=ok when none; refuse when
+:: Workspace scan (D4) of the folders in WS_TARGETS, separated by * (a name
+:: under the installation GB, or a full path): every card.policy.toml or
+:: gui.state.json, without following junctions or links, except the files
+:: listed in GB's tracked-workspace-markers.txt under app. GATE=ok when none; refuse when
 :: one is found (each folder logged as WORKSPACE_FOUND= and shown) or a
 :: target is itself a link; fail when the scan could not run.
 :workspace_gate
 set "GATE=ok"
-set "PSI_A=%BASE%"
+set "PSI_A=%GB%"
 set "PSI_B=%WS_TARGETS%"
-set "PSI_C=%BASE%\tracked-workspace-markers.txt"
+set "PSI_C=%GB%\tracked-workspace-markers.txt"
 set "PSI_D=%WORK%\ws_found.txt"
 del /f /q "%WORK%\ws.txt" "%PSI_D%" >nul 2>nul
-powershell -NoProfile -NonInteractive -Command "try { $b=$env:PSI_A; $skip=@{}; if ([IO.File]::Exists($env:PSI_C)) { foreach ($l in [IO.File]::ReadAllLines($env:PSI_C)) { if ($l) { $skip[[IO.Path]::Combine($b,'app',$l).ToLowerInvariant()]=1 } } }; $found=New-Object Collections.Generic.List[string]; $link=''; $rp=[IO.FileAttributes]::ReparsePoint; foreach ($t in $env:PSI_B.Split(' ')) { $r=[IO.Path]::Combine($b,$t); if (-not [IO.Directory]::Exists($r)) { continue }; $ri=New-Object IO.DirectoryInfo($r); if ($ri.Attributes -band $rp) { $link=$t; break }; $st=New-Object Collections.Stack; $st.Push($ri); while ($st.Count) { $d=$st.Pop(); foreach ($e in $d.EnumerateFileSystemInfos()) { if ($e.Attributes -band [IO.FileAttributes]::Directory) { if (-not ($e.Attributes -band $rp)) { $st.Push($e) } } elseif ($e.Name -ieq 'card.policy.toml' -or $e.Name -ieq 'gui.state.json') { if (-not $skip.ContainsKey($e.FullName.ToLowerInvariant())) { if (-not $found.Contains($e.DirectoryName)) { $found.Add($e.DirectoryName) } } } } } }; if ($link) { 'LINK ' + $link } else { $o=@(foreach ($f in $found) { 'WORKSPACE_FOUND=' + $f }); [IO.File]::WriteAllLines($env:PSI_D, [string[]]$o, (New-Object Text.UTF8Encoding $false)); 'SCAN ' + $found.Count } } catch { 'ERROR ' + $_.Exception.Message }" > "%WORK%\ws.txt" 2>nul <nul
->>"%LOG%" echo(Workspace scan of %WS_TARGETS%:
+powershell -NoProfile -NonInteractive -Command "try { $b=$env:PSI_A; $skip=@{}; if ([IO.File]::Exists($env:PSI_C)) { foreach ($l in [IO.File]::ReadAllLines($env:PSI_C)) { if ($l) { $skip[[IO.Path]::Combine($b,'app',$l).ToLowerInvariant()]=1 } } }; $found=New-Object Collections.Generic.List[string]; $link=''; $rp=[IO.FileAttributes]::ReparsePoint; foreach ($t in $env:PSI_B.Split('*')) { $r=[IO.Path]::Combine($b,$t); if (-not [IO.Directory]::Exists($r)) { continue }; $ri=New-Object IO.DirectoryInfo($r); if ($ri.Attributes -band $rp) { $link=$t; break }; $st=New-Object Collections.Stack; $st.Push($ri); while ($st.Count) { $d=$st.Pop(); foreach ($e in $d.EnumerateFileSystemInfos()) { if ($e.Attributes -band [IO.FileAttributes]::Directory) { if (-not ($e.Attributes -band $rp)) { $st.Push($e) } } elseif ($e.Name -ieq 'card.policy.toml' -or $e.Name -ieq 'gui.state.json') { if (-not $skip.ContainsKey($e.FullName.ToLowerInvariant())) { if (-not $found.Contains($e.DirectoryName)) { $found.Add($e.DirectoryName) } } } } } }; if ($link) { 'LINK ' + $link } else { $o=@(foreach ($f in $found) { 'WORKSPACE_FOUND=' + $f }); [IO.File]::WriteAllLines($env:PSI_D, [string[]]$o, (New-Object Text.UTF8Encoding $false)); 'SCAN ' + $found.Count } } catch { 'ERROR ' + $_.Exception.Message }" > "%WORK%\ws.txt" 2>nul <nul
+>>"%LOG%" echo(Workspace scan in %GB% of %WS_TARGETS%:
 >>"%LOG%" type "%WORK%\ws.txt"
 findstr /b /l /c:"SCAN 0" "%WORK%\ws.txt" >nul 2>nul
 if not errorlevel 1 goto :eof
 findstr /b /l /c:"SCAN " "%WORK%\ws.txt" >nul 2>nul
 if not errorlevel 1 goto workspace_found
 set "GATE=refuse"
-set "ERR=a folder this would remove is a junction or link inside %BASE%, which may point somewhere else entirely; nothing was removed"
+set "ERR=a folder this would remove is a junction or link, which may point somewhere else entirely; nothing was removed"
 findstr /b /l /c:"LINK " "%WORK%\ws.txt" >nul 2>nul
 if not errorlevel 1 goto :eof
 set "GATE=fail"
@@ -1131,10 +1759,10 @@ goto :eof
 :workspace_found
 >>"%LOG%" type "%PSI_D%"
 echo.
-echo A workspace is saved inside the part of the installation this would remove:
+echo A workspace is saved inside a folder this would remove:
 type "%PSI_D%"
-echo Move each folder named above out of %BASE%, then try again.
-set "ERR=a workspace is saved inside the installation; move it out first"
+echo Move each folder named above somewhere else, then try again.
+set "ERR=a workspace is saved inside a folder this would remove; move it out first"
 set "GATE=refuse"
 goto :eof
 
@@ -1319,17 +1947,12 @@ set "R_WHY="
 set "R_OK=yes"
 goto :eof
 
-:: Refuse a base equal to or inside the installation this engine runs from
-:: (the launcher\ copy): the install would overwrite the running script.
+:: The copy kept in an installation's launcher\ never installs: an update in
+:: place would overwrite the running script, and a relocation would delete it.
 :engine_base_check
 set "ERR="
 if not exist "%SELF_DIR%..\.isar-install-root" goto :eof
-for %%I in ("%SELF_DIR%..") do set "ENGINE_BASE=%%~fI"
-set "PSI_A=%BASE%"
-set "PSI_B=%ENGINE_BASE%"
-call :inside
-if not "%INSIDE%"=="yes" goto :eof
-set "ERR=this is the copy of the installer inside an installation; run the installer you downloaded instead, or choose a folder outside that installation"
+set "ERR=this is the copy of the installer kept inside an installation, which only repairs and uninstalls; to install, update or move ISAR, run the installer you downloaded"
 goto :eof
 
 :: INSIDE=yes when the path PSI_A is PSI_B or lies inside it.
