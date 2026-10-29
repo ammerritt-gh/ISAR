@@ -33,6 +33,8 @@ GUI_ALLOWED = {
     # The inter-spectra user values: the GUI saves them in process through the checked writers, and reads the
     # read-side module (the anchors, picks, locks and settings it shows).
     "isar.intake.inter_values", "isar.intake.inter_spectra",
+    # The inter-spectra settings table (C-settings): the dialog builds its rows from it. Stdlib only, Qt-free.
+    "isar.analyze.coupled.settings",
     # C-schedule: the analysis queue's bookkeeping, which the design gives to the GUI ("the GUI keeps the
     # two queues"). Stdlib only, no I/O, no clock, no threads, imports nothing from isar.
     "isar.session.analysis_queue",
