@@ -180,6 +180,14 @@ def test_severity_table_covers_every_flag_code():
     assert set(SEVERITY_OF.values()) <= set(SEVERITIES)
 
 
+def _modules_after(imports: str) -> set[str]:
+    """The module names a fresh interpreter, run from the checkout, has loaded after ``imports``."""
+    code = f"import sys; {imports}; print('\\n'.join(sys.modules))"
+    out = subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT, capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    return set(out.stdout.split())
+
+
 def _loaded_after(imports: str) -> str:
     """Import in a fresh interpreter run from the checkout, and report which heavy modules were loaded."""
     code = f"import sys; {imports}; print(sorted({{'numpy', 'scipy', 'PySide6'}} & set(sys.modules)))"
@@ -196,10 +204,14 @@ def test_the_core_store_and_records_load_no_numerics_and_no_qt():
     assert loaded == "[]", loaded
 
 
-def test_the_read_facade_loads_no_qt():
-    """``isar.workspace_api`` already loads numpy through its package, so only Qt is held here."""
-    loaded = _loaded_after("import isar.workspace_api.inter_spectra")
-    assert "PySide6" not in loaded, loaded
+def test_the_read_facade_adds_no_scipy_qt_or_coupled_numerics():
+    """Measured against ``isar.workspace_api`` alone: the facade and the session package add none of these. numpy
+    is already loaded by that package, so an added numpy import cannot show here."""
+    base = _modules_after("import isar.workspace_api")
+    added = _modules_after("import isar.workspace_api.inter_spectra, isar.session.inter_spectra") - base
+    heavy = sorted(m for m in added if m.split(".")[0] in ("scipy", "PySide6")
+                   or (m.startswith("isar.analyze.coupled.") and m != "isar.analyze.coupled.settings"))
+    assert heavy == [], heavy
 
 
 def test_the_bl43_like_workspace_has_six_scans_of_28_spectra_each_with_a_fast_solo(tmp_path):
