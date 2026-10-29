@@ -30,7 +30,7 @@ from isar_gui.session import Session
 from isar_gui.views.elided_label import ElidedLabel
 from isar_gui.views.scan_list import GUTTER
 from scans_view_fixture import (DEEP_OUTDATED, DEEP_TRUSTED, FITTED, KEY_A, KEY_B,
-                                NO_ZERO, ONE_MODE, SPECTRA_A, SPECTRA_B, STEM_B)
+                                NO_MONITOR, NO_ZERO, ONE_MODE, SPECTRA_A, SPECTRA_B, STEM_B)
 
 LAPTOP = (1108, 851)
 DESKTOP = (1920, 1040)
@@ -256,9 +256,9 @@ def test_expert_group_recall_and_header_switches_need_no_menu(qtbot, monkeypatch
     window.selection.clear()
     _click_set(window, KEY_A)
     qtbot.waitUntil(lambda: window.selection.keys == SPECTRA_A, timeout=5000)
-    drawn = _wait_drawn(qtbot, page, lambda state: len(state.keys) == len(SPECTRA_A) - 1)
+    drawn = _wait_drawn(qtbot, page, lambda state: len(state.keys) == len(SPECTRA_A))
     assert window.selection.keys == SPECTRA_A
-    assert NO_ZERO not in drawn.keys and len(drawn.not_drawn) == 1
+    assert NO_ZERO in drawn.keys and not drawn.not_drawn    # its beamline zero: drawn before any fast pass
     assert calls == []
 
 
@@ -385,12 +385,40 @@ def test_live_counts_mark_old_fits_and_keep_selection_zoom_and_list_state(qtbot,
     assert OUTDATED_TEXT in _fit_cell(window.scan_inspector, "fit_deep_inputs").text()
 
 
+def test_saved_fast_result_redraws_its_scan_on_the_fitted_zero(qtbot, monkeypatch, scans_view_ws):
+    """A scan drawn on the file axis before its fast pass moves to its fitted zero once that result is saved."""
+    import numpy as np
+    from bl43_fixture import _load, _save
+    from scans_view_fixture import _outcome
+
+    window = _window(qtbot, monkeypatch, scans_view_ws)
+    page = _page(window)
+    window.selection.set((NO_ZERO,), clicked=NO_ZERO)
+    _wait_drawn(qtbot, page, lambda state: state.keys == (NO_ZERO,))
+    before = page._drawn_state.traces
+    assert [t.identity.endswith("(beamline zero)") for t in before] == [True]
+
+    ws, card, session = _load(scans_view_ws)
+    outcome = _outcome(NO_ZERO)
+    outcome["calib"]["zero_source"] = "elastic_fit"
+    entry = session.scans[NO_ZERO]
+    entry.detectors = {NO_ZERO.rsplit(":", 1)[1]: outcome}
+    entry.status, entry.reasons = "fitted", []
+    _save(ws, card, session)
+    window._on_results_saved((NO_ZERO,))                  # what the queue's writer signals after a save
+
+    _wait_drawn(qtbot, page, lambda state: state.keys == (NO_ZERO,)
+                and not any(t.identity.endswith("(beamline zero)") for t in page._drawn_state.traces))
+    zero = window.scan_list_vm.snapshot.spectrum(NO_ZERO).fit.energy_zero
+    np.testing.assert_allclose(page._drawn_state.traces[0].x, before[0].x - zero)
+
+
 @pytest.mark.parametrize("size", [LAPTOP, DESKTOP], ids=["laptop", "desktop"])
 def test_composed_window_geometry_names_and_elision(qtbot, monkeypatch, scans_view_ws,
                                                     tmp_path, size):
     window = _window(qtbot, monkeypatch, scans_view_ws, size)
     page = _page(window)
-    selected = (*SPECTRA_A, *SPECTRA_B[:3])
+    selected = (*SPECTRA_A[:6], NO_MONITOR, *SPECTRA_B[:3])     # one scan with no monitor: a not-drawn line to lay out
     window.selection.set(selected, clicked=selected[0])
     _wait_drawn(qtbot, page, lambda state: len(state.keys) + len(state.not_drawn) == 10)
     qtbot.mouseClick(page.fit_buttons["deep"], Qt.MouseButton.LeftButton)
@@ -401,7 +429,7 @@ def test_composed_window_geometry_names_and_elision(qtbot, monkeypatch, scans_vi
                         and state.keys and len(state.not_drawn) == 1)
     inspector = window.scan_inspector
     assert not inspector.isHidden() and window._right_panel_collapsed()
-    assert drawn.keys and NO_ZERO not in drawn.keys
+    assert drawn.keys and NO_MONITOR not in drawn.keys
     assert "1 of 10 selected not drawn" in drawn.not_drawn_line
     assert "Deep (untrusted" in drawn.curves_header
     assert len({line.entry for line in drawn.legend if line.entry in drawn.keys}) == len(drawn.keys)

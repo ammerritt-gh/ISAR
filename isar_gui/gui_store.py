@@ -356,6 +356,14 @@ class GuiStore:
             current.discard(str(gid))
         self._data["collapsed"] = sorted(current)
 
+    # ---- scans removed from the scan list: hidden there, never excluded from data, fits or groups ----
+    def removed_units(self) -> set[str]:
+        """Unit keys the operator removed from the scan list (``Remove from list``)."""
+        return {str(x) for x in self._list_or_empty("removed_units")}
+
+    def set_removed_units(self, keys) -> None:
+        self._data["removed_units"] = sorted({str(k) for k in keys})
+
     # ---- ui scraps: active scans-dock dimension tab ----------------------
     def scans_tab(self) -> str | None:
         """The last-active scans-dock dimension tab name (``"All"`` / ``"T"`` / ...), or ``None``."""

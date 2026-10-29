@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
-from PySide6.QtCore import QEvent, QItemSelection, QItemSelectionModel, QModelIndex, QPoint, QRect, Qt
+from PySide6.QtCore import QEvent, QItemSelection, QItemSelectionModel, QModelIndex, QPoint, QRect, Qt, Signal
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QMenu, QPushButton, QSizePolicy, QToolButton, QTreeView, QVBoxLayout,
@@ -28,10 +28,12 @@ _KEY_ROLE = Qt.ItemDataRole.UserRole + 1      # the selectable identity, or None
 _KIND_ROLE = Qt.ItemDataRole.UserRole + 2
 _TONE_ROLE = Qt.ItemDataRole.UserRole + 3     # what the item's dot was drawn for
 _STALE_ROLE = Qt.ItemDataRole.UserRole + 4    # whether the item's word was drawn as out of date
+_REMOVED_ROLE = Qt.ItemDataRole.UserRole + 5  # whether the item's row was drawn as removed (greyed)
 _SORT_LABELS = {"set": "By scan set", "temperature": "By temperature", "analyzer": "By analyzer"}
 _HINT = "Select an analyzer row, then double-click it or press Open inspector."
 _HINT_NONE = "Select an analyzer row, or a scan-set row for all its analyzers, to open the inspector."
 _NEW_CONTAINER_KINDS = ("set", "analyzer")
+REMOVE_TEXT, RESTORE_TEXT, READ_TEXT = "Remove from list", "Restore to list", "Read source file again"
 
 GUTTER = 24
 
@@ -180,7 +182,9 @@ class _ContainerDelegate(QStyledItemDelegate):
         return size
 
 
-class ScanListPanel(QWidget):           # no public signals; it acts through the VM
+class ScanListPanel(QWidget):           # acts through the VM; asks the window only to read a source file again
+    read_again_requested = Signal(tuple)  # tuple[str, ...]: the selected spectrum keys to read from their files
+
     def __init__(self, vm: ScanListViewModel, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("scan_list")
@@ -233,6 +237,15 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
         self._columns_button = self._menu_button("Columns ▾", column_menu, "Choose the columns")
         self._columns_button.setToolTip("Choose which columns the list shows.")
 
+        self._removed_button = QPushButton("Show removed", self)
+        self._removed_button.setObjectName("scan_list_show_removed")
+        self._removed_button.setCheckable(True)
+        self._removed_button.setChecked(self._vm.show_removed)
+        self._removed_button.setToolTip("List the scans you removed from this list too, greyed. "
+                                        "Select them and choose Restore to list to bring them back.")
+        self._removed_button.clicked.connect(self._vm.set_show_removed)
+        self._row_menu = QMenu(self)          # the right-click menu on a scan row, rebuilt each time it opens
+
         self._model = QStandardItemModel(0, len(COLUMNS), self)
         self._view = _ScanTree(self)
         self._view.setObjectName("scan_list_tree")
@@ -248,6 +261,8 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
         self._view.setExpandsOnDoubleClick(False)
         self._view.setItemDelegateForColumn(0, _ContainerDelegate(self._view))
         self._view.setAcceptDrops(False)
+        self._view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._view.customContextMenuRequested.connect(self._on_context_menu)
         header = self._view.header()
         header.setStretchLastSection(False)
         header.setFirstSectionMovable(False)
@@ -288,6 +303,7 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
         top.addWidget(self._filter, 1)
         top.addWidget(self._sort_button)
         top.addWidget(self._columns_button)
+        top.addWidget(self._removed_button)
         foot = QHBoxLayout()
         foot.addWidget(self._inspect)
         foot.addWidget(self._hint, 1)
@@ -325,6 +341,35 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
         key = self._vm.selection.active
         if key:
             self._vm.inspect(key)
+
+    def _on_context_menu(self, point) -> None:
+        """Right-click on a row: select it if it is not already selected (as a click would), then offer the
+        actions that apply to the selected scans. Menu actions act on the selection, never on the row alone."""
+        vm = self._vm
+        index = self._view.indexAt(point).siblingAtColumn(0)
+        if index.isValid():
+            node_id, key = index.data(_ID_ROLE), index.data(_KEY_ROLE)
+            members = (key,) if key else vm.container_keys(node_id)
+            if not members or not set(members) <= set(vm.selection.keys):
+                vm.click(node_id)
+        keys = vm.selected_spectra()
+        menu = self._row_menu
+        menu.clear()
+        if any(not vm.is_removed(k) for k in keys):
+            self._add_action(menu, REMOVE_TEXT, vm.remove_selected)
+        if any(vm.is_removed(k) for k in keys):
+            self._add_action(menu, RESTORE_TEXT, vm.restore_selected)
+        read = self._add_action(menu, READ_TEXT, lambda: self.read_again_requested.emit(keys))
+        read.setEnabled(bool(keys))
+        read.setToolTip("Read the selected scans' files again, as a drop does. Hidden scans stay hidden."
+                        if keys else "Select one or more scans first.")
+        menu.popup(self._view.viewport().mapToGlobal(point))
+
+    @staticmethod
+    def _add_action(menu: QMenu, text: str, slot) -> QAction:
+        action = menu.addAction(text)
+        action.triggered.connect(lambda _checked=False: slot())
+        return action
 
     def index_for_key(self, key: str) -> QModelIndex:
         item = self._by_key.get(key)
@@ -390,6 +435,7 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
         self._sort_actions[vm.sort].setChecked(True)
         for column, action in self._column_actions.items():
             action.setChecked(column in vm.visible_columns())
+        self._removed_button.setChecked(vm.show_removed)
         if self._filter.text() != vm.filter_text:
             self._filter.setText(vm.filter_text)
         self._model.setHorizontalHeaderLabels([vm.column_title(c) for c in COLUMNS])
@@ -449,9 +495,11 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
             if item.data(_TONE_ROLE) != tone:
                 item.setData(tone, _TONE_ROLE)
                 item.setIcon(dot_icon(tone) if tone is not None else QIcon())
-            if bool(item.data(_STALE_ROLE)) != stale:     # the out-of-date mark: the word in the warning colour
-                item.setData(stale, _STALE_ROLE)
-                item.setData(QColor(TONE_COLOR[Tone.WARN]) if stale else None, Qt.ItemDataRole.ForegroundRole)
+            if bool(item.data(_STALE_ROLE)) != stale or bool(item.data(_REMOVED_ROLE)) != node.removed:
+                item.setData(stale, _STALE_ROLE)           # the out-of-date mark: the word in the warning colour
+                item.setData(node.removed, _REMOVED_ROLE)  # a removed scan: its row greyed
+                color = TONE_COLOR[Tone.WARN] if stale else TONE_COLOR[Tone.IDLE] if node.removed else None
+                item.setData(QColor(color) if color else None, Qt.ItemDataRole.ForegroundRole)
 
     def _index_items(self) -> None:
         self._by_id.clear()
@@ -527,8 +575,10 @@ class ScanListPanel(QWidget):           # no public signals; it acts through the
         vm = self._vm
         visible, total = vm.counts()
         noun = "spectrum" if total == 1 else "spectra"
+        removed = 0 if vm.show_removed else vm.removed_count()
+        tail = f" · {removed} removed" if removed else ""
         self._status.setText(f"{visible} of {total} {noun} · <a href='clear'>Clear filter</a>"
-                             if vm.filter_active else f"{total} {noun}" if total else "")
+                             if vm.filter_active else f"{total} {noun}{tail}" if total or removed else "")
         notice = vm.outside_filter()
         self._notice.setText(notice or "")
         self._notice.setVisible(notice is not None)

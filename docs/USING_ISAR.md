@@ -423,6 +423,17 @@ fitting code's own word and one line on what it means (the filter box matches ei
   columns, while `report/results.csv` and the export's `fits.json` say `fitting` for the same entry.
   Both mean there is no stored fit.
 
+**Removing a scan from the list.** Right-click the selected scans and choose *Remove from list*. The scans are
+hidden from this list, from the Scans page and from the selection, and the list's footer says how many are
+removed. Their data, fits, saved groups and the analysis queue are unchanged. *Show removed* (in the list's top row)
+lists them again, greyed and named "(removed)"; select them and choose *Restore to list*. The choice is saved with
+the experiment.
+
+**Reading a source file again.** Right-click the selected scans and choose *Read source file again* to send each
+analyzer's own data file back through the same route a drop takes. If a file is missing, or ISAR has no record of
+one, the status bar and the Log say so and tell you to drag the file into the window to add it again. The same
+message appears if ISAR cannot read the file. A removed scan read again stays removed.
+
 A dash (—) marks a missing temperature or Q; hover over it for the reason. Both passes are shown side by
 side and neither is picked as the result.
 
@@ -478,8 +489,11 @@ y √(1/N + 1/M). At N=0, the display keeps 0 ± 0 and adds no floor. Normalised
 without positive monitors. If a spectrum has no usable monitor it is counted as not drawn with the reason;
 Raw can still show its counts if its energy axis is calibrated.
 
-No zero or curve is guessed: spectra that need an energy zero stay not drawn until a recorded calibration
-supplies it. Pooled masters are named as not drawn, not replaced by their member spectra. Missing data or monitor exposure is named in the not-drawn summary; an unavailable pass or curve is named on its spectrum trace. An older result whose exposure was not
+No zero or curve is guessed. On BL43LXU a spectrum with no fitted zero yet is drawn at once on the file's own
+calibrated energy axis, labelled *beamline zero*, and moves to its fitted zero when its own fast pass is saved.
+Any other instrument's raw axis is drawn labelled *Energy, not zeroed*; it never shares a plot with zeroed
+spectra, so in a mixed selection it waits for the fast pass to set the energy zero and is named in the
+not-drawn summary. No fit curve is drawn until its pass exists. Pooled masters are named as not drawn, not replaced by their member spectra. Missing data or monitor exposure is named in the not-drawn summary; an unavailable pass or curve is named on its spectrum trace. An older result whose exposure was not
 stored needs its source files read again before it can be shown in Normalised scale; Raw can show the
 existing counts. If the source monitor itself is absent, read the data again with it present.
 

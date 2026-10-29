@@ -127,15 +127,43 @@ def test_over_limit_reads_nothing_and_returns_to_plot(page, monkeypatch):
     assert select(page).body == EMPTY
 
 
+def test_beamline_zero_is_tagged_and_shares_the_axis(page):
+    drawn = select(page, NO_ZERO, ONE_MODE)
+    assert set(drawn.keys) == {NO_ZERO, ONE_MODE} and not drawn.not_drawn
+    tagged = [t.identity for t in page._drawn_state.traces if t.identity.endswith('(beamline zero)')]
+    assert len(tagged) == 1
+    assert page._drawn_state.main_spec.xlabel == 'Energy transfer (meV)'
+
+
+def test_unzeroed_scan_waits_while_zeroed_scans_are_drawn(page, monkeypatch):
+    from dataclasses import replace
+    from isar.workspace_api.spectra import ZERO_NONE
+    from isar_gui.viewmodels import scans_page as module
+    original = module.spectrum_bundles
+
+    def raw_axis(*args, **kwargs):          # NO_ZERO as a needs_zero instrument with no fitted zero yet
+        return tuple(replace(b, zero=ZERO_NONE) if b.key == NO_ZERO else b for b in original(*args, **kwargs))
+
+    monkeypatch.setattr(module, 'spectrum_bundles', raw_axis)
+    drawn = select(page, NO_ZERO, ONE_MODE)
+    assert drawn.keys == (ONE_MODE,)
+    assert dict(drawn.not_drawn) == {NO_ZERO: 'waiting for the fast pass to set the energy zero'}
+    assert drawn.not_drawn_line == '1 of 2 selected not drawn: waiting for the fast pass to set the energy zero (1)'
+    drawn = select(page, NO_ZERO)
+    assert drawn.keys == (NO_ZERO,)
+    assert page._drawn_state.main_spec.xlabel == 'Energy, not zeroed (meV)'
+
+
 def test_missing_data_counts_and_offset_controls(page, qtbot):
     drawn = select(page, NO_ZERO, NO_MONITOR, ONE_MODE)
-    assert len(drawn.keys) == 1
-    assert '2 of 3 selected not drawn:' in drawn.not_drawn_line
-    assert {reason for key, reason in drawn.not_drawn} == {'no energy zero yet', 'no monitor recorded'}
+    assert set(drawn.keys) == {NO_ZERO, ONE_MODE}
+    assert '1 of 3 selected not drawn:' in drawn.not_drawn_line
+    assert {reason for key, reason in drawn.not_drawn} == {'no monitor recorded'}
     page.vm.set_scale('raw')
     page.flush_redraw()
-    assert '1 of 3 selected not drawn:' in page.drawn().not_drawn_line
-    drawn = select(page, NO_ZERO)
+    assert page.drawn().not_drawn_line == ''
+    page.vm.set_scale('normalised')
+    drawn = select(page, NO_MONITOR)
     assert not drawn.keys
     assert 'Nothing drawn' in page._drawn_state.main_spec.annotations[0].text
     select(page, ONE_MODE, TWO_MODE, NO_Q)
@@ -149,6 +177,7 @@ def test_missing_data_counts_and_offset_controls(page, qtbot):
     page.flush_redraw()
     assert page.auto_button.isChecked()
     page.vm.set_step(50)
+    page.vm.set_scale('raw')
     page.vm.set_scale('normalised')
     page.flush_redraw()
     assert page.auto_button.isChecked()

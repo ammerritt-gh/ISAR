@@ -12,6 +12,7 @@ from isar.workspace_api import (
     DEEP_DOES_NOT_REBUILD,
     NOT_JUDGED_TEXT,
     NO_ENERGY_ZERO,
+    NO_PASS,
     OUTDATED_TEXT,
     POOLED,
     FitView,
@@ -22,6 +23,7 @@ from isar.workspace_api import (
     normalised_points,
     spectrum_bundles,
 )
+from isar.workspace_api.spectra import ZERO_BEAMLINE, ZERO_FIT, ZERO_NONE
 from isar.workspace_api.scan_list import scan_list
 from isar.workspace_api.workspace import Workspace
 from scans_view_fixture import (DEEP_DELTA, DEEP_NO_PARAMS, DEEP_REFUSED, DEEP_TRUSTED,
@@ -120,14 +122,34 @@ def test_bundle_scales_data_curves_and_exposure_aware_residuals():
     )
 
 
-@pytest.mark.parametrize("source", ["elastic_fit", "pipeline_zero", "interpolated", None])
+@pytest.mark.parametrize("source", ["elastic_fit", "pipeline_zero", "interpolated"])
 def test_needs_zero_uses_recorded_calibration_sources(source):
     bundle = spectrum_bundles(_workspace(_unit()), [_row(fit=_fit(zero_source=source))])[0]
-    if source is None:
-        assert bundle.not_drawn == NotDrawn(NO_ENERGY_ZERO, "no energy zero yet")
-    else:
-        assert bundle.not_drawn is None
-        np.testing.assert_allclose(bundle.energy, [-0.5, 0.5, 1.5, 2.5])
+    assert bundle.not_drawn is None and bundle.zero == ZERO_FIT
+    np.testing.assert_allclose(bundle.energy, [-0.5, 0.5, 1.5, 2.5])
+
+
+def test_needs_zero_with_an_unrecorded_zero_source_stays_not_zeroed():
+    bundle = spectrum_bundles(_workspace(_unit()), [_row(fit=_fit(zero_source=None))])[0]
+    assert bundle.not_drawn is None and bundle.zero == ZERO_NONE
+    np.testing.assert_allclose(bundle.energy, [10.0, 11.0, 12.0, 13.0])
+
+
+def test_needs_zero_without_a_zero_draws_the_raw_axis_not_zeroed():
+    # no fast pass and no declared fallback: counts on the raw axis, labelled not zeroed, never E0 = 0
+    bundle = spectrum_bundles(_workspace(_unit()), [replace(_row(), fit=None)])[0]
+    assert bundle.not_drawn is None and bundle.zero == ZERO_NONE
+    np.testing.assert_allclose(bundle.energy, [10.0, 11.0, 12.0, 13.0])
+    assert bundle.scaled("raw").passes["fast"] == NotDrawn(NO_PASS, "no fast pass")
+
+
+def test_file_axis_card_draws_at_once_on_the_beamline_zero():
+    ws = _workspace(_unit())
+    ws.card = SimpleNamespace(policy=SimpleNamespace(calibration={"zero_fallback": "file_axis"}))
+    bundle = spectrum_bundles(ws, [replace(_row(), fit=None)])[0]
+    assert bundle.not_drawn is None and bundle.zero == ZERO_BEAMLINE
+    np.testing.assert_allclose(bundle.energy, [10.0, 11.0, 12.0, 13.0])
+    assert spectrum_bundles(ws, [_row()])[0].zero == ZERO_FIT
 
 
 def test_missing_monitor_cache_retries_a_changed_unit(scans_view_ws, monkeypatch):
