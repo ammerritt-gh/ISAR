@@ -217,7 +217,7 @@ def build_parser() -> argparse.ArgumentParser:
     pd.add_argument("--analysis-limit", default=None,
                     help="absolute cumulative analysis ceiling, e.g. '1h', '10m', '3600s', or 'none'")
     pd.add_argument("--calibration", default=None,
-                    help="σ-calibration artifact path (default the repo phonon_dft_deterministic.json)")
+                    help="σ-calibration artifact path (default the packaged phonon_dft_deterministic.json)")
     pd.add_argument("--tavi", default=None, help="TAVI API base URL (default http://127.0.0.1:8642/api/v1)")
     pd.add_argument("--seed", type=int, default=0, help="base seed for the scan seed sequence")
     pd.add_argument("--no-worker", dest="worker", action="store_false", default=True,

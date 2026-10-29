@@ -131,8 +131,7 @@ DEFAULT_WAIT_TIMEOUT = 600.0
 # by a controller that is not making progress; hitting it is classified as a controller fault, which
 # is unattended-safe — checkpoints are retained and the campaign resumes after repair.
 _ABSOLUTE_ITERATION_CEILING = 10_000
-_DEFAULT_CALIBRATION = (Path(__file__).resolve().parents[2] / "calibration"
-                        / "phonon_dft_deterministic.json")
+_DEFAULT_CALIBRATION = Path(__file__).resolve().parent / "acquisition" / "phonon_dft_deterministic.json"
 _LOG = logging.getLogger(__name__)
 
 

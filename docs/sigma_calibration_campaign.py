@@ -34,8 +34,8 @@ DELIVERABLES this script writes under `--out` (default out/sigma_calibration/):
   manifest.json         one row per submitted scan: job_id, scan_number, H, ncount, seed, E_true,
                         points_requested, points_delivered, state
   score.json            the raw `isar score --truth-fn phonon_dft --json` output
-And the committed artifact `calibration/phonon_dft_deterministic.json` (score dict + a header block
-consumed by `isar.drive.acquisition.calibration.load_calibration`) plus `calibration/README.md`.
+And the committed artifact `isar/drive/acquisition/phonon_dft_deterministic.json` (score dict + a header block
+consumed by `isar.drive.acquisition.calibration.load_calibration`) plus `isar/drive/acquisition/README.md`.
 
 REPRODUCIBILITY. Fixed H grid, ncounts, and seeds. The TAVI deterministic engine + explicit seed is
 bit-reproducible; re-running this script reproduces the scans and the calibration.
@@ -56,7 +56,7 @@ Run (from the repo root, in the tavi-dev env with its Library/bin on PATH so sci
 The scoring LOGIC is unit-tested in tests/analyze/test_truth.py; this is a local measurement script
 (house practice, like docs/phase3_gold_check.py), not a CI pytest — TAVI must be running.
 
---- FINDINGS (2026-07-06 run; ISAR f1228d8, TAVI 1937fe6a; full write-up in calibration/README.md) ---
+--- FINDINGS (2026-07-06 run; ISAR f1228d8, TAVI 1937fe6a; full write-up in isar/drive/acquisition/README.md) ---
 99 scans submitted, all 99 delivered by TAVI. ISAR delivered a fit on 46 and abstained on 53 (honest
 triage): the dominant abstention is "no admissible structure converged" (31) — at high SNR the
 DHO×resolution model does not perfectly match TAVI's analytic S(Q,ω), cost/dof≈2–3, and the optimizer
@@ -429,8 +429,8 @@ def main(argv=None) -> int:
 
 # --------------------------------------------------------------------------- artifacts
 def write_artifacts(score: dict, manifest: list[dict], summary: dict) -> None:
-    """Write calibration/phonon_dft_deterministic.json (loadable by the driver) + README.md findings."""
-    caldir = REPO / "calibration"
+    """Write isar/drive/acquisition/phonon_dft_deterministic.json (loadable by the driver) + README.md findings."""
+    caldir = REPO / "isar" / "drive" / "acquisition"
     caldir.mkdir(exist_ok=True)
     # The artifact is the score dict (so `load_calibration` reads inflation/coverage68/center_pull_mean
     # + buckets directly) PLUS a provenance header block. Per-tier coverage is surfaced as `buckets`
@@ -473,7 +473,7 @@ def write_artifacts(score: dict, manifest: list[dict], summary: dict) -> None:
     readme = f"""# σ-calibration (phonon_dft, TAVI deterministic engine)
 
 First-pass closed-loop Phase-0 calibration. Reproduce with `python docs/sigma_calibration_campaign.py`.
-Consumed by `isar.drive.acquisition.calibration.load_calibration("calibration/phonon_dft_deterministic.json")`.
+Consumed by `isar.drive.acquisition.calibration.load_calibration("isar/drive/acquisition/phonon_dft_deterministic.json")`.
 
 - date: {time.strftime("%Y-%m-%d")}   ISAR {git_commit(REPO)}   TAVI {tavi_commit()}
 - sample: {SAMPLE}   truth: `isar.analyze.truth.phonon_dft` (E = 6·sin(π·q/2) meV, q = H−2), T = 200 K

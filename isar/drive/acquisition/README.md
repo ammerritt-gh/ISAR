@@ -4,7 +4,7 @@
 > **Verified against code revision:** `d0ea1df` (2026-07-25)
 
 First-pass closed-loop Phase-0 calibration. Reproduce with `python docs/sigma_calibration_campaign.py`.
-Consumed by `isar.drive.acquisition.calibration.load_calibration("calibration/phonon_dft_deterministic.json")`.
+Consumed by `isar.drive.acquisition.calibration.load_calibration("isar/drive/acquisition/phonon_dft_deterministic.json")`.
 
 - date: 2026-07-06   ISAR 0505251   TAVI 1937fe6a
 - sample: Al_phonon_DFT   truth: `isar.analyze.truth.phonon_dft` (E = 6·sin(π·q/2) meV, q = H−2), T = 200 K
