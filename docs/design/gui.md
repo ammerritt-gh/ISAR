@@ -405,6 +405,7 @@ operator's answer was (a): its tooltip and accessible description explain it, an
   The tooltip gives the full path and how the folder was chosen or, when not good, the reason. The rf folder is
   good when it is set, checked since it last changed, has no problem, and holds no analyzer for a missing curve;
   the gpi folder is good when it is set, matches an imported scan set, and none of its files is rejected.
+  Until the worker has read readiness, both are judged from the import summary and the saved settings alone.
   Clicking still saves the chosen folder as the user's, as before.
 - **Not changed.** The Parsed column keeps its meaning: "no Q" means the file holds neither |Q| nor an hkl. How an
   hkl is chosen and checked is as §0quinquies and USING_ISAR describe it. The ruling's "sorting by Q" had nothing to
