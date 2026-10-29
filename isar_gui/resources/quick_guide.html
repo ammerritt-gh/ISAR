@@ -12,9 +12,11 @@ use <b>Add data ▾</b>. The line under the experiment name tells you how many s
 <p>BL43LXU data are fitted with the measured resolution curves. The setup area has two buttons,
 <b>Resolution curves (rf)…</b> and <b>gpi files…</b>. Each shows a green check when its folder is good and a red
 cross when it is not; hover over it for the folder's path and the reason. If the setup area says <b>No resolution
-curves yet</b>, or the <b>Resolution curves (rf)…</b> button has a red cross, press it and pick the folder that
-holds the curves. ISAR saves the choice with the experiment. It also looks for a folder named <i>rf</i> next to your
-data, and for a <i>gpi_files</i> folder.</p>
+curves yet</b>, or the <b>Resolution curves (rf)…</b> cross says <i>no resolution folder is set</i> or that
+analyzers have no resolution curve, press it and pick the folder that holds the curves. ISAR saves the choice with
+the experiment. A folder you have just picked stays crossed, with the reason <i>the resolution folder changed</i>,
+until the next import (<b>Add data</b>) checks it; picking the same folder again does not check it, so add the data
+instead. ISAR also looks for a folder named <i>rf</i> next to your data, and for a <i>gpi_files</i> folder.</p>
 
 <h3>3. Fix what needs attention</h3>
 <p><b>Needs attention</b> lists what is missing or unreadable. Open a group, tick the scan sets it concerns, enter

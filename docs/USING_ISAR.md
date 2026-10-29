@@ -353,8 +353,9 @@ found the resolution curves.
   curve check's problem, when it found one, is on its own line in the warning colour. Pressing a button opens a
   folder chooser and saves the folder you pick at once as this experiment's folder; the analysis uses it. The
   same curves chooser, named *Choose resolution-curve folder…*, sits in the needs-attention group and the
-  readiness list that ask for it. A saved folder is checked at the next import or when an analysis starts, and
-  the section says so until then: a curve file added or replaced in the folder is seen at that point, not before.
+  readiness list that ask for it. A saved folder is checked at the next import or `isar run`, and
+  the section says so until then. A folder you have just picked stays crossed until that check, and picking it
+  again does not run it: a curve file added or replaced in the folder is seen at that point, not before.
   If another `rf/` folder was found beside newly dropped data, the section names it with *Use this curves
   folder*; ISAR never switches to it by itself. Hover the counts line for what a scan set, an analyzer and a
   spectrum are.
