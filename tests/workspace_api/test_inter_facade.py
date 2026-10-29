@@ -302,6 +302,28 @@ def test_spectrum_bundles_fit_choice(root):
     assert gone.fit_id == "fast" and gone.summaries == solo.summaries
 
 
+def test_a_chosen_refit_keeps_the_stored_deep_pass_drawn(root):
+    """The refit replaces the fast slot only: the Deep slot is the solo fit's own, as with no choice (C-bundle)."""
+    from bl43_fixture import _DEEP_RESOLVED, _load, _save
+    from isar.workspace_api import spectrum_bundles
+    from isar.workspace_api.scan_list import scan_list
+    ws = Workspace.open(root)
+    k1 = spectrum_keys(root)[0]
+    sws, card, session = _load(root)
+    session.scans[k1].detectors[k1.rsplit(":", 1)[1]]["deep_pass"] = {
+        **_DEEP_RESOLVED, "trusted": True, "chosen": {"label": "2 DHO"}}
+    _save(sws, card, session)
+    ws.refresh()
+    solo = spectrum_bundles(ws, [scan_list(ws).spectrum(k1)])[0]
+    assert solo.summaries["deep"].label == "2 DHO" and solo.summaries["deep"].trusted is True
+    save(root, B1, [_refit(k1, F1, _hashes(root, [k1])[k1])])
+    ws.refresh()
+    chosen = spectrum_bundles(ws, [scan_list(ws).spectrum(k1)], fit_choice={k1: F1})[0]
+    assert (chosen.fit_id, chosen.summaries["fast"].label) == (F1, "2 modes")
+    assert chosen.summaries["deep"] == solo.summaries["deep"]
+    assert type(chosen._passes["deep"]) is type(solo._passes["deep"])
+
+
 # ---------------------------------------------------------------------------
 # the batch preview (S1U4's graph is faked: the wrapper is what is tested)
 # ---------------------------------------------------------------------------

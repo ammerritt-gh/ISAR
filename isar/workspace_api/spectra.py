@@ -785,7 +785,10 @@ def _chosen_bundle(ws, row, qe, cache, zero_fallback, fit_id):
         _log.warning("fit %s of %s cannot be drawn; drawing the fast solo fit", fit_id, row.key)
         return _bundle(ws, row, qe, cache, zero_fallback)
     bundle = _bundle(ws, replace(row, fit=fit), qe, cache, zero_fallback, fit_id)
-    return replace(bundle, fit_id=fit_id, fit_label=label)
+    solo = _bundle(ws, row, qe, cache, zero_fallback)     # the overlay blanks deep_pass; the Deep slot is the solo's
+    return replace(bundle, fit_id=fit_id, fit_label=label,
+                   summaries=MappingProxyType({"fast": bundle.summaries["fast"], "deep": solo.summaries["deep"]}),
+                   _passes=MappingProxyType({"fast": bundle._passes["fast"], "deep": solo._passes["deep"]}))
 
 
 def spectrum_bundles(ws, rows: Sequence[SpectrumRow | PooledRow], *,
