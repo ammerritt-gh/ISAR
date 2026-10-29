@@ -247,7 +247,8 @@ def fast_pass_settings(source) -> "FastPassSettings":
     """The fast pass's settings for this card: the mode ceiling, every valid ``[fitting.fast_pass]``
     key, and ``[fitting.prior]`` as the recipe's PriorSettings (no table: None, which is recipe v5).
     A key that is unknown, the ceiling, or does not cast warns and is ignored; a bad prior table
-    warns and is ignored whole."""
+    warns and is ignored whole. The near-zero energy ramp (``energy_ramp_*``) is not a card setting:
+    such a key warns and is dropped, and the rest of the table applies."""
     from isar.analyze.fast_pass import FastPassSettings
     from isar.analyze.prior import PriorSettings
 
@@ -265,9 +266,15 @@ def fast_pass_settings(source) -> "FastPassSettings":
             warnings.warn(f"[fitting.fast_pass] {key}: {value!r} does not fit the setting's type "
                           f"— ignoring")
     prior = None
-    if g.prior:
+    card_prior = {}
+    for key, value in g.prior.items():
+        if key.startswith("energy_ramp_"):
+            warnings.warn(f"[fitting.prior] {key}: not a card setting — ignoring")
+        else:
+            card_prior[key] = value
+    if card_prior:
         try:
-            prior = PriorSettings(**g.prior)
+            prior = PriorSettings(**card_prior)
         except (TypeError, ValueError) as error:
             warnings.warn(f"[fitting.prior] ignored: {error}")
     return FastPassSettings(mode_ceiling=mode_ceiling(g), prior=prior, **settings)
@@ -391,6 +398,8 @@ def guidelines_signature(g: Guidelines, *, scan_number, q, T) -> dict:
         "min_fit_points": g.min_fit_points,
         "mode_ceiling": mode_ceiling(g),
         "prior_recipe": prior_recipe.PRIOR_RECIPE_VERSION,
+        # the recipe's defaults (the energy ramp's numbers above all): a changed one refits
+        "prior_recipe_settings": asdict(prior_recipe.PriorSettings()),
         "fast_pass_implementation": fast_pass.IMPLEMENTATION_VERSION,
         "fit_range": None if fit_range is None else [fit_range[0], fit_range[1]],
         "exclude_regions": [[lo, hi] for lo, hi in exclude_regions],

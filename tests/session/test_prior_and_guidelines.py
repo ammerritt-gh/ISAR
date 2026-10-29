@@ -312,6 +312,37 @@ def test_guidelines_signature_changes_with_ceiling_and_recipe_version(monkeypatc
     assert sig(_card_with_fitting({})) != base                              # recipe version
 
 
+def test_a_changed_energy_ramp_default_makes_stored_results_stale(monkeypatch):
+    # The ramp's numbers are recipe defaults, not card settings: a later change to one of them must
+    # move every scan's signature (so stored fits refit), and an unchanged default must not.
+    import functools
+
+    from isar.analyze import prior
+    sig = lambda: G.guidelines_signature(G.resolve(_card_with_fitting({})), scan_number=1, q=None,
+                                         T=None)
+    base = sig()
+    assert base["prior_recipe_settings"]["energy_ramp_ceiling"] == 7.5
+    recipe = prior.PriorSettings
+    monkeypatch.setattr(prior, "PriorSettings", functools.partial(recipe, energy_ramp_ceiling=7.5))
+    assert sig() == base                                                    # same numbers
+    for field, value in (("energy_ramp_ceiling", 6.0), ("energy_ramp_start_fwhm", 1.2),
+                         ("energy_ramp_end_fwhm", 0.3), ("energy_ramp_corner_fwhm", 0.04)):
+        monkeypatch.setattr(prior, "PriorSettings", functools.partial(recipe, **{field: value}))
+        assert sig() != base, field
+
+
+def test_the_energy_ramp_is_not_a_card_setting():
+    from isar.analyze.prior import PriorSettings
+    card = _card_with_fitting({"prior": {"energy_ramp_ceiling": 2.0}})
+    with pytest.warns(UserWarning, match="energy_ramp_ceiling: not a card setting"):
+        settings = G.fast_pass_settings(card)
+    assert settings.prior is None                                           # the defaults stand
+    card = _card_with_fitting({"prior": {"energy_ramp_start_fwhm": 2.0, "amplitude_margin": 3.0}})
+    with pytest.warns(UserWarning, match="energy_ramp_start_fwhm"):
+        settings = G.fast_pass_settings(card)
+    assert settings.prior == PriorSettings(amplitude_margin=3.0)            # the rest applies
+
+
 def test_the_card_tables_configure_the_fast_pass():
     from isar.analyze.prior import PriorSettings
     card = _card_with_fitting({
