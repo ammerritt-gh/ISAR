@@ -239,7 +239,8 @@ folders with a scrubbed environment, so the run behaves like a new user's machin
 ## Release checklist (operator)
 
 1. Set the release version in `installer\WINDOWS-install-ISAR.bat` to the new tag. A routine test
-   checks that it matches the version in `pyproject.toml`.
+   checks that it matches the version in `pyproject.toml`. Then copy `installer\WINDOWS-install-ISAR.bat`
+   over `installer\WINDOWS-uninstall-ISAR.bat`: the two must stay byte-identical, and a routine test checks it.
 2. Regenerate the lock with `python tools/installer/make_lock.py`, only if the dependencies changed.
 3. Push the release branch and run `tools\installer\run-installer-acceptance.bat` against it.
 4. Tag the release and publish it on GitHub. Publishing stays a manual step.

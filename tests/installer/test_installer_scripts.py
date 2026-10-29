@@ -501,6 +501,14 @@ def test_start_on_an_unfinished_install_says_repair_and_does_not_start(tmp_path)
     assert "is not installed" in log and "start returned" not in log, log
 
 
+def test_release_checklist_copies_the_engine_over_the_uninstaller():
+    """Static: the uninstaller is a byte copy of the engine, so the checklist's version bump must
+    carry the copy too, or the byte-identity test fails on the next gate."""
+    text = " ".join((INSTALLER / "ISAR-Installation-README.md").read_text(encoding="utf-8").split())
+    step = text[text.index("1. Set the release version"):text.index("2. Regenerate the lock")]
+    assert "copy `installer\\WINDOWS-install-ISAR.bat` over `installer\\WINDOWS-uninstall-ISAR.bat`" in step, step
+
+
 def test_collect_diagnostics_attended_result_is_not_exited_past():
     """Static: an attended run must reach its Explorer window and pause. Written as ``if defined YES endlocal
     & exit`` the if binds only endlocal, so the exit runs either way; the group keeps both under the if.
