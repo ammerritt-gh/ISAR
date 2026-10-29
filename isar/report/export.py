@@ -33,7 +33,7 @@ from isar.session import outcome as outcome_mod
 from isar.session.inter_spectra import authority, records as inter_records
 from isar.session.workspace import Workspace
 from isar.workspace_api import Workspace as ReadWorkspace
-from isar.workspace_api.inter_spectra import inter_overview
+from isar.workspace_api.inter_spectra import inter_overview, is_flagged
 from isar.workspace_api.scan_keys import split_key
 
 log = logging.getLogger(__name__)
@@ -517,7 +517,7 @@ def _inter_rows(e, det, ent, ov) -> list:
     rows = []
     for row in outcome_mod._mode_rows(e, det, ent.outcome):
         row.update({"pass": "inter", "trust": FAST_TRUST, "inputs_current": current, "fit_id": ent.line.fit,
-                    "authoritative": "true", "flagged": str(bool(ov and ov.flag)).lower(),
+                    "authoritative": "true", "flagged": str(ov is not None and is_flagged(ov.flag)).lower(),
                     "uncertainty_kind": CONDITIONAL if row.get("omega0_err") is not None else None})
         rows.append(row)
     return rows
@@ -540,7 +540,8 @@ def _inter_block(unit, ent, ov, log, has_fast: bool):
     refits = sorted((r for r in log.refits if r.unit == unit and r.status in inter_records.ELIGIBLE),
                     key=lambda r: log.batches[r.batch].number if r.batch in log.batches else 0)
     history += [{"fit": r.fit, "label": authority.fit_label(r, log.batches), "status": r.status,
-                 "flagged": bool(r.flag and r.flag.flagged)} for r in refits]
+                 "flagged": r.flag is not None and any(x["severity"] in ("warn", "serious") for x in r.flag.reasons)}
+                for r in refits]
     line = ent.line if ent is not None else None
     drawn = {k: ent.outcome[k] for k in authority.OVERLAY_KEYS if k in ent.outcome} if line else None
     return {"authoritative": {"fit": ov.fit_id, "source": ov.source, "label": _fit_source(ent, ov),

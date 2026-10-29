@@ -27,6 +27,8 @@ OVERLAY = {"n_modes": 1, "omega0": 3.5, "best_label": "1 mode",
            "fast_pass": {"state": "resolved", "peaks": []}}
 OVERLAY_IV = {**OVERLAY, "interval": [3.3, 3.5, 3.7]}
 FLAG = {"score": 2.0, "flagged": True, "reasons": [{"code": "moved", "severity": "warn", "text": "moved"}]}
+REPAIR = {"score": 0.5, "flagged": False,
+          "reasons": [{"code": "neighbour_supported_split", "severity": "info", "text": "split, repaired"}]}
 
 
 def test_the_worktree_is_the_import_root():
@@ -107,6 +109,13 @@ def test_a_refit_in_use_is_its_triage_row_with_its_label_and_flag(ws_root):
     assert row["ω₀"] != solo["ω₀"]
     assert row["conf"] == "—" and "conditional" in md                              # the refit's error is conditional
     assert (ws_root / "report" / "figures" / "dispersion.png").exists()
+
+
+def test_a_repair_row_is_not_on_the_review_list(ws_root):
+    k1 = spectrum_keys(ws_root)[0]
+    _save_ring(ws_root, "b000000000001", [(F1, k1)], number_flag=REPAIR)
+    row = _row(_write(ws_root)[0], ws_root, k1)
+    assert (row["verdict"], row["disp"], row["fit"]) == ("inter-spectra", "inter-spectra fit", "Batch 1 · ring 1")
 
 
 def test_the_dispersion_figure_draws_an_unflagged_refit_row(ws_root, monkeypatch):

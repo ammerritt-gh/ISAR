@@ -29,6 +29,8 @@ OVERLAY = {"n_modes": 1, "omega0": 3.5, "best_label": "1 mode",
            "modes": [{"omega0": 3.5, "omega0_err": 0.2, "gamma": 0.4, "gamma_err": 0.1}],
            "fast_pass": {"state": "resolved", "peaks": []}}
 FLAG = {"score": 2.0, "flagged": True, "reasons": [{"code": "moved", "severity": "warn", "text": "moved"}]}
+REPAIR = {"score": 0.5, "flagged": False,
+          "reasons": [{"code": "neighbour_supported_split", "severity": "info", "text": "split, repaired"}]}
 
 
 def test_the_worktree_is_the_import_root():
@@ -123,6 +125,17 @@ def test_a_refit_is_exported_as_a_third_pass_and_the_fast_rows_stay(ws_root):
     assert block["flag"]["severity"] == "warn" and block["why_changed"] == "a shoulder split off"
     assert [h["fit"] for h in block["history"]] == ["fast", F1] and block["fit"]["n_modes"] == 1
     assert doc["passes"]["exported"] == ["fast", "deep", "inter"]
+
+
+def test_a_repair_is_listed_as_a_reason_but_is_not_flagged_for_review(ws_root):
+    k1 = spectrum_keys(ws_root)[0]
+    _save_ring(ws_root, "b000000000001", [(F1, k1)], number_flag=REPAIR)
+    _, doc, rec, rows = _export(ws_root)
+    assert _by_pass(rows, k1)["inter"]["flagged"] == "false"
+    block = rec[k1]["inter_spectra"]
+    assert block["flag"]["severity"] == "info"
+    assert [r["code"] for r in block["flag"]["reasons"]] == ["neighbour_supported_split"]
+    assert block["history"][-1]["flagged"] is False
 
 
 def test_picking_the_solo_fit_then_locking_a_refit_then_stale_follow_the_resolver(ws_root):

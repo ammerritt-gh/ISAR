@@ -45,6 +45,11 @@ class FlagInfo:
     reasons: tuple[FlagReason, ...]
 
 
+def is_flagged(flag: FlagInfo | None) -> bool:
+    """The review list: a warn or serious reason. An info reason is a repair, listed but not flagged (design, Flags)."""
+    return flag is not None and flag.severity in ("warn", "serious")
+
+
 @dataclass(frozen=True)
 class SpectrumInter:
     key: str; fit_id: str | None          # the authoritative fit ("fast" or a refit id), stale rule already applied; None: nothing to use
