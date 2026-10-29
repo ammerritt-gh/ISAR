@@ -233,3 +233,27 @@ def test_readiness_kinds_carry_the_fixed_names_targets_states_and_actions():
     assert (k["gpi_rejected"].target, k["gpi_rejected"].state, k["gpi_rejected"].action) == ("scan", "fallback", "import_again")
     assert (k["gpi_curves_dropped"].target, k["gpi_curves_dropped"].state, k["gpi_curves_dropped"].action) == ("scan", "ready", "none")
     assert (k["gpi_folder_changed"].target, k["gpi_folder_changed"].state, k["gpi_folder_changed"].action) == ("experiment", "fallback", "import_again")
+
+
+def test_curve_in_force_is_judged_on_the_curve_not_on_the_calibration(tmp_path):
+    e = Exp(tmp_path, gpi_q={**Q, "a04": 5.0})          # the file is rejected: ordinary slit matching, no slit known
+    e.check()
+    an = e.na().scans[e.key].analyzers
+    assert {a: (r.curve, r.curve_kind) for a, r in an.items()} == {a: (None, "no_slit") for a in Q}
+    assert values.save_value(e.root, "slit", "40x40", [e.key]).ok       # a slit, and no calibration has run
+    an = e.na().scans[e.key].analyzers
+    assert all(r.curve is not None and r.curve_kind is None and r.curve_reason is None for r in an.values())
+    other = e.root / "elsewhere"
+    other.mkdir()
+    assert settings.save_resolution_folder(e.root, other).ok            # saved, not yet checked
+    an = e.na().scans[e.key].analyzers
+    assert {(r.curve, r.curve_kind) for r in an.values()} == {(None, "unchecked")}
+    assert all(r.curve_reason == readiness.FOLDER_CHANGED for r in an.values())
+
+
+def test_curve_in_force_with_a_named_set_names_its_file_or_the_missing_one(exp):
+    exp.check()
+    an = exp.na().scans[exp.key].analyzers
+    assert an["a03"].curve == f"{NAMED}_a03" and an["a04"].curve == f"{NAMED}_a04"
+    assert (an["a05"].curve, an["a05"].curve_kind) == (None, "missing")   # sarf_z has no a05 curve
+    assert NAMED + "_a05" in an["a05"].curve_reason

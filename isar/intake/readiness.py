@@ -124,6 +124,9 @@ class AnalyzerReadiness:
     action: str                               # one of ACTIONS; "none" when nothing is needed
     running: bool
     values_changed: tuple[str, ...]           # fast detail first, then deep; () when unchanged
+    curve: str | None = None                  # the resolution curve file ISAR would use for this analyzer now
+    curve_kind: str | None = None             # when curve is None: "missing" | "no_slit" | "folder" | "unchecked"
+    curve_reason: str | None = None           # when curve is None: the plain reason
 
 
 @dataclass(frozen=True)
@@ -375,6 +378,30 @@ def _calibrate(a: str, ar: dict, si: inputs.ScanInputs, cx: _Cx, flags) -> tuple
     return _use("pending", _pending_reason(cx)), "pending"
 
 
+def _curve_in_force(a: str, si: inputs.ScanInputs, cx: _Cx) -> tuple[str | None, str | None, str | None]:
+    """``(curve file, kind, reason)``: the resolution curve ISAR would use for ``a`` now, judged on the curve
+    alone (not on whether the calibration has run, nor on a counts hold); kind and reason when there is none."""
+    if cx.stale:
+        return None, "unchecked", FOLDER_CHANGED
+    if cx.folder_problem is not None:
+        return None, "unchecked" if cx.folder_problem == NOT_CHECKED else "folder", cx.folder_problem
+    if si.named is not None:
+        file = ((si.gpi.curves or {}).get(a) or {}).get("file")
+        if file is not None:
+            return file, None, None
+        return None, "missing", f"the curve {si.named}_{a}, named by the gpi file, is not in the resolution folder"
+    if cx.slit is None:
+        # a calibration made from these inputs has chosen a slit: its curve for this analyzer is the one in force
+        done = ((cx.prev or {}).get("detectors") or {}).get(a) or {} if cx.current else {}
+        if (done.get("curve") or {}).get("file"):
+            return done["curve"]["file"], None, None
+        return None, "no_slit", SLIT_PENDING
+    c = cx.cidx.get(a, cx.slit)
+    if c is not None:
+        return c.file, None, None
+    return None, "missing", tabulated.curve_need(cx.cidx, a, cx.slit)
+
+
 def _lines_not_read(imp: dict, a: str) -> list[str]:
     out = [f"{x.get('key', '?')}: {x.get('line', '')}".strip() for x in imp.get("unrecognised_lines") or ()
            if x.get("analyzer") == a]
@@ -568,7 +595,9 @@ def _scan(scan: str, row: dict, pos: int, index: inputs.EntryIndex, state: dict,
         an_can[(scan, a)] = can
         scan_kinds = [(g.kind, g.state) for g in scan_gaps if g.kind in ("temperature", "slit", "sidecar")]
         action = "wait" if running else _pick(own.get(a, []) + scan_kinds, a in pending)
-        analyzers[a] = AnalyzerReadiness(f"{scan}:{a}", a, u, can, action, running, changed)
+        curve, curve_kind, curve_reason = _curve_in_force(a, si, cx)
+        analyzers[a] = AnalyzerReadiness(f"{scan}:{a}", a, u, can, action, running, changed,
+                                         curve, curve_kind, curve_reason)
         if running:
             running_scans.add(scan)
             gaps.append(_Gap("running", "analysis is running on this analyzer", scan, a, order=(pos, a)))
