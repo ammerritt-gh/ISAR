@@ -227,3 +227,22 @@ def test_bar_is_hidden_without_inter_state_and_loading_history_is_said(qtbot, sc
     page.set_inter(inter)
     page.flush_redraw()
     assert not page.inter_mount.isHidden() and "reading" in page.inter_bar.menu_button.text()
+
+
+def test_a_fresh_page_draws_the_authoritative_refit_at_the_default_fit(qtbot, scans_view_ws_readonly, reads):
+    ws = Workspace.open(scans_view_ws_readonly)
+    page = ScansPage(ScanListViewModel(ws), ws)
+    qtbot.addWidget(page)
+    page.set_store(GuiStore(scans_view_ws_readonly))
+    inter = FakeInterState()
+    page.set_inter(inter)
+    page.resize(700, 600)
+    page.show()
+    assert page.vm.fit == "none"
+    inter.overview = make_overview(by_key={ONE_MODE: _row(ONE_MODE, "r2")})
+    inter.histories[ONE_MODE] = make_history(_refit("r2", "ring 2", authoritative=True))
+    drawn = _select(page, ONE_MODE, active=ONE_MODE)
+    assert page._drawn_state.traces[0].curves
+    assert drawn.curves_header == "Curves · Inter-spectra fits"
+    text = next(line.text for line in drawn.legend if line.entry == ONE_MODE)
+    assert "Batch 1 · ring 2" in text and CONDITIONAL_ERRORS in text

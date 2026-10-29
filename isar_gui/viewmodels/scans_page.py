@@ -398,9 +398,11 @@ class ScansPageViewModel(ViewModel):
             y_unit = scaled.y_unit
             curves, note = (), None
             refit = fit_id != 'fast'
-            if fit_pass != 'none' and common['view'] != 'overlay':
-                result = scaled.passes[fit_pass]
-                summary = bundle.summaries[fit_pass]
+            # an in-use refit is the spectrum's fit, so it draws in the fast slot even at Fit None
+            shown = 'fast' if refit and fit_pass == 'none' else fit_pass
+            if shown != 'none' and common['view'] != 'overlay':
+                result = scaled.passes[shown]
+                summary = bundle.summaries[shown]
                 if isinstance(result, NotDrawn):
                     note = result.text
                 else:
@@ -408,7 +410,7 @@ class ScansPageViewModel(ViewModel):
                         ScansCurve(c.name, c.role, c.mode_number, c.values, c.centers) for c in result.components)
                     note = summary.outdated_text or summary.unjudged_text
                     residuals = result.residuals
-                    if fit_pass == 'deep':
+                    if shown == 'deep':
                         deep_summaries.append(summary)
                     refit_flags.append(refit)
                     if refit:
@@ -423,7 +425,7 @@ class ScansPageViewModel(ViewModel):
             drawn_keys.append(bundle.key)
         header = None
         if any(t.curves for t in traces):
-            if fit_pass == 'fast':
+            if fit_pass != 'deep':
                 header = ('Curves · Fast' if not any(refit_flags) else 'Curves · Inter-spectra fits'
                           if all(refit_flags) else 'Curves · Fast and inter-spectra')
             else:
