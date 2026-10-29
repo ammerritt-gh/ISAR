@@ -49,11 +49,11 @@ def _payload(batch, event, body):
             "event": event, event: body}
 
 
-def _refit(unit, fit, h, *, status="accepted", flag=None, why=None, cond=(), overlay=True, stage_idx=1):
+def _refit(unit, fit, h, *, status="accepted", flag=None, why=None, cond=(), overlay=True, stage_idx=1, came_out=None):
     return {"fit": fit, "unit": unit, "status": status, "reason": None, "seed": "fast", "inputs": h,
             "conditioned_on": [{"unit": u, "fit": f, "inputs": hh} for u, f, hh in cond], "flag": flag,
             "why_changed": why,
-            "payload": {"came_in": {}, "came_out": {},
+            "payload": {"came_in": {}, "came_out": came_out or {},
                         "overlay": {"n_modes": 2, "omega0": 3.5, "best_label": "2 modes", "interval": [3.4, 3.6],
                                     "modes": [{"omega0": 3.5, "omega0_err": 0.1, "gamma": 0.4, "amplitude": 50.0},
                                               {"omega0": 7.5, "omega0_err": 0.2, "gamma": 0.6, "amplitude": 20.0}]}
@@ -113,7 +113,7 @@ def test_a_refit_in_use_shows_its_batch_label_flag_and_seam(root):
     a, b = o.by_key[k1], o.by_key[k2]
     assert (a.fit_id, a.in_use, a.source, a.label) == (F1, True, "batch", "Batch 1 · ring 1")
     assert [r.code for r in a.flag.reasons] == ["branch_lost_mid_window", "seam_disagreement"]
-    assert a.flag.severity == "serious" and a.flag.score == 61.0 and a.flag.link_mismatch == 1.2
+    assert a.flag.severity == "serious" and a.flag.score == 61.0
     assert [r.code for r in b.flag.reasons] == ["seam_disagreement"]       # both ends of the seam, not just the flagged
     assert not a.locked and not a.stale and a.stale_text is None
     (summary,) = o.batches
@@ -136,6 +136,16 @@ def test_a_batch_that_did_not_settle_flags_its_refits_serious_and_ends_the_summa
     o = inter_overview(root)
     assert [(r.code, r.severity) for r in o.by_key[k1].flag.reasons] == [("did_not_settle", "serious")]
     assert o.by_key[k1].label == "Batch 1 · sweep 3" and o.batches[0].status == "did_not_settle"
+
+
+def test_a_flag_shows_the_two_parts_of_its_score(root):
+    """F = R + max U (C-refit): the flag shows its release regret and its largest link mismatch, seam or not."""
+    k1 = spectrum_keys(root)[0]
+    came_out = {"errors": "conditional", "R": 40.0, "U": {"q": 21.0, "T": 3.0}}
+    save(root, B1, [_refit(k1, F1, _hashes(root, [k1])[k1], flag={"score": 61.0, "flagged": True, "reasons": []},
+                           came_out=came_out)])
+    f = inter_overview(root).by_key[k1].flag
+    assert (f.score, f.cost_of_coupling, f.link_mismatch) == (61.0, 40.0, 21.0)
 
 
 def test_stale_inputs_fall_back_to_the_solo_fit_and_say_why(root):

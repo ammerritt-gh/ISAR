@@ -160,19 +160,17 @@ def _load(root, only: str | None = None) -> _Ctx:
     return _Ctx(root, log, user, solo, now, res, {r.fit: r for r in log.refits}, stages)
 
 
-def _flag(c: _Ctx, line: records.RefitLine, *, stale_locked: bool = False) -> FlagInfo | None:
+def _flag(c: _Ctx, line: records.RefitLine, payload: dict | None, *, stale_locked: bool = False) -> FlagInfo | None:
     """The refit's own flag, plus the seam disagreement its ring or sweep measured, plus a batch that did not
-    settle, plus a stale locked fit. A spectrum on its solo fit is never flagged here."""
+    settle, plus a stale locked fit. A spectrum on its solo fit is never flagged here. The score F = R + max U
+    (C-refit): cost_of_coupling is R and link_mismatch the largest U, both from the stored refit."""
     reasons = [FlagReason(r["code"], r["severity"], r.get("text", "")) for r in (line.flag.reasons if line.flag else ())]
-    mismatch = None
     for st in c.stages.get((line.batch, line.stage, line.index), ()):
         for seam in st.seams:
             if line.unit in (seam.get("a"), seam.get("b")):
                 f = seam.get("flag") or {}
                 reasons.append(FlagReason(f.get("code", "seam_disagreement"), f.get("severity", "warn"),
                                           f.get("text", "")))
-                if seam.get("mismatch") is not None:
-                    mismatch = max(mismatch or 0.0, float(seam["mismatch"]))
     info = c.log.batches.get(line.batch)
     if info is not None and info.end and info.end.get("state") == "did_not_settle":
         reasons.append(FlagReason("did_not_settle", "serious", info.end.get("reason") or ""))
@@ -182,7 +180,10 @@ def _flag(c: _Ctx, line: records.RefitLine, *, stale_locked: bool = False) -> Fl
     if not unique and not (line.flag and line.flag.flagged):
         return None
     severity = max((r.severity for r in unique), key=_SEV.__getitem__, default="warn")
-    return FlagInfo(severity, line.flag.score if line.flag else None, None, mismatch, tuple(unique))
+    came_out = (payload or {}).get("came_out") or {}
+    gaps = [float(u) for u in (came_out.get("U") or {}).values() if u is not None]
+    return FlagInfo(severity, line.flag.score if line.flag else None, came_out.get("R"), max(gaps, default=None),
+                    tuple(unique))
 
 
 def _label(c: _Ctx, r: authority.Resolution) -> str:
@@ -198,7 +199,8 @@ def _spectrum(c: _Ctx, unit: str, r: authority.Resolution) -> SpectrumInter:
     lock_stale = r.locked and r.stale is not None
     return SpectrumInter(
         key=unit, fit_id=r.fit or FAST, in_use=line is not None, source="fast" if r.source in ("fast_solo", "fallback") else r.source,
-        label=_label(c, r), flag=None if line is None else _flag(c, line, stale_locked=lock_stale),
+        label=_label(c, r),
+        flag=None if line is None else _flag(c, line, records.read_payload(c.root, line), stale_locked=lock_stale),
         locked=r.locked, locked_fit_id=r.lock_fit, lock_stale=lock_stale, stale=r.source == "fallback",
         stale_text=_stale_text(r.stale))
 
@@ -251,7 +253,7 @@ def inter_history(root, key: str) -> tuple[FitEntry, ...]:
             x.fit, authority.fit_label(x, c.log.batches), x.batch, f"Batch {number.get(x.batch, x.batch)}",
             f"{x.stage} {x.index}", x.status != "unchanged", r.fit == x.fit, pick is not None and pick.fit == x.fit,
             locked_fit == x.fit, stale is not None, _stale_text(stale),
-            _flag(c, x, stale_locked=locked_fit == x.fit and stale is not None), why, True,
+            _flag(c, x, payload, stale_locked=locked_fit == x.fit and stale is not None), why, True,
             payload is not None and (payload.get("overlay") or {}).get("interval") is not None))
     return tuple(out)
 
