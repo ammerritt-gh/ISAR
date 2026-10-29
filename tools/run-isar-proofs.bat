@@ -62,7 +62,10 @@ echo Running the le Tacon inter-spectra proof (ISAR_LETACON_INTER=1): hours, res
 set "ISAR_GOLDEN="
 set "ISAR_LETACON="
 set "ISAR_LETACON_INTER=1"
-"%MM%" run -n %ISAR_ENV% python -m pytest proofs\test_letacon_inter_spectra.py -q -s
+rem cmd passes a wildcard to pytest unexpanded, so the loop lists every proofs\test_letacon_inter_spectra*.py
+set "INTER_FILES="
+for %%F in (proofs\test_letacon_inter_spectra*.py) do call set "INTER_FILES=%%INTER_FILES%% %%F"
+"%MM%" run -n %ISAR_ENV% python -m pytest %INTER_FILES% -q -s
 goto done
 
 :done
