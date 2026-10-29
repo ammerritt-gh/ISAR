@@ -78,6 +78,8 @@ def test_intake_change_regroups_the_dock_without_a_workspace_refresh(qtbot, tmp_
     with qtbot.waitSignal(vm.refreshed, timeout=WAIT_MS):
         holder.changed.emit()                      # the holder's own change; the workspace is not re-read
     assert _q_groups(vm) == [["a03"], ["a04"], ["a05"]]
+    q_bar = dock._filter_bar._q                # the filter bar's q dropdown, resynced on the same change
+    assert (0.5, 0.5, 3.0) in [q_bar.itemData(i) for i in range(q_bar.count())]
     dock._build_page("q")
     boxes = [b.box_id for b in dock._boxes if b.box_id.startswith("auto:q:")]
     assert len(boxes) == 3 and boxes == [g.id for g in vm.auto_groups("q")]

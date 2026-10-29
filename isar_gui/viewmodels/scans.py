@@ -478,8 +478,12 @@ class ScansViewModel(ViewModel):
         """Bind the window's IntakeState: the q groups and the ``q:`` filter read the effective hkl it holds, and
         regroup on its ``changed`` (a new gpi folder or gpi check) with no workspace refresh."""
         self._intake = intake
-        intake.changed.connect(self.refresh)
+        intake.changed.connect(self._on_intake_changed)
         self.refresh()
+
+    def _on_intake_changed(self) -> None:
+        self.refresh()
+        self.filter_changed.emit()   # the filter bar's q options read the same hkl bins
 
     # ---- refresh ----
     def refresh(self) -> None:
