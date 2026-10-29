@@ -29,6 +29,7 @@ ENERGY_LABEL = 'Energy transfer (meV)'
 NOT_ZEROED_LABEL = 'Energy, not zeroed (meV)'
 WAITING_FOR_ZERO = 'waiting for the fast pass to set the energy zero'
 WATERFALL_LAYOUT = "waterfall of one spectrum's fits"
+WATERFALL_FIT = "the waterfall draws each fit of this spectrum"
 
 
 @dataclass(frozen=True)
@@ -265,6 +266,7 @@ class ScansPageViewModel(ViewModel):
         inter = self.inter
         row = inter.row(active) if inter and self._active else None
         history = inter.history(active) if inter and self._active else None
+        viewed = self.chosen.get(self._active) or (row.fit_id if row else 'fast')
         wf_off = (None if n == 1 and history is not None and len(history) > 1 else
                   "Select exactly one spectrum to draw a waterfall of its fits." if n != 1 else
                   "Reading this spectrum's fits…" if history is None else
@@ -275,7 +277,7 @@ class ScansPageViewModel(ViewModel):
         read_s = 0.0
         reference = None
         choice = self._choice(keys) if body == PLOT else {}
-        wf_entries, self._wf_total = self._waterfall_entries(history) if wf else ((), 0)
+        wf_entries, self._wf_total = self._waterfall_entries(history, viewed) if wf else ((), 0)
         self._wf_entries, self._wf_on = wf_entries, wf
         if body == PLOT:
             read_key = (keys, inter.revision if inter else '', tuple(sorted(choice.items())),
@@ -319,7 +321,6 @@ class ScansPageViewModel(ViewModel):
         reset_range = frame != self._frame
         self._frame = frame
         common = dict(body=body, view=view, reset_range=reset_range, step_auto=self.hand_step is None)
-        viewed = self.chosen.get(self._active) or (row.fit_id if row else 'fast')
         if body != PLOT:
             state = PageState(**common,
                 over_limit_note=(f'{n} spectra selected — the plot shows at most 10. '
@@ -367,12 +368,13 @@ class ScansPageViewModel(ViewModel):
         row = self.inter.row(key)
         return (fit_id, row.label if row and row.fit_id == fit_id else fit_id, bool(row and row.stale), True)
 
-    def _waterfall_entries(self, history):
-        """Fast solo, every changed refit and the authoritative one, oldest first; capped at MAX_PLOTTED."""
-        picked = [e for e in history if e.batch_id is None or e.changed or e.authoritative]
+    def _waterfall_entries(self, history, viewed):
+        """Fast solo, every changed refit, the authoritative one and the viewed fit, oldest first; capped at
+        MAX_PLOTTED. The viewed fit is always drawn, so the bar never acts on a fit the plot leaves out."""
+        picked = [e for e in history if e.batch_id is None or e.changed or e.authoritative or e.fit_id == viewed]
         total = len(picked)
         if len(picked) > MAX_PLOTTED:
-            keep = {picked[0].fit_id} | {e.fit_id for e in picked if e.authoritative}
+            keep = {picked[0].fit_id} | {e.fit_id for e in picked if e.authoritative or e.fit_id == viewed}
             for entry in reversed(picked):
                 if len(keep) >= MAX_PLOTTED:
                     break
@@ -463,11 +465,11 @@ class ScansPageViewModel(ViewModel):
                 ', '.join(f'{reason} ({count})' for reason, count in counts.items())) if counts else ''
         if wf and len(self._wf_entries) < self._wf_total:
             line = f'showing {len(self._wf_entries)} of {self._wf_total} fits' + (' · ' + line if line else '')
+        fit_reason = ('Overlay compares raw data; fits show in Offset or with one spectrum'
+                      if common['view'] == 'overlay' else WATERFALL_FIT if wf else None)
         return PageState(**common, main_spec=main, residual_spec=residual,
             not_drawn_text=line, not_drawn_tip='\n'.join(f'{labels[k]}: {r}' for k, r in not_drawn),
-            fit=Control(common['view'] != 'overlay',
-                        'Overlay compares raw data; fits show in Offset or with one spectrum'
-                        if common['view'] == 'overlay' else None),
+            fit=Control(fit_reason is None, fit_reason),
             layout=Control(n > 1 and not wf, WATERFALL_LAYOUT if wf else 'one spectrum' if n == 1 else None),
             offset=Control(common['view'] == 'offset',
                            None if common['view'] == 'offset' else 'applies to the Offset layout'),

@@ -283,3 +283,19 @@ def test_waterfall_marks_the_fit_chosen_in_the_menu(setup, reads):
     page.flush_redraw()
     labels = [t.identity for t in page._drawn_state.traces if t.active]
     assert labels == ["Batch 1 · ring 1"]
+
+
+def test_waterfall_cap_still_draws_the_fit_chosen_in_the_menu(setup, reads):
+    page, inter = setup
+    refits = [_refit(f"r{i}", f"ring {i}", authoritative=i == 3, changed=i != 2) for i in range(1, 17)]
+    inter.histories[ONE_MODE] = make_history(*refits)
+    inter.overview = make_overview(by_key={ONE_MODE: _row(ONE_MODE, "r3")})
+    _select(page, ONE_MODE)
+    page.vm.set_waterfall(True)
+    page.flush_redraw()
+    for fit_id, label in (("r5", "Batch 1 · ring 5"), ("r2", "Batch 1 · ring 2")):    # r2 is collapsed in the menu
+        page.vm.choose_fit(fit_id)
+        page.flush_redraw()
+        state = page._drawn_state
+        assert len(state.traces) == 10 and state.not_drawn_text.startswith("showing 10 of ")
+        assert [t.identity for t in state.traces if t.active] == [label]
