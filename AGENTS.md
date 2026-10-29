@@ -181,6 +181,7 @@ area.
 | What ISAR is for — the master objectives | `docs/DESIGN_GOALS.md`: user-owned, never AI-edited; read it at every planning session and surface a contradiction to the operator instead of resolving it; its Pause/Failure States section is the law for stopping a campaign (steering.md §7.10 implements it) |
 | The SCENE program — scene layer, catalogue, target-free discovery (status: ARCHITECTURE §15) | `docs/design/scene.md` |
 | Campaign diagnostic report | `docs/design/reporting.md` |
+| Inter-spectra fitting (the second pass that couples neighbouring spectra) | `docs/design/inter_spectra.md` |
 | Why a decision was made | the owning design doc's dated rulings. Ruling IDs (O·, H·, S·, G·, ADR-NNN, …) are stable historical names — see GLOSSARY §Ruling IDs; the retired DECISIONS ledger is in git history |
 | The frozen campaign evidence bundles (data, never contract) | `docs/campaigns/README.md` |
 
@@ -196,10 +197,12 @@ combine-before-divide, collate) · `calibrate` (elastic fits, versioned energy-z
 `calibrate/tas.py` importing `isar.synth.resolution` is the one sanctioned production→synth
 dependency) · `analyze` (fitting, errors, model selection, verdict, confidence; the DHO physics —
 IC grids, admissibility gates, structure enumeration, Γ bounds — is owned by `analyze/phonon.py`,
-and `analyze/structures.py` holds only the generic `Hypothesis` recipe) · `session` (`driver.py`
+and `analyze/structures.py` holds only the generic `Hypothesis` recipe; `analyze/coupled/` is the inter-spectra
+numerical core, `docs/design/inter_spectra.md`) · `session` (`driver.py`
 orders the stages; `outcome.py` owns the FitOutcome persistence DTO and `results.csv`,
 `scan_delivery.py` the per-scan fits, `master_delivery.py` the pooled masters and certification,
-`evidence_update.py` the cross-q evidence and branch identity; `analysis_service.py` the one long-lived analysis process per open experiment, which runs the queue's items and saves their results through one writer; `analysis_queue.py` the queue's scheduler, which the GUI owns; `file_fit.py` one analyzer file, fast or deep, from the experiment's saved inputs; `writer.py` `save_results`, the one writer, under the workspace write lock) · `cli` · `drive` (`loop.py`
+`evidence_update.py` the cross-q evidence and branch identity; `inter_spectra/` the second pass (graph, rings,
+authority, records, batch runner; `docs/design/inter_spectra.md`); `analysis_service.py` the one long-lived analysis process per open experiment, which runs the queue's items and saves their results through one writer; `analysis_queue.py` the queue's scheduler, which the GUI owns; `file_fit.py` one analyzer file, fast or deep, from the experiment's saved inputs; `writer.py` `save_results`, the one writer, under the workspace write lock) · `cli` · `drive` (`loop.py`
 orchestrates the targeted campaign and `program_runner.py` the discovery step — `run_program` is
 the one seam that runs a `discover_and_map` step end to end, and the consultation channel
 (`drive/consultation.py`) and cold-start producer (`drive/steering/cold_start.py`) hang off it;
@@ -210,8 +213,9 @@ the drive-side read of the hypothesis map; `loop.<CONST>` re-imports are
 deliberate, production reads them) ·
 `report` · `synth` (Phase-1 synthetic core) / `synth_format` (synthetic-run tooling) ·
 `workspace_api` / `geometry` / `plotspec` (Qt-free; `workspace_api/config_gates.py` is the G16
-facade) ·
-`intake` (Qt-free; the BL43 append-only user-value and settings store in `isar/intake/`, whose writers
+facade; `workspace_api/inter_spectra.py` is the inter-spectra read facade) ·
+`intake` (Qt-free; the BL43 append-only user-value and settings store in `isar/intake/`, with the inter-spectra
+values in `inter_spectra.py` and `inter_values.py`, whose writers
 the GUI calls in process; `workspace_api` only reads it) ·
 `isar_gui` (reads science through `workspace_api`, saves the user's values and settings in process
 through `isar.intake`, controls campaigns by subprocess + control files, and runs the analysis queue through the `isar.session.analysis_service` subprocess).

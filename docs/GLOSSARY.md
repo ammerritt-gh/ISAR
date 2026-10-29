@@ -447,6 +447,34 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   is told from physics. *No_signal* is nothing there. Collapsing the three into "rejected" would throw
   away the one discriminant that matters.
 
+## Inter-spectra vocabulary
+
+The second pass that couples neighbouring spectra. Its status, invariants and rulings live in
+[design/inter_spectra.md](design/inter_spectra.md); each term below means what that document says.
+
+- **spectrum** — one analyzer's data in one scan: an experiment, a scan number and a detector. Inside this pass
+  the word means this unit; elsewhere in the glossary it is informal.
+- **fast solo fit** — a spectrum's own fast-pass result, before any neighbour is consulted. This pass never changes it.
+- **T-link** — a neighbour relation between the same analyzer at adjacent temperatures of one series (scans at one q setting).
+- **q-link** — a neighbour relation between adjacent analyzers of one scan on the 4 × 7 grid, using each analyzer's hkl.
+- **curvature term** — a penalty on the middle of three collinear q spectra for leaving the straight line through the other two.
+- **penalty** — a soft cost added to a spectrum's fit for disagreeing with a neighbour. It makes a move expensive and never forbids it.
+- **neighbour-informed prior** — the same coupling as a penalty, applied as a prior on mode energies when the mode count is chosen.
+- **anchor** — a spectrum the user trusts, from which an anchored batch grows. Only a user chooses one.
+- **ring** — in an anchored batch, a spectrum's distance in neighbour steps from the nearest anchor. Rings are fixed before the batch runs.
+- **seam** — two spectra of one ring that meet between fronts grown from different anchors; they are compared when the ring completes.
+- **anchored batch** — a batch that grows outward from the anchors, ring by ring.
+- **simultaneous batch** — a batch in which every selected spectrum is refitted against its neighbours together, in sweeps, until the fits settle.
+- **sweep** — one pass of refits over a simultaneous batch's spectra.
+- **refit** — one fit of one spectrum inside a batch. Every completed refit stays in that spectrum's history.
+- **authoritative fit** — the fit ISAR uses for a spectrum: the fast solo fit, a user's pick, or the newest accepted refit.
+- **lock** — a user mark that stops every batch from refitting a spectrum. A locked fit is never replaced.
+- **flag** — a mark sending a spectrum to a person. Its score is the cost of coupling plus the largest link mismatch; it carries reasons with severities (serious, look, repaired).
+- **mode status** — per mode: determined by its own data, held by its neighbours, or still poorly determined.
+- **not observed here** — a branch a neighbour predicts that this spectrum does not show. Recorded as not observed, never as a death.
+- **did not settle** — a simultaneous batch that stopped at its sweep cap before its fits settled. Its results are kept and flagged.
+- **stale** — a refit whose inputs have changed since it was made. A stale fit is never authoritative.
+
 ## Validation vocabulary
 
 - **gold / expert fit** — a human's by-hand fit of the same data (in their usual tool). ISAR is compared
@@ -469,7 +497,8 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   (`git log --all -- docs/DECISIONS.md`). A few IDs also survive as code vocabulary — e.g.
   **H1**, the SCENE program's
   constitution (`design/scene.md`); **S10**, evidence freezes only at owner-named milestones;
-  **O44**, the acoustic zone-centre exclusion (`ARCHITECTURE.md` §15).
+  **O44**, the acoustic zone-centre exclusion (`ARCHITECTURE.md` §15); **IS1**–**IS15**, the inter-spectra
+  rulings, quoted with their dates in `design/inter_spectra.md` §8.
 
   **Retired 2026-09-02, kept here so a citation in git history resolves:** **O11** (decline
   widening), **O15** (the connected frontier), **O27** (same-q production ceilings), **O28** (the

@@ -444,6 +444,10 @@ provenance table — assembled deterministically from the workspace's own artifa
 `isar diagnose`, rendered at every campaign end, characterization-pinned against the frozen
 MVP-16 workspace.)*
 
+**Inter-spectra fits in reports.** The reports and exports a person reads show each spectrum's authoritative fit with
+its source labelled; `results.csv` and `report/modes.csv` stay the fast-pass projection, the frozen Stage II/III contract
+(`design/inter_spectra.md` §4).
+
 **Logging is part of the trust contract.** A question the logs cannot answer is a logging
 defect, not a rendering problem. Required events: `escalate_fit` with outcomes, structured
 `decide.action`, recenter guard decisions, the stop-reason enum. Figures are the natural record
@@ -504,6 +508,10 @@ rulings W1–W3.)*
 | `isar export` and the GUI Export action: every pass side by side and labelled, the authoritative one per spectrum marked (`authoritative`, `fit_source`; the inter-spectra fit as `pass = inter`), stored results only; for a BL43LXU experiment each pass's currentness (`inputs` in `fits.json`, `inputs_current` in `modes.csv`) | **Implemented** (2026-10-27). `currentness.assessed` is true only for a BL43LXU experiment that holds fit-input records; a pass without a finished record is not judged (`current` null), and any other instrument says `assessed` false (`isar/report/export.py`) |
 | Stage-two left-side pieces (BL43LXU): setup section with the *Resolution curves (rf)…* and *gpi files…* buttons, *Experiment info…*, the needs-attention list with ticked-scan entry, the inspector's fact table, the out-of-date mark on a pass whose inputs changed, the readiness line | **Implemented** (2026-10-27), tested offscreen on generated data (`tests/gui/test_stage2_walkthrough.py`); no person has run the walkthrough yet. User values are taken for temperature and slit, plus the dead and counts-accepted declarations; none for Q or other facts (pinned). |
 | Analysis queue in the Processing panel (BL43LXU): analyzer files queued by hand or as they arrive, fast before deep, several files at once on the cores setting, one writer per experiment that confirms each save, no time limit on a fit; a result is done only once saved (`design/gui.md` §0sexies) | **Implemented** (2026-10-28), tested offscreen and at the engine. Not yet run: a person's walk-through at the GUI threshold. Open: a queued fit does not refresh the curves check the setup section shows |
+| Inter-spectra fitting (the second pass): anchored and simultaneous batches from the Processing panel, T-links, the coupled refit with neighbour-informed priors on mode energies, history, the authoritative fit, locks, flags with severity, error bars labelled conditional; the Scan list, Processing, Scan(s) and Config surfaces and the waterfall of one spectrum's fits | **Implemented** (2026-10-29), tested offscreen and at the engine. No person has run the walk-through, and the real-data proof is not yet written (`design/inter_spectra.md` §1) |
+| Inter-spectra q-links (grid adjacency; curvature in simultaneous batches; change penalty in anchored batches) | **Partial**: built and tested on synthetic coordinates; no real-data run yet (`design/inter_spectra.md` §1) |
+| Inter-spectra amplitude coupling (a prior on mode amplitude) | **Planned**: not coupled; amplitude stays free; the amplitude-prior test was not run (`design/inter_spectra.md` §9) |
+| Inter-spectra penalty settings | **Partial**: five of twenty-two settings calibrated on synthetic tracks, not on real data; the rest uncalibrated (`design/inter_spectra.md` §5) |
 | Peak-count benchmark (`isar.synth.count_bench`): should-find misses, false peaks, count states, flag rates and per-spectrum time, on synthetic truths built with the real resolution curves | **Implemented**, measured on the evaluation streams (292 spectra, 2026-10-26; `STATS_PRIMER.md` §2.3). Figures are aims, not gates; the full run is on request, and a one-peak case runs in the routine suite. |
 | Interval ladder through bootstrap; `interval_reliable` flag | Implemented |
 | Uniform `interval_reliable` convergence rule | Implemented (2026-07-10) |

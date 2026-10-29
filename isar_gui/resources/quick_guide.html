@@ -37,9 +37,24 @@ already stored stay.</p>
 <p>Each row is a scan set; open it to see its analyzers. The <b>hkl</b> column shows each analyzer's hkl in r.l.u. when ISAR has one (hover for its source); <b>|Q| (nm⁻¹)</b> is under <b>Columns ▾</b>. On BL43LXU the <b>gpi</b> and <b>rf</b> columns show a check or a cross for each analyzer.
 The <b>Fast pass</b> and <b>Deep pass</b> columns appear by themselves once a result exists. The colour dot and the word say how settled a result is; hover a word for
 what it means, or see <b>Help ▸ What the status words mean</b>. Select an analyzer row and press
-<b>Open inspector</b> (or double-click it) to see the file's facts, your values, and the plot.</p>
+<b>Open inspector</b> (or double-click it) to see the file's facts, your values, and the plot.
+The <b>Anchor</b> column marks the spectra you trust, <b>Flag</b> marks the ones a person should review, <b>Lock</b>
+marks a fit no batch may change, and <b>Inter-spectra fit</b> says which fit ISAR uses for each spectrum. Select
+spectra and right-click to choose <b>Set as anchor</b> or <b>Remove anchor</b>.</p>
 
-<h3>6. Take the results away</h3>
+<h3>6. Refine fits with neighbours (optional)</h3>
+<p>Once you have spectra you trust, open the <b>Inter-spectra fitting</b> box in the Processing panel. <b>Add selected scans as anchors</b> adds the selected scans to the <b>Anchors</b> list, and <b>Remove selected anchors</b> takes them
+out. Choose <b>Spread in q</b>, <b>Spread in T</b> or <b>Spread in q and T</b>, then press <b>Start anchored batch</b>: it
+refits the spectra around the anchors, ring by ring. To refit spectra together, select them in the scan list and press
+<b>Start simultaneous batch on the selection</b>. Each batch is one row in the queue. A Start button stays greyed out,
+with the reason as its tooltip, until its batch can run. Open a spectrum in the Scan(s) view and press <b>Inter-spectra
+fitting</b> to choose among its fits: the fast solo fit, then the refits grouped by batch. <b>Make authoritative</b> makes
+the chosen fit the one ISAR uses, and <b>Lock this fit</b> stops any batch refitting it (<b>Unlock</b> releases it).
+<b>Waterfall of fits</b> draws the spectrum's fits one above another. A refit lists its reasons for review with their
+severity, and its error bars are conditional on the neighbours. Nothing starts by itself. The penalty settings are under
+<b>Config ▸ Inter-spectra fitting settings…</b>.</p>
+
+<h3>7. Take the results away</h3>
 <p><b>Export results…</b> in the bottom bar writes the results to a new folder and tells you where it is.
 <b>Save experiment copy…</b> copies the whole experiment folder. Both leave your experiment as it was.</p>
 
