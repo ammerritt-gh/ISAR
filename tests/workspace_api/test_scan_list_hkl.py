@@ -64,6 +64,7 @@ def test_effective_hkl_worked_examples():
 def test_effective_hkl_never_raises_on_a_malformed_entry():
     got = effective_hkl([_sv("x:1:det", ["a", "b", "c"])], [])
     assert got["x:1:det"].value is None and got["x:1:det"].reason
+    assert effective_hkl([SimpleNamespace(hkl=[1.0, 0.0, 0.0])], []) == {}     # a legacy view with no key: skipped
 
 
 def test_hkl_bin_and_step():

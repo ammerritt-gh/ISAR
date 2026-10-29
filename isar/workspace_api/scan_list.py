@@ -319,11 +319,14 @@ def effective_hkl(scans, fact_rows: Sequence[FactRow]) -> dict[str, Fact]:
     q_rows = {(r.scan, r.analyzer): r for r in fact_rows if r.fact == "q" and r.analyzer is not None}
     out: dict[str, Fact] = {}
     for sv in scans:
+        key = getattr(sv, "scan_id", None)
+        if key is None:       # a legacy view with no key names no unit; unit_rows finds no hkl for it
+            continue
         try:
-            out[sv.scan_id] = _unit_hkl(sv, q_rows)
+            out[key] = _unit_hkl(sv, q_rows)
         except (TypeError, ValueError, AttributeError) as exc:
-            log.warning("effective hkl of %s could not be read (%s)", getattr(sv, "scan_id", "?"), exc)
-            out[sv.scan_id] = _missing_hkl("the hkl in the record could not be read")
+            log.warning("effective hkl of %s could not be read (%s)", key, exc)
+            out[key] = _missing_hkl("the hkl in the record could not be read")
     return out
 
 
