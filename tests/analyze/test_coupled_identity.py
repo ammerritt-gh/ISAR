@@ -296,6 +296,19 @@ def test_duplicate_and_absent_branches_cost_nothing_extra():
     assert ident.match_link(_local(2), ["p"], lambda m, b: 0.0, incoming=("q", None))["incoming_invalid"]
 
 
+def test_close_slot_orders_of_a_composition_are_kept_for_pricing():
+    # a crossing: (p, q) and its exchange (q, p) are one composition, 1.5 apart; the far order is not kept
+    table = {(0, "p"): 0.0, (0, "q"): 1.0, (1, "p"): 0.5, (1, "q"): 0.0, (0, None): 10.0, (1, None): 10.0}
+    cost = lambda m, b: table[(m, b)]
+    out = ident.match_link(_local(2), ["p", "q"], cost, keep=None, close=S.close_call_nats)
+    pq = next(p for p in out["proposals"] if p["composition"] == (("p", "q"), 0))
+    assert pq["slots"] == ("p", "q")
+    assert [(o["slots"], o["cost"]) for o in pq["orders"]] == [(("p", "q"), 0.0), (("q", "p"), 1.5)]
+    tight = ident.match_link(_local(2), ["p", "q"], cost, keep=None, close=1.0)
+    pq = next(p for p in tight["proposals"] if p["composition"] == (("p", "q"), 0))
+    assert [o["slots"] for o in pq["orders"]] == [("p", "q")]
+
+
 def test_recovered_branch_is_matched_and_only_a_true_newcomer_is_born():
     A1 = held("A1", "fA1", [("p", 10.0)])
     A2 = held("A2", "fA2", [("p", 10.1)])                           # a duplicate observation of p

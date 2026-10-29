@@ -72,8 +72,12 @@ def _composition(slots: Sequence[str | None]) -> tuple[tuple[str, ...], int]:
     return tuple(sorted(b for b in slots if b is not None)), sum(b is None for b in slots)
 
 
+def _order_key(slots: Sequence[str | None]) -> list:
+    return [(b is not None, b or "") for b in slots]     # None sorts first; a tie keeps one winner
+
+
 def match_link(local: Sequence[ModeObs], branches: Sequence[str], proposal_costs, incoming=None,
-               keep: int | None = 4) -> dict:
+               keep: int | None = 4, close: float = 0.0) -> dict:
     """Ranked distinct compositions of ``local`` against the held ``branches`` (search only).
 
     ``proposal_costs(m, b)`` is the core's cost in deviance units of local mode ``m`` taking branch ``b``
@@ -81,12 +85,14 @@ def match_link(local: Sequence[ModeObs], branches: Sequence[str], proposal_costs
     forbids. A held branch absent locally costs nothing more. ``branches`` is deduplicated: duplicate
     observations of one branch are one assignable branch. ``incoming`` is the incoming slots tuple
     (branch or None per local mode) relative to ``branches``. ``keep=None`` ranks every composition
-    (full search).
+    (full search). ``close`` is the settings' ``close_call_nats``.
 
-    Returns ``{"proposals": [{"slots", "composition", "cost", "source"}], "coverage": {...},
+    Returns ``{"proposals": [{"slots", "composition", "cost", "source", "orders"}], "coverage": {...},
     "weight_unavailable": True, "incoming_invalid": reason or None}``: the incoming and all-unmatched
     proposals always, then up to ``keep`` other distinct compositions, each with its cheapest
-    association, cheapest first. Costs rank proposals; they are not evidence weights.
+    association, cheapest first. ``orders`` lists every slot order of that composition within ``close``
+    of its cheapest, so a competing identity (an exchange at a crossing) reaches the core to price.
+    Costs rank proposals; they are not evidence weights.
     """
     pool = list(dict.fromkeys(branches))
     n = len(local)
@@ -112,12 +118,14 @@ def match_link(local: Sequence[ModeObs], branches: Sequence[str], proposal_costs
     fixed = {_composition(s) for s, _ in mandatory}
 
     best: dict[tuple, tuple[float, tuple]] = {}         # composition -> (cost, slots) of its cheapest association
+    leaves: dict[tuple, dict[tuple, float]] = defaultdict(dict)   # composition -> {slots: cost} of every association
+    mandatory_max = max(sum(cost[m][options.index(b)] for m, b in enumerate(s)) for s, _ in mandatory)
     state = {"nodes": 0, "truncated": False, "limit": -math.inf if keep == 0 else math.inf}
 
     def record(slots: tuple, c: float) -> None:
         comp = _composition(slots)
-        order = [(b is not None, b or "") for b in slots]         # None sorts first; a tie keeps one winner
-        if comp not in best or (c, order) < (best[comp][0], [(b is not None, b or "") for b in best[comp][1]]):
+        leaves[comp][slots] = c
+        if comp not in best or (c, _order_key(slots)) < (best[comp][0], _order_key(best[comp][1])):
             best[comp] = (c, slots)
         if keep:
             others = sorted(v[0] for k, v in best.items() if k not in fixed)
@@ -136,7 +144,9 @@ def match_link(local: Sequence[ModeObs], branches: Sequence[str], proposal_costs
             if state["truncated"]:
                 return
             c = partial + cost[m][j]
-            if (b is not None and b in used) or not math.isfinite(c) or c + rest[m + 1] > state["limit"]:
+            # a kept order sits within close of its composition's cheapest, and the mandatory ones are kept too
+            bound = max(state["limit"], mandatory_max) + close
+            if (b is not None and b in used) or not math.isfinite(c) or c + rest[m + 1] > bound:
                 continue
             slots.append(b)
             used.add(b)
@@ -145,12 +155,24 @@ def match_link(local: Sequence[ModeObs], branches: Sequence[str], proposal_costs
             used.discard(b)
 
     walk(0, [], set(), 0.0)
+
+    def orders(comp: tuple, slots: tuple, c: float) -> list[dict]:
+        found = leaves.get(comp)
+        if not found:                                   # an unreached (infinite-cost) proposal keeps its own slots
+            return [{"slots": slots, "cost": c}]
+        low = min(found.values())
+        return [{"slots": s, "cost": v} for s, v in sorted(found.items(), key=lambda kv: (kv[1], _order_key(kv[0])))
+                if v <= low + close]
+
     ranked = sorted((c, comp, s) for comp, (c, s) in best.items() if comp not in fixed)
     kept = ranked if keep is None else ranked[:keep]
-    proposals = [{"slots": s, "composition": _composition(s),
-                  "cost": sum(cost[m][options.index(b)] for m, b in enumerate(s)), "source": src}
-                 for s, src in mandatory]
-    proposals += [{"slots": s, "composition": comp, "cost": c, "source": "ranked"} for c, comp, s in kept]
+    proposals = []
+    for s, src in mandatory:
+        comp, c = _composition(s), sum(cost[m][options.index(b)] for m, b in enumerate(s))
+        proposals.append({"slots": s, "composition": comp, "cost": c, "source": src,
+                          "orders": orders(comp, s, c)})
+    proposals += [{"slots": s, "composition": comp, "cost": c, "source": "ranked",
+                   "orders": orders(comp, s, c)} for c, comp, s in kept]
     total = sum(math.comb(len(pool), r) for r in range(min(n, len(pool)) + 1))
     returned = len({p["composition"] for p in proposals})
     return {"proposals": proposals,
