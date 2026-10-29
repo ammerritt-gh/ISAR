@@ -360,9 +360,26 @@ class _StageJob:
     seed: int
 
 
+def _sampled_groups(models) -> list:
+    """The labels the deep pass samples (decision 7): per group (the record's ``parent``; a model with
+    none is its own group), the one label the fast pass priced for it and did not supersede, else the
+    group's starting model. First-appearance order."""
+    groups: dict = {}
+    for m in models:
+        groups.setdefault(m.get("parent", m["label"]), []).append(m)
+    out = []
+    for parent, basins in groups.items():
+        priced = {m["label"] for m in basins if not m.get("superseded") and m.get("ln_z") is not None
+                  and math.isfinite(m["ln_z"])}
+        if len(priced) > 1:
+            raise ValueError(f"the record prices {sorted(priced)} in one group ({parent!r})")
+        out.append(priced.pop() if priced else parent)
+    return out
+
+
 def stage_width(record: dict) -> int:
     """Distinct models available together in the initial stage; promotion cannot be wider."""
-    return max(1, len(_label_groups(record.get("models") or ())))
+    return max(1, len(_sampled_groups(record.get("models") or ())))
 
 
 def deep_pass(entries, *, accepted: SamplerSettings = ACCEPTED,
@@ -574,18 +591,36 @@ def plain_hypotheses(ctx, ceiling: int) -> dict:
     return out
 
 
+def _split_delta(label: str) -> tuple[str, str]:
+    """``(plain label, delta suffix)`` of a model label; the suffix is empty for a plain structure."""
+    plain_label, sep, suffix = label.rpartition("_delta")
+    return (plain_label, suffix) if sep else (label, "")
+
+
 def _model_hypothesis(ctx, label: str, first: dict, hypotheses: Mapping):
     """The catalogue hypothesis a record model was fitted as: the plain structure, or its delta twin
-    (the mode numbers of the label suffix must agree with the record's ``delta_modes``)."""
-    plain_label, sep, suffix = label.rpartition("_delta")
-    if not sep:
-        plain_label, suffix = label, ""
+    (the mode numbers of the label suffix must agree with the record's ``delta_modes``). An on-demand
+    model (decision 6) is its group's starting structure with its ``removed`` components taken out."""
+    plain_label, suffix = _split_delta(label)
     delta = [int(i) for i in first.get("delta_modes") or ()]
     if suffix != "-".join(str(i + 1) for i in delta):
         raise ValueError(f"model {label!r}: label suffix disagrees with delta_modes {delta}")
-    plain = hypotheses.get(plain_label)
-    if plain is None:
-        raise ValueError(f"model {label!r}: no hypothesis {plain_label!r} among the plain structures")
+    if first.get("on_demand"):
+        start_label, _ = _split_delta(first["parent"])
+        plain = hypotheses.get(start_label)
+        if plain is None:
+            raise ValueError(f"model {label!r}: no hypothesis {start_label!r} among the plain structures")
+        for prefix in first.get("removed") or ():
+            reduced = loop.without_component(plain, prefix)
+            if reduced is None:
+                raise ValueError(f"model {label!r}: removing {prefix!r} leaves no structure")
+            plain = reduced
+        if str(plain.label) != plain_label:
+            raise ValueError(f"model {label!r}: the reduced structure rebuilds as {str(plain.label)!r}")
+    else:
+        plain = hypotheses.get(plain_label)
+        if plain is None:
+            raise ValueError(f"model {label!r}: no hypothesis {plain_label!r} among the plain structures")
     if not delta:
         return plain
     if not all(0 <= i < int(first["n_peaks"]) for i in delta):
@@ -600,7 +635,7 @@ def _model_hypothesis(ctx, label: str, first: dict, hypotheses: Mapping):
 
 
 def models_from_record(ctx, record: dict, hypotheses: Mapping) -> list:
-    """One :class:`ModelEntry` per label of a fast-pass record (basins of one label are one entry),
+    """One :class:`ModelEntry` per sampled label (:func:`_sampled_groups`), basins of one label one entry,
     twin parents and ``not_fitted`` models included: nested sampling starts from the prior and
     needs no fit. No refit and no evidence computation. ``ValueError`` naming the cause (never a
     partial list) when the record is not one the deep pass can sample: no fast-pass record, the data
@@ -620,7 +655,9 @@ def models_from_record(ctx, record: dict, hypotheses: Mapping) -> list:
         raise ValueError("prior provenance differs from the record's settings")
     saturated = record.get("ln_like_saturated")
     entries = []
-    for label, basins in _label_groups(record["models"]).items():
+    by_label = _label_groups(record["models"])
+    for label in _sampled_groups(record["models"]):
+        basins = by_label[label]
         first = basins[0]
         hyp = _model_hypothesis(ctx, label, first, hypotheses)
         try:

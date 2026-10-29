@@ -40,10 +40,11 @@ from typing import Callable
 
 import numpy as np
 
-from isar.analyze.prior import EnergyPrior, PriorSettings, energy_prior, resolution_fwhm
+from isar.analyze.prior import (EnergyPrior, PriorSettings, QEWidthPrior, energy_prior, qe_width_prior,
+                                resolution_fwhm)
 
 from isar.analyze import phonon
-from isar.analyze.components import ConstantBackground, Elastic, PhononDHO, QuasiElastic
+from isar.analyze.components import CentralQE, ConstantBackground, Elastic, PhononDHO, QuasiElastic
 from isar.analyze.structures import Hypothesis
 from isar.schema import placement as _placement
 from isar.schema.placement import (  # noqa: F401 — re-exported for existing callers/tests
@@ -248,6 +249,8 @@ _QUASIELASTIC = PhenomenonDefinition(
     identity="quasi-elastic scattering — relaxational dynamics, broad in energy about E=0",
     local_models=(
         LocalModel("broad", QuasiElastic, phonon.quasielastic_admissible),
+        # The BL43LXU central excess: phenomenological, no mechanism claimed (not a scene component).
+        LocalModel("central", CentralQE, phonon.central_qe_admissible),
     ),
     gates=(phonon.quasielastic_admissible,),
     transport=(
@@ -361,6 +364,13 @@ def enumerate_count_structures(ctx, n: int, profile: str = DEFAULT_PROFILE) -> l
     ``stokes2+bg``, ``stokes3+bg``, ...). Every mode honours the Bose-dead Stokes-only choice
     (:func:`isar.analyze.phonon._phonon_for`; DHO physics stays in phonon.py). Labels, order and k
     for ``n <= 2`` are pinned to the legacy hand enumeration by ``tests/analyze/test_catalogue.py``.
+
+    A BL43LXU spectrum (:func:`isar.analyze.phonon.central_qe_admissible`) gets exactly one
+    structure per count instead: ``elastic+<stokes>+qe+bg`` (``elastic+qe+bg`` at ``n = 0``): the
+    modes, the elastic line, the central QE (:class:`~isar.analyze.components.CentralQE`, its width
+    pinned to the card's ``quasielastic_fwhm`` when declared) and the background; the ``elastic``
+    token and component only under the elastic gate. Elastic-free and QE-free models are not
+    enumerated: the fast pass's twin rule builds them on demand.
     """
     sharp = entry("elastic", profile).model("sharp")
     broad = entry("quasielastic", profile).model("broad")
@@ -370,6 +380,19 @@ def enumerate_count_structures(ctx, n: int, profile: str = DEFAULT_PROFILE) -> l
     qe = broad.admissible(ctx)
 
     hyps: list[Hypothesis] = []
+    if phonon.central_qe_admissible(ctx):
+        central = entry("quasielastic", profile).model("central")
+        pin = getattr(ctx, "quasielastic_fwhm", None)
+        qe_c = central.recipe if pin is None else central.recipe(width=pin)
+        head, el = (("elastic",), (sharp.recipe,)) if elastic else ((), ())
+        if n == 0:
+            return [Hypothesis("+".join(head + ("qe", "bg")), (*el, qe_c, bg))]
+        stokes = "stokes" if n == 1 else f"stokes{n}"
+        modes = tuple(phonon._phonon_for(ctx) if i == 1 else phonon._phonon_for(ctx, f"phonon{i}")
+                      for i in range(1, n + 1))
+        _phonon_bearing_adder(hyps, profile)("+".join(head + (stokes, "qe", "bg")),
+                                             (*modes, *el, qe_c, bg))
+        return hyps
     if n == 0:
         if elastic:
             hyps.append(Hypothesis("elastic+bg", (sharp.recipe, bg)))
@@ -416,6 +439,11 @@ class ResolvedPrior:
     :class:`~isar.analyze.prior.EnergyPrior`) is that density, the one the fast pass's
     :meth:`isar.analyze.prior.SpectrumPrior.ln_energies` uses; ``mu`` and ``sigma`` are ``None``.
 
+    ``kind == "qe_width"`` is the central QE's intrinsic-width density (BL43LXU,
+    :class:`~isar.analyze.prior.QEWidthPrior`: flat, then 1 nat per resolution FWHM beyond 2 FWHM,
+    normalised on its support ``[lo, hi]``): ``qe_width`` is that density, the one the fast pass's
+    :meth:`isar.analyze.prior.SpectrumPrior.ln_qe_width` uses; ``mu`` and ``sigma`` are ``None``.
+
     ``kind == "softlog"`` is the recipe's softened log-uniform width density
     ``1/(x + mu) / ln((hi + mu)/mu)`` with ``mu`` the knee (meV) and ``sigma`` ``None``. It is
     normalised on ``[0, hi]`` like :meth:`isar.analyze.prior.SpectrumPrior.ln_width`, so the
@@ -425,7 +453,7 @@ class ResolvedPrior:
     STAT eligibility rules read)."""
 
     name: str
-    kind: str                       # "gaussian" | "lognormal" | "flat" | "softlog" | "energy_ramp"
+    kind: str                       # "gaussian" | "lognormal" | "flat" | "softlog" | "energy_ramp" | "qe_width"
     mu: float | None
     sigma: float | None
     lo: float
@@ -433,6 +461,7 @@ class ResolvedPrior:
     origin: str
     origin_detail: str | None = None
     energy: EnergyPrior | None = None   # kind "energy_ramp" only
+    qe_width: QEWidthPrior | None = None   # kind "qe_width" only
 
     def _dist(self):
         from scipy import stats
@@ -457,6 +486,8 @@ class ResolvedPrior:
             return -math.log(v + self.mu) - math.log(math.log((self.hi + self.mu) / self.mu))
         if self.kind == "energy_ramp":
             return self.energy.log_pdf(v)
+        if self.kind == "qe_width":
+            return self.qe_width.log_pdf(v)
         dist = self._dist()
         z = self._trunc_mass(dist)
         if not (z > 0):
@@ -475,6 +506,8 @@ class ResolvedPrior:
             return (self.lo + self.mu) * ((self.hi + self.mu) / (self.lo + self.mu)) ** u - self.mu
         if self.kind == "energy_ramp":
             return float(self.energy.ppf(u))
+        if self.kind == "qe_width":
+            return float(self.qe_width.ppf(u))
         dist = self._dist()
         c_lo = float(dist.cdf(self.lo))
         z = self._trunc_mass(dist)
@@ -484,10 +517,13 @@ class ResolvedPrior:
 
     def spec(self) -> dict:
         """Fingerprintable declaration of this prior (no evaluation state)."""
-        return {"name": self.name, "kind": self.kind, "mu": self.mu, "sigma": self.sigma,
-                "lo": self.lo, "hi": self.hi, "origin": self.origin,
-                "origin_detail": self.origin_detail,
-                "energy": None if self.energy is None else self.energy.spec()}
+        out = {"name": self.name, "kind": self.kind, "mu": self.mu, "sigma": self.sigma,
+               "lo": self.lo, "hi": self.hi, "origin": self.origin,
+               "origin_detail": self.origin_detail,
+               "energy": None if self.energy is None else self.energy.spec()}
+        if self.qe_width is not None:                  # only BL43LXU specs carry the key
+            out["qe_width"] = self.qe_width.spec()
+        return out
 
 
 @dataclass(frozen=True)
@@ -596,7 +632,8 @@ class PriorBundle:
         # campaign path already takes the Γ-floor rung; upgrade if the campaign path prices such
         # widths. The near-zero energy penalty ("energy_ramp") has no width to compare; the
         # evidence ladder's rung 1 tests it on its own (evidence.structure_evidence).
-        return tuple(p for p in self.params if p.kind not in ("flat", "softlog", "energy_ramp"))
+        return tuple(p for p in self.params
+                     if p.kind not in ("flat", "softlog", "energy_ramp", "qe_width"))
 
 
 def _resolve_value(value, ctx, *, what: str) -> float:
@@ -691,6 +728,14 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=(),
             else:
                 resolved.append(ResolvedPrior(name, "softlog", settings.width_knee, None,
                                               lo, hi, "default_softlog"))
+        elif suffix == "width":
+            # the central QE's intrinsic width (a pinned width has no parameter, so no factor)
+            density = qe_width_prior(resolution_fwhm(ctx))
+            if (lo, hi) != (density.lo, density.hi):
+                raise ValueError(f"QE width bounds ({lo!r}, {hi!r}) differ from the density's support "
+                                 f"({density.lo!r}, {density.hi!r}): bound it with prior.mode_bounds")
+            resolved.append(ResolvedPrior(name, "qe_width", None, None, lo, hi, "default_qe_width",
+                                          qe_width=density))
         elif suffix == "omega0":
             if fwhm is None:
                 fwhm = resolution_fwhm(ctx)

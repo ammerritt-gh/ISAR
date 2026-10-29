@@ -43,7 +43,8 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   whose elastic line is not significant. It is labelled `pipeline_zero` in the alerts; ISAR never
   assumes a zero of 0.0 on an uncalibrated axis.
 - **setting ladder** — how ISAR picks a scan's analyzer-slit setting, and so its resolution curve. A
-  slit the files or the user give is kept (a clearly better slit only raises `slit_mismatch`). With
+  slit the files, an accepted gpi file or the user give is kept (a clearly better slit only raises
+  `slit_mismatch`). With
   none, the slit whose curves best fit the elastic lines is used (`slit_inferred`), and
   `slit_ambiguous` says the runner-up is nearly as good.
 - **Voigt** — a Gaussian convolved with a Lorentzian; ISAR's instrument-resolution shape.
@@ -53,15 +54,35 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **quasi-elastic** — a broad component sitting near zero energy transfer (real signal, not
   resolution). Since SCENE-1 it is its own catalogue phenomenon — a measurement target in its own
   right (linewidth ⇒ relaxation rate), distinct from *diffuse* scattering (broad in Q, elastic in
-  E; scene-level, not yet catalogued).
+  E; scene-level, not yet catalogued). On BL43LXU every model carries one central **QE** (below).
+- **QE (central quasi-elastic component)** — BL43LXU only, in every fast-pass, deep-pass and campaign
+  model: one Lorentzian of fitted intrinsic FWHM centred on the calibrated energy zero (never a fitted
+  centre), times the relaxational detailed-balance factor `(E/kT)/(1 - exp(-E/kT))` on the intrinsic
+  shape, convolved with the measured resolution; height and width are fitted jointly with the elastic
+  line, the phonons and the background. It is phenomenological (a "central excess": a weight and a
+  width, never a relaxation time, mobile fraction or process) and is not a phonon, so it changes no
+  model's phonon count. Its height is the convolved peak value (the phonons' convention); its
+  reported weight is the intrinsic shape integrated over the measured energy window, because the
+  detailed-balance form has no finite all-energy integral. The width prior is a penalty, not a cap:
+  not allowed below 1 resolution FWHM, flat to 2 FWHM, then -1 nat per FWHM (STATS_PRIMER). A card
+  `quasielastic_fwhm` pins the width and drops its prior. The elastic line is also in every BL43LXU
+  model and is never removed: a QE that fits to zero height is removed by the duplicate-model rule and
+  the reduced model is priced on its own evidence, as one result in place of its parent. Triple-axis,
+  IN8's fixed-width `QuasiElastic` and every other instrument are unchanged.
 - **phenomenon catalogue** — the single registry (`isar.phenomenon-catalogue/1`) of what can be
   present in a scan: acoustic, optic, elastic, quasielastic, unknown, bg_only. Each entry declares
   its local models and gates (the physics stays in `analyze/phonon.py`), plus dormant parameter
   priors, transport declarations, and constrained variants consumed when Laplace evidence lands.
-  Structure enumeration is catalogue-driven, including the phonon-less nulls `elastic+bg` and `bg`.
+  Structure enumeration is catalogue-driven, including the phonon-less nulls `elastic+bg` and `bg`
+  (on BL43LXU the starting zero-phonon model is `elastic+qe+bg`; `elastic+bg` appears there only as the
+  reduced model the duplicate rule builds when the QE is removed, and a bare `bg` never appears, since
+  the elastic line is never removed).
 - **elastic_only** — the verdict when the phonon-less `elastic+bg` candidate wins selection with a
   significant elastic line: a positive, scan-local, categorically humble claim (confidence
   hard-capped at 0.5); never region exclusion, never a Bragg identification.
+  On BL43LXU that test's `elastic+bg` score exists only when the duplicate rule built that reduced
+  model, so a phonon-less winner such as `elastic+qe+bg` is reported `no_signal` with the
+  phonon-less wording instead.
 - **constraint transport** — carrying parameters fit in a clean region as *soft* constraints into
   complicated regions (crossings, spurions), assuming slow variation; declared per catalogue entry
   (smoothness class + scale in r.l.u.), one-directional, applied exactly once via the existing
@@ -216,7 +237,8 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **held** — a scan ISAR is not ready to fit (most often `held_for_calibration`: no energy zero
   measured yet). Held scans are re-examined automatically on every later run; ISAR never guesses
   the missing piece.
-- **fact source** — where a scan's or spectrum's value came from: `header` (a `# key value` line in the
+- **fact source** — where a scan's or spectrum's value came from: `gpi` (an accepted gpi file, see *gpi file*),
+  `header` (a `# key value` line in the
   file, or its trailing `#Q=`/`#T=` line when no leading header gives it), `trailer` (a trailing line
   that disagrees with the leading header, kept as a conflict), `sidecar` (a beamline file beside the
   data, such as `.var`), `filename`, `inferred` (ISAR derived it) or `missing`. The first found wins in
@@ -225,7 +247,8 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   *File and user values disagree* item on the needs-attention list, naming the field and both values;
   the user value is the one used.
 - **Q rung** — how a spectrum's momentum transfer Q was obtained, best first: rung 1, the analyzer's
-  own HKL from the file; rung 2, computed from the sample angles and orientation (planned); rung 3,
+  own HKL from the file or an accepted gpi file; rung 2, computed from the sample angles and orientation (planned);
+  rung 3,
   computed from the arm-centre HKL and labelled approximate (planned); rung 4, no Q (`q = None`). The
   spectrum is still identified by its scan and analyzer, with or without Q.
 - **dispersion prior** — the running ω(Q) expectation ISAR builds from its own resolved fits
@@ -241,6 +264,11 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   (with its *fact source*) against the value you saved for that scan. A user value wins and is what the
   fit uses; saving the file value again withdraws it. A later save supersedes an earlier one, nothing is
   erased, and a value saved for one scan touches no other. The two disagree when both exist and differ.
+- **gpi file** (SPring-8 BL43LXU) — the beamline's hand-edited gnuplot macro `gpi_files/gpi.<scan set>` beside
+  the data. It gives each analyzer's HKL (its Q), the analyzer slit and the resolution curve set (`sarf_name`).
+  ISAR takes any of it only when its Q magnitudes agree with the data's `#Q=` values; otherwise nothing from
+  that file is used. Not the same as a SARF curve's own `.gpi` summary, the file beside each curve in `rf/` that
+  gives its widths. See USING_ISAR's *gpi files beside the scans*.
 - **condition** — a declaration about a scan or an analyzer rather than a number: an **excluded scan**
   (left out of every fit), a **dead analyzer** (left out of one scan), or **counts accepted** (below).
   Saved with an optional reason, and reversed by saving it again as not declared.

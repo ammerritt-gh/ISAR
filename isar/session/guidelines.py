@@ -13,7 +13,7 @@ import warnings
 from dataclasses import asdict, dataclass, field, fields
 
 from isar.analyze import prior as prior_recipe
-from isar.analyze.phonon import default_mode_ceiling
+from isar.analyze.phonon import CENTRAL_QE_INSTRUMENT, default_mode_ceiling
 from isar.analyze.prior import PhononPrior
 from isar.schema.card import Card
 
@@ -123,6 +123,7 @@ class Guidelines:
     overrides: dict = field(default_factory=dict)   # scan -> Override
     fast_pass: dict = field(default_factory=dict)   # [fitting.fast_pass], validated by fast_pass_settings
     prior: dict = field(default_factory=dict)       # [fitting.prior], validated by fast_pass_settings
+    instrument: str = ""                    # the card's instrument; gates the BL43LXU central QE
 
     # --- queries ------------------------------------------------------------
     def excluded(self, scan_number) -> str | None:
@@ -221,6 +222,7 @@ def resolve(card: Card) -> Guidelines:
         overrides=overrides,
         fast_pass=dict(f.get("fast_pass") or {}),
         prior=dict(f.get("prior") or {}),
+        instrument=str(card.policy.instrument or ""),
     )
 
 
@@ -389,7 +391,7 @@ def guidelines_signature(g: Guidelines, *, scan_number, q, T) -> dict:
     prior = g.expectation_for(scan_number=scan_number, q=q, T=T)
     fit_range, exclude_regions = g.mask_regions_for(scan_number=scan_number, q=q, T=T)
     peaks = g.peaks_for(scan_number=scan_number, q=q, T=T)
-    return {
+    sig = {
         "excluded": g.excluded(scan_number),
         "prior": None if prior is None else [prior.omega0, prior.omega0_sigma],
         "structures": g.structure_labels_for(scan_number=scan_number, q=q, T=T),
@@ -406,3 +408,8 @@ def guidelines_signature(g: Guidelines, *, scan_number, q, T) -> dict:
         "peaks": [[p["omega0"], p["sigma"]] for p in peaks],
         "fast_pass_settings": asdict(fast_pass_settings(g)),
     }
+    if g.instrument == CENTRAL_QE_INSTRUMENT:
+        # BL43LXU only: its stored fits read stale; every other instrument's signature is unchanged
+        sig["central_qe"] = {"recipe": prior_recipe.CENTRAL_QE_RECIPE_VERSION,
+                             "settings": asdict(prior_recipe.QEWidthSettings())}
+    return sig

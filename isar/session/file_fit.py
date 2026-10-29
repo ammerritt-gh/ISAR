@@ -116,10 +116,13 @@ def _fit(root: Path, item: FileItem, progress, emit) -> None:
     sample = driver._sample_of(rec, card)            # the effective record keeps the experiment id
     sp = up = None
     if intake_scans.applies(card):
-        sp = StartPoint(root, nop_card, g, runcal, parsed={key: rec}, rows={key: intake_scans.scan_row(rec, chash)},
+        row = intake_scans.scan_row(rec, chash)
+        gpi_entry = _gpi_entry(root, card, key, row, list(source_by_name.values()))
+        sp = StartPoint(root, nop_card, g, runcal, parsed={key: rec}, rows={key: row},
                         data_revision={key: chash},
                         passes=("fast",) if item.pass_kind == "fast" else ("fast", "deep"), run_id="",
-                        session=session, is_fresh=None, write_stub=None, loaded=loaded)
+                        session=session, is_fresh=None, write_stub=None, loaded=loaded,
+                        gpi={} if gpi_entry is None else {key: gpi_entry})
         up = sp.plan([(rec, det, q, None, sample, item.unit_key, chash, "", seed)])[0]
         task, eff, view = up.task, sp.frozen[key], sp.views[key] or runcal
         now = currentness.UnitNow(chash, up.ghash, up.calfp, up.inputs_hash)
@@ -192,6 +195,19 @@ def _fit(root: Path, item: FileItem, progress, emit) -> None:
         return result("deep", "failed", f"Deep pass not run: {record.get('reason')}", payload)
     warning = currentness.result_warning({"deep_pass": record}, "deep")
     result("deep", "done_warning" if warning else "done", warning, payload)
+
+
+def _gpi_entry(root: Path, card, key: str, row: dict, data_paths: list):
+    """The queued fit's own input check: the gpi check over the stored rows with this scan's row rebuilt from
+    the fresh parse, published as at import and run start; the scan's entry, or None (no file, or the check
+    failed: no gpi value is used)."""
+    from isar.intake import gpi
+    try:
+        check = gpi.check_gpi(root, card, data_paths, by="fit", rows={**intake_scans.read_scans(root), key: row})
+    except Exception:  # noqa: BLE001 — a failed check leaves the fit without gpi values, never stops it
+        log.exception("fit_file: gpi check failed; no gpi value is used")
+        return None
+    return None if check is None else check.scans.get(key)
 
 
 def _fast_status(entry: ScanEntry, det: str, tabulated: bool) -> tuple[str, str | None]:

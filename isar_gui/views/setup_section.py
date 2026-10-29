@@ -11,7 +11,8 @@ Two or three compact lines from the intake backend's import summary and settings
   checked yet, and each other ``rf/`` folder found beside new data with *Use this folder*.
 
 The section only shows what the backend returns. *Choose curves folder…* leaves through ``locate_requested``, and the
-window routes it to :func:`locate_resolution_folder`, the one route that saves a folder the user picks.
+window routes it to :func:`locate_resolution_folder`, the one route that saves a folder the user picks. The gpi
+folder (``gpi_files/``) is one line under it, with *Choose gpi folder…* leaving through ``gpi_locate_requested``.
 """
 from __future__ import annotations
 
@@ -37,6 +38,9 @@ LOCATE_TEXT = "Choose curves folder…"               # the setup line is tight 
 LOCATE_LONG = "Choose resolution-curve folder…"     # attention list, readiness list, Details dialog
 LOCATE_TIP = ("Pick the folder holding the measured resolution curves. It is saved with this experiment "
               "at once and the analysis fits with it.")
+GPI_LOCATE_TEXT = "Choose gpi folder…"
+GPI_LOCATE_TIP = ("Pick the folder holding the beamline's gpi files (gpi.<scan set>). It is saved with this "
+                  "experiment at once; their values are used after the data is read again or the analysis starts.")
 _SOURCE_WORDS = {"discovered": "found beside the data", "user": "chosen by you"}
 _LIST_ROWS = 6                  # an opened list shows this many rows, then scrolls
 _WARN = f"color: {TONE_COLOR[Tone.WARN]};"
@@ -67,6 +71,14 @@ def resolution_text(summary, settings) -> tuple[str | None, bool]:
     return None, False
 
 
+def gpi_text(settings) -> str:
+    """The gpi folder saved for this experiment and where it came from, or "gpi folder: none"."""
+    folder = None if settings is None else settings.gpi_folder
+    if folder is None:
+        return "gpi folder: none"
+    return f"gpi folder: {folder.path} ({_SOURCE_WORDS.get(folder.source, folder.source)})"
+
+
 def _start_folder(intake) -> str:
     settings, summary = intake.settings, intake.summary
     if settings is not None and settings.resolution_folder is not None:
@@ -83,6 +95,16 @@ def locate_resolution_folder(parent: QWidget, intake):
     if not folder:
         return None
     return intake.save_resolution_folder(Path(folder))
+
+
+def locate_gpi_folder(parent: QWidget, intake):
+    """*Choose gpi folder…*: pick a folder and save it at once as the user's gpi folder. Returns the
+    :class:`~isar_gui.viewmodels.intake.SaveOutcome`, or ``None`` when cancelled."""
+    saved = intake.settings.gpi_folder if intake.settings is not None else None
+    folder = QFileDialog.getExistingDirectory(parent, "Choose the gpi folder", "" if saved is None else saved.path)
+    if not folder:
+        return None
+    return intake.save_gpi_folder(Path(folder))
 
 
 class _Line(ElidedLabel):
@@ -131,6 +153,7 @@ class _RunButton(ElidedButton):
 
 class SetupSection(QWidget):
     locate_requested = Signal()
+    gpi_locate_requested = Signal()     # "Choose gpi folder…" -> the window's gpi chooser route
     run_requested = Signal()            # "Fast-pass all ready (N)" -> MainWindow.start_analysis (the button holds no logic)
 
     def __init__(self, intake, parent: QWidget | None = None) -> None:
@@ -164,6 +187,12 @@ class SetupSection(QWidget):
         self._locate.setObjectName("setup_locate")
         self._locate.setToolTip(LOCATE_TIP)
         self._locate.clicked.connect(self.locate_requested)
+        self._gpi = ElidedLabel("", self)           # the gpi folder in force, or "none"
+        self._gpi.setObjectName("setup_gpi")
+        self._gpi_locate = ElidedButton(GPI_LOCATE_TEXT, self)
+        self._gpi_locate.setObjectName("setup_gpi_locate")
+        self._gpi_locate.setToolTip(GPI_LOCATE_TIP)
+        self._gpi_locate.clicked.connect(self.gpi_locate_requested)
         self._run = _RunButton(RUN_TEXT, self)
         self._run.setObjectName("setup_run")
         self._run.setToolTip(RUN_TIP)
@@ -189,6 +218,12 @@ class SetupSection(QWidget):
         self._grid.setColumnStretch(0, 1)
         self._grid.addWidget(self._summary, 0, 0)
         self._grid.addWidget(self._resolution, 1, 0)
+        gpi_row = QHBoxLayout()                 # the gpi folder in force, and its chooser beside it
+        gpi_row.setContentsMargins(0, 0, 0, 0)
+        gpi_row.setSpacing(6)
+        gpi_row.addWidget(self._gpi, 1)
+        gpi_row.addWidget(self._gpi_locate, 0)
+        self._grid.addLayout(gpi_row, 2, 0)
         # Under the path, not beside it: the button names its object, and beside it the path got no room at 1108 px.
         # Fast-pass all ready leads the row, so it is on screen at every window size whatever the right panel does.
         buttons = QHBoxLayout()
@@ -197,8 +232,8 @@ class SetupSection(QWidget):
         buttons.addWidget(self._run, 0)
         buttons.addWidget(self._locate, 0)
         buttons.addStretch(1)
-        self._grid.addLayout(buttons, 2, 0)
-        self._grid.addWidget(self._run_note, 3, 0)
+        self._grid.addLayout(buttons, 3, 0)
+        self._grid.addWidget(self._run_note, 4, 0)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 2, 8, 2)
         layout.setSpacing(1)
@@ -281,6 +316,9 @@ class SetupSection(QWidget):
             curves.problem if curves is not None else None) != NO_CURVES)
         if curves is not None:
             self._resolution.setToolTip(f"{resolution}\n{self._checked_text(curves)}")
+        self._gpi.set_full_text(gpi_text(settings) if bl43 else "")
+        self._gpi.setVisible(bl43)
+        self._gpi_locate.setVisible(bl43)
 
         problem = curves.problem if bl43 and curves is not None else None
         shown = curve_problem(problem)

@@ -86,7 +86,8 @@ def stored_now(prev, det: str, *, g, runcal, row: dict | None, scan_inputs, curv
     """:class:`UnitNow` from what is stored, without parsing the data file: the import row's data revision
     (BL43; else the ledger's own content hash), the stamped q and T in the guidelines hash, the stored scan
     calibration. ``row``/``scan_inputs`` are the scan's import row and inputs (BL43), else None. None when
-    the stored scan calibration no longer stands for ``det`` against the curves now (``curves_now``)."""
+    the stored scan calibration no longer stands for ``det`` against the curves now (``curves_now``, already
+    narrowed to the scan's named set by the caller)."""
     if prev is None:
         return None
     from isar.intake import inputs
@@ -95,6 +96,10 @@ def stored_now(prev, det: str, *, g, runcal, row: dict | None, scan_inputs, curv
     exp = prev.scan_id.rsplit(":", 2)[0]
     scan = prev.scan_number
     state = runcal.tabulated.get(f"{exp}:{scan}") if runcal.method == "tabulated_elastic" else None
+    if state is not None and scan_inputs is not None:
+        # a switch between two named sets of one folder leaves its fingerprint as it was: judged first
+        if state.get("named") != scan_inputs.named:
+            return None
     if state is not None and not _state_stands(state, det, curves_now):
         return None
     prov = prev.provenance or {}
@@ -118,7 +123,7 @@ def current_passes(workspace_root: Path | str, unit_keys: Iterable[str] | None =
     analyzer file in the ledger); an unknown key gives ``frozenset()``. Reads the workspace once and never
     writes; ``FileNotFoundError`` when there is no workspace at ``workspace_root``. Re-exported, Qt-free, as
     ``isar.workspace_api.currentness.current_passes``."""
-    from isar.intake import curves, inputs, scans as intake_scans, store
+    from isar.intake import curves, gpi, inputs, scans as intake_scans, store
     from isar.session import calibrations, guidelines as guide_mod
     from isar.session.workspace import Workspace
 
@@ -129,14 +134,16 @@ def current_passes(workspace_root: Path | str, unit_keys: Iterable[str] | None =
     runcal = calibrations.calibration_view(card)
     request = queue_deep_request()
     bl43 = intake_scans.applies(card)
-    rows, index, curves_now = {}, None, None
+    rows, index, curves_now, gpi_now = {}, None, None, {}
     if bl43:
         rows = intake_scans.read_scans(root)
+        gpi_now = gpi.entries_in_force(root)
         read = store.read_all(root, store.ENTRIES)
         index = inputs.index_entries(read.entries, lines=read.lines)
         folder, pattern, _source = curves.resolution_location(card, root)
         curves_now = curves.load_curves(folder, pattern)          # logs why when unusable; then not judged
     inputs_of: dict = {}
+    curves_of: dict = {}
     out: dict[str, frozenset[str]] = {}
     for key in keys:
         prev = session.get(key)
@@ -144,15 +151,18 @@ def current_passes(workspace_root: Path | str, unit_keys: Iterable[str] | None =
             out[key] = frozenset()
             continue
         det = key.rsplit(":", 1)[1]
-        row = si = None
+        row = si = scan_curves = None
         if bl43:
             scan = key.rsplit(":", 1)[0]
             row = rows.get(scan)
             if row is None:              # a BL43 unit with no import row has nothing to compare with
                 out[key] = frozenset()
                 continue
-            si = inputs_of.get(scan) or inputs_of.setdefault(scan, inputs.scan_inputs(row, index))
-        now = stored_now(prev, det, g=g, runcal=runcal, row=row, scan_inputs=si, curves_now=curves_now)
+            si = inputs_of.get(scan) or inputs_of.setdefault(scan, inputs.scan_inputs(row, index, gpi_now.get(scan)))
+            if scan not in curves_of:    # narrowed once per scan: each narrowing reads the named set's curve files
+                curves_of[scan] = curves.with_named(curves_now, si.named)
+            scan_curves = curves_of[scan]
+        now = stored_now(prev, det, g=g, runcal=runcal, row=row, scan_inputs=si, curves_now=scan_curves)
         out[key] = judge(prev, det, now, request)
     return out
 

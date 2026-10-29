@@ -297,8 +297,9 @@ empty/ready layout pair, and amends G19 as stated below.
     counts are raw lifts the hold on them and changes no count and no flag (an `_lr` analyzer stays
     held whatever is saved); every fit made that way records it, and *Withdraw* takes it back.
 - **Pinned for later, not built here:** the analyzer overview in the centre, automatic
-  export to an outside folder, `gpi.*` parsing for per-analyzer Q, and user values for Q and for facts
+  export to an outside folder, and user values for Q and for facts
   other than temperature, slit and dead analyzers.
+- **Built since:** `gpi.*` parsing for per-analyzer Q, slit and curve set (the BL43 gpi files, [USING_ISAR](../USING_ISAR.md)).
 
 ---
 

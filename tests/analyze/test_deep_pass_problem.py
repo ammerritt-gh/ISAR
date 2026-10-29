@@ -7,6 +7,7 @@ configured prior (plan revision F7). Also: a mixed delta mask keeps ONE ordered 
 either width density, and ``bayesian_posterior`` is unchanged by routing through ``EvidenceProblem``
 (tests/analyze/test_bayes.py and test_evidence.py are the unchanged pins).
 """
+import functools
 import math
 
 import numpy as np
@@ -14,9 +15,12 @@ import pytest
 
 from isar.analyze import deep_pass as dp
 from isar.analyze import evidence, fast_pass, loop, prior
+from isar.analyze.components import (QE_WEIGHT_CONVENTION, CentralQE, CompositeModel, ConstantBackground,
+                                     Elastic, PhononDHO)
+from isar.analyze.context import ScanContext
 from isar.analyze.errors.bayes import EvidenceProblem
 from isar.analyze.fast_pass import FastPassSettings
-from isar.session import scan_delivery
+from isar.session import deep_delivery, scan_delivery
 from isar.synth import bl43_curves, count_bench
 
 
@@ -120,3 +124,76 @@ def test_full_params_embeds_the_pinned_width():
     full = problem.full_params([5.0, 100.0, 8.0])
     assert full == {"phonon.omega0": 5.0, "phonon.Gamma": loop.GAMMA_FLOOR, "phonon.h": 100.0,
                     "bg.BG": 8.0}
+
+
+# --- BL43LXU: the deep pass samples the labels the fast pass priced (S1U3) ----------------------------
+QX = np.arange(-5.0, 10.0, 0.25)
+QE_CASES = {   # the truth of each case; the fast pass's winner differs between them
+    "phonon": ([PhononDHO(), Elastic(), ConstantBackground()], [5.0, 0.6, 40.0, 200.0, 3.0]),
+    "central_qe": ([Elastic(), CentralQE(), ConstantBackground()], [150.0, 2.5, 80.0, 20.0]),
+}
+
+
+def _bl43(counts):
+    return ScanContext(x=QX, counts=counts, mask=np.ones(QX.size, bool), T=97.0, center=0.0,
+                       gauss_fwhm=0.0, lorentz_fwhm=0.0, instrument="BL43LXU",
+                       energy_status="absolute", resolution_curve=bl43_curves.curve("a06"))
+
+
+@functools.lru_cache(maxsize=None)
+def _bl43_record(case):
+    components, theta = QE_CASES[case]
+    ctx = _bl43(CompositeModel(components).evaluate(QX, theta, _bl43(np.ones(QX.size))))
+    res = fast_pass.run_fast_pass(ctx, settings=FastPassSettings(mode_ceiling=1))
+    return ctx, scan_delivery._fast_pass_record(res)
+
+
+@pytest.mark.parametrize("case", sorted(QE_CASES))
+def test_the_deep_pass_samples_the_label_each_group_priced(case):
+    ctx, record = _bl43_record(case)
+    models = record["models"]
+    parents = {m["parent"] for m in models}
+    want = set()
+    for parent in parents:
+        group = [m for m in models if m["parent"] == parent]
+        priced = {m["label"] for m in group if not m["superseded"] and m["ln_z"] is not None}
+        want |= priced or {parent}
+    entries = dp.models_from_record(ctx, record, dp.plain_hypotheses(ctx, 1))
+    assert len(entries) == len(parents) and {e.label for e in entries} == want
+    assert not {m["label"] for m in models if m["superseded"]} & want
+    assert dp.stage_width(record) == len(want)
+    qe_checked = 0
+    for e in entries:
+        priced = [m["ln_z"] for m in models if m["label"] == e.label and m["ln_z"] is not None]
+        if priced:
+            want_z = np.logaddexp.reduce(priced) - record["ln_like_saturated"]
+            assert e.fastpass_ln_z == pytest.approx(want_z), e.label
+        else:
+            assert e.fastpass_ln_z is None, e.label
+        if e.fastpass_lnl_opt is None:
+            continue
+        names = [p.name for p in e.problem.bundle.params]
+        theta, cost = _point(record, e.label, names)
+        loglike, _ptform, _ndim = e.problem()
+        assert loglike(np.array(theta)) == pytest.approx(-cost / 2, rel=1e-6, abs=1e-6), e.label
+        if "qe.width" in names:
+            w = theta[names.index("qe.width")]
+            density = e.problem.bundle.by_name()["qe.width"].logpdf(w)
+            assert density == pytest.approx(prior.resolve_prior_for(ctx).ln_qe_width(w)), e.label
+            qe_checked += 1
+    assert any(m["on_demand"] for m in models if m["label"] in want) == (case == "phonon") and qe_checked > 0
+
+
+def test_the_deep_summary_publishes_the_chosen_central_qe(monkeypatch):
+    ctx, record = _bl43_record("central_qe")
+    entry = next(e for e in dp.models_from_record(ctx, record, dp.plain_hypotheses(ctx, 1))
+                 if "qe.width" in [p.name for p in e.problem.bundle.params])
+    monkeypatch.setattr(deep_delivery.errors, "attach", lambda *args, **kwargs: None)   # errors: not this test's
+    out = deep_delivery._chosen(dp.ModelEvidence(entry.label, entry.count, "reference"), entry, record,
+                                deep_delivery.DeepRequest(), None)
+    qe, p = out["qe"], out["params"]
+    assert qe["convention"] == QE_WEIGHT_CONVENTION and qe["pinned"] is False
+    assert (qe["height"], qe["width"]) == (p["qe.h"], p["qe.width"])
+    assert qe["weight"] == pytest.approx(
+        CentralQE().spectral_weight({"h": p["qe.h"], "width": p["qe.width"]}, entry.problem.ctx))
+    assert qe["window"] == (QX.min(), QX.max())

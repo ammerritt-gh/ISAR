@@ -17,7 +17,7 @@ ISAR = analysis authority). Forward workstreams live in their own plans:
 [SPEEDUP](docs/plans/speedup.md), [STEERING roadmap §10](docs/design/steering.md),
 [BACKGROUND](docs/plans/background.md), [EIG](docs/design/eig.md).
 
-Last updated: 2026-10-27.
+Last updated: 2026-10-29.
 
 ---
 
@@ -111,6 +111,41 @@ Things that are wrong now, as opposed to things not yet built.
       low-q rescue in `isar/session/scan_delivery.py`) uses the recipe; file fitting never does.
       **Acceptance:** a functional tie (`h = A × height(ω₀, Γ)`, re-evaluated at every model
       evaluation) restores the brightness pin, if a campaign needs it.
+
+- [ ] **DEFECT-11 — OP1 pooled-mode replay regressed.** `tests/slow/test_op1_branch_replay.py::test_op1_pooled_modes_replay_as_optic_and_acoustic_tracks`
+      expects an optic mode at 7.774 meV at the replayed index and the fit no longer gives it. It was
+      already failing before `cadd6592` (prior /6). The test was last edited 2026-08-07;
+      `test_workspaces/OP1/session.json` has been unchanged since 2026-07-18, so a code change in
+      between broke it. The culprit commit is not known (not bisected). The test reads a local-only
+      workspace, so it is in effect a proof and may belong in `proofs/`. Pinned `xfail(strict=False)`.
+      **Acceptance:** the cause is found and the test passes unpinned, or it moves to `proofs/` with a
+      justified expectation.
+
+- [ ] **DEFECT-12 — Parallel-only gate failures not fixed (2026-10-29).** Found while stabilising
+      `python -m pytest -n 16 --dist worksteal`. The cause of the worker crashes and of
+      `test_gutter_file_and_blank_clicks_and_hover` was found and fixed in `tests/gui/conftest.py`
+      (collections ran on xdist's receiver thread and freed Qt wrappers off-thread; a leaked Help
+      window swallowed `QTest.mouseMove`; the rename test pumps events while waiting for its worker; the
+      scan-inspector geometry tests wait on the layout instead of a fixed time). What is left:
+      - `tests/report/test_campaign_diagnostic_sections.py::test_render_failed_becomes_a_defect`
+        failed in the earlier gate runs of 2026-10-29 but **did not fail in 18 whole-gate or
+        report+gui runs** here, before or after the fix, so no error text was captured and no cause
+        found. It stays in the gate unchanged. One guess, unconfirmed: the same off-thread
+        collection corrupting a matplotlib figure mid-render.
+      - `tests/session/test_driver_smoke.py::test_run_batch_emits_timer_stages`: reported failing in
+        another session's gate runs on a busy machine; no error text was kept, and it did not fail in
+        16 concurrent copies under 24 busy loops, nor in `tests/session` at `-n 16` under load. Not
+        found; it stays in the gate unchanged.
+      - `tests/gui/test_window_frame.py::test_the_arrangement_is_the_same_before_and_after_the_first_data`
+        failed once before the crash fix (a window-geometry flake of the kind fixed in
+        `test_scan_inspector.py`, which waited a fixed 80 ms); not seen since.
+      - Seen once each in runs before the fix, probably the same crash: `tests/gui/test_shell.py::test_empty_start_window`
+        (worker crashed), `tests/gui/test_backends.py::test_apply_health_marks_reachable_http_error_amber` (worker crashed).
+      - Order-dependent, found by hand not in the gate: `tests/gui/test_fact_table.py` followed by
+        another GUI test raises `AttributeError: 'types.SimpleNamespace' object has no attribute
+        'fast_pass'` inside a Qt slot (a test leaves a widget whose timer still reads a stub workspace).
+      **Acceptance:** each item is either fixed at its shared state with a before/after run, or
+      recorded as understood and accepted.
 
 ---
 
@@ -453,6 +488,18 @@ the steering roadmap ([design/steering.md](docs/design/steering.md) §10). Only 
       tripwire was deleted 2026-10-29; the attachment-semantics design discussion comes first.
       **Acceptance:** on the FCC world, with vs without a declared acoustic hypothesis, the real closed
       loop places at least one scan differently, pinned by a new A/B test.
+- [ ] **DRV-7 — Scene and prior /6 conflict on the zone-centre endpoint.** The two endpoint tests in
+      `tests/scene/test_worlds_scene.py` (`test_the_endpoint_world_terminates_the_acoustic_track_at_the_declared_zone_centre`,
+      `test_the_zone_centre_exemption_does_not_spread_to_the_rest_of_the_path`) fail since `cadd6592`
+      (prior /6, near-zero penalty); all nine tests in that file pass at `cadd6592~1`. The fitter no
+      longer reports the acoustic mode at H = 2.05 (truth 0.31 meV against a ~1.32 meV FWHM
+      resolution), so the acoustic track starts at H = 2.10 and the gap toward the declared zone centre
+      is `blocked_unresolved`, not a structural endpoint. At H = 2.10 the fitted energy is 0.95 meV
+      against a truth of 0.62 (one probe run, not a measured bias). Undecided, parked for the later scene
+      pass: the scene's endpoint rule adapts; or the prior's near-zero penalty yields at a declared zone
+      centre. Pinned `xfail(strict=False)`; no expected value was changed.
+      **Acceptance:** the two endpoint tests pass unpinned, or are re-pinned by a decision recorded in
+      `docs/design/scene.md`.
 
 ---
 
@@ -474,6 +521,12 @@ None of these change a reported number; all are cost or hygiene.
       explicit single-writer contract or a workspace lock first — today's always-reload is what
       makes mid-campaign human card edits safe.
       **Acceptance:** a single-writer contract exists and residency is enabled behind it.
+- [ ] **PERF-4 — Heavy fixtures inside the routine gate.** Four fixtures make the ~90 s gate slower,
+      not wrong: a 32 s mocked campaign-loop test in `tests/drive/test_loop.py`, a 26 s fixture rebuilt
+      per worker in `tests/session/test_master_predictive.py`, a 23 s GUI fixture in
+      `tests/gui/test_scan_list_marks.py`, and a 15 s fixture in
+      `tests/report/test_campaign_diagnostic_characterization.py`. The gate already meets its target.
+      **Acceptance:** each is shared, cached or slimmed, or left with a recorded reason.
 - [ ] **INT-1 — Centralize steering string constants.** `fit_kind` literals ("unconstrained",
       "soft_prior", "branch_conditional", "stokes_only", "descriptor_only") are spread over 8
       files, and "acoustic"/"optic" is duplicated as two independent `BRANCH_ID` constants
@@ -623,12 +676,15 @@ conditions — these are wants, not commitments.
 - `isar_gui/views/attention_list.py:87` — three near-identical wrapped-label classes (`_Line`, `_Wrapped`,
   `_Cell`), four pluraliser helpers and a `_WARN` style in five files; one `WrappedLabel`, one helper,
   one theme constant. Revisit when any of them next needs a wrapping or minimum-size fix.
+- `isar/session/deep_delivery.py:122` — the deep record's QE summary is built by hand beside
+  `fast_pass._qe_result`, each computing its window from `ctx.x_used - ctx.center`; one
+  `CentralQE.summary(local, ctx)` in `components.py` for both. Revisit if a third consumer reads it.
 
 ---
 
 ## Notes
 
-routine suite 1.4 min, over its 1-min budget
+routine suite 1.8 min, over its 1-min budget
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test

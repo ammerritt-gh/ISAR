@@ -27,9 +27,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from isar.analyze.lineshapes import (Lorentzian, UnitPeak, Voigt, _dho_grid_values, convolve_tabulated, dho_signal,
-                                     resolution_convolver, unit_peak, unit_peak_of_nodes,
-                                     voigt_area_for_height)
+from isar.analyze.lineshapes import (KB, Lorentzian, UnitPeak, Voigt, _dho_grid_values, bose_numerator,
+                                     convolve_tabulated, dho_signal, resolution_convolver, unit_peak,
+                                     unit_peak_of_nodes, voigt_area_for_height)
 
 
 def _curve(ctx):
@@ -211,6 +211,97 @@ class QuasiElastic(Component):
 
     def unit_columns(self, x, nonlinear: dict, ctx) -> dict:
         return {"QE": self.evaluate(x, {"QE": 1.0}, ctx)}
+
+
+QE_WEIGHT_CONVENTION = ("intrinsic Lorentzian x relaxational factor, unconvolved, integrated over "
+                        "the fitted energy window")
+
+
+def _relaxational_factor(E, T):
+    """``r(E) = (E/kT) / (1 - exp(-E/kT))``: the relaxational detailed-balance factor, ``r(0) = 1`` and
+    ``r(-E)/r(E) = exp(-E/kT)``. 1 when T is missing, non-finite or <= 0: the high-temperature limit
+    (the T -> 0 limit diverges); BL43LXU records always carry a temperature, so this is a guard."""
+    E = np.asarray(E, dtype=float)
+    if T is None or not np.isfinite(T) or T <= 0:
+        return np.ones_like(E)
+    return bose_numerator(E, T) / (KB * float(T))
+
+
+def central_qe_columns(x, ctx, widths, *, weights=False):
+    """``(columns, weight_per_h)``: ``columns`` is ``(len(widths), x.size)``, row ``i`` the QE of
+    intrinsic FWHM ``widths[i]`` (a unit-area Lorentzian at the energy zero times the relaxational
+    factor, applied before the convolution and never renormalised over the grid) convolved with the
+    resolution, at ``x - ctx.center`` and divided by its maximum over the convolver's output nodes
+    (so a row's maximum is <= 1, = 1 when the peak lies inside ``x``: ``h`` is the convolved peak
+    height, the phonons' convention). ``weight_per_h`` (``len(widths)``) is the intrinsic shape's
+    integral over ``[min(ctx.x_used), max(ctx.x_used)] - ctx.center`` divided by the same maximum
+    (``None`` unless ``weights``). One batched convolution.
+    shortcut: the grid ends 20 meV past the data, so a width of tens of meV loses its far tail;
+    widen ``lineshapes.CONVOLUTION_PAD`` if the fitted width ever rails at the prior's far end."""
+    x = np.asarray(x, dtype=float)
+    widths = np.atleast_1d(np.asarray(widths, dtype=float))
+    conv = _convolver(x, ctx)
+
+    def intrinsic(E):
+        return (widths[:, None] / (2.0 * np.pi)) / (E ** 2 + (0.5 * widths[:, None]) ** 2) \
+            * _relaxational_factor(E, ctx.T)
+
+    rows = conv.nodes(intrinsic(conv.grid))
+    peak = rows.max(axis=1)
+    q = x - ctx.center
+    cols = np.stack([np.interp(q, conv.x_out, row, left=0.0, right=0.0) / p
+                     for row, p in zip(rows, peak)])
+    if not weights:
+        return cols, None
+    used = np.asarray(ctx.x_used, dtype=float) - ctx.center
+    lo, hi = float(used.min()), float(used.max())
+    inside = conv.grid[(conv.grid > lo) & (conv.grid < hi)]
+    E = np.concatenate(([lo], inside, [hi]))
+    f = intrinsic(E)
+    area = np.sum(0.5 * (f[:, 1:] + f[:, :-1]) * np.diff(E), axis=1)   # trapezoid rule; NumPy 1.x has no np.trapezoid
+    return cols, area / peak
+
+
+class CentralQE(Component):
+    """The central quasi-elastic component of a BL43LXU spectrum: phenomenological, a "central
+    excess" with no mechanism claimed (reported as a spectral weight and a width, nothing more).
+
+    A Lorentzian of fitted intrinsic FWHM ``width`` centred on the energy zero (never fitted
+    separately), times the relaxational detailed-balance factor (:func:`central_qe_columns`), always
+    convolved with the measured resolution. ``h`` (linear) is the convolved peak height, so the
+    phonons' height prior applies unchanged; ``width`` (nonlinear) has its own prior
+    (:class:`isar.analyze.prior.QEWidthPrior`). ``CentralQE(width=w)`` pins the width (a card's
+    ``quasielastic_fwhm``): no width parameter, no width prior. Not :class:`QuasiElastic`, which
+    stays the IN8 fixed-width variant, and not a scene component."""
+
+    prefix = "qe"
+    params = (Parameter("width", "nonlinear"), Parameter("h", "linear"))
+    width: float | None = None        # the pinned width, None when fitted
+
+    def __init__(self, prefix: str | None = None, width: float | None = None):
+        super().__init__(prefix)
+        if width is not None:
+            if not (np.isfinite(width) and width > 0):
+                raise ValueError(f"a pinned QE width must be positive and finite, got {width!r}")
+            self.width = float(width)
+            self.params = (Parameter("h", "linear"),)
+
+    def width_of(self, local: dict) -> float:
+        return self.width if self.width is not None else float(local["width"])
+
+    def unit_columns(self, x, nonlinear: dict, ctx) -> dict:
+        cols, _ = central_qe_columns(x, ctx, [self.width_of(nonlinear)])
+        return {"h": cols[0]}
+
+    def evaluate(self, x, local: dict, ctx) -> np.ndarray:
+        """``h`` times the unit column; no exposure (:class:`CompositeModel` applies it once)."""
+        return local["h"] * self.unit_columns(x, local, ctx)["h"]
+
+    def spectral_weight(self, local: dict, ctx) -> float:
+        """The intrinsic shape's integral over the fitted window, at height ``local["h"]``
+        (:data:`QE_WEIGHT_CONVENTION`): counts x meV at the reference exposure."""
+        _, per_h = central_qe_columns(ctx.x_used, ctx, [self.width_of(local)], weights=True)
+        return float(local["h"] * per_h[0])
 
 
 class ConstantBackground(Component):

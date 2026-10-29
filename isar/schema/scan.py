@@ -29,7 +29,7 @@ ENERGY_STATUSES = ("absolute", "needs_zero", "needs_conversion_and_zero")
 RAW_ABSCISSA_KINDS = ("energy", "temperature", "angle")
 # Which rung of the Q ladder (design R3) produced a spectrum's Q; rung 4 means no Q (q is None).
 # card_offset is a nominal card value, not a measurement, so it sits with the approximate rung 3.
-Q_SOURCE_RUNG = {"header": 1, "filename": 1, "reported": 1, "card_offset": 3, "none": 4}
+Q_SOURCE_RUNG = {"gpi": 1, "header": 1, "filename": 1, "reported": 1, "card_offset": 3, "none": 4}
 
 
 # ---------------------------------------------------------------------------

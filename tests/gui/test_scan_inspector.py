@@ -255,14 +255,19 @@ def test_a_long_metadata_label_elides_with_its_full_name_in_the_tooltip(qtbot, p
     assert label.toolTip() == "count_recovery_max_deviation"
 
 
+def _frame_settles(qtbot, w):
+    # The docks reach their final geometry through queued layout passes; under a loaded machine a fixed wait
+    # measured them mid-way. Retry the frame check until it holds (the last failure is raised on timeout).
+    qtbot.waitUntil(lambda: assert_frame_geometry(w, LAPTOP), timeout=5000)
+
+
 def test_many_metadata_rows_scroll_inside_the_panel_at_the_laptop_width(qtbot, patched, bl43_ws, monkeypatch):
     md = {"unit": A06, **{f"fact_{i:02d}": f"{i} (sidecar)" for i in range(40)}}
     monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
     vm, panel = _panel(qtbot, bl43_ws)
     panel.resize(mw_mod._INSPECTOR_MIN, 600)
     _select(panel, A06)
-    qtbot.wait(30)
-    assert panel._scroll.verticalScrollBar().maximum() > 0
+    qtbot.waitUntil(lambda: panel._scroll.verticalScrollBar().maximum() > 0, timeout=5000)
     assert panel.minimumSizeHint().width() <= mw_mod._INSPECTOR_MIN
 
 
@@ -271,9 +276,8 @@ def test_a_long_unit_in_the_laptop_window_keeps_the_frame_and_scrolls(qtbot, pat
     monkeypatch.setattr(InspectorViewModel, "_unit_metadata", staticmethod(lambda *_args: md))
     w = _window(qtbot, monkeypatch, LAPTOP, bl43_ws)
     w.scan_list_vm.inspect(A06)
-    qtbot.wait(50)
-    assert_frame_geometry(w, LAPTOP)
-    assert w.scan_inspector._scroll.verticalScrollBar().maximum() > 0
+    qtbot.waitUntil(lambda: w.scan_inspector._scroll.verticalScrollBar().maximum() > 0, timeout=5000)
+    _frame_settles(qtbot, w)
 
 
 def test_scan_numbers_text_for_each_kind_of_set():
@@ -585,9 +589,8 @@ def test_a_processing_panel_re_expanded_stays_open_while_the_inspector_is_open(
     w.set_right_panel_collapsed(False)
     qtbot.wait(50)
     w.scan_list_vm.inspect(A04)                      # another spectrum while it is open: no second collapse
-    qtbot.wait(50)
     assert not w._right_panel_collapsed() and not w.scan_inspector.isHidden()
-    assert_frame_geometry(w, LAPTOP)
+    _frame_settles(qtbot, w)
 
 
 def test_on_a_desktop_opening_the_inspector_leaves_processing_expanded(qtbot, patched, bl43_ws, monkeypatch):
@@ -603,9 +606,8 @@ def test_laptop_with_the_inspector_open_and_the_right_panel_expanded_fits(
     w = _window(qtbot, monkeypatch, LAPTOP, bl43_ws)
     w.scan_list_vm.inspect(A06)
     w.set_right_panel_collapsed(False)
-    qtbot.wait(80)
+    _frame_settles(qtbot, w)
     assert not w.scan_inspector.isHidden() and not w._right_panel_collapsed()
-    assert_frame_geometry(w, LAPTOP)
     assert w._center_stack.width() >= 300 and w._center_stack.height() >= 250
     assert w.scan_list.width() >= mw_mod._LEFT_MIN
     assert w.scan_inspector.width() >= mw_mod._INSPECTOR_MIN

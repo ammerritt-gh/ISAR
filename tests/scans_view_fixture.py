@@ -65,7 +65,7 @@ class Truth:
     deep: dict | None
 
 
-def _manifest(modes=(), *, peak="stokes+astokes") -> dict:
+def _manifest(modes=(), *, peak="stokes+astokes", qe=None) -> dict:
     components = []
     parameters = {}
     for number, (energy, gamma, height) in enumerate(modes, 1):
@@ -73,9 +73,12 @@ def _manifest(modes=(), *, peak="stokes+astokes") -> dict:
         components.append({"type": "phonon_dho", "prefix": prefix, "peak": peak})
         parameters.update({f"{prefix}.omega0": energy, f"{prefix}.Gamma": gamma,
                            f"{prefix}.h": height})
-    components.extend(({"type": "elastic", "prefix": "elastic"},
-                       {"type": "constant_background", "prefix": "bg"}))
+    components.append({"type": "elastic", "prefix": "elastic"})
     parameters.update({"elastic.h": 300.0, "bg.BG": 3.0})
+    if qe is not None:                  # a fitted BL43LXU central QE: (intrinsic FWHM, height)
+        components.append({"type": "central_qe", "prefix": "qe"})
+        parameters.update({"qe.width": qe[0], "qe.h": qe[1]})
+    components.append({"type": "constant_background", "prefix": "bg"})
     return {"schema": "isar.model_manifest/2", "components": components,
             "parameters": parameters}
 
@@ -99,7 +102,7 @@ def _fast_manifest(key: str) -> tuple[str, dict, list[tuple[str, dict]]]:
         return "elastic+bg", selected, [("elastic+bg", selected),
                                                       ("1 DHO", one_mode)]
     if key == STOKES_ONLY:
-        selected = _manifest(((4.2, 0.4, 30.0),), peak="stokes")
+        selected = _manifest(((4.2, 0.4, 30.0),), peak="stokes", qe=(2.0, 12.0))
     elif key == DEEP_DELTA:
         selected = _manifest(((3.8, 0.4, 30.0),))
     elif key == NO_MONITOR:

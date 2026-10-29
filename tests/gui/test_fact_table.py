@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QLabel, QLin
 
 import bl43_fixture
 import bl43_intake_fixture
+import intake_fixtures as fx
+from isar.session import ingest
 from isar.workspace_api import Workspace, needs_attention
 from isar_gui.main_window import MainWindow
 from isar_gui.session import Session
@@ -277,6 +279,21 @@ def test_an_hkl_in_the_files_is_shown_in_rlu_with_its_source(qtbot, ft_ws):
 def test_a_q_missing_everywhere_says_so(qtbot, ft_ws):
     rig = Rig(qtbot, ft_ws, A05)                           # set A's a05 has no #Q= line either
     assert rig.text("q", "files").startswith("—") and rig.cell("q", "files").toolTip() == NO_HKL
+
+
+def test_an_hkl_from_an_accepted_gpi_file_is_shown_as_used_from_it_not_as_no_hkl(qtbot, tmp_path):
+    ws, data = fx.bl43_workspace(tmp_path, stems=("A",), analyzers=("a03", "a05"))
+    q = {"a03": 10.0, "a05": 11.0}                         # generated, as the data files' #Q= trailers
+    fx.write_scan(data, stem=f"{fx.STEM}_A", analyzers=("a03", "a05"), seed=1, energy=fx.ENERGY_120, q_nm=q)
+    fx.write_gpi(data, f"{fx.STEM}_A", q_nm=q, hkl={"a03": (0.5, 0.5, 3.0), "a05": (0.5, 0.5, 3.5)})
+    card, session = ws.load()
+    ingest.ingest_batch(card, session, [data], workspace_root=ws.root)
+    ws.save(card, session)
+    scan = sorted({r.scan for r in Workspace(ws.root).fact_rows()})[0]
+    rig = Rig(qtbot, ws.root, f"{scan}:a03")
+    assert rig.text("q", "used") == "[0.5, 0.5, 3] rlu\nfrom the gpi file"
+    assert rig.cell("q", "used").toolTip() != NO_HKL
+    assert rig.text("q", "files") == "—\nmissing"           # the file gave no HKL; the gpi file did
 
 
 def test_the_analyzer_row_marks_dead_then_in_use_from_the_conditions_read(qtbot, monkeypatch, ft_ws):

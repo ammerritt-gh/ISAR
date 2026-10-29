@@ -54,6 +54,7 @@ _WATCHED: dict[str, tuple[str, ...]] = {
     "intake_scans": ("report", "intake_scans.json"),      # the import record
     "fit_inputs": ("report", "fit_inputs.jsonl"),         # what each pass used (a scan start, an analyzer finish)
     "curves": ("report", "curves.json"),                  # the curve check, at each import and run start
+    "gpi": ("report", "gpi.json"),                        # the gpi check, beside the curve check
 }
 
 
