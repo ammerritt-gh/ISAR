@@ -117,7 +117,7 @@ CONTRACT = (
 
 # the settings table, in display order: (name, group, default), the plan's table
 SETTING_TABLE = (
-    ("q_tolerance_meV", "front", 2.0), ("t_tolerance_meV", "front", 1.0), ("flag_threshold", "front", 9.0),
+    ("q_tolerance_meV", "front", 2.0), ("t_tolerance_meV", "front", 1.0), ("flag_threshold", "front", 54.0),
     ("shape_family", "advanced", "welsch"), ("step_exponent", "advanced", 0.25),
     ("sweep_tol_meV", "advanced", 0.01), ("sweep_cap", "advanced", 20),
     ("q_change_scale_meV", "hidden", 1.0), ("q_curvature_scale_meV", "hidden", 1.0),
@@ -160,9 +160,13 @@ def test_the_settings_table_is_the_plan_table():
     assert tuple((d.name, d.group, d.default) for d in SETTING_DEFS) == SETTING_TABLE
 
 
+# plan revision 4: calibrated on synthetic tracks (expert continuation 2); every other row uncalibrated
+CALIBRATED_ROWS = {"t_tolerance_meV", "step_exponent", "reference_T_K", "penalty_cap", "flag_threshold"}
+
+
 @pytest.mark.parametrize("d", SETTING_DEFS, ids=lambda d: d.name)
-def test_every_row_is_uncalibrated_and_described(d):
-    assert d.calibrated is False
+def test_every_row_carries_the_plan_mark_and_is_described(d):
+    assert d.calibrated is (d.name in CALIBRATED_ROWS)
     assert d.help.strip()
     assert d.default is not None
 

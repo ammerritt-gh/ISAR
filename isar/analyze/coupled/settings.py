@@ -1,6 +1,7 @@
 """The inter-spectra settings: one table of names, bounds and starting values (C-settings).
 
-Every value is uncalibrated until the expert pair calibrates it in planning. Stdlib only; Qt-free.
+Five rows are calibrated on synthetic tracks, not on real data (``calibrated=True``); the rest are
+uncalibrated starting values. Stdlib only; Qt-free.
 ``InterSettings.from_values`` is the checked reader: an unknown name, a wrong type or an out-of-bounds
 value raises ValueError naming it. The writer (deltas, ``None`` = back to default) is
 ``isar.intake.inter_values``; the reader that folds those deltas is ``isar.intake.inter_spectra``.
@@ -21,7 +22,7 @@ class SettingDef:
     group: Literal["front", "advanced", "hidden"]     # dialog placement; "hidden" = not shown
     kind: Literal["float", "int", "choice", "bool"]
     default: object
-    calibrated: bool                                  # False = shown as "uncalibrated"
+    calibrated: bool                                  # False = "uncalibrated"; True = calibrated on synthetic tracks
     unit: str | None
     minimum: float | None
     maximum: float | None
@@ -30,8 +31,8 @@ class SettingDef:
     strict_minimum: bool = False                      # the table's "> 0": the minimum itself is refused
 
 
-def _row(name, group, kind, default, unit, minimum, maximum, help_, *, choices=None, strict=False):
-    return SettingDef(name, group, kind, default, False, unit, minimum, maximum, choices, help_, strict)
+def _row(name, group, kind, default, unit, minimum, maximum, help_, *, choices=None, strict=False, cal=False):
+    return SettingDef(name, group, kind, default, cal, unit, minimum, maximum, choices, help_, strict)
 
 
 SETTING_DEFS: tuple[SettingDef, ...] = (
@@ -39,14 +40,14 @@ SETTING_DEFS: tuple[SettingDef, ...] = (
          "Anchored batches: the energy change along q that costs nothing before any penalty applies."),
     _row("t_tolerance_meV", "front", "float", 1.0, "meV", 0, 50,
          "Temperature neighbours: the energy change that costs little at the reference temperature step.",
-         strict=True),
-    _row("flag_threshold", "front", "float", 9.0, None, 0, 1000,
-         "A spectrum is flagged for review when its flag score reaches this value.", strict=True),
+         strict=True, cal=True),
+    _row("flag_threshold", "front", "float", 54.0, None, 0, 1000,
+         "A spectrum is flagged for review when its flag score reaches this value.", strict=True, cal=True),
     _row("shape_family", "advanced", "choice", "welsch", None, None, None,
          "The shape of the penalty: welsch (bounded, the default) or quartic (for comparison).",
          choices=("welsch", "quartic")),
     _row("step_exponent", "advanced", "float", 0.25, None, 0, 2,
-         "How much the tolerated temperature change widens with the size of the temperature step."),
+         "How much the tolerated temperature change widens with the size of the temperature step.", cal=True),
     _row("sweep_tol_meV", "advanced", "float", 0.01, "meV", 0, 1,
          "A sweep that moves no mode energy by more than this is quiet; two quiet sweeps settle a batch.",
          strict=True),
@@ -58,12 +59,12 @@ SETTING_DEFS: tuple[SettingDef, ...] = (
          "Simultaneous q links: the energy scale of the curvature residual along a line of three spectra.",
          strict=True),
     _row("reference_T_K", "hidden", "float", 100.0, "K", 0, 1000,
-         "The temperature step, in kelvin, at which the temperature tolerance applies unchanged.", strict=True),
+         "The temperature step, in kelvin, at which the temperature tolerance applies unchanged.", strict=True, cal=True),
     _row("t_spacing_form", "hidden", "choice", "widen", None, None, None,
          "How the temperature step enters the penalty: widen (the default) or divide (the literal form, for comparison).",
          choices=("widen", "divide")),
     _row("penalty_cap", "hidden", "float", 12.0, "deviance", 0, 1000,
-         "The largest price one penalty term can add to a spectrum's fit.", strict=True),
+         "The largest price one penalty term can add to a spectrum's fit.", strict=True, cal=True),
     _row("birth_edge", "hidden", "float", 2.0, "deviance", 0, 1000,
          "The entry price of a branch that no neighbour predicts, at any energy in the window."),
     _row("birth_mid", "hidden", "float", 12.0, "deviance", 0, 1000,
@@ -120,7 +121,7 @@ class InterSettings:
     version: int = SETTINGS_VERSION
     q_tolerance_meV: float = 2.0
     t_tolerance_meV: float = 1.0
-    flag_threshold: float = 9.0
+    flag_threshold: float = 54.0
     shape_family: str = "welsch"
     step_exponent: float = 0.25
     sweep_tol_meV: float = 0.01

@@ -17,6 +17,7 @@ SOURCE_WORDS = {"fast": "Fast solo", "batch": "Batch", "pick": "Your pick", "loc
 CONDITIONAL_ERRORS = "Error bars are conditional on the neighbours and the chosen model."
 ERRORS_UNAVAILABLE = "Error bars unavailable for this fit."
 UNCALIBRATED = "uncalibrated"
+CALIBRATED_SYNTHETIC = "calibrated on synthetic tracks, not on real data"
 
 REASON_WORDS = {
     "score_over_threshold": "The coupling cost passes the flag threshold.",
