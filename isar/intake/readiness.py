@@ -19,8 +19,9 @@ from types import SimpleNamespace
 
 from isar.calibrate import tabulated
 from isar.intake import curves as curves_mod
+from isar.intake import gpi as gpi_mod
 from isar.intake import inputs, scans, settings, store
-from isar.intake.curves import CurveIndex, OtherFolder, read_curve_check
+from isar.intake.curves import CurveFile, CurveIndex, OtherFolder, read_curve_check
 from isar.schema.card import Card, load_policy, load_state
 from isar.schema.scan import Flag
 
@@ -49,6 +50,8 @@ NOT_BL43 = "readiness is computed for BL43LXU workspaces only"
 NOT_CHECKED = "the resolution curves have not been checked yet (at the next import or analysis start)"
 FOLDER_CHANGED = "the resolution folder changed; its curves are checked when analysis starts or at the next import"
 CURVES_CHANGED = "the resolution curves changed since this scan was calibrated"
+GPI_FOLDER_CHANGED = ("the gpi folder changed; the values from the gpi files are set aside until the data is "
+                      "read again or analysis starts")
 SLIT_PENDING = "no slit in the files or saved; it is chosen from the elastic lines when analysis starts"
 
 
@@ -83,6 +86,10 @@ KINDS: dict[str, _Kind] = {k: _Kind(*v) for k, v in {
     "sidecar": ("Sidecar (.var)", "scan", ("read",), "fallback", "import_again"),
     "unrecognised_line": ("Unrecognised lines", "analyzer", ("read",), "fallback", "tell_operator"),
     "disagreement": ("File and user values disagree", "scan", ("fit",), "ready", "none"),
+    "gpi_rejected": ("gpi file not used", "scan", ("steer", "calibrate", "fit"), "fallback", "import_again"),
+    "gpi_curves_dropped": ("gpi curve set set aside", "scan", ("calibrate", "fit"), "ready", "none"),
+    "gpi_folder_changed": ("gpi folder changed", "experiment", ("steer", "calibrate", "fit"), "fallback",
+                           "import_again"),
     "exposure_missing": ("Monitor missing", "analyzer", ("reduce",), "fallback", "none"),
     "q_missing": ("Q (for steering)", "analyzer", ("steer",), "held", "none"),
     "declared": ("Declared dead or excluded", "scan_or_analyzer", ("reduce", "calibrate", "fit", "steer"),
@@ -205,6 +212,7 @@ class ImportSummary:
     curves: CurveSummary | None           # None: not a BL43LXU workspace
     last_import_at: str | None            # the latest imported_at over rows
     record_problem: str | None = None     # the import record could not be read (then the counts are zero)
+    gpi: gpi_mod.GpiCheck | None = None   # the latest gpi check; None: not BL43, never checked, or unreadable
 
 
 def scan_order(rows: Mapping[str, dict], scan: str) -> tuple:
@@ -243,6 +251,15 @@ def _check(root: Path):
     except ValueError as exc:
         log.warning("readiness: the curve check is unreadable (%s); read as not checked", exc)
         return None, str(exc)
+
+
+def _gpi_check(root: Path):
+    """The latest gpi check; a malformed one is logged and read as no check."""
+    try:
+        return gpi_mod.read_gpi_check(root)
+    except ValueError as exc:
+        log.warning("readiness: the gpi check is unreadable (%s); read as not checked", exc)
+        return None
 
 
 def _declared(slit) -> str | None:
@@ -303,6 +320,7 @@ class _Cx:
     stale: bool
     folder_problem: str | None
     hold_kind: str               # the gap kind of a curve hold: the folder's, or the analyzer's own
+    named: str | None = None     # the gpi file's curve set in force; cidx then holds its curves alone
 
 
 def _pending_reason(cx: _Cx) -> str:
@@ -346,6 +364,8 @@ def _calibrate(a: str, ar: dict, si: inputs.ScanInputs, cx: _Cx, flags) -> tuple
         return _use("held", f"{a}: {cx.folder_problem}"), "resolution_folder"
     if cx.slit is not None:
         why = tabulated.curve_need(cx.cidx, a, cx.slit)
+        if why and cx.named:
+            why = f"the curve {cx.named}_{a}, named by the gpi file, is not in the resolution folder"
         return (_use("held", f"{a}: {why}"), "curve_missing") if why else (_use("pending", _pending_reason(cx)), "pending")
     cands = [s for s in cx.cidx.settings() if s]
     if not cands:
@@ -389,11 +409,14 @@ def _can_start(values: list[bool | None]) -> bool | None:
 
 def _scan(scan: str, row: dict, pos: int, index: inputs.EntryIndex, state: dict, check, cidx, folder_problem,
           stale: bool, marks: Mapping[str, UnitMarks], gaps: list[_Gap], an_can: dict, running_scans: set,
-          disagree: set, unread: Mapping[str, dict]) -> ScanReadiness:
+          disagree: set, unread: Mapping[str, dict], gpi_entries: Mapping[str, object]) -> ScanReadiness:
     """One scan's readiness; its gaps, the analyzers' ``can_start`` and the scans running or disagreeing are
     added to the collectors the caller passes. ``unread``: path -> its ``files`` entry, for each file the
     latest import recorded failed (the path the row's ``import.paths`` gives for the analyzer's file)."""
-    si = inputs.scan_inputs(row, index)
+    si = inputs.scan_inputs(row, index, gpi_entries.get(scan))
+    cal_slit = _declared(inputs.calibration_slit(si))
+    if si.named is not None:       # the named set's curves are the scan's library, at the setting it declares
+        cidx = CurveIndex(CurveFile(d, cal_slit, c["file"], c["sha256"]) for d, c in sorted(si.gpi.curves.items()) if c)
     prev = state.get(scan)
     imp = row.get("import") or {}
     read_dets = sorted(row.get("analyzers") or {})
@@ -401,15 +424,15 @@ def _scan(scan: str, row: dict, pos: int, index: inputs.EntryIndex, state: dict,
     live = [a for a in read_dets if a not in si.dead]
     key = None if check is None else inputs.calibration_inputs_key(
         data_revision=row["data_revision"], folder=check.folder, pattern=check.pattern, library=check.library,
-        declared_slit=_declared(si.facts["slit"].used_value), analyzers=live,
-        counts_accepted=[a for a in live if a in si.counts_accepted])
+        declared_slit=cal_slit, analyzers=live, counts_accepted=[a for a in live if a in si.counts_accepted],
+        named=inputs.named_key(si.named, si.gpi.curves if si.gpi else {}))
     current = not stale and key is not None and tabulated.calibration_reusable(
         prev, content_hash=row["data_revision"], library=check.library, inputs_key=key)
     failed = not stale and key is not None and prev is not None and "error" in prev and prev.get("inputs_key") == key
-    cx = _Cx(prev, check, cidx, _declared(si.facts["slit"].used_value), current, failed, stale, folder_problem,
-             "resolution_folder" if folder_problem is not None else "curve_missing")
+    cx = _Cx(prev, check, cidx, cal_slit, current, failed, stale, folder_problem,
+             "resolution_folder" if folder_problem is not None else "curve_missing", si.named)
     flags = row.get("flags") or []
-    slit_given = si.facts["slit"].used_value is not None
+    slit_given = cal_slit is not None        # a user, gpi or file slit, or the named set's own setting
     cands = [s for s in cidx.settings() if s]
 
     own: dict[str, list[tuple[str, str]]] = {}         # analyzer -> its (kind, state) gaps
@@ -485,7 +508,7 @@ def _scan(scan: str, row: dict, pos: int, index: inputs.EntryIndex, state: dict,
         else:
             fit = cal
         u["fit"] = fit
-        if ar.get("q_source") == "none":
+        if inputs.analyzer_q(row, si, a)[1] == "none":
             u["steer"] = _use("held", "no Q in the files (only |Q|)")
             gap("q_missing", "no Q in the files (only |Q|)", a)
         else:
@@ -516,6 +539,11 @@ def _scan(scan: str, row: dict, pos: int, index: inputs.EntryIndex, state: dict,
         if sc.get("state") in ("missing", "unreadable"):
             scan_gaps.append(_Gap("sidecar", sc.get("reason") or f"the .var sidecar is {sc['state']}", scan,
                                   fallback=NO_SIDECAR, order=(pos, "")))
+        if si.gpi is not None and not si.gpi.accepted:
+            scan_gaps.append(_Gap("gpi_rejected", si.gpi.problem or "the gpi file was not used", scan,
+                                  file=si.gpi.file, order=(pos, "")))
+        if si.named_dropped is not None:
+            scan_gaps.append(_Gap("gpi_curves_dropped", si.named_dropped, scan, order=(pos, "")))
         if any(fi.disagreement for fi in si.facts.values()):
             disagree.add(scan)
             scan_gaps.append(_Gap("disagreement", "; ".join(
@@ -675,6 +703,8 @@ def _evaluate(root: Path, marks: Mapping[str, UnitMarks]) -> NeedsAttention:
     if stale:
         folder_problem = None           # a folder saved since the last check is pending, never this hold
     state = card.state.tabulated_calibration
+    gpi_stale = _stale(sett.gpi_folder, _gpi_check(root))
+    gpi_entries = gpi_mod.entries_in_force(root)
 
     gaps: list[_Gap] = []
     an_can: dict = {}
@@ -686,9 +716,11 @@ def _evaluate(root: Path, marks: Mapping[str, UnitMarks]) -> NeedsAttention:
     unread = {p: rec for p, rec in files.items() if (rec or {}).get("class") == "failed"}
     for pos, scan in enumerate(order):
         ready[scan] = _scan(scan, rows[scan], pos, index, state, check, cidx, folder_problem, stale, marks,
-                            gaps, an_can, running_scans, disagree, unread)
+                            gaps, an_can, running_scans, disagree, unread, gpi_entries)
     if folder_problem is not None and rows:
         gaps.append(_Gap("resolution_folder", folder_problem))
+    if gpi_stale and rows:
+        gaps.append(_Gap("gpi_folder_changed", GPI_FOLDER_CHANGED))
     for path in sorted(files):
         rec = files[path] or {}
         if rec.get("class") in ("failed", "refused"):
@@ -769,4 +801,5 @@ def _import_summary(root: Path) -> ImportSummary:
         n_scans=len(rows), n_analyzers=sum(len(r.get("analyzers") or {}) for r in rows.values()),
         incomplete_sets=tuple(sets), files_not_read=tuple(unread),
         files_not_read_by_kind=dict(sorted(Counter(f.kind for f in unread).items())), curves=curve,
-        last_import_at=max((r["imported_at"] for r in rows.values() if r.get("imported_at")), default=None))
+        last_import_at=max((r["imported_at"] for r in rows.values() if r.get("imported_at")), default=None),
+        gpi=_gpi_check(root))
