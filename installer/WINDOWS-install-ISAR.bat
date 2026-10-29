@@ -439,8 +439,14 @@ set "MM_EXE=%BASE%\micromamba\micromamba.exe"
 set "ERR=micromamba could not be placed in %BASE%\micromamba"
 if not exist "%MM_EXE%" goto fail
 >>"%LOG%" 2>&1 "%MM_EXE%" --version <nul
+:: The environment is built from the lock copy kept beside the launcher (the
+:: one Repair rebuilds from), whose path is plain, unlike %TEMP%'s.
+if not exist "%BASE%\launcher\" mkdir "%BASE%\launcher" 2>nul
+copy /y "%WORK%\isar-win-64.lock" "%BASE%\launcher\isar-win-64.lock" >nul 2>nul
+set "ERR=the package lock could not be placed in %BASE%\launcher"
+if not exist "%BASE%\launcher\isar-win-64.lock" goto fail
 echo   The download and build messages go to the log, not this window.
-"%MM_EXE%" create -y --no-rc -r "%BASE%\mamba" -p "%BASE%\env" -f "%WORK%\isar-win-64.lock" >>"%LOG%" 2>&1 <nul
+"%MM_EXE%" create -y --no-rc -r "%BASE%\mamba" -p "%BASE%\env" -f "%BASE%\launcher\isar-win-64.lock" >>"%LOG%" 2>&1 <nul
 set "ERR=the Python environment could not be built; check the internet connection and the free disk space, then run this installer again"
 if errorlevel 1 goto fail
 if not exist "%BASE%\env\python.exe" goto fail
@@ -775,8 +781,6 @@ if errorlevel 1 goto :eof
 copy /y "%BASE%\app\installer\launchers\collect-diagnostics.bat" "%BASE%\launcher\collect-diagnostics.bat" >nul 2>nul
 if errorlevel 1 goto :eof
 copy /y "%BASE%\app\installer\WINDOWS-install-ISAR.bat" "%BASE%\launcher\WINDOWS-install-ISAR.bat" >nul 2>nul
-if errorlevel 1 goto :eof
-copy /y "%WORK%\isar-win-64.lock" "%BASE%\launcher\isar-win-64.lock" >nul 2>nul
 if errorlevel 1 goto :eof
 set "ERR="
 goto :eof
