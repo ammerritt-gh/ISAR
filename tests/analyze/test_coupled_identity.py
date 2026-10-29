@@ -394,6 +394,18 @@ def test_a_carried_mode_keeps_its_id_when_a_lower_mode_is_matched():
     assert r.flags == {}
 
 
+def test_an_anchored_unmatched_mode_keeps_its_incoming_id():
+    # the ring member's own Held is passed in previous (S1U6); its high mode keeps fast:k#0 as neighbours tip k
+    A = held("A", "fA", [("p", 10.0)])
+    k = held("k", "fast", [("fast:k#0", 14.0)])
+    a = asg("k", "b:ring1", ("p", None), changed=True)
+    r = run(["k"], [link("A", "k")], {"k": a}, {"A": A, "k": k}, mode="anchored", rings={"k": 1},
+            energies={"k": [10.0, 14.0]})
+    assert [r.ids[ref] for ref in refs("k", 2)] == ["p", "fast:k#0"]
+    assert [r.status[ref] for ref in refs("k", 2)] == ["matched", "new_branch"]
+    assert r.flags == {}
+
+
 def test_a_confident_winner_with_a_close_rival_stays_confident():
     # p = 0.86 >= 0.80 and a rival 1.8 nats behind: a close call goes to review, it does not make the slot ambiguous
     A = held("A", "fA", [("p", 10.0), ("q", 12.0)])

@@ -282,7 +282,9 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
     batch_mode: "anchored" | "simultaneous"; rings: key -> ring (anchored, ``plan.ring_of``) or None.
     snapshot_id: the stage's snapshot; every assignment must have been decided on it.
     assignments: stage key -> Assignment (C-snapshot). previous: key -> Held, the state frozen at the
-        stage start (anchored: anchors, valid locks and earlier rings; simultaneous: every member).
+        stage start (anchored: anchors, valid locks and earlier rings, plus each stage member's own
+        incoming Held, which serves only its unmatched modes' ids, as eligible() never lets a stage
+        member support; simultaneous: every member).
     energies: stage key -> the solved omega0 of each slot, in ``modes[key]`` order (the seam gate's only input).
 
     Support for a stage spectrum's slot is a linked held neighbour carrying the branch (or a dormant
