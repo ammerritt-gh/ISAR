@@ -1,13 +1,53 @@
 """The inter-spectra batch runner (C-queue). Qt-free; top-level imports stdlib only, like analysis_service.
 
-S1U1 writes the boundary dataclasses and the stub; S1U6 fills ``run_batch``. The runner sees only the
-``emit``, ``progress`` and ``ack`` callables; the service owns the pipes.
+``run_batch`` runs one batch inside the item process the analysis service starts. It reads the experiment once
+(the freeze: settings, locks, the ledger, each member's prepared context and input fingerprint), plans the batch
+on the graph, and fits it with its own refit pool inside the item's cores:
+
+- anchored: ring by ring from the anchors; every refit of a ring conditions on the state frozen when the ring
+  starts (earlier rings, anchors, valid locks), so ring-mates never see each other; seams are measured when the
+  ring completes;
+- simultaneous: rounds of stage 1 (counts and branch assignments against one frozen snapshot) then stage 2
+  (continuous Gauss-Seidel sweeps over conflict-free groups) until a round changes nothing, or the sweep cap ends
+  it as "did not settle".
+
+Every ring or sweep is handed over through ``emit`` and the runner waits on ``ack`` for the writer's verdict
+before the next stage: acceptance decides what the next stage conditions on, and a refused refit's held value
+goes back. Nothing here writes a user value (hard rule 1) or touches the fast solo fit. The 30-minute figure is
+a target recorded in the timing block and read by no branch: nothing stops, fails or is cut by it.
+
+The runner sees only the ``emit``, ``progress`` and ``ack`` callables; the service owns the pipes. ``core`` (the
+numerical core, a module; default :mod:`isar.analyze.coupled.refit`) is injectable for tests and is always
+called with ``workers=1``: the runner's pool is the only one.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import dataclasses
+import importlib
+import logging
+import math
+import os
+import pickle
+import time
+from collections.abc import Mapping
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Literal
+
+log = logging.getLogger(__name__)
+
+CORE = "isar.analyze.coupled.refit"
+CORE_VERSION = "isar.coupled-refit/1"
+TARGET_S = 1800.0          # the design's 30-minute target: recorded and reported, read by no branch
+NOT_CURRENT = "its fast pass is not current; run the fast pass first"
+CUT_OFF = "cut off by a failed neighbour"
+SCOPE_CHANGED = "the scope changed since the preview"
+STALE_LOCK = "its locked fit is out of date, so it is neither refitted nor used"
+_THREAD_ENV = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")    # as driver._THREAD_ENV
+_ELIGIBLE = ("accepted", "unchanged")
+_KINDS = ("anchored", "simultaneous")
+_DIRECTIONS = ("q", "T", "qT")
 
 
 @dataclass(frozen=True)
@@ -19,11 +59,32 @@ class BatchSpec:                       # JSON-able; the "batch" object of the st
     members: tuple[str, ...]           # = BatchPreview.members: the scope, anchors included
 
     def to_json(self) -> dict:
-        raise NotImplementedError("stub: filled by S1U6")
+        return {"batch_id": self.batch_id, "kind": self.kind, "direction": self.direction,
+                "anchors": list(self.anchors), "members": list(self.members)}
 
     @staticmethod
     def from_json(d: dict) -> "BatchSpec":                 # raises ValueError naming the bad field
-        raise NotImplementedError("stub: filled by S1U6")
+        if not isinstance(d, dict):
+            raise ValueError(f"batch: not an object ({type(d).__name__})")
+        bid = d.get("batch_id")
+        if not (isinstance(bid, str) and len(bid) == 13 and bid[0] == "b"
+                and all(c in "0123456789abcdef" for c in bid[1:])):
+            raise ValueError(f"batch_id: {bid!r} is not b + 12 hex")
+        kind = d.get("kind")
+        if kind not in _KINDS:
+            raise ValueError(f"kind: {kind!r} is not anchored or simultaneous")
+        direction = d.get("direction")
+        if (kind == "anchored" and direction not in _DIRECTIONS) or (kind == "simultaneous" and direction is not None):
+            raise ValueError(f"direction: {direction!r} does not fit a {kind} batch")
+        keys = {}
+        for name in ("anchors", "members"):
+            v = d.get(name)
+            if not isinstance(v, (list, tuple)) or not all(isinstance(k, str) for k in v):
+                raise ValueError(f"{name}: not a list of spectrum keys")
+            keys[name] = tuple(v)
+        if kind == "anchored" and not keys["anchors"]:
+            raise ValueError("anchors: an anchored batch needs at least one")
+        return BatchSpec(bid, kind, direction, keys["anchors"], keys["members"])
 
 
 @dataclass(frozen=True)
@@ -47,8 +108,623 @@ class InterResult:                     # dataclasses.asdict() of this goes down 
     ack: int | None = None             # token the runner will wait on; None = no wait
 
 
+class _Ended(Exception):
+    """The batch ends here with ``state`` and ``reason`` (an analysis outcome, not a crash)."""
+
+    def __init__(self, state: str, reason: str) -> None:
+        super().__init__(reason)
+        self.state, self.reason = state, reason
+
+
 def run_batch(workspace_root: Path, item: BatchItem, *, progress: Callable[[dict], None],
-              emit: Callable[[InterResult], None], ack: Callable[[int], dict]) -> None:
+              emit: Callable[[InterResult], None], ack: Callable[[int], dict], core=None,
+              target_s: float = TARGET_S) -> None:
     # never raises for an analysis failure: it is logged and emitted as event "end" outcome "failed".
     # ack(token) blocks until the service has saved that result and returns the verdict.
-    raise NotImplementedError("stub: filled by S1U6")
+    run = _Run(Path(workspace_root), item, progress, emit, ack, core, target_s)
+    try:
+        try:
+            run.go()
+        except _Ended as ended:
+            log.info("batch %s ends %s: %s", item.unit_key, ended.state, ended.reason)
+            run.end(ended.state, ended.reason)
+    except (EOFError, BrokenPipeError, ConnectionError) as exc:      # the service is gone: nobody to report to
+        log.warning("batch %s: the service went away (%s); the runner ends", item.unit_key, exc)
+    except Exception as exc:  # noqa: BLE001 — a batch's failure is its end line, never the service's
+        log.exception("batch %s failed", item.unit_key)
+        try:
+            run.end("failed", f"analysis error ({type(exc).__name__}: {exc})")
+        except Exception:  # noqa: BLE001 — the end could not be handed over; the service writes one
+            log.exception("batch %s: the failed end could not be handed over", item.unit_key)
+    finally:
+        run.pool.close()
+
+
+# ---- the pool ------------------------------------------------------------------------------------------
+def _work(core_name: str, fn: str, blob: bytes):
+    """A pool job: one core call, its arguments pickled by the runner (so the shipping cost is measured)."""
+    args, kwargs = pickle.loads(blob)
+    return getattr(importlib.import_module(core_name), fn)(*args, **kwargs)
+
+
+class _Pool:
+    """The runner's one refit pool, opened on the first call wide enough; one job or one worker runs inline."""
+
+    def __init__(self, core, workers: int) -> None:
+        self.core, self.workers, self.ex, self.ship_s = core, workers, None, 0.0
+
+    def map(self, fn: str, calls: list) -> dict:
+        """``{key: result or the exception it raised}`` of ``core.<fn>(*args, **kwargs)`` per ``(key, args, kwargs)``."""
+        out: dict = {}
+        if self.workers <= 1 or len(calls) <= 1:
+            for key, args, kwargs in calls:
+                try:
+                    out[key] = getattr(self.core, fn)(*args, **kwargs)
+                except Exception as exc:  # noqa: BLE001 — one spectrum's failure is its result
+                    log.exception("%s of %s failed", fn, key)
+                    out[key] = exc
+            return out
+        if self.ex is None:
+            for name in _THREAD_ENV:          # one BLAS thread per process, as _deep_stage pins it
+                os.environ.setdefault(name, "1")
+            self.ex = ProcessPoolExecutor(max_workers=self.workers)
+        futures = {}
+        for key, args, kwargs in calls:
+            # shortcut: ctx pickled per job, upgrade to an initializer-shipped dict when ship_s exceeds 10% of wall
+            t0 = time.perf_counter()
+            blob = pickle.dumps((args, kwargs), protocol=pickle.HIGHEST_PROTOCOL)
+            self.ship_s += time.perf_counter() - t0
+            futures[key] = self.ex.submit(_work, self.core.__name__, fn, blob)
+        for key, fut in futures.items():
+            try:
+                out[key] = fut.result()
+            except Exception as exc:  # noqa: BLE001 — one spectrum's failure is its result
+                log.exception("%s of %s failed in the pool", fn, key)
+                out[key] = exc
+        return out
+
+    def close(self) -> None:
+        if self.ex is not None:
+            self.ex.shutdown()
+            self.ex = None
+
+
+def pool_size(cores: int, width: int) -> int:
+    """E14: ``min(item cores, widest stage, ISAR_WORKERS when set and > 0)``, at least 1."""
+    w = min(int(cores), max(1, int(width)))
+    env = os.environ.get("ISAR_WORKERS", "").strip()
+    if env.isdigit() and int(env) > 0:
+        w = min(w, int(env))
+    return max(1, w)
+
+
+# ---- JSON of the core's objects ----------------------------------------------------------------------------
+def _plain(o, skip=()):
+    """A JSON-safe copy: dataclasses as dicts (``skip`` names fields left out), tuple keys joined by "|"."""
+    if dataclasses.is_dataclass(o) and not isinstance(o, type):
+        return {f.name: _plain(getattr(o, f.name)) for f in dataclasses.fields(o) if f.name not in skip}
+    if isinstance(o, Mapping):
+        return {("|".join(map(str, k)) if isinstance(k, tuple) else str(k)): _plain(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple, set, frozenset)):
+        return [_plain(v) for v in o]
+    if isinstance(o, bool) or o is None or isinstance(o, (str, int)):
+        return o
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if hasattr(o, "tolist"):                          # numpy arrays and scalars
+        return _plain(o.tolist())
+    return repr(o)
+
+
+def _came_in(snap) -> dict:
+    # the context is the spectrum's own prepared data (rebuilt from the workspace), the settings are the batch's
+    return _plain(snap, skip=("context", "own_record", "settings"))
+
+
+def _term(link):
+    from isar.session.inter_spectra.graph import Term
+    return Term("T-change" if link.kind == "T" else "q-change", (link.a, link.b), (float(link.step),), None, None)
+
+
+def _other(link, k: str) -> str:
+    return link.b if link.a == k else link.a
+
+
+def _renamed(h, rename: Mapping[str, str]):
+    """``h`` with its branch ids under the stage's reconciled names (E18); ``h`` itself when none changes."""
+    if not rename or not any(m.branch in rename for m in h.modes):
+        return h
+    return replace(h, modes=tuple(replace(m, branch=rename.get(m.branch, m.branch)) for m in h.modes))
+
+
+def canonical_factors(A: Mapping, ids, refs: Mapping, outside: Mapping) -> tuple[dict, dict]:
+    """E18: one factor set for the stage. Each assignment's slot ids are mapped to the reconciled ids; a factor
+    is kept only when every member of its term carries its (reconciled) branch, stage members by their
+    reconciled slots and fixed neighbours (``outside``: unit -> Held) by their modes. Returns the assignments
+    with their incident kept factors, and the rename (alias -> name) the stage's held values follow."""
+    rename = {o: name for name, others in (ids.alternatives.get("aliases") or {}).items() for o in others}
+    carries = {k: {ids.ids.get(r) for r in refs[k]} - {None} for k in A}
+    for u, h in outside.items():
+        if u not in carries:
+            carries[u] = {rename.get(m.branch, m.branch) for m in h.modes}
+    out = {}
+    for k, a in A.items():
+        kept = []
+        for f in a.factors:
+            b = rename.get(f.branch_id, f.branch_id)
+            if all(b in carries.get(m, ()) for m in f.members):
+                kept.append(f if b == f.branch_id else replace(
+                    f, branch_id=b, factor_id=f.factor_id[:len(f.factor_id) - len(f.branch_id)] + b))
+        out[k] = replace(a, slots=tuple(None if s is None else rename.get(s, s) for s in a.slots),
+                         factors=tuple(kept))
+    return out, rename
+
+
+# ---- one batch --------------------------------------------------------------------------------------------
+class _Run:
+    def __init__(self, root: Path, item: BatchItem, progress, emit, ack, core, target_s: float) -> None:
+        self.root, self.item, self._progress, self._emit, self._ack = root, item, progress, emit, ack
+        self.core, self.target_s = core, target_s
+        self.pool = _Pool(None, 1)
+        self.token = 0
+        self.started = False
+        self.batch = str((item.spec or {}).get("batch_id"))
+        self.kind = (item.spec or {}).get("kind")
+        self.t0 = time.perf_counter()
+        self.timing = {"wall_s": 0.0, "prepare_s": 0.0, "ship_s": 0.0, "save_s": 0.0, "assign_s": 0.0,
+                       "likelihood_s": 0.0, "continuous_s": 0.0, "uncertainty_s": 0.0, "release_s": 0.0,
+                       "starts": 0, "stages": [], "target_s": target_s, "over_target": False}
+        self.members: tuple[str, ...] = ()
+        self.fixed: dict[str, str] = {}           # unit -> "anchor" | "lock" (never refitted)
+        self.latest: dict[str, str] = {}          # unit -> "done" | "failed": its latest attempt (counts are current)
+        self.failed: dict[str, str] = {}          # unit -> reason of its latest failed attempt
+        self.not_reached: dict[str, str] = {}     # unit -> reason it was never attempted
+        self.records: dict[str, dict] = {}        # fit id -> record of a refit accepted in this batch
+        self.ctx: dict = {}
+        self.stage_name, self.index, self.of, self.round = "prepare", 0, None, None
+        self.rings_done = self.sweeps = self.rounds = None
+        self.drift = None
+
+    # -- the service side
+    def send(self, payload: dict, status: str = "done", reason: str | None = None) -> dict:
+        self.token += 1
+        self._emit(InterResult(self.item.item_id, self.item.unit_key, "inter", status, reason, payload, ack=self.token))
+        t0 = time.perf_counter()
+        verdict = self._ack(self.token)
+        self.timing["save_s"] += time.perf_counter() - t0
+        return verdict
+
+    def payload(self, event: str, body: dict) -> dict:
+        return {"schema": "isar.inter-result/1", "unit": f"inter:{self.batch}:batch", "pass": "inter",
+                "batch": self.batch, "event": event, event: body}
+
+    def counts(self) -> dict:
+        done = sum(1 for u, s in self.latest.items() if s == "done" and u not in self.fixed)
+        failed = sum(1 for u, s in self.latest.items() if s == "failed" and u not in self.fixed)
+        n = len(self.members)
+        return {"done": done, "failed": failed, "not_reached": n - done - failed - len(self.fixed),
+                "fixed": len(self.fixed), "total": n}
+
+    def progress(self, phase: str) -> None:
+        self._progress({"pass": "inter", "kind": self.kind, "stage": self.stage_name, "index": self.index,
+                        "of": self.of, "round": self.round, "phase": phase, **self.counts()})
+
+    def unreached_list(self) -> list[dict]:
+        return [{"unit": u, "reason": self.not_reached.get(u, "not reached")} for u in self.members
+                if u not in self.fixed and u not in self.latest]
+
+    def end(self, state: str, reason: str | None = None) -> None:
+        if not self.started:          # nothing saved yet: the writer would refuse the end of an unknown batch
+            self._emit(InterResult(self.item.item_id, self.item.unit_key, "inter", "failed", reason, None))
+            return
+        self.timing["wall_s"] = time.perf_counter() - self.t0
+        self.timing["ship_s"] = self.pool.ship_s
+        self.timing["over_target"] = self.timing["wall_s"] > self.target_s     # information only
+        c, missed = self.counts(), self.unreached_list()
+        if state == "failed":
+            status = "failed"
+        elif c["failed"] or missed or state == "did_not_settle":
+            status = "done_warning"
+            if reason is None:
+                reason = "; ".join(x for x in (f"{len(missed)} spectra not reached" if missed else "",
+                                               f"{c['failed']} failed" if c["failed"] else "") if x)
+        else:
+            status = "done"
+        body = {"state": state, "reason": reason, "done": c["done"], "failed": c["failed"], "not_reached": missed,
+                "rings_done": self.rings_done, "sweeps": self.sweeps, "rounds": self.rounds,
+                "timing": _plain(self.timing), "drift": self.drift}
+        self.send(self.payload("end", body), status, reason)
+
+    # -- the freeze
+    def go(self) -> None:
+        from isar.intake import inputs, scans as intake_scans, store
+        from isar.intake.inter_spectra import read_inter_settings, read_user
+        from isar.session import currentness, file_fit
+        from isar.session.inter_spectra import authority, q_provider, records
+        from isar.session.inter_spectra.graph import anchored_scope, build_graph
+        from isar.session.inter_spectra.layout import grid_for
+        from isar.session.inter_spectra.nodes import read_nodes
+
+        self.records_mod, self.read_user = records, read_user
+        if self.core is None:
+            self.core = importlib.import_module(CORE)
+        spec = BatchSpec.from_json(self.item.spec)
+        self.spec, self.batch, self.kind = spec, spec.batch_id, spec.kind
+        self.progress("prepare")
+        t0 = time.perf_counter()
+        self.settings = read_inter_settings(self.root)
+        user = read_user(self.root)
+        self.intake_seq = user.max_seq
+        self.frozen = frozen = file_fit.freeze(self.root)
+        ns = read_nodes(self.root)
+        self.nodes = ns.nodes
+        if spec.kind == "anchored":
+            scope, kinds = anchored_scope(spec.anchors, spec.direction, ns)
+            self.members = tuple(sorted(set(spec.members)))
+            if set(scope) != set(spec.members):
+                raise _Ended("failed", SCOPE_CHANGED)
+        else:
+            scope, kinds = frozenset(k for k in spec.members if k in ns.nodes), frozenset({"q", "T"})
+            self.members = tuple(sorted(set(spec.members)))
+            for k in set(spec.members) - scope:
+                self.not_reached[k] = "unknown to the import record"
+        qc = q_provider.q_coordinates(self.root, scope)        # a module attribute: a timing tool may supply its own
+        self.epochs = {**{scan: src for scan, (_cell, src) in qc.lattices.items()},
+                       **{k.rsplit(":", 1)[0]: why for k, why in qc.reasons.items()
+                          if why not in ("no accepted hkl", "unknown spectrum")}}
+        self.graph = build_graph(ns.nodes, ns, scope=scope, kinds=kinds, grid=grid_for(frozen.card.policy.plugin),
+                                 coords=qc.points if "q" in kinds else {},
+                                 collinearity_tol=self.settings.collinearity_tol)
+        if "q" in kinds and spec.kind == "anchored":       # E17: a spectrum without a point says why
+            for k, why in qc.reasons.items():
+                if k in scope and k not in spec.anchors and not self.graph.links_of(k):
+                    self.not_reached.setdefault(k, why)
+
+        # which fit of each member is in use now (C-authority), and whether it may condition
+        rows = intake_scans.read_scans(self.root)
+        read = store.read_all(self.root, store.ENTRIES)
+        index = inputs.index_entries(read.entries, lines=read.lines)
+        log0 = records.read_log(self.root)
+        by_unit: dict[str, list] = {}
+        for r in log0.refits:
+            by_unit.setdefault(r.unit, []).append(r)
+        needed = sorted({*scope, *(c.unit for u in scope for r in by_unit.get(u, ()) for c in r.conditioned_on)})
+        now = records.inputs_now_from(rows, index, frozen.card.state.tabulated_calibration, needed)
+        self.res = {u: authority.resolve(u, refits=by_unit.get(u, ()), pick=user.picks.get(u), lock=user.locks.get(u),
+                                         has_fast=authority.has_fast_solo(frozen.session.get(u), u), inputs_now=now)
+                    for u in scope}
+        locked = {u for u in scope if user.locks.get(u) is not None and user.locks[u].locked}
+        self.stale_locks = {u for u in locked if not self.res[u].conditions}
+        self.locks = locked - self.stale_locks
+        for u in self.stale_locks:
+            self.not_reached[u] = STALE_LOCK
+
+        # E6: preparation, one parse per scan, one prepare per member.
+        # shortcut: serial prepare; parallelise through the pool when prepare_s exceeds 10% of wall.
+        request = currentness.queue_deep_request()
+        scans: dict[str, object] = {}
+        self.inputs, self.current = {}, set()
+        for u in sorted(scope):
+            if not ns.nodes[u].eligible:
+                continue
+            exp, scan, det = u.rsplit(":", 2)
+            entry = frozen.session.get(u)
+            if f"{exp}:{scan}" not in scans:
+                scans[f"{exp}:{scan}"] = file_fit.prepare_scan(frozen, exp, int(scan), entry)
+            sp = scans[f"{exp}:{scan}"]
+            if sp is None:
+                self.ctx[u] = ("failed", "the data file for this analyzer is no longer there")
+                continue
+            prep = file_fit.prepare_unit(frozen, sp, u, ("fast",))
+            if prep.reason is not None:
+                self.ctx[u] = ("failed", prep.reason)
+                continue
+            self.ctx[u] = file_fit.fit_context(prep)
+            self.inputs[u] = prep.now.inputs_hash
+            if "fast" in currentness.judge(entry, det, prep.now, request):
+                self.current.add(u)
+        self.timing["prepare_s"] = time.perf_counter() - t0
+        self.incoming = {u: self.held_of(u, self.res[u].fit) for u in self.usable(scope)
+                         if self.res[u].fit and u not in self.stale_locks}
+        self.fast = {u: self.held_of(u, "fast") for u in self.incoming}
+        if spec.kind == "anchored":
+            self.anchored()
+        else:
+            raise _Ended("failed", "a simultaneous batch is not built yet")
+
+    def usable(self, units) -> list[str]:
+        """Members that may be refitted and may condition: prepared, with a current fast pass (E10)."""
+        return [u for u in sorted(units) if u in self.current and not isinstance(self.ctx.get(u), tuple)]
+
+    def why_unusable(self, u: str) -> tuple[str, str]:
+        """``("failed" | "not_reached", reason)`` of a member ``usable`` leaves out."""
+        c = self.ctx.get(u)
+        if isinstance(c, tuple):
+            return "failed", c[1]
+        if u not in self.ctx:
+            n = self.nodes.get(u)
+            return "not_reached", (n.reason if n is not None and n.reason else "not eligible")
+        return "not_reached", NOT_CURRENT
+
+    def mark_unusable(self, u: str) -> None:
+        kind, why = self.why_unusable(u)
+        if kind == "failed":
+            self.latest[u], self.failed[u] = "failed", why
+        else:
+            self.not_reached.setdefault(u, why)
+
+    def record_of(self, u: str, fit: str) -> dict:
+        if fit == "fast":
+            return self.frozen.session.get(u).detectors[u.rsplit(":", 1)[1]]["fast_pass"]
+        if fit in self.records:
+            return self.records[fit]
+        line = next((r for r in self.records_mod.read_log(self.root).refits if r.fit == fit), None)
+        payload = None if line is None else self.records_mod.read_payload(self.root, line)
+        if not payload or not (payload.get("overlay") or {}).get("fast_pass"):
+            raise ValueError(f"{u}: the stored fit {fit} cannot be read")
+        return payload["overlay"]["fast_pass"]
+
+    def held_of(self, u: str, fit: str):
+        return self.core.held_from_fit(self.record_of(u, fit), unit=u, fit=fit, inputs=self.inputs.get(u),
+                                       context=self.ctx[u], T=self.nodes[u].T)
+
+    def snapshot(self, u: str, own, sid: str, terms, stage_id: str | None = None):
+        from isar.analyze.coupled.types import Snapshot
+        return Snapshot(snapshot_id=sid, stage_id=stage_id or sid, unit=u, fit_id=self.records_mod.new_fit_id(),
+                        context=self.ctx[u], own=own, own_record=self.record_of(u, own.fit), terms=tuple(terms),
+                        settings=self.settings, batch_kind=self.kind, fast=self.fast.get(u))
+
+    def start(self, *, anchors, rings, seams, preview, terms) -> None:
+        body = {"batch_kind": self.kind, "scope": {"direction": self.spec.direction, "members": list(self.members)},
+                "anchors": list(anchors), "rings": dict(rings), "seams": [list(s) for s in seams],
+                "settings": {"version": self.settings.version, "values": _plain(self.settings.to_values())},
+                "preview": preview, "fixed": dict(self.fixed),
+                "unreached": {u: self.not_reached[u] for u in self.members if u in self.not_reached},
+                "terms": [_plain(t) for t in terms], "metric": dict(self.graph.metric), "core": CORE_VERSION,
+                "inputs_at": int(self.frozen.inputs_at), "intake_seq": int(self.intake_seq),
+                "epochs": dict(self.epochs), "inputs": {u: self.inputs.get(u) for u in self.members}}
+        verdict = self.send(self.payload("start", body))
+        if not verdict.get("saved"):
+            raise _Ended("failed", f"could not save the batch start: {verdict.get('error')}")
+        self.started = True
+
+    def assign(self, snaps: dict, cache: dict) -> dict:
+        """Stage 1 of every snapshot: the trigger filter inline, every pricing job of every triggered spectrum
+        fanned out over the pool (remedy 2), the decision inline. ``cache``: unit -> {job key: Priced}, whose
+        keys hash every value a price depends on, so a changed snapshot never reuses one (remedy 1)."""
+        from isar.analyze.coupled.types import Priced
+        t0 = time.perf_counter()
+        pre = {k: self.core.assign_jobs(s, cached=cache.get(k, {})) for k, s in snaps.items()}
+        calls = [((k, j.key), (snaps[k], j), {}) for k, (a, jobs) in pre.items() if a is None for j in jobs]
+        priced = self.pool.map("price", calls)
+        A = {}
+        for k, (a, jobs) in pre.items():
+            if a is not None:
+                A[k] = a
+                continue
+            new = {}
+            for j in jobs:
+                p = priced[(k, j.key)]
+                if isinstance(p, Exception):
+                    p = Priced(j.key, j.count, tuple(j.slots), None, "no_evidence", None,
+                               f"pricing failed ({type(p).__name__}: {p})", 0, 0.0)
+                new[j.key] = p
+                self.timing["likelihood_s"] += p.seconds
+            A[k] = self.core.assign_decide(snaps[k], [*cache.get(k, {}).values(), *new.values()])
+            cache.setdefault(k, {}).update({key: p for key, p in new.items() if p.ln_z is not None})
+        self.timing["assign_s"] += time.perf_counter() - t0
+        return A
+
+    def identity(self, A: dict, snaps: dict, previous: dict, sid: str, energies: dict | None = None):
+        """``propagate_ids`` over one stage (argument shapes: its docstring, amendment 6). Without ``energies``
+        each slot takes the incoming energies padded with the window centre (only unmatched slots read them)."""
+        from isar.analyze.coupled import identity
+        refs = {k: [(k, snaps[k].fit_id, m) for m in range(A[k].count)] for k in A}
+        energies = dict(energies or {})
+        for k, a in A.items():
+            if energies.get(k) is None:
+                own = [m.omega0 for m in snaps[k].own.modes]
+                energies[k] = (own + [0.5 * sum(snaps[k].own.window)] * a.count)[:a.count]
+        ids = identity.propagate_ids(
+            sorted(A), self.graph.links, refs, self.settings, batch_mode=self.kind,
+            rings=self.ring_of if self.kind == "anchored" else None, snapshot_id=sid, assignments=A,
+            previous=previous, energies=energies)
+        return ids, refs
+
+    def refits(self, snaps: dict, A: dict) -> dict:
+        calls = [(k, (snaps[k],), {"stage": "continuous", "assignment": A[k], "workers": 1}) for k in snaps]
+        R = self.pool.map("refit", calls)
+        for r in R.values():
+            if not isinstance(r, Exception):
+                for name in ("continuous_s", "uncertainty_s", "release_s"):
+                    self.timing[name] += float((r.timing or {}).get(name, 0.0))
+                self.timing["starts"] += int(r.starts or 0)
+        return R
+
+    def entry(self, k: str, snap, r, extra_flags=(), stage1: dict | None = None) -> dict:
+        """The stage payload's refit line of one refit (or of the exception the refit raised)."""
+        cond = list({h.unit: {"unit": h.unit, "fit": h.fit, "inputs": h.inputs}
+                     for ti in snap.terms for h in ti.held}.values())
+        base = {"fit": snap.fit_id, "unit": k, "seed": snap.own.fit, "inputs": self.inputs.get(k),
+                "conditioned_on": cond}
+        if isinstance(r, Exception):
+            return {**base, "status": "failed", "reason": f"analysis error ({type(r).__name__}: {r})", "flag": None,
+                    "why_changed": None, "payload": {"came_in": _came_in(snap), "came_out": None, "overlay": None}}
+        flag = _plain(r.flag) if r.flag else None
+        if flag is not None and extra_flags:
+            flag["reasons"] = [*flag.get("reasons", []), *extra_flags]
+            flag["flagged"] = True
+        came_out = _plain(r, skip=("fit", "overlay"))         # both live in the payload's overlay
+        if stage1 is not None:
+            came_out["stage1"] = stage1                         # E12: the round's stage 1 rides on its first sweep
+        overlay = _plain(r.overlay) if r.status in _ELIGIBLE and r.overlay is not None else None
+        status, reason = r.status, r.reason
+        if status in _ELIGIBLE and overlay is None:             # a fit nobody can draw is not offered
+            status, reason = "failed", r.overlay_unavailable or "no drawable fit"
+        return {**base, "status": status, "reason": reason, "flag": flag, "why_changed": r.why_changed,
+                "payload": {"came_in": _came_in(snap), "came_out": came_out, "overlay": overlay}}
+
+    def save_stage(self, stage: str, index: int, entries: list, seams: list) -> dict:
+        body = {"stage": stage, "index": index, "round": self.round, "refits": entries, "seams": seams,
+                "progress": self.counts(), "not_reached": dict(self.not_reached)}
+        verdict = self.send(self.payload("stage", body))
+        if not verdict.get("saved"):
+            raise _Ended("failed", f"could not save {stage} {index}: {verdict.get('error')}")
+        return verdict
+
+    def judge(self, k: str, r, verdict: dict, fit_id: str) -> bool:
+        """Apply the writer's verdict to one member's attempt; True when its refit is now authoritative."""
+        if not isinstance(r, Exception) and r.status in _ELIGIBLE and verdict["accepted"].get(k) == fit_id:
+            self.latest[k] = "done"
+            self.failed.pop(k, None)
+            return True
+        why = (verdict["refused"].get(k) or (f"analysis error ({type(r).__name__}: {r})" if isinstance(r, Exception)
+                                             else r.reason or r.status))
+        self.latest[k], self.failed[k] = "failed", why
+        return False
+
+    def identity_flags(self, ids, k: str) -> list[dict]:
+        """The identity reasons of one spectrum (ambiguous, loop, unresolved return) as flag reasons."""
+        return [{"code": code, "severity": f.get("severity", "warn"),
+                 "text": "; ".join(str(v) for v in list(f.get("values") or ())[:3])}
+                for code, f in (ids.flags or {}).items() if k in f.get("units", ()) and code != "seam_disagreement"]
+
+    def stage_timing(self, kind: str, index: int, t0: float, width: int, n: int) -> None:
+        self.timing["stages"].append({"kind": kind, "index": index, "wall_s": time.perf_counter() - t0,
+                                      "width": width, "n_refits": n})
+
+    def take_new_locks(self, held: dict) -> set:
+        """E11: locks are re-read at every ring and sweep; a member locked since becomes a fixed neighbour, read
+        as the fit its lock pins. Returns the units newly fixed."""
+        user = self.read_user(self.root)
+        new = set()
+        for u, ls in user.locks.items():
+            if ls.locked and u in self.members and u not in self.fixed and u in self.current \
+                    and not isinstance(self.ctx.get(u), tuple):
+                self.fixed[u] = "lock"
+                held[u] = self.held_of(u, ls.fit or "fast")
+                new.add(u)
+        return new
+
+    def open_pool(self, width: int) -> None:
+        w = pool_size(self.item.cores, width)
+        self.pool = _Pool(self.core, w)
+        if w < self.item.cores:              # the cores this batch cannot use go back to the queue
+            self._emit(InterResult(self.item.item_id, self.item.unit_key, "cores", "cores", None, None, w))
+
+    # -- anchored (E16)
+    def anchored(self) -> None:
+        from isar.analyze.coupled.types import TermInput
+        from isar.session.inter_spectra.preview import preview_anchored
+        from isar.session.inter_spectra.rings import plan_anchored
+        g, spec = self.graph, self.spec
+        plan = plan_anchored(g, spec.anchors, self.locks | self.stale_locks, self.stale_locks)
+        self.ring_of = plan.ring_of
+        for a in plan.anchors:
+            if a not in self.incoming:                  # E10: an anchor that is not current ends the batch here
+                raise _Ended("failed", f"anchor {a}: {self.why_unusable(a)[1]}")
+        self.fixed = {**{a: "anchor" for a in plan.anchors}, **{u: "lock" for u in sorted(self.locks)}}
+        held = {u: self.incoming[u] for u in self.fixed if u in self.incoming}
+        for u in self.members:
+            if u in self.fixed or u in self.stale_locks:
+                continue
+            if u in plan.not_reached:
+                self.not_reached.setdefault(u, plan.not_reached[u])
+            elif u not in self.incoming:
+                self.mark_unusable(u)
+        self.open_pool(max((len(r.members) for r in plan.rings), default=1))
+        self.of = len(plan.rings)
+        self.start(anchors=plan.anchors, rings=plan.ring_of, seams=[(s.link.a, s.link.b) for s in plan.seams],
+                   preview=preview_anchored(g, plan, spec.direction).text,
+                   terms=sorted({_term(l) for r in plan.rings for ls in r.conditioners.values() for l in ls},
+                                key=lambda t: t.members))
+        self.stage_name, self.rings_done = "plan", 0
+        self.progress("plan")
+        for r, ring in enumerate(plan.rings, 1):
+            t_ring = time.perf_counter()
+            self.stage_name, self.index = "ring", r
+            self.take_new_locks(held)                       # a lock set mid-batch is fixed from this ring on
+            held_frozen = dict(held)                        # the state every refit of this ring conditions on
+            sid = f"{self.batch}:ring{r}"
+            todo = {}
+            for k in ring.members:
+                if k in self.fixed or k not in self.incoming:
+                    continue
+                links = [l for l in ring.conditioners.get(k, ()) if _other(l, k) in held_frozen]
+                if not links:
+                    self.not_reached[k] = CUT_OFF
+                    continue
+                todo[k] = [TermInput(_term(l), (held_frozen[_other(l, k)],)) for l in links]
+            if not todo:
+                self.rings_done = r
+                self.stage_timing("ring", r, t_ring, 0, 0)
+                continue
+            snaps = {k: self.snapshot(k, self.incoming[k], sid, terms) for k, terms in todo.items()}
+            self.progress("assign")
+            A = self.assign(snaps, {})
+            previous = {**held_frozen, **{k: s.own for k, s in snaps.items()}}    # amendment 11: own Held too
+            ids, refs = self.identity(A, snaps, previous, sid)
+            A, rename = canonical_factors(A, ids, refs, held_frozen)
+            if rename:
+                snaps = {k: replace(s, own=_renamed(s.own, rename),
+                                    terms=tuple(TermInput(t.term, tuple(_renamed(h, rename) for h in t.held))
+                                                for t in s.terms)) for k, s in snaps.items()}
+            self.progress("refine")
+            R = self.refits(snaps, A)
+            # seams, judged on each spectrum's latest refit energies (after the ring's continuous refits)
+            self.progress("seams")
+            ok = {k for k, x in R.items() if not isinstance(x, Exception) and x.status in _ELIGIBLE}
+            energies = {k: [m.omega0 for m in R[k].modes] for k in ok if len(R[k].modes) == A[k].count}
+            ids_after, _ = self.identity(A, snaps, previous, sid, energies)
+            seams = self.ring_seams(plan, r, R, ok, ids_after)
+            entries = [self.entry(k, snaps[k], R[k], self.identity_flags(ids, k)) for k in snaps]
+            verdict = self.save_stage("ring", r, entries, seams)
+            for k, s in snaps.items():
+                if self.judge(k, R[k], verdict, s.fit_id):
+                    self.records[s.fit_id] = R[k].fit
+                    held[k] = self.core.held_from_fit(R[k].fit, unit=k, fit=s.fit_id, inputs=self.inputs.get(k),
+                                                      context=self.ctx[k], T=self.nodes[k].T)
+            self.rings_done = r
+            self.stage_timing("ring", r, t_ring, len(snaps), len(snaps))
+            self.progress("save")
+        self.drift = self.drift_of(held)
+        self.end("completed")
+
+    def ring_seams(self, plan, r: int, R: dict, ok: set, ids_after) -> list[dict]:
+        """The seams of ring ``r`` that disagree: the core's measured mismatch over the threshold, and the
+        identity's seam conflicts. Nothing is added to either fit (a later simultaneous batch reconciles)."""
+        out = []
+        for s in plan.seams:
+            a, b = s.link.a, s.link.b
+            if s.ring != r or a not in ok or b not in ok:
+                continue
+            rep = self.core.seam_report(R[a], R[b], s.link, self.settings)
+            if rep.get("over"):
+                out.append({"a": a, "b": b, "link": s.link.kind, "mismatch": rep.get("max_U"),
+                            "flag": {"code": "seam_disagreement", "severity": "warn",
+                                     "text": f"the two fronts disagree across this seam (mismatch "
+                                             f"{rep.get('max_U', 0.0):.3g}, threshold {rep.get('threshold')})"},
+                            "report": _plain(rep)})
+        kinds = {tuple(sorted((l.a, l.b))): l.kind for l in self.graph.links}
+        for s in ids_after.seams:
+            a, b = s["link"]
+            out.append({"a": a, "b": b, "link": kinds.get(tuple(sorted((a, b))), "q"), "mismatch": None,
+                        "flag": {"code": "seam_disagreement", "severity": "warn",
+                                 "text": f"identity across this seam: {s['issue'].replace('_', ' ')}"},
+                        "report": _plain(s)})
+        return out
+
+    def drift_of(self, held: dict) -> dict | None:
+        """Cumulative T drift per (series, analyzer, branch) over the final held fits (an endpoint diagnostic)."""
+        from isar.analyze.coupled import identity
+        segs: dict = {}
+        for u, h in held.items():
+            n = self.nodes.get(u)
+            if n is None or n.T is None or n.series is None:
+                continue
+            for m in h.modes:
+                segs.setdefault((n.series, n.detector, m.branch), []).append(
+                    {"unit": u, "T": n.T, "omega0": m.omega0, "guard": m.guard, "status": "matched"})
+        segments = [{"analyzer": f"{series}|{det}", "branch": b, "observations": obs}
+                    for (series, det, b), obs in sorted(segs.items()) if len(obs) > 1]
+        return _plain(identity.drift_report(segments, self.settings)) if segments else None
