@@ -35,6 +35,19 @@ def split_key(key):
     return None, value, None
 
 
+def match_member(label, by_unit, by_scan):
+    """The unit a pooled master's member label names: a unit key (``by_unit``), else a numeric scan label
+    that matches exactly one unit (``by_scan``: scan number -> list of units). ``None`` when unresolved."""
+    match = by_unit.get(label)
+    if match is not None:
+        return match
+    try:
+        candidates = by_scan.get(int(label), [])
+    except ValueError:
+        return None
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def scan_prefix(key) -> str:
     """Return the legacy scan-level prefix of ``key`` without guessing malformed inputs."""
     experiment_id, scan_number, _detector_id = split_key(key)

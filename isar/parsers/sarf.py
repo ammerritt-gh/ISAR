@@ -10,7 +10,8 @@ setting) from every file whose whole name matches the card's `resolution_pattern
 expression with the groups `analyzer` and, for a setting-dependent resolution, `setting`. A setting
 is labelled by `metadata.slit_label`, the same spelling the reader gives the `slit` fact, so a
 declared slit and a curve file of the same opening always meet. An unreadable file is logged and
-left out; it never stops the library.
+left out; it never stops the library. `load_named(folder, pattern, name)` holds only the set a gpi
+file names (`<name>_<analyzer>`), which the slit lookup's first-wins rule could otherwise hide.
 """
 from __future__ import annotations
 
@@ -31,6 +32,8 @@ GPI_KEYS = ("res_fwhm", "res_fwtm", "res_fwm100")
 _GPI_LINE = re.compile(r"^\s*(\w+)\s*=\s*([-+0-9.eE]+)\s*$")
 # One library per (folder, pattern) per process; refreshed when the files' fingerprint differs.
 _LIBRARIES: dict = {}
+# One named-set library per (folder, pattern, name) per process; refreshed when the fingerprint differs.
+_NAMED: dict = {}
 
 
 def _matches(folder: Path, pattern: str) -> list[tuple[Path, str, str | None]]:
@@ -111,8 +114,39 @@ def load_library(folder, pattern: str) -> ResolutionLibrary:
     folder = Path(folder)
     if not folder.is_dir():
         raise FileNotFoundError(f"resolution folder {folder} not found")
+    return _library(_matches(folder, pattern))
+
+
+def _named_matches(folder: Path, pattern: str, name: str) -> list[tuple[Path, str, str | None]]:
+    """The matches whose file name is exactly ``<name>_<analyzer>`` (the analyzer as the pattern captures it)."""
+    rx = re.compile(pattern)
+    prefix = f"{name}_"
+    return [(path, det, setting) for path, det, setting in _matches(folder, pattern)
+            if path.name.startswith(prefix) and rx.fullmatch(path.name).group("analyzer") == path.name[len(prefix):]]
+
+
+def _load_named(folder: Path, pattern: str, name: str, fp: str) -> ResolutionLibrary:
+    key = (str(folder), pattern, name)
+    hit = _NAMED.get(key)
+    if hit is None or hit[0] != fp:
+        _NAMED[key] = hit = (fp, _library(_named_matches(folder, pattern, name)))
+    return hit[1]
+
+
+def load_named(folder, pattern: str, name: str, fp: str | None = None) -> ResolutionLibrary:
+    """Only the curves of the named set (a gpi file's ``sarf_name``): files named exactly ``<name>_<analyzer>``,
+    keyed (detector, setting) as ``load_library``, so another set at the same slit never hides them.
+    Loaded once per process per state of the folder. ``fp``: the folder's fingerprint from the caller's own
+    snapshot, so no second hash of every file. FileNotFoundError when there is no folder."""
+    folder = Path(folder)
+    if not folder.is_dir():
+        raise FileNotFoundError(f"resolution folder {folder} not found")
+    return _load_named(folder, pattern, name, fp or fingerprint(folder, pattern))
+
+
+def _library(matches) -> ResolutionLibrary:
     curves, seen = [], {}
-    for path, det, setting in _matches(folder, pattern):
+    for path, det, setting in matches:
         if (det, setting) in seen:
             log.warning("sarf: %s and %s both give %s at %s; the first is used", seen[(det, setting)],
                         path.name, det, setting)
@@ -141,8 +175,18 @@ def library_for(folder, pattern: str, expected: str | None = None) -> Resolution
 
 def curve_from_reference(ref: dict) -> TabulatedResolution:
     """The curve a fit was made with, from its recorded reference (folder, pattern, fingerprint,
-    detector, setting). ValueError when the files changed or the curve is gone."""
-    lib = library_for(ref["folder"], ref["pattern"], ref.get("fingerprint"))
+    detector, setting; ``named`` when the curve was chosen by a gpi file's set name). ValueError when the
+    files changed or the curve is gone."""
+    if ref.get("named"):
+        folder = Path(ref["folder"])
+        if not folder.is_dir():
+            raise FileNotFoundError(f"resolution folder {folder} not found")
+        fp = fingerprint(folder, ref["pattern"])
+        if ref.get("fingerprint") is not None and fp != ref["fingerprint"]:
+            raise ValueError(f"the resolution files in {folder} changed since they were last read")
+        lib = _load_named(folder, ref["pattern"], ref["named"], fp)
+    else:
+        lib = library_for(ref["folder"], ref["pattern"], ref.get("fingerprint"))
     curve = lib.get(ref["detector"], ref["setting"])
     if curve is None:
         raise ValueError(f"no resolution curve for {ref['detector']} at {ref['setting']} in {ref['folder']}")

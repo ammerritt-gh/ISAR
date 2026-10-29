@@ -14,7 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QMenu, QPushButton,
+from PySide6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy,
                                QVBoxLayout, QWidget)
 
 from isar_gui.commands import GuiIngestReport
@@ -103,7 +103,9 @@ class FilesStrip(QWidget):
         attention_row.addWidget(self._attention_word, 1)
         self._attention.hide()
         self._add = ElidedButton("Add data ▾", line)
+        self._add.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)   # never below its text
         self._add.setObjectName("files_add")
+        self._add.setStyleSheet("QPushButton::menu-indicator { image: none; }")   # the label carries the arrow
         self._add.setToolTip("Read more data files, or a whole folder, into this experiment. The originals stay "
                              "where they are and must stay available.")
         add_menu = QMenu(self._add)

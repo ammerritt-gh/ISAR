@@ -228,7 +228,10 @@ destroying data," and it is enforced in code, not aspirational:
 **Tabulated elastic calibration (`tabulated_elastic`; the BL43 format file switches it on).** The folder of measured
 resolution curves, one per analyzer and slit, is the experiment's saved folder (`intake/settings.jsonl`),
 discovered or chosen in the GUI; with none saved, an `rf/` beside the imported data is discovered and
-saved at the first import or run (`isar/intake/curves.py`). Each curve is identified by its content, and
+saved at the first import or run (`isar/intake/curves.py`).
+A `gpi_files/` folder beside the data is discovered the same way for the scan
+sets' gpi files (`isar/intake/gpi.py`): an accepted gpi file gives each analyzer's HKL, the slit and the named curve
+set, and `report/gpi.json` records each check. Each curve is identified by its content, and
 `report/curves.json` records the folder in force and what it holds. `calibrations.refresh_tabulated`
 runs in `isar run` after routing and writes `card.state.tabulated_calibration["exp:scan"]`, never
 the policy. Each analyzer's entry records the curve file and hash its zero was fitted with, and each
@@ -476,12 +479,13 @@ rulings W1–W3.)*
 |---|---|
 | Stage I: parsers (S30, IN8, SPring-8 BL43LXU processed per-analyzer files in both layouts), reduce, calibration state, card | Implemented |
 | BL43LXU file sets at ingest (one scan per set, `parse_set`), facts with sources, per-analyzer exposure, count recovery to raw counts | Implemented |
-| Q by rung: rung 1 (the analyzer's own HKL from a header or filename) and rung 4 (no Q) | Implemented |
+| Q by rung: rung 1 (the analyzer's own HKL from a header, a filename or an accepted gpi file) and rung 4 (no Q) | Implemented |
 | Q by rung: rung 2 (from the sample motor angles) and rung 3 (from the arm-centre HKL, approximate) | Planned (waits for the SIXCIRCLE geometry) |
 | Tabulated per-analyzer resolution (SARF curve per analyzer and slit) in the fit, in place of the Voigt | Implemented |
 | Slit ladder: declared slit, else inferred from the elastic lines; `slit_mismatch`, `slit_inferred`, `slit_ambiguous` alerts | Implemented |
 | Per-analyzer elastic zero (`tabulated_elastic`) with labelled `pipeline_zero` fallback; real-data proof `proofs/test_bl43_resolution.py` | Implemented |
 | Resolution-curve folder as an experiment setting, `rf/` discovery, curve content identity (BL43LXU) | Implemented |
+| gpi files beside the data (BL43LXU): per-analyzer HKL, the analyzer slit and the named curve set, taken only when the file's Q magnitudes agree with the data's `#Q=` within 0.15 /nm; real-data proof `proofs/test_bl43_gpi.py` | Implemented |
 | User values and conditions for BL43 (checked, append-only, applied at each scan's start point; counts accepted lifts the hold on unrecovered counts) | Implemented |
 | Fit inputs per analyzer and pass, with "values changed since last fit" | Implemented |
 | Readiness per use, the needs-attention list, the import summary and the conditions read (BL43LXU; read-only, computed on read from the persisted records) | Implemented |
@@ -498,7 +502,7 @@ rulings W1–W3.)*
 | BL43 scan-set list with analyzer rows, status words, filter and sort, shared multi-selection by stable identity | **Implemented** (2026-10-28; G27, design/gui.md §0septies) |
 | Scan(s) spectrum view: shared selection, ten-spectrum plot limit, raw/monitor-normalised scales, stored Fast/Deep curves and explicit not-drawn states; pooled masters remain inspectable but are not plotted (G27) | **Implemented** (2026-10-28); generated-data widget coverage exists; person walkthrough not yet run (design/gui.md §0septies) |
 | `isar export` and the GUI Export action: every pass side by side and labelled, the authoritative one per spectrum marked (`authoritative`, `fit_source`; the inter-spectra fit as `pass = inter`), stored results only; for a BL43LXU experiment each pass's currentness (`inputs` in `fits.json`, `inputs_current` in `modes.csv`) | **Implemented** (2026-10-27). `currentness.assessed` is true only for a BL43LXU experiment that holds fit-input records; a pass without a finished record is not judged (`current` null), and any other instrument says `assessed` false (`isar/report/export.py`) |
-| Stage-two left-side pieces (BL43LXU): setup section with *Choose curves folder…*, *Experiment info…*, the needs-attention list with ticked-scan entry, the inspector's fact table, the out-of-date mark on a pass whose inputs changed, the readiness line | **Implemented** (2026-10-27), tested offscreen on generated data (`tests/gui/test_stage2_walkthrough.py`); no person has run the walkthrough yet. User values are taken for temperature and slit, plus the dead and counts-accepted declarations; none for Q or other facts (pinned). |
+| Stage-two left-side pieces (BL43LXU): setup section with the *Resolution curves (rf)…* and *gpi files…* buttons, *Experiment info…*, the needs-attention list with ticked-scan entry, the inspector's fact table, the out-of-date mark on a pass whose inputs changed, the readiness line | **Implemented** (2026-10-27), tested offscreen on generated data (`tests/gui/test_stage2_walkthrough.py`); no person has run the walkthrough yet. User values are taken for temperature and slit, plus the dead and counts-accepted declarations; none for Q or other facts (pinned). |
 | Analysis queue in the Processing panel (BL43LXU): analyzer files queued by hand or as they arrive, fast before deep, several files at once on the cores setting, one writer per experiment that confirms each save, no time limit on a fit; a result is done only once saved (`design/gui.md` §0sexies) | **Implemented** (2026-10-28), tested offscreen and at the engine. Not yet run: a person's walk-through at the GUI threshold. Open: a queued fit does not refresh the curves check the setup section shows |
 | Peak-count benchmark (`isar.synth.count_bench`): should-find misses, false peaks, count states, flag rates and per-spectrum time, on synthetic truths built with the real resolution curves | **Implemented**, measured on the evaluation streams (292 spectra, 2026-10-26; `STATS_PRIMER.md` §2.3). Figures are aims, not gates; the full run is on request, and a one-peak case runs in the routine suite. |
 | Interval ladder through bootstrap; `interval_reliable` flag | Implemented |

@@ -206,7 +206,7 @@ class FactTable(QWidget):
 
     def _fact_cells(self, r) -> _Row:
         """One fact row of the read as a display row (no actions yet)."""
-        unit = r.unit or ("rlu" if r.fact == "q" and r.file_value is not None else None)
+        unit = r.unit or ("rlu" if r.fact == "q" and r.used_value is not None else None)
         row = _Row(r.fact, _TITLES.get(r.fact, r.fact.replace("_", " ").capitalize()))
         if r.fact == "counts":
             row.files = counts_text(r.file_value)
@@ -232,7 +232,7 @@ class FactTable(QWidget):
             row.used = (f"—\n{named or 'missing'}", f"No value is in force; {named}. Entering a value replaces "
                                                    "the stand-in." if named else "missing")
         else:
-            whose = "yours" if r.used_source == "user" else "file"
+            whose = {"user": "yours", "gpi": source_words("gpi")}.get(r.used_source, "file")
             row.used = (f"{_value_text(r.used_value, unit)}\n{whose}", f"Used: {whose}")
         if r.disagreement:
             both = (f"Your value ({_value_text(r.user_value, unit)}) differs from the file's "
@@ -243,8 +243,8 @@ class FactTable(QWidget):
     def _q_row(self, r) -> _Row:
         row = self._fact_cells(r)
         row.tip = FILES_ONLY
-        if r.file_value is None:      # no hkl: the file's |Q|, as the scan list shows it
-            q = None if self._row is None else self._row.q
+        if r.used_value is None:      # no hkl in the files or the gpi file: the file's |Q|, as the scan list shows it
+            q = None if self._row is None else self._row.q_abs
             if q is not None and q.value is not None:
                 where = f", {q.source}" if q.source and q.source != "missing" else ""
                 row.files = (f"{_value_text(q.value, q.unit)}\n(|Q|{where})", NO_HKL)

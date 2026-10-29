@@ -111,6 +111,19 @@ def energy_grid(x, x_max, prior_omega=None, *, eps=EPS_OMEGA0, step=STEP,
     return np.arange(lo, hi + step / 2.0, step)
 
 
+def _width_starts(composite, ctx) -> dict:
+    """``{name: resolution FWHM}`` for every nonlinear ``.width`` parameter of ``composite`` (the
+    central QE's intrinsic width): not a phonon coordinate, so no IC scans it; every NNLS basis and
+    seed holds it at the resolution width (:func:`isar.analyze.prior.resolution_fwhm`)."""
+    from isar.analyze.prior import resolution_fwhm  # prior imports this module
+
+    names = [n for n in composite.nonlinear_names() if n.endswith(".width")]
+    if not names:
+        return {}
+    width = resolution_fwhm(ctx)
+    return {n: width for n in names}
+
+
 def phonon_structure_ic(composite, ctx, *, gamma0=GAMMA0, estimator="baker_cousins") -> np.ndarray:
     """Initial parameter vector (in ``composite.param_names()`` order) for this context.
 
@@ -123,19 +136,21 @@ def phonon_structure_ic(composite, ctx, *, gamma0=GAMMA0, estimator="baker_cousi
     x_max = float(np.max(x))
     est = estimators.get_estimator(estimator)
     linear_set = set(composite.linear_names())
+    widths = _width_starts(composite, ctx)
 
-    if not composite.nonlinear_names():
-        # Phonon-less composite (elastic+bg / bg): every param is linear, so one NNLS solve IS
-        # the IC — no energy to grid-scan, and the grid (empty on a Stokes-free window) is
-        # irrelevant to this structure.
-        phi, lin_names = composite.nnls_basis(x, {}, ctx)
+    if not set(composite.nonlinear_names()) - set(widths):
+        # Phonon-less composite (elastic+bg / bg, with or without the central QE): every param is
+        # linear or a width held at its start, so one NNLS solve IS the IC — no energy to grid-scan,
+        # and the grid (empty on a Stokes-free window) is irrelevant to this structure.
+        phi, lin_names = composite.nnls_basis(x, widths, ctx)
         coef, _ = nnls(phi, counts)
         lin = dict(zip(lin_names, coef))
-        return np.array([max(float(lin[n]), 0.0) for n in composite.param_names()], dtype=float)
+        return np.array([widths[n] if n in widths else max(float(lin[n]), 0.0)
+                         for n in composite.param_names()], dtype=float)
 
     best_cost, best = np.inf, None
     for od in energy_grid(x, x_max, ctx.prior_omega, eps=EPS_OMEGA0):
-        nl = {name: (od if name.endswith(".omega0") else gamma0)
+        nl = {name: (od if name.endswith(".omega0") else widths.get(name, gamma0))
               for name in composite.nonlinear_names()}
         phi, lin_names = composite.nnls_basis(x, nl, ctx)
         coef, _ = nnls(phi, counts)
@@ -154,8 +169,8 @@ def phonon_structure_ic(composite, ctx, *, gamma0=GAMMA0, estimator="baker_cousi
             out.append(max(float(lin[name]), 0.0))
         elif name.endswith(".omega0"):
             out.append(od)
-        else:  # a nonlinear non-energy param (Γ) — fixed at gamma0 during IC
-            out.append(gamma0)
+        else:  # a nonlinear non-energy param (Γ, or a QE width) — fixed at its start during IC
+            out.append(widths.get(name, gamma0))
     return np.array(out, dtype=float)
 
 
@@ -193,14 +208,17 @@ def _sub_composite(composite, keep):
                            if not isinstance(c, PhononDHO) or c.prefix in keep])
 
 
-def _seed_dict(composite, modes: dict, linear: dict) -> dict:
+def _seed_dict(composite, modes: dict, linear: dict, widths: dict | None = None) -> dict:
     """A full seed keyed by ``composite.param_names()``: each mode's ``(E0, Γ)`` from ``modes``,
-    each linear height from ``linear`` (absent or negative → 0)."""
+    each linear height from ``linear`` (absent or negative → 0), each width from ``widths``."""
     linear_set = set(composite.linear_names())
+    widths = widths or {}
     out = {}
     for name in composite.param_names():
         if name in linear_set:
             out[name] = max(float(linear.get(name, 0.0)), 0.0)
+        elif name in widths:
+            out[name] = float(widths[name])
         else:
             prefix, par = name.rsplit(".", 1)
             od, g = modes[prefix]
@@ -210,7 +228,7 @@ def _seed_dict(composite, modes: dict, linear: dict) -> dict:
 
 def _nnls_linear(composite, ctx, modes: dict) -> dict:
     """Every linear height of ``composite`` by NNLS with the modes' nonlinears held."""
-    nl = {}
+    nl = dict(_width_starts(composite, ctx))
     for p, (od, g) in modes.items():
         nl[f"{p}.omega0"], nl[f"{p}.Gamma"] = od, g
     phi, lin_names = composite.nnls_basis(ctx.x_used, nl, ctx)
@@ -232,7 +250,7 @@ def _scan_new_mode(composite, ctx, fixed: dict, new: str, hint, *, gamma0, estim
     grid = energy_grid(x, x_max, hint, eps=EPS_OMEGA0)
     res_fwhm = float(getattr(ctx, "gauss_fwhm", 0.0) or 0.0)
     held_w = [od for od, _ in fixed.values()]
-    base = {}
+    base = dict(_width_starts(composite, ctx))
     for p, (od, g) in fixed.items():
         base[f"{p}.omega0"], base[f"{p}.Gamma"] = od, g
 
@@ -293,7 +311,7 @@ def greedy_multimode_ic(composite, ctx, previous_result, peaks=None, *, gamma0=G
     last = prefixes[-1]
     od, lin = _scan_new_mode(composite, ctx, fixed, last, _peak_hint(peaks, len(prefixes) - 1),
                              gamma0=gamma0, estimator=estimator)
-    return _seed_dict(composite, {**fixed, last: (od, gamma0)}, lin)
+    return _seed_dict(composite, {**fixed, last: (od, gamma0)}, lin, _width_starts(composite, ctx))
 
 
 def placed_modes_ic(composite, ctx, omega0s, *, gamma0=GAMMA0,
@@ -311,7 +329,8 @@ def placed_modes_ic(composite, ctx, omega0s, *, gamma0=GAMMA0,
         od, _ = _scan_new_mode(_sub_composite(composite, {*fixed, p}), ctx, fixed, p, None,
                                gamma0=gamma0, estimator=estimator)
         fixed[p] = (od, gamma0)
-    return _seed_dict(composite, fixed, _nnls_linear(composite, ctx, fixed))
+    return _seed_dict(composite, fixed, _nnls_linear(composite, ctx, fixed),
+                      _width_starts(composite, ctx))
 
 
 def split_mode_ic(composite, ctx, previous_result, parent: str, separation: float, *,
@@ -340,7 +359,7 @@ def split_mode_ic(composite, ctx, previous_result, parent: str, separation: floa
     modes = {**held, parent: (_od(w - 0.5 * separation), g), new: (_od(w + 0.5 * separation), g)}
     linear = {n: v for n, v in previous_result.params.items() if n in set(composite.linear_names())}
     linear[f"{parent}.h"], linear[f"{new}.h"] = a_lo, a_hi
-    return _seed_dict(composite, modes, linear)
+    return _seed_dict(composite, modes, linear, _width_starts(composite, ctx))
 
 # ----------------------------------------------------------------------------
 # Admissibility gates and structure enumeration (§2)
@@ -370,6 +389,16 @@ def quasielastic_admissible(ctx) -> bool:
     given scan is left to model selection (§4) — it is enumerated, not assumed.
     """
     return getattr(ctx, "quasielastic_fwhm", None) is not None
+
+
+# The central quasi-elastic component (CentralQE) is switched on by instrument, not by a card
+# setting: phenomenological, no mechanism claimed; every BL43LXU model carries one.
+CENTRAL_QE_INSTRUMENT = "BL43LXU"
+
+
+def central_qe_admissible(ctx) -> bool:
+    """The central QE belongs to every spectrum of the :data:`CENTRAL_QE_INSTRUMENT`."""
+    return getattr(ctx, "instrument", None) == CENTRAL_QE_INSTRUMENT
 
 
 def _background_and_stokes_amp(ctx):

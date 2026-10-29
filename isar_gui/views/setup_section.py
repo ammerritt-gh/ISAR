@@ -6,24 +6,28 @@ Two or three compact lines from the intake backend's import summary and settings
   incomplete sets and the files not read are links that open, in place, the list behind them (each set
   with its missing analyzers and their causes and its sidecar state; each file with its reason), or
   "Nothing read yet";
-* where the resolution curves were found, with *Choose curves folder…*, and below it, in the warning colour, the
-  last curve check's problem (one line, the full text on hover), a note when the saved folder is not
-  checked yet, and each other ``rf/`` folder found beside new data with *Use this folder*.
+* two folder buttons on one row, *Resolution curves (rf)…* and *gpi files…* (BL43LXU only), each with a check or a
+  cross for whether its folder is good and the path on hover; below them, in the warning colour, the last curve
+  check's problem (one line, the full text on hover), a note when the saved folder is not checked yet, and each
+  other ``rf/`` folder found beside new data with *Use this folder*.
 
-The section only shows what the backend returns. *Choose curves folder…* leaves through ``locate_requested``, and the
-window routes it to :func:`locate_resolution_folder`, the one route that saves a folder the user picks.
+The section only shows what the backend returns: the folder marks come from ``folder_status``. Each folder button
+leaves through its own signal (``locate_requested``, ``gpi_locate_requested``), and the window routes it to
+:func:`locate_resolution_folder` or :func:`locate_gpi_folder`, the routes that save a folder the user picks.
 """
 from __future__ import annotations
 
 import html
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (QFileDialog, QGridLayout, QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
+from isar.workspace_api.intake_view import FolderStatus, folder_status
 from isar_gui.plain_words import NO_CURVES, NO_CURVES_TIP, curve_problem, plain_reason
-from isar_gui.theme import TONE_COLOR, Tone
+from isar_gui.theme import TONE_COLOR, Tone, state_icon
 from isar_gui.views.elided_label import ElidedButton, ElidedLabel
 
 NOTHING_READ = "Nothing read yet. Add data files below."
@@ -33,10 +37,13 @@ STALE_NOTE = "The curves folder has not been checked yet; it is checked when you
 COUNTS_LEGEND = ("A scan set is one scan with one file per analyzer; a spectrum is one analyzer of one set, "
                  "and 'analyzers read' counts the spectra.\nAn incomplete set has analyzer files that did not "
                  "arrive or could not be read. Click a count in blue to list them.")
-LOCATE_TEXT = "Choose curves folder…"               # the setup line is tight at 1108 px; elsewhere there is room
+LOCATE_TEXT = "Resolution curves (rf)…"              # names the rf folder; the other lists say LOCATE_LONG
 LOCATE_LONG = "Choose resolution-curve folder…"     # attention list, readiness list, Details dialog
 LOCATE_TIP = ("Pick the folder holding the measured resolution curves. It is saved with this experiment "
               "at once and the analysis fits with it.")
+GPI_LOCATE_TEXT = "gpi files…"
+GPI_LOCATE_TIP = ("Pick the folder holding the beamline's gpi files (gpi.<scan set>). It is saved with this "
+                  "experiment at once; their values are used after the data is read again or the analysis starts.")
 _SOURCE_WORDS = {"discovered": "found beside the data", "user": "chosen by you"}
 _LIST_ROWS = 6                  # an opened list shows this many rows, then scrolls
 _WARN = f"color: {TONE_COLOR[Tone.WARN]};"
@@ -67,6 +74,29 @@ def resolution_text(summary, settings) -> tuple[str | None, bool]:
     return None, False
 
 
+def _mark_folder(button: ElidedButton, shown: bool, status: FolderStatus | None, click: str,
+                 note: str | None = None) -> None:
+    """Show a folder button with its check or cross (none when ``status`` is None). The tooltip gives the state,
+    the path and how it was chosen, or the reason it is not good, then ``note`` and the click's words; the
+    accessible name and description say the same in words, so the state never rests on the icon alone."""
+    button.setVisible(shown)
+    button.setIcon(state_icon(status.good) if status is not None else QIcon())
+    label = button.full_text()
+    button.set_full_text(label)                 # re-elides for the icon's room
+    if status is None:
+        head, detail, name, description = label, None, label, None
+    elif status.good:
+        head, detail = f"{label}: good", f"{status.path}\n{status.how}"
+        name, description = status.accessible, f"{status.how}: {status.path}"
+    else:
+        head = f"{label}: not good"
+        detail = status.reason + (f"\n{status.path}" if status.path else "")
+        name, description = status.accessible, status.reason
+    button.setToolTip("\n".join(part for part in (head, detail, note, click) if part))
+    button.setAccessibleName(name)
+    button.setAccessibleDescription(description or "")
+
+
 def _start_folder(intake) -> str:
     settings, summary = intake.settings, intake.summary
     if settings is not None and settings.resolution_folder is not None:
@@ -83,6 +113,16 @@ def locate_resolution_folder(parent: QWidget, intake):
     if not folder:
         return None
     return intake.save_resolution_folder(Path(folder))
+
+
+def locate_gpi_folder(parent: QWidget, intake):
+    """*gpi files…*: pick a folder and save it at once as the user's gpi folder. Returns the
+    :class:`~isar_gui.viewmodels.intake.SaveOutcome`, or ``None`` when cancelled."""
+    saved = intake.settings.gpi_folder if intake.settings is not None else None
+    folder = QFileDialog.getExistingDirectory(parent, "Choose the gpi folder", "" if saved is None else saved.path)
+    if not folder:
+        return None
+    return intake.save_gpi_folder(Path(folder))
 
 
 class _Line(ElidedLabel):
@@ -131,6 +171,7 @@ class _RunButton(ElidedButton):
 
 class SetupSection(QWidget):
     locate_requested = Signal()
+    gpi_locate_requested = Signal()     # "gpi files…" -> the window's gpi chooser route
     run_requested = Signal()            # "Fast-pass all ready (N)" -> MainWindow.start_analysis (the button holds no logic)
 
     def __init__(self, intake, parent: QWidget | None = None) -> None:
@@ -158,12 +199,14 @@ class SetupSection(QWidget):
         self._list.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
         self._list.hide()
 
-        self._resolution = ElidedLabel("", self)
-        self._resolution.setObjectName("setup_resolution")
-        self._locate = ElidedButton(LOCATE_TEXT, self)       # shares its row with Run: it gives way first
+        self._locate = ElidedButton(LOCATE_TEXT, self)       # the rf folder: its check or cross, the path on hover
         self._locate.setObjectName("setup_locate")
-        self._locate.setToolTip(LOCATE_TIP)
         self._locate.clicked.connect(self.locate_requested)
+        self._gpi_locate = ElidedButton(GPI_LOCATE_TEXT, self)
+        self._gpi_locate.setObjectName("setup_gpi_locate")
+        self._gpi_locate.clicked.connect(self.gpi_locate_requested)
+        for folder in (self._locate, self._gpi_locate):
+            folder.setIconSize(QSize(12, 12))           # the state icon's own size, so it is not scaled
         self._run = _RunButton(RUN_TEXT, self)
         self._run.setObjectName("setup_run")
         self._run.setToolTip(RUN_TIP)
@@ -188,14 +231,18 @@ class SetupSection(QWidget):
         self._grid.setVerticalSpacing(0)       # the Run row costs a line; the 400 px scan list has no slack
         self._grid.setColumnStretch(0, 1)
         self._grid.addWidget(self._summary, 0, 0)
-        self._grid.addWidget(self._resolution, 1, 0)
-        # Under the path, not beside it: the button names its object, and beside it the path got no room at 1108 px.
-        # Fast-pass all ready leads the row, so it is on screen at every window size whatever the right panel does.
+        folders = QHBoxLayout()                 # the two folders side by side, each with its own state
+        folders.setContentsMargins(0, 0, 0, 0)
+        folders.setSpacing(6)
+        folders.addWidget(self._locate, 0)
+        folders.addWidget(self._gpi_locate, 0)
+        folders.addStretch(1)
+        self._grid.addLayout(folders, 1, 0)
+        # Fast-pass all ready leads its row, so it is on screen at every window size whatever the right panel does.
         buttons = QHBoxLayout()
         buttons.setContentsMargins(0, 0, 0, 0)
         buttons.setSpacing(6)
         buttons.addWidget(self._run, 0)
-        buttons.addWidget(self._locate, 0)
         buttons.addStretch(1)
         self._grid.addLayout(buttons, 2, 0)
         self._grid.addWidget(self._run_note, 3, 0)
@@ -209,6 +256,7 @@ class SetupSection(QWidget):
         layout.addLayout(self._others)
 
         intake.changed.connect(self._render)
+        intake.worker_changed.connect(self._render)     # the folder marks need the readiness the worker reads
         self._render()
 
     def set_run_state(self, enabled: bool, note: str, *, curves_only: bool = False, label: str = RUN_TEXT) -> None:
@@ -270,17 +318,15 @@ class SetupSection(QWidget):
         self._summary.setStyleSheet(_WARN if warn_summary else "")
         self._render_list(summary if bl43 else None)
 
-        where, warn = resolution_text(summary, settings)
-        resolution = None if where is None else f"Resolution curves: {where}"
-        self._locate.setVisible(bl43)
-        self._resolution.set_full_text(resolution or "")
-        self._resolution.setStyleSheet(_WARN if warn else "")
-        # "not found" and the sentence under it say the same: the sentence stands alone (the row is kept for the tests
-        # and the screen reader, hidden) so the section keeps the height it had before the button got its own row.
-        self._resolution.setVisible(bool(resolution) and bl43 and curve_problem(
-            curves.problem if curves is not None else None) != NO_CURVES)
-        if curves is not None:
-            self._resolution.setToolTip(f"{resolution}\n{self._checked_text(curves)}")
+        # Unevaluated readiness (nothing imported yet): folder_status judges from the summary alone, and the mark shows.
+        rf, gpi = folder_status(summary, settings, intake.attention)
+        where, _warn = resolution_text(summary, settings)
+        saved = None if settings is None else settings.gpi_folder
+        gpi_where = "no gpi folder is chosen" if saved is None else (
+            f"{saved.path} ({_SOURCE_WORDS.get(saved.source, saved.source)})")
+        _mark_folder(self._locate, bl43, rf, LOCATE_TIP,
+                     self._checked_text(curves) if rf is not None else where)
+        _mark_folder(self._gpi_locate, bl43, gpi, GPI_LOCATE_TIP, None if gpi is not None else gpi_where)
 
         problem = curves.problem if bl43 and curves is not None else None
         shown = curve_problem(problem)

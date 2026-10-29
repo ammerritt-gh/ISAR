@@ -12,7 +12,7 @@ from isar_gui.session import Session
 from isar_gui.viewmodels.scan_list import ScanListViewModel
 from isar_gui.views.scans_page import ScansPage, EMPTY, PLOT, LIST
 from scans_view_fixture import (ONE_MODE, TWO_MODE, NO_Q, NO_ZERO, NO_MONITOR, OUTDATED,
-    DEEP_TRUSTED, DEEP_OUTDATED, SPECTRA_A, SPECTRA_B, FITTED)
+    DEEP_TRUSTED, DEEP_OUTDATED, SPECTRA_A, SPECTRA_B, STOKES_ONLY, FITTED)
 
 
 @pytest.fixture
@@ -240,3 +240,10 @@ def test_redraw_timing_report(page):
     print(f'cold: {cold}\nwarm: {warm}')
     assert cold.n == warm.n == 10
     assert all(value >= 0 for t in (cold, warm) for value in (t.read_s, t.build_s, t.render_s, t.total_s))
+
+
+def test_the_central_qe_is_drawn_and_named_qe(page):
+    page.vm.set_fit('fast')
+    drawn = select(page, STOKES_ONLY)
+    assert 'QE' in {line.entry for line in drawn.legend}
+    assert [c.role for c in drawn.curves if c.key == STOKES_ONLY and c.name == 'QE'] == ['quasielastic']

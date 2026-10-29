@@ -156,7 +156,7 @@ def identity(snapshot: ScanListSnapshot, key: str) -> Identity | None:
         numbered = len(scan_set.scan_numbers) == 1
         scan = str(scan_set.scan_numbers[0]) if numbered else scan_set.label
         analyzer = row.analyzer or key.rsplit(":", 1)[-1]
-        q_fact, t_fact, label = row.q, scan_set.temperature, scan_set.label
+        q_fact, t_fact, label = row.q_abs, scan_set.temperature, scan_set.label
     return Identity(scan, numbered, analyzer,
                     _fact_text(q_fact, "Q missing", ".2f"),
                     _fact_text(t_fact, "T missing", "g"), label)

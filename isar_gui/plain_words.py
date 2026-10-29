@@ -30,7 +30,9 @@ STAND_IN_TIP = ("The fit runs with a stand-in instead of a measured value. Enter
 
 # Where a file fact was read from (FactRow.file_source).
 _SOURCE = {"header": "from the header", "trailer": "from the trailer", "sidecar": "from the sidecar",
-           "filename": "from the file name", "card": "from the card", "inferred": "inferred"}
+           "filename": "from the file name", "card": "from the card", "inferred": "inferred",
+           "gpi": "from the gpi file", "file": "from the file", "members": "mean of the pool's members",
+           "reported": "reported in the file", "card_offset": "from the card's Q offset"}   # the hkl's q_source words
 
 # The remedy of an attention group, as a sentence naming what to press or do (backend action id -> text).
 FIX_PHRASE = {
@@ -51,7 +53,11 @@ USE_WORDS = {"read": "reading the files", "reduce": "reduction and export",
 
 # Group titles the backend words as pipeline stages.
 GROUP_TITLE = {"q_missing": "Q missing (only campaign planning needs it)",
-               "calibration_pending": "Not calibrated yet (energy zero and resolution)"}
+               "calibration_pending": "Not calibrated yet (energy zero and resolution)",
+               "gpi_rejected": "gpi file not used", "gpi_curves_dropped": "gpi curve set not used"}
+# The remedy where the action's own sentence names the wrong one: the action names a button, this names the fix.
+KIND_FIX = {"gpi_rejected": "fix the gpi file, then add the data again or start the analysis",
+            "gpi_folder_changed": "add the data again or start the analysis, so the gpi files are read again"}
 
 _NO_FOLDER = "no resolution folder is saved"
 NO_CURVES = "No resolution curves yet. Choose the folder that holds them."
@@ -108,6 +114,8 @@ def group_title(kind: str, summary: str, scope: str) -> str:
     plainly worded, and a long path out of the line (it stays in the hover)."""
     if kind == "resolution_folder" and summary.partition(": ")[2].startswith(_NO_FOLDER):
         return "Resolution curves: none chosen yet"
+    if kind == "gpi_folder_changed":       # the backend's sentence repeats the title; the hover keeps it
+        return "gpi folder changed: its values are set aside"
     if kind in GROUP_TITLE:
         rest = summary.partition(": ")[2]
         summary = f"{GROUP_TITLE[kind]}: {rest}" if rest else GROUP_TITLE[kind]

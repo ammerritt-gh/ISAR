@@ -121,6 +121,14 @@ STALE_PHRASES = (
         "LLMM must be running",
         "same correction: state which profile needs LLMM rather than making it unconditional",
     ),
+    (
+        "Choose gpi folder",
+        "the button is *gpi files…* since 2026-10-29 (USING_ISAR; design/gui.md §0nonies)",
+    ),
+    (
+        "Choose curves folder",
+        "the button is *Resolution curves (rf)…* since 2026-10-29 (USING_ISAR; design/gui.md §0nonies)",
+    ),
     # Two forms, not one: `GUI_DESIGN.md` legitimately names its build phase "Phase A — read-only
     # viewer", so the bare noun phrase cannot be forbidden. What was wrong is the *claim* form,
     # which reads as an architectural boundary that campaign control appears to violate.

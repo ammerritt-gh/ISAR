@@ -22,6 +22,7 @@ One directory per experiment (`isar/session/workspace.py`):
   report/             # report.md/.html/.json, reduction.*, results.csv, modes.csv, figures/,
                       # measurements.jsonl (counts-authoritative arena log), scene/ (revisions),
                       # curves.json (BL43 resolution-curve check: folder, curves by content),
+                      # gpi.json (BL43 gpi-file check: each scan set's gpi file accepted or not, and why),
                       # intake_scans.json (BL43 import record: the file values of every scan read;
                       # machine-written, rebuilt by a re-import), fit_inputs.jsonl (what each pass
                       # used; append-only), fit_history.jsonl (every ledger entry a re-import or
@@ -46,7 +47,11 @@ experiment's resolution-curve folder is the latest `resolution_folder` line in `
 saved by the GUI (or discovered once, at the first import or run, when none is saved) and never changed by
 an import, a run or a fit. `report/curves.json` records what the last check found: the folder in force, its
 fingerprint, each curve's content hash, and any other `rf/` folder that also holds curves. Imports and run
-starts write it; nothing else does.
+starts write it; nothing else does. The experiment's gpi folder is the latest `gpi_folder` line in
+`settings.jsonl`, saved the same way (by the GUI, or discovered beside the data when none is saved).
+`report/gpi.json` records what the last check found: the folder in force and, for each `gpi.<set>` file,
+its content hash, whether it was accepted (and why not) and the values it gives. Imports, run starts and
+queued single-file fits write it; nothing else does, and no gpi value is ever written to `entries.jsonl`.
 
 **Writers and the write lock.** The writers that run beside the GUI's analysis queue hold
 `.isar-write.lock` at the workspace root for their whole read-modify-write: the queue's writer
@@ -88,10 +93,12 @@ Q and count record), written by `isar ingest` and by `isar run`; it never holds 
   fit. A save made after a scan's start point is used from the next run, and the reads mark the results
   meanwhile. A save never requeues anything by itself.
 - **Effective record.** The temperature and slit in force replace the file's (a missing temperature stays
-  missing and falls back, never 0 K); dead analyzers are absent; the analyzers with accepted counts are
-  named. The parsed record is never changed.
+  missing and falls back, never 0 K); an accepted gpi file's slit and HKLs stand below your values and above
+  the file's (USING_ISAR, *gpi files beside the scans*); dead analyzers are absent; the analyzers with accepted
+  counts are named. The parsed record is never changed.
 - **Calibration reuse.** A scan's tabulated calibration state carries an `inputs_key`, the hash of its data
-  revision, resolution folder, pattern, library fingerprint, declared slit, analyzers and accepted counts.
+  revision, resolution folder, pattern, library fingerprint, declared slit, analyzers and accepted counts, and,
+  when an accepted gpi file names a curve set, that set and each analyzer's curve hash.
   It is reused only when that key is unchanged; otherwise the scan is recalibrated before its units are
   fitted. An excluded or dead unit becomes an `excluded` ledger entry carrying the declaring entry in its
   reason; it is never fitted and has no fit-inputs line.

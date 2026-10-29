@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 from isar.intake import inputs, readiness
 from isar.intake.inputs import Change
@@ -37,7 +38,7 @@ class FactRow:
     user_entry: str | None
     user_reason: str | None
     used_value: object | None
-    used_source: str              # "user" | "file" | "missing"
+    used_source: str              # "user" | "gpi" | "file" | "missing"
     disagreement: bool
     fallback: str | None          # "bose_t0_limit" | "slit_inferred" | "slit_broadest_curve" | "slit_pending" | None
 
@@ -82,7 +83,8 @@ def _slit_fallback(row: dict, si: inputs.ScanInputs, state: dict | None, check, 
         data_revision=row.get("data_revision"), folder=check.folder, pattern=check.pattern, library=check.library,
         declared_slit=None,      # only asked for when no slit is in force
         analyzers=dets,
-        counts_accepted=[d for d in dets if d in si.counts_accepted])
+        counts_accepted=[d for d in dets if d in si.counts_accepted],
+        named=inputs.named_key(si.named, si.gpi.curves if si.gpi else {}))
     if state.get("inputs_key") != key:
         return "slit_pending"
     return _BASIS_FALLBACK.get(state.get("setting_basis"))
@@ -98,27 +100,32 @@ def _scan_fact_row(scan: str, fact: str, fi: inputs.FactInput, row_fact: dict, f
 
 
 def fact_rows(rows: Mapping[str, dict], index: inputs.EntryIndex, calibration: Mapping[str, dict], check,
-              folder_now: str | None, scans: Iterable[str] | None = None) -> list[FactRow]:
+              folder_now: str | None, scans: Iterable[str] | None = None,
+              gpi: Mapping[str, object] | None = None) -> list[FactRow]:
     """Per scan: temperature, slit, then Q and counts per analyzer. ``rows`` is the import record,
-    ``calibration`` the card state's tabulated calibration, ``check`` the persisted curve check (or None)."""
+    ``calibration`` the card state's tabulated calibration, ``check`` the persisted curve check (or None),
+    ``gpi`` the gpi entries in force (``gpi.entries_in_force``), by scan key."""
+    gpi = gpi or {}
     out: list[FactRow] = []
     for scan in sorted(rows if scans is None else set(scans) & set(rows), key=lambda k: _order(rows, k)):
         row = rows[scan]
-        si = inputs.scan_inputs(row, index)
+        si = inputs.scan_inputs(row, index, gpi.get(scan))
         row_facts = row.get("facts") or {}
         t, s = si.facts["temperature"], si.facts["slit"]
         out.append(_scan_fact_row(scan, "temperature", t, row_facts.get(inputs.FILE_FACT["temperature"]) or {},
                                   "bose_t0_limit" if t.used_value is None else None))
         out.append(_scan_fact_row(scan, "slit", s, row_facts.get(inputs.FILE_FACT["slit"]) or {},
                                   _slit_fallback(row, si, calibration.get(scan), check, folder_now)
-                                  if s.used_value is None else None))
+                                  if inputs.calibration_slit(si) is None else None))
         for det, a in sorted((row.get("analyzers") or {}).items()):
             q = a.get("q")
+            used_q, q_source = inputs.analyzer_q(row, si, det)
             out.append(FactRow(
                 scan=scan, analyzer=det, fact="q", unit=None, enterable=False, file_value=q,
                 file_source="missing" if q is None else a.get("q_source") or "missing", file_conflicts=(),
-                user_value=None, user_entry=None, user_reason=None, used_value=q,
-                used_source="missing" if q is None else "file", disagreement=False, fallback=None))
+                user_value=None, user_entry=None, user_reason=None, used_value=used_q,
+                used_source="missing" if used_q is None else "gpi" if q_source == "gpi" else "file",
+                disagreement=False, fallback=None))
             counts = a.get("counts")
             if counts is not None:           # accepting counts never changes them: used is always the file value
                 acc = si.counts_accepted.get(det)
@@ -130,9 +137,10 @@ def fact_rows(rows: Mapping[str, dict], index: inputs.EntryIndex, calibration: M
     return out
 
 
-def _now_args(used: dict, check, folder_now: str | None) -> dict:
+def _now_args(used: dict, check, folder_now: str | None, named: Mapping[str, dict | None] | None = None) -> dict:
     """The ``*_now`` arguments of ``inputs.changes``: the folder saved now, and the library and curve
-    identity from the last check while that check was of this folder (else omitted)."""
+    identity from the last check while that check was of this folder (else omitted). ``named``: the scan's
+    gpi curve set in force (analyzer -> file identity), whose files the slit library may not hold."""
     args: dict = {"folder_now": folder_now}
     cal = used.get("calibration") if isinstance(used, dict) else None
     if cal is None or check is None or check.folder != folder_now:
@@ -140,15 +148,17 @@ def _now_args(used: dict, check, folder_now: str | None) -> dict:
     args["library_now"] = check.library
     file = (cal.get("curve") or {}).get("file")
     if file is not None:
-        args["curve_sha_now"] = next((c.sha256 for c in check.curves if c.file == file), "missing")
+        args["curve_sha_now"] = next(
+            (c.sha256 for c in check.curves if c.file == file),
+            next((c["sha256"] for c in (named or {}).values() if c and c["file"] == file), "missing"))
     return args
 
 
-def _pass(p, current: dict | None, check, folder_now: str | None) -> PassInputs:
+def _pass(p, current: dict | None, check, folder_now: str | None, named=None) -> PassInputs:
     changed: tuple[Change, ...] = ()
     if current is not None:
         try:
-            changed = inputs.changes(p.inputs, current, **_now_args(p.inputs, check, folder_now))
+            changed = inputs.changes(p.inputs, current, **_now_args(p.inputs, check, folder_now, named))
         except (KeyError, TypeError, AttributeError) as exc:      # a line this version cannot compare
             log.warning("fit inputs of %s (%s pass, run %s) cannot be compared with the inputs now (%s)",
                         p.unit, p.pass_name, p.run, exc)
@@ -159,10 +169,11 @@ def _pass(p, current: dict | None, check, folder_now: str | None) -> PassInputs:
 
 def fit_inputs(passes: Mapping[str, Mapping[str, object]], rows: Mapping[str, dict], index: inputs.EntryIndex,
                calibration: Mapping[str, dict], check, folder_now: str | None,
-               units: Iterable[str] | None = None) -> list[UnitFitInputs]:
+               units: Iterable[str] | None = None, gpi: Mapping[str, object] | None = None) -> list[UnitFitInputs]:
     """Per unit with a counting pass (``fit_inputs.latest_passes``): its latest fast and deep pass and the
     changes since, each pass judged on its own. A unit whose scan has no import row is listed without changes."""
     out: list[UnitFitInputs] = []
+    gpi = gpi or {}
     scan_inputs: dict[str, inputs.ScanInputs | None] = {}
     wanted = passes if units is None else set(units) & set(passes)
     for unit in sorted(wanted, key=lambda u: (_order(rows, u.rpartition(":")[0]), u)):
@@ -170,13 +181,14 @@ def fit_inputs(passes: Mapping[str, Mapping[str, object]], rows: Mapping[str, di
         any_pass = next(iter(by.values()))
         scan, _, det = unit.rpartition(":")
         if scan not in scan_inputs:
-            scan_inputs[scan] = inputs.scan_inputs(rows[scan], index) if scan in rows else None
+            scan_inputs[scan] = inputs.scan_inputs(rows[scan], index, gpi.get(scan)) if scan in rows else None
         si = scan_inputs[scan]
         current = None if si is None else inputs.unit_inputs(rows[scan], si, det, calibration.get(scan))
+        named = si.gpi.curves if si is not None and si.named is not None else None
         out.append(UnitFitInputs(
             unit=unit, scan=any_pass.scan or scan, analyzer=det,
-            fast=_pass(by["fast"], current, check, folder_now) if "fast" in by else None,
-            deep=_pass(by["deep"], current, check, folder_now) if "deep" in by else None))
+            fast=_pass(by["fast"], current, check, folder_now, named) if "fast" in by else None,
+            deep=_pass(by["deep"], current, check, folder_now, named) if "deep" in by else None))
     return out
 
 
@@ -192,13 +204,14 @@ class ConditionRow:
 
 
 def condition_rows(rows: Mapping[str, dict], index: inputs.EntryIndex,
-                   scans: Iterable[str] | None = None) -> list[ConditionRow]:
+                   scans: Iterable[str] | None = None, gpi: Mapping[str, object] | None = None) -> list[ConditionRow]:
     """The conditions in force, one row each: per scan the exclusion, then the dead analyzers, then the
     accepted counts, from the same ``inputs.scan_inputs`` the run's start point and readiness read."""
     out: list[ConditionRow] = []
+    gpi = gpi or {}
     for scan in sorted(rows if scans is None else set(scans) & set(rows), key=lambda k: _order(rows, k)):
         row = rows[scan]
-        si = inputs.scan_inputs(row, index)
+        si = inputs.scan_inputs(row, index, gpi.get(scan))
         if si.excluded is not None:
             c = si.excluded
             out.append(ConditionRow(scan, None, "excluded", c.entry, c.reason, c.at, None))
@@ -237,3 +250,83 @@ def needs_attention(root) -> readiness.NeedsAttention:
 def import_summary(root) -> readiness.ImportSummary:
     """What the imports read and did not, and where the curves were found (C-import-summary)."""
     return readiness.import_summary(root)
+
+
+@dataclass(frozen=True)
+class FolderStatus:
+    good: bool
+    path: str | None      # the folder in force, full path; None when there is none
+    how: str | None       # "found beside the data" | "chosen by you" | "from the card"; None without a folder
+    reason: str | None    # None when good; else the plain reason (readiness wording where it exists)
+    accessible: str       # "Resolution curves folder: good" / "gpi files folder: not good"
+
+
+_HOW = {"user": "chosen by you", "discovered": "found beside the data", "card": "from the card"}
+
+
+def _status(label: str, path, how, reason) -> FolderStatus:
+    return FolderStatus(reason is None, path, how if path else None, reason,
+                        f"{label}: {'good' if reason is None else 'not good'}")
+
+
+def _kinds(attention) -> dict:
+    """The needs-attention groups by kind; none while the readiness is not evaluated."""
+    return {g.kind: g for g in attention.groups} if attention is not None and attention.evaluated else {}
+
+
+def _rf_reason(c, groups, scans, left) -> str | None:
+    if c.folder is None:
+        return "no resolution folder is set"
+    if c.check_stale:
+        return readiness.FOLDER_CHANGED
+    if c.checked_at is None:
+        return readiness.NOT_CHECKED
+    if c.problem:
+        return c.problem
+    if "resolution_folder" in groups:
+        return groups["resolution_folder"].items[0].reason
+    # a counts hold stops calibrate before its curve_missing group, so the per-analyzer readiness is counted too;
+    # an analyzer the import left out of its set has no curve to hold (``left``: the (scan, analyzer) pairs)
+    missing = {(i.scan, i.analyzer) for i in groups["curve_missing"].items} if "curve_missing" in groups else set()
+    missing |= {(s.scan, a) for s in scans.values() for a, r in s.analyzers.items()
+                if r.curve_kind == "missing" and (s.scan, a) not in left}
+    if missing:
+        n = len(missing)
+        return f"{n} analyzer{' has' if n == 1 else 's have'} no resolution curve"
+    return None
+
+
+def _gpi_reason(saved_path, check, groups) -> str | None:
+    if saved_path is None:
+        return "no gpi folder is chosen"
+    if check is None or check.folder is None or Path(check.folder) != Path(saved_path) \
+            or "gpi_folder_changed" in groups:
+        return readiness.GPI_FOLDER_CHANGED
+    if not check.scans:
+        return "no gpi file matches the imported scans"
+    bad = [s for s in check.scans.values() if not s.accepted]
+    if bad:
+        n = len({s.file for s in bad})
+        return f"{n} gpi file{'' if n == 1 else 's'} not used: {bad[0].problem or 'the file was not used'}"
+    return None
+
+
+def folder_status(summary, settings, attention) -> tuple[FolderStatus | None, FolderStatus | None]:
+    """``(rf, gpi)`` for the setup panel; each None when the card has no such folder (not BL43LXU).
+    Pure over what the GUI's intake holder already read (``summary``, ``settings`` = ``current_settings(root)``
+    or None, ``attention``); reads no file."""
+    if summary is None or summary.curves is None:
+        return None, None
+    c, groups = summary.curves, _kinds(attention)
+    scans = attention.scans if attention is not None and attention.evaluated else {}
+    left = {(s.scan, a) for s in summary.incomplete_sets for a in s.missing_analyzers}
+    rf = _status("Resolution curves folder", c.folder, _HOW.get(c.source), _rf_reason(c, groups, scans, left))
+    check = summary.gpi
+    saved = getattr(settings, "gpi_folder", None)
+    if saved is not None:
+        path, how = saved.path, _HOW.get(saved.source)
+    else:
+        path = None if check is None else check.folder
+        how = None if check is None else _HOW.get(check.setting_source)
+    gpi = _status("gpi files folder", path, how, _gpi_reason(path, check, groups))
+    return rf, gpi

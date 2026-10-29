@@ -75,7 +75,9 @@ def scan_row(record, data_revision: str) -> dict:
     label = ((record.facts or {}).get("scan_label") or {}).get("value")
     energy = axes.scanned_axes(record)[0].values
     analyzers = {det: {"q": None if sp.q is None else [float(v) for v in sp.q], "q_source": sp.q_source,
-                       "counts": _counts(sp), "exposure": _exposure(record, det, energy)}
+                       "counts": _counts(sp), "exposure": _exposure(record, det, energy),
+                       # the file's own |Q| (the `#Q=` trailer, 1/nm): what the gpi check compares against
+                       "Q_nm": ((sp.facts or {}).get("Q_nm") or {}).get("value")}
                  for det, sp in sorted(record.spectra.items())}
     row = {
         "scan": f"{record.experiment_id}:{record.scan_number}",

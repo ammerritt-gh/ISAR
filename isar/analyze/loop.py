@@ -1423,15 +1423,21 @@ def delta_twin_hypothesis(plain, delta_prefixes, ctx):
     return replace(plain, label=plain.label + suffix, context=derived)
 
 
-def without_background(hyp):
-    """``hyp`` without its flat background (the label loses ``+bg``), or ``None`` when nothing
-    would be left. ``hyp`` is an enumerated structure, whose label carries no variant suffix."""
+def without_component(hyp, prefix: str):
+    """``hyp`` without the components of ``prefix`` (``"elastic"``, ``"qe"`` or ``"bg"``: the label
+    loses that token, an ``@identity`` suffix is kept), or ``None`` when nothing would be left.
+    ``hyp`` is an enumerated structure, whose label carries no variant suffix."""
     head, at, identity = str(hyp.label).partition("@")
-    tokens = [t for t in head.split("+") if t != "bg"]
-    components = tuple(c for c in hyp.components if getattr(c, "prefix", None) != "bg")
+    tokens = [t for t in head.split("+") if t != prefix]
+    components = tuple(c for c in hyp.components if getattr(c, "prefix", None) != prefix)
     if not tokens or not components:
         return None
     return replace(hyp, label="+".join(tokens) + at + identity, components=components)
+
+
+def without_background(hyp):
+    """``hyp`` without its flat background (the label loses ``+bg``), or ``None``."""
+    return without_component(hyp, "bg")
 
 
 def _twin_target(record, model, kind, name):

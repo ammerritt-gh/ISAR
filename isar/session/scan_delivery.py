@@ -21,7 +21,7 @@ import numpy as np
 from isar.analyze import errors, fast_pass, loop, select, verdict
 from isar.analyze.evidence import EVIDENCE_REVISION
 from isar.analyze import gold as gold_mod
-from isar.analyze.components import ConstantBackground, Elastic, PhononDHO, QuasiElastic
+from isar.analyze.components import CentralQE, ConstantBackground, Elastic, PhononDHO, QuasiElastic
 from isar.analyze.context import ScanContext, effective_exposure, select_exposure
 from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.phonon import EPS_OMEGA0, _phonon_for
@@ -494,9 +494,10 @@ def _cell_edges(xs) -> np.ndarray:
 # What each enumerated component class IS, for the scene layer's component descriptors. Matched by
 # class rather than by any name string: the enumerated structure is the single authority on what a
 # candidate is made of, and a label is an identifier the scene must never have to parse.
-# ``None`` = not a scene component (the background is everywhere and claims nothing).
+# ``None`` = not a scene component (the background is everywhere and claims nothing; the BL43LXU
+# central QE is phenomenological and claims no phenomenon).
 _COMPONENT_KINDS = ((PhononDHO, "mode"), (Elastic, "elastic"), (QuasiElastic, "quasielastic"),
-                    (ConstantBackground, None))
+                    (CentralQE, None), (ConstantBackground, None))
 # Distinct from the legitimate ``None`` above, which means "known, and not a scene component".
 _UNKNOWN_KIND = object()
 
@@ -1519,7 +1520,9 @@ def _fast_pass_record(res) -> dict:
                 "probability": m.probability, "twin_of": m.twin_of, "n_basins": m.n_basins,
                 "reason": m.reason, "posterior_iterations": m.posterior_iterations,
                 "params": dict(m.params),
-                "map_params": None if m.map_params is None else dict(m.map_params)}
+                "map_params": None if m.map_params is None else dict(m.map_params),
+                "qe": m.qe, "on_demand": m.on_demand, "removed": list(m.removed),
+                "superseded": m.superseded, "parent": m.parent}
 
     selected = res.selected
     return _finite_json({
@@ -1540,6 +1543,7 @@ def _fast_pass_record(res) -> dict:
         "models": [model(m) for m in res.models],
         "peaks": [asdict(p) for p in res.peaks],
         "elastic_height": res.elastic_height, "background": res.background,
+        "qe": None if res.qe is None else asdict(res.qe),
         "grouped_intensity": [{"e_lo": lo, "e_hi": hi, "intensity": a, "sigma": s}
                               for lo, hi, a, s in res.grouped_intensity],
         "flags": [asdict(f) for f in res.flags],
@@ -1584,10 +1588,11 @@ def _structure_whitelist(structure_labels, ctx, ceiling) -> tuple:
 
 def _candidate_models(res) -> dict:
     """``label -> ModelResult``: one candidate row per catalogue label with a fit. When basins share
-    a label, the most probable (a priced one on a tie; then the lower basin index) speaks for it."""
+    a label, the most probable (a priced one on a tie; then the lower basin index) speaks for it.
+    A superseded model (another label of its group was priced) is no candidate."""
     rows = {}
     for m in res.models:
-        if m.fit is None:
+        if m.fit is None or m.superseded:
             continue
         kept = rows.get(m.label)
         if kept is None or (m.probability, m.ln_z is not None) > (kept.probability,
@@ -1608,7 +1613,8 @@ def _selection_from_fast_pass(res, results, rows) -> select.Selection:
 
     basins = {}
     for m in res.models:
-        basins.setdefault(m.label, []).append(m)
+        if not m.superseded:              # as the fast pass's own tally: superseded models never count
+            basins.setdefault(m.label, []).append(m)
     n_counts = len(res.count_probabilities)
     evidence = evidence_mod.EvidenceSet(res.arena_fingerprint)
     prior_spec = tuple(sorted((k, repr(v)) for k, v in res.prior_provenance.items()))

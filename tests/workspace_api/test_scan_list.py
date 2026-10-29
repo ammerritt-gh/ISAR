@@ -45,7 +45,7 @@ def test_pooled_master_is_a_pooled_row_not_a_set(tmp_path):
     assert [p.key for p in snap.pooled] == ["tavi:900:det"]
     assert snap.pooled[0].label == "pooled master (2 members)"
     assert snap.pooled[0].temperature == Fact(200.0, "K", "fit", "fit")
-    assert snap.pooled[0].q == Fact((2.0, 0.0, 0.0), "rlu", "fit", "fit")
+    assert snap.pooled[0].q == Fact((2.0, 0.0, 0.0), "rlu", "members", "file")   # the members agree
     assert snap.pooled[0].fast == Status("not recorded", False, "no fast-pass record")
     assert snap.scan_set("tavi:900") is None
 

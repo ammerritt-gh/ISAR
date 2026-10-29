@@ -31,8 +31,8 @@ def curve_values(e, fwhm):
     return np.exp(-0.5 * (e / s) ** 2) + 0.03 * (1 + 0.5 * np.tanh(e)) / (1 + (e / (2.5 * fwhm)) ** 2)
 
 
-def write_library(folder: Path, settings=SETTINGS, analyzers=ANALYZERS, *, skip=()):
-    """`sarf_t_s<n>_<h>_<v>_aNN` files for every analyzer and setting, minus the `skip` pairs."""
+def write_library(folder: Path, settings=SETTINGS, analyzers=ANALYZERS, *, skip=(), prefix="sarf_t"):
+    """`<prefix>_s<n>_<h>_<v>_aNN` files for every analyzer and setting, minus the `skip` pairs."""
     folder.mkdir(parents=True, exist_ok=True)
     grid = np.round(np.arange(-15.0, 15.0001, 0.1), 4)
     for n, (setting, fwhm) in enumerate(settings.items(), start=1):
@@ -42,15 +42,16 @@ def write_library(folder: Path, settings=SETTINGS, analyzers=ANALYZERS, *, skip=
                 continue
             rows = ["# SARF generated for the test", "# center of FWHM at zero", "#E_meV SARF fit"]
             rows += [f" {e:8.3f} {y:12.5E} {y:12.5E}" for e, y in zip(grid, curve_values(grid, fwhm))]
-            (folder / f"sarf_t_s{n}_{h}_{v}_{det}").write_text("\n".join(rows) + "\n", encoding="utf-8",
+            (folder / f"{prefix}_s{n}_{h}_{v}_{det}").write_text("\n".join(rows) + "\n", encoding="utf-8",
                                                                newline="\n")
 
 
 def write_scan(folder: Path, stem=STEM, analyzers=ANALYZERS, *, slit=None, seed=1, monitors=None, weak=(),
                hkl=None, zero=ZERO, true_slit=TRUE_SLIT, centroids=None, energy=ENERGY, off_integer=(),
-               off_step=3):
+               off_step=3, q_nm=None):
     """One scan in the CsV3Sb5 layout: an elastic line at `zero` through the `true_slit` curve, one DHO
     mode at 4 meV, a flat background; Poisson counts. `slit` = (h, v) written as header facts.
+    `q_nm` (analyzer -> |Q| in 1/nm) writes the trailing `#Q=` line of each analyzer it names.
     `centroids` (analyzer -> beamline elastic centroid, meV) writes the `.var` sidecar: every analyzer is
     listed, and only the analyzers in the mapping carry `elpk_centroid_meV`. An analyzer in `off_integer`
     has 5 counts added to every bin and its printed error set so that (y/e)^2 is about half a count off an
@@ -85,7 +86,41 @@ def write_scan(folder: Path, stem=STEM, analyzers=ANALYZERS, *, slit=None, seed=
         rows.append("#      meV      secs   npts          norm_i             y_i            ye_i")
         rows += [f"{e:10.4f} {10.0:9.1f} {1:6d} {mon:15.7E} {n / mon:15.7E} {np.sqrt(ne) / mon:15.7E}"
                  for e, n, ne in zip(energy, counts, err_counts)]
+        if q_nm and det in q_nm:
+            rows.append(f"#Q=   {q_nm[det]:.3f} /nm")
         (folder / f"{stem}_{det}").write_text("\n".join(rows) + "\n", encoding="utf-8", newline="\n")
+
+
+def write_gpi(data_folder: Path, set_name: str, *, q_nm, hkl, slit=(40, 40), sarf_name="sarf_z_s1_40_40",
+              problem_name=None) -> Path:
+    """`data_folder/gpi_files/gpi.<set_name>` in the beamline macro's layout (banner, `set` lines, names,
+    `sarf=1; if (...)`, the slit with `#mm`, and per analyzer its HKL line, `Q_aNN` and a dQ line). A None in
+    `q_nm` or `hkl` (analyzer -> value) leaves that line out; `slit=None` leaves agaph/agapv out. Every
+    number is the caller's, none measured."""
+    folder = data_folder / "gpi_files"
+    folder.mkdir(parents=True, exist_ok=True)
+    rows = ["#################################################", f"# gnuplot macro for {set_name} (generated)",
+            "#################################################", "set terminal postscript enhanced color",
+            'set xlabel "Energy (meV)"', 'set ylabel "Counts"', "",
+            f"problem_name1='{problem_name if problem_name is not None else set_name}'",
+            "resolution_name = 'rf_t_s1_40_40'"]
+    if sarf_name is not None:
+        rows.append(f"sarf_name = '{sarf_name}'")
+    rows.append('sarf=1; if (resolution_name eq "") sarf=0')
+    if slit is not None:
+        rows += [f"agaph = {slit[0]:g} #mm", f"agapv = {slit[1]:g} #mm"]
+    for det in sorted(set(q_nm) | set(hkl)):
+        h = hkl.get(det)
+        if h is not None:
+            rows.append(f'hkl_{det} = "({h[0]:g}, {h[1]:g}, {h[2]:g})"; hkl_{det}_H = {h[0]:g}; '
+                        f"hkl_{det}_K = {h[1]:g}; hkl_{det}_L = {h[2]:g}")
+        if q_nm.get(det) is not None:
+            rows.append(f'Q_{det} = " {q_nm[det]:.2f}/nm"')
+        rows.append(f'dQ_{det} = "(0.01, 0, 0)"; dQ_{det}_H = 0.01; dQ_{det}_K = 0; dQ_{det}_L = 0')
+    rows += ["", f"plot '{set_name}_a03' u 1:2 w lp title problem_name1"]
+    path = folder / f"gpi.{set_name}"
+    path.write_text("\n".join(rows) + "\n", encoding="utf-8", newline="\n")
+    return path
 
 
 def workspace(tmp_path, *, merge="separate", sample=None):

@@ -325,9 +325,12 @@ def test_setup_section_reads_what_was_read_and_where_the_curves_were_found(qtbot
     assert _plain(section._summary.text()) == ("3 scan sets · 9 analyzers read · 1 incomplete set · "
                                                "3 files not read")
     rf = s2_built.parent / "incoming" / "rf"
-    assert section._resolution.full_text() == f"Resolution curves: {rf.resolve()} (found beside the data)"
-    assert "Last checked" in section._resolution.toolTip()
-    assert section._locate.isVisible() and section._problem.isHidden() and section._stale.isHidden()
+    assert section._locate.accessibleName() == "Resolution curves folder: good"
+    assert section._locate.toolTip().startswith(
+        f"Resolution curves (rf)…: good\n{rf.resolve()}\nfound beside the data")
+    assert "Last checked" in section._locate.toolTip()
+    assert section._locate.isVisible() and section._gpi_locate.isVisible()
+    assert section._problem.isHidden() and section._stale.isHidden()
     section.toggle_list("not_read")                          # the link opens the list in place
     rows = [section._list.item(i).text() for i in range(section._list.count())]
     assert section._list.isVisible() and any(r.startswith("notes.txt: not recognised") for r in rows)
@@ -340,8 +343,8 @@ def test_setup_section_reads_what_was_read_and_where_the_curves_were_found(qtbot
 
 def test_setup_section_not_found_with_the_no_curves_fixture(qtbot, s2_no_curves):
     section = _section(qtbot, _bound(qtbot, s2_no_curves))
-    assert section._resolution.full_text() == "Resolution curves: not found"   # the shipped card names no folder
-    assert "#b7791f" in section._resolution.styleSheet()
+    assert section._locate.accessibleName() == "Resolution curves folder: not good"   # the shipped card names no folder
+    assert section._locate.accessibleDescription() == "no resolution folder is set"
     assert section._problem.full_text() == "No resolution curves yet. Choose the folder that holds them."
     assert "no resolution folder is saved" in section._problem.toolTip()           # the backend's text stays on hover
 
@@ -364,7 +367,7 @@ def test_setup_section_shows_constructed_backend_states(qtbot, s2_ws, tmp_path):
     use[0].click()                                             # saves that path, and re-reads
     saved = intake_settings.current_settings(s2_ws).resolution_folder
     assert saved.path == str(other.resolve()) and saved.source == "user"
-    assert section._resolution.full_text() == f"Resolution curves: {other.resolve()} (chosen by you)"
+    assert str(other.resolve()) in section._locate.toolTip()
 
     not_bl43 = "not recognised as BL43LXU data"     # a folder whose files are none of them BL43 data
     intake._summary = dataclasses.replace(
@@ -436,7 +439,7 @@ def test_record_problem_is_not_shown_without_a_card(qtbot, tmp_path):
     section = _section(qtbot, intake)
     assert _plain(section._summary.text()) == NOTHING_READ and section._record_problem.isHidden()
     assert section._locate.isVisible()
-    assert section._locate.full_text() == "Choose curves folder…"
+    assert section._locate.full_text() == "Resolution curves (rf)…"
 
 
 def test_no_experiment_reads_nothing_read_yet_without_locate(qtbot):
@@ -457,7 +460,7 @@ def test_locate_saves_the_users_folder_and_it_survives_reopening(qtbot, monkeypa
     w.setup_section._locate.click()
     saved = intake_settings.current_settings(s2_ws).resolution_folder
     assert saved.path == str(chosen.resolve()) and saved.source == "user"
-    assert w.setup_section._resolution.full_text() == f"Resolution curves: {chosen.resolve()} (chosen by you)"
+    assert str(chosen.resolve()) in w.setup_section._locate.toolTip()
     assert w.setup_section._stale.full_text() == STALE_NOTE           # not checked until the next import
     assert f"Saved: resolution folder {chosen.resolve()}" in w.log_dock._view.toPlainText()
     w.intake.bind(None)
@@ -525,7 +528,7 @@ def test_a_just_created_experiment_saves_and_reads_back_then_imports(qtbot, monk
 
     _pick_folder(monkeypatch, chosen)
     w.setup_section._locate.click()
-    assert w.setup_section._resolution.full_text() == f"Resolution curves: {chosen.resolve()} (chosen by you)"
+    assert str(chosen.resolve()) in w.setup_section._locate.toolTip()
 
     def fill_and_save(dialog):
         dialog._fields["sample"].setText("CsV3Sb5")
@@ -734,10 +737,10 @@ def test_long_paths_in_the_setup_section_elide_and_widen_nothing(qtbot, monkeypa
     qtbot.wait(30)
     section = w.setup_section
     assert w.left_column_dock.width() == before
-    assert section._resolution.toolTip().startswith(f"Resolution curves: {long} (found beside the data)")
+    assert long in section._locate.toolTip()
     assert section._problem.toolTip().endswith(f"{long})")
     inside = section.rect()
-    for child in (section._summary, section._resolution, section._locate, section._problem):
+    for child in (section._summary, section._locate, section._gpi_locate, section._problem):
         rect = child.geometry()
         assert inside.contains(rect), (child.objectName(), rect, inside)
 

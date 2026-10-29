@@ -16,8 +16,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from enum import Enum
 
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 
 # The GUI may import only isar.workspace_api (G16): the two writer words come via the scan-list read.
 from isar.workspace_api.scan_list import (HELD, NOT_FITTED, NOT_READ, NOT_RECORDED, NOT_RUN,
@@ -75,6 +75,7 @@ QUEUE_STATES: Mapping[str, tuple[str, Tone, str]] = {
 }
 
 _ICONS: dict[Tone, QIcon] = {}
+_STATE_ICONS: dict[bool, QIcon] = {}
 
 
 def status_tone(column: str, word: str) -> Tone:
@@ -112,4 +113,27 @@ def dot_icon(tone: Tone) -> QIcon:
         painter.drawEllipse(QRectF(1, 1, 8, 8))
         painter.end()
         icon = _ICONS[tone] = QIcon(pix)
+    return icon
+
+
+def state_icon(good: bool) -> QIcon:
+    """A check (Tone.OK's colour) or a cross (Tone.ERR's) on a 12 px pixmap, cached per state. The shape
+    carries the meaning and the colour only repeats it (core law 7); no literal colours, no image files."""
+    icon = _STATE_ICONS.get(good)
+    if icon is None:
+        pix = QPixmap(12, 12)
+        pix.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(TONE_COLOR[Tone.OK if good else Tone.ERR]), 2.0)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        if good:
+            painter.drawPolyline([QPointF(2.0, 6.5), QPointF(5.0, 9.5), QPointF(10.0, 2.5)])
+        else:
+            painter.drawLine(QPointF(2.5, 2.5), QPointF(9.5, 9.5))
+            painter.drawLine(QPointF(9.5, 2.5), QPointF(2.5, 9.5))
+        painter.end()
+        icon = _STATE_ICONS[good] = QIcon(pix)
     return icon

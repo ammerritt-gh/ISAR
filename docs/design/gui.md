@@ -22,9 +22,9 @@ preserved as the design record.
 | **Pass 3** — compact campaign monitor | **Implemented** (G20) | `views/campaign_monitor.py` |
 | **Desktop window** — one arrangement in every state: scan list on the left, Scan(s)/Plane/Dispersion/Sandbox in the centre, Processing and Campaign on the right, Log and Output below (G24, G27) | **Implemented** (2026-10-28); laptop human walkthrough remains unrun | `main_window.py`, `views/experiment_strip.py`, `views/output_bar.py`, `views/processing_panel.py`, `tests/gui/test_window_frame.py` |
 | **Experiment as a real folder** — drop-to-create, Rename, Save experiment copy…, Export results… (G25) | **Implemented** (2026-10-27) | `workspace_manager.py`, `views/files_strip.py`, `export_action.py`, `isar/report/export.py` |
-| **Scan list and scan inspector** — BL43 scan-set tree, shared multi-selection, status words, filter and sort, Fit section and stored tables in the left inspector (G24, G27); right-click Remove from list / Restore to list, Show removed, Read source file again (§0octies) | **Implemented** (2026-10-28; generated-data widget tests; no person acceptance claimed); removal and read-again built 2026-10-29 | isar/workspace_api/scan_list.py, viewmodels/scan_list.py, views/scan_list.py, views/scan_inspector.py, theme.py, tests/gui/test_scan_list_selection.py, tests/gui/test_scan_list_hide.py, tests/gui/test_scan_list_read_again.py, tests/gui/test_inspector_fit_section.py |
+| **Scan list and scan inspector** — BL43 scan-set tree, shared multi-selection, status words, hkl, |Q|, gpi and rf columns (§0nonies), filter and sort, Fit section and stored tables in the left inspector (G24, G27); right-click Remove from list / Restore to list, Show removed, Read source file again (§0octies) | **Implemented** (2026-10-28; generated-data widget tests; no person acceptance claimed); removal and read-again built 2026-10-29 | isar/workspace_api/scan_list.py, viewmodels/scan_list.py, views/scan_list.py, views/scan_inspector.py, theme.py, tests/gui/test_scan_list_selection.py, tests/gui/test_scan_list_hide.py, tests/gui/test_scan_list_read_again.py, tests/gui/test_inspector_fit_section.py |
 | **Scan(s) spectrum view** — shared selection, up to ten spectra, stored Fast/Deep curves, explicit not-drawn reasons, raw and monitor-normalised scales (G27) | **Implemented** (2026-10-28; generated-data widget coverage; person walkthrough not yet run) | `workspace_api/spectra.py`, `workspace_api/evaluate.py`, `session/deep_delivery.py`, `plotspec/builders.py`, `viewmodels/scans_page.py`, `views/scans_page.py`, `tests/gui/test_scans_page.py` |
-| **Left side, stage two** — setup section, *Choose curves folder…*, *Experiment info…*, needs-attention list, fact table, out-of-date marks, readiness line (G24, G25) | **Implemented** (2026-10-27; job `ja0cd202ecb67`, on the intake backend of job `jfada74237892`); user values for Q and other facts stay pinned, and one layout limit is open (§0quinquies) | `viewmodels/intake.py`, `views/setup_section.py`, `views/details_dialog.py`, `views/attention_list.py`, `views/value_entry.py`, `views/fact_table.py`, `views/readiness_line.py`, `tests/gui/test_stage2_walkthrough.py` |
+| **Left side, stage two** — setup section (the *Resolution curves (rf)…* and *gpi files…* folder buttons, §0nonies), *Experiment info…*, needs-attention list, fact table, out-of-date marks, readiness line (G24, G25) | **Implemented** (2026-10-27; job `ja0cd202ecb67`, on the intake backend of job `jfada74237892`); user values for Q and other facts stay pinned, and one layout limit is open (§0quinquies) | `viewmodels/intake.py`, `views/setup_section.py`, `workspace_api/intake_view.py`, `views/details_dialog.py`, `views/attention_list.py`, `views/value_entry.py`, `views/fact_table.py`, `views/readiness_line.py`, `tests/gui/test_stage2_walkthrough.py` |
 | **Analysis queue** — the Processing panel's queue: analyzer files queued by hand or as they arrive, fast before deep, continuous on the cores ISAR is given, one writer per experiment; BL43LXU only (G26, §0sexies) | **Implemented** (2026-10-28), tested offscreen and at the engine. The walk-through at the GUI threshold by a person is **not yet run**. Open: a queued fit does not refresh the curves check the setup section shows (§0sexies) | `isar_gui/queue_controller.py`, `isar_gui/views/queue_panel.py`, `isar/session/analysis_queue.py`, `isar/session/analysis_service.py`, `isar/session/file_fit.py`, `isar/session/writer.py`, `isar/session/currentness.py`; `tests/gui/test_window_queue.py`, `test_queue_panel.py`, `test_queue_controller.py` |
 | **Read-only display grammar** — WISH-1/2/3/9 | **Implemented** (G23) | `isar/workspace_api/display.py`, `isar/plotspec/`, plane/dispersion/inspector viewmodels and panes |
 | **Phase B** — planner (C6): objective authoring, forbidden-zone rendering | **Planned** | no objective editor or planner module exists |
@@ -241,8 +241,9 @@ empty/ready layout pair, and amends G19 as stated below.
   state, or `not run` where nothing is stored, side by side, with no result picked as "the" result; each
   column switches on by itself when the first stored result of that pass exists (amendment 7), unless the
   user switched it off by hand (`scan_list.hidden` in the session), which the auto rule then respects. The
-  G27 supersedes that rule: Scan(s) starts at Fit: None and draws only the stored pass the user selects. A missing temperature or Q shows a dash with its reason
-  on hover, and a background update keeps selection, expansion and scroll.
+  G27 supersedes that rule: Scan(s) starts at Fit: None and draws only the stored pass the user selects. A missing temperature or |Q| shows a dash with its reason
+  on hover; a missing hkl is a blank cell. A background update keeps selection, expansion and scroll
+  (the hkl, |Q|, gpi and rf columns are §0nonies).
 - **Scan inspector (G24, G27).** The inspector remains in the left panel and retains recorded scan/analyzer facts, QC flags, target Q, campaign-era command, counting mode, calibration and other unit metadata. G27 removes its former raw-counts plot and adds a Fit section for the stored pass summaries and mode values; the Scan(s) page owns spectrum plotting. Pooled-master numbers and tables remain inspectable even though Scan(s) does not draw pooled curves.
 
 - **Stage two (Implemented, 2026-10-27; job `ja0cd202ecb67`, on the intake backend of job
@@ -251,7 +252,8 @@ empty/ready layout pair, and amends G19 as stated below.
   the window computes no gap, no readiness and no value of its own, and keeps no second store.
   - *Setup section* (`views/setup_section.py`): what was read (scan sets, analyzers, incomplete sets,
     files not read; the last two open in place) and where the resolution curves were found, with
-    *Locate…*, which saves the folder the user picks at once as the experiment's resolution folder. The
+    the *Resolution curves (rf)…* and, on BL43LXU, *gpi files…* buttons (§0nonies), each of which saves the
+    folder the user picks at once as the experiment's folder. The
     last curve check's problem is shown in the warning colour on one line, shortened with … to the
     column's width and shown in full on hover (so the scan list keeps S1's 400 px minimum with the
     attention list open); a saved folder is marked
@@ -273,7 +275,7 @@ empty/ready layout pair, and amends G19 as stated below.
     hover. Temperature and slit apply to the whole scan set and offer *Set my value…* and *Use the
     file's value*; the analyzer offers *Mark dead* / *In use* and, for counts that may not be raw,
     *Accept counts…* / *Withdraw acceptance*. Q and the count origin are shown only; when the files
-    carry no hkl, Q shows the scan list's |Q| and says steering needs the hkl.
+    carry no hkl, Q shows the file's |Q|, as the scan list's |Q| column does, and says steering needs the hkl.
   - *Out-of-date mark* (`viewmodels/scan_list.py`, `views/scan_list.py`): a *Fast pass* or *Deep
     pass* word whose recorded inputs differ from today's keeps its stored text, is drawn in the
     warning colour, and names each changed input, from and to, on hover. The two passes are judged
@@ -297,8 +299,9 @@ empty/ready layout pair, and amends G19 as stated below.
     counts are raw lifts the hold on them and changes no count and no flag (an `_lr` analyzer stays
     held whatever is saved); every fit made that way records it, and *Withdraw* takes it back.
 - **Pinned for later, not built here:** the analyzer overview in the centre, automatic
-  export to an outside folder, `gpi.*` parsing for per-analyzer Q, and user values for Q and for facts
+  export to an outside folder, and user values for Q and for facts
   other than temperature, slit and dead analyzers.
+- **Built since:** `gpi.*` parsing for per-analyzer Q, slit and curve set (the BL43 gpi files, [USING_ISAR](../USING_ISAR.md)).
 
 ---
 
@@ -375,6 +378,38 @@ Operator rulings, 2026-10-29: removing a scan from the list **hides** it (its da
 - **Read source file again** (`main_window.py`, `_read_source_again`). Each selected analyzer's own file (`SpectrumRow.file_path`, the file the File column shows; where a scan set has no analyzer-matched file, every file that produced it, from `Workspace.files`) goes through `request_ingest`, the drop path. A missing file, or a scan with no recorded source, is reported in the status bar and the Log, as is an `ingest_failed` of that batch: "Could not read <file> again (<reason>). Drag the file into the window to add it again." A removed scan read again stays removed.
 - **Raw before the fast pass** (`isar/workspace_api/spectra.py`, `_bundle`; `SpectrumBundle.zero`). A `needs_zero` spectrum with no fitted zero is no longer refused. The card's `zero_fallback = "file_axis"` (BL43LXU) draws it at once on the file's own calibrated energy axis, its legend tagged "(beamline zero)". Any other `needs_zero` instrument draws on the raw abscissa, labelled "Energy, not zeroed (meV)"; a raw axis never shares a plot with zeroed spectra, so in a mixed selection the zeroed ones draw and each raw one is named in the not-drawn line as "waiting for the fast pass to set the energy zero". No fit curve is drawn before its pass exists, and a fitted curve is never drawn on a raw axis. A scan moves to its fitted zero when its own fast result is saved: the window's post-save path (`_on_results_saved`) already re-reads the list and redraws the Scans page, and `test_saved_fast_result_redraws_its_scan_on_the_fitted_zero` pins that. The fitter and the energy-zero machinery are unchanged; `needs_conversion_and_zero` is still refused. Hard rule 4 holds in the form the card declares: the file axis is the card's own zero, not an assumed E₀ = 0.
 - **Known limits, not yet handled.** A removed scan can still enter the selection through a saved-group recall or *Show* in Finished, and then draws on the Scans page. Before its fast pass a file-axis scan shows the beamline's energies, not ISAR's refined zero. The human walk-through of these changes has not been run.
+
+### 0nonies. Scan list hkl and status columns, and the folder buttons (2026-10-29)
+
+Operator rulings, 2026-10-29: the Q column shows hkl when ISAR has one and is blank when it has none; |Q| becomes
+an optional column; per-analyzer gpi and rf columns show whether each analyzer's hkl and curve are in place; the
+setup section's two folder lines become two buttons that say whether their folder is good. The Scans dock's
+q-groups and `q:` filter use the same hkl the column shows. For a gpi cross with no needs-attention item, the
+operator's answer was (a): its tooltip and accessible description explain it, and no new item is added.
+
+- **hkl** (`workspace_api/scan_list.py`: `effective_hkl`, `hkl_step`, `hkl_bin`). The effective hkl a fit uses:
+  the accepted gpi file's on BL43LXU, else the file's own under its `q_source`, else none. It comes through the
+  facade from the effective-input function (`isar.intake.inputs`), never from the parsed `Spectrum.q`, so a
+  rejected or withdrawn gpi file leaves the cell blank. Pooled rows show the members' component-wise mean when
+  every member falls in one bin, else blank with "the members' hkl differ". The Scans dock's auto q-groups and
+  `q:` filter bin the same hkl (`hkl_bin`, the card's `hkl_round_step`).
+- **|Q| (nm⁻¹)** (`absq`, optional, off by default, remembered like the other optional columns): the file's
+  `Q_nm`, in its own column. A pooled row leaves it blank.
+- **gpi and rf** (BL43LXU only; shown by default there). One mark per analyzer; a scan set or pooled row shows a
+  check only when every member is good. The marks are judged in the facade: gpi from the gpi check and the entries
+  in force; rf from `AnalyzerReadiness.curve`, the curve in force for the analyzer (the named set's, or the one
+  matched by slit), whether or not its calibration has run. Until the worker has read readiness, an rf mark shows
+  no icon.
+- **Folder buttons** (`views/setup_section.py`; `folder_status` in `workspace_api/intake_view.py`).
+  *Resolution curves (rf)…* and *gpi files…* (BL43LXU only) share one row, each with a green check or a red cross.
+  The tooltip gives the full path and how the folder was chosen or, when not good, the reason. The rf folder is
+  good when it is set, checked since it last changed, has no problem, and holds no analyzer for a missing curve;
+  the gpi folder is good when it is set, matches an imported scan set, and none of its files is rejected.
+  Until the worker has read readiness, both are judged from the import summary and the saved settings alone.
+  Clicking still saves the chosen folder as the user's, as before.
+- **Not changed.** The Parsed column keeps its meaning: "no Q" means the file holds neither |Q| nor an hkl. How an
+  hkl is chosen and checked is as §0quinquies and USING_ISAR describe it. The ruling's "sorting by Q" had nothing to
+  change: the scan list has no sort by Q (its sorts are set, temperature and analyzer).
 
 ---
 

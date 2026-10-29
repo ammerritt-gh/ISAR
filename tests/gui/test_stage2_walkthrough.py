@@ -315,8 +315,8 @@ def test_scenario3_files_parse_without_curves_and_locate_changes_the_counts(
     n = import_summary(root).n_analyzers
     m = _blocked_locate(root)
     assert import_summary(root).curves.n_curves == 0 and n > 0 and m == n       # nothing could be matched
-    assert w.setup_section._resolution.full_text() == "Resolution curves: not found"
-    assert WARN in w.setup_section._resolution.styleSheet()
+    assert w.setup_section._locate.accessibleName() == "Resolution curves folder: not good"
+    assert not w.setup_section._locate.icon().isNull()
     assert w.setup_section._problem.full_text() == "No resolution curves yet. Choose the folder that holds them."
     assert import_summary(root).curves.problem in w.setup_section._problem.toolTip()
     line = w.readiness_line
@@ -348,7 +348,7 @@ def test_scenario3_files_parse_without_curves_and_locate_changes_the_counts(
     summary = import_summary(root)
     assert summary.curves.folder == str(curves.resolve()) and summary.curves.check_stale
     assert _blocked_locate(root) == 0
-    assert w.setup_section._resolution.full_text() == f"Resolution curves: {curves.resolve()} (chosen by you)"
+    assert str(curves.resolve()) in w.setup_section._locate.toolTip()
     assert w.setup_section._stale.isVisible() and w.setup_section._stale.full_text()
     ready = sum(a.can_start is True for s in needs_attention(root).scans.values() for a in s.analyzers.values())
     assert ready > 0
@@ -409,9 +409,9 @@ def _text_fits(label) -> None:
 
 def _assert_s2_controls_usable(w) -> None:
     lst, section, inspector = w.attention_list, w.setup_section, w.scan_inspector
-    # setup section: the read counts, the curves line, Locate… and the problem line, apart and whole
-    setup = tuple(c for c in (section._summary, section._resolution, section._locate, section._problem)
-                  if c.isVisible())         # the "not found" row folds into the sentence under it
+    # setup section: the read counts, the two folder buttons and the problem line, apart and whole
+    setup = tuple(c for c in (section._summary, section._locate, section._gpi_locate, section._problem)
+                  if c.isVisible())
     assert section._locate in setup and section._problem in setup
     assert_apart(w, setup, "setup section")
     for control in setup:

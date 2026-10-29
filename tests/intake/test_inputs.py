@@ -1,11 +1,15 @@
 """Effective inputs (C-effective, C-entries): what is in force, the effective copy, and what changed."""
+import dataclasses
+
 import numpy as np
 import pytest
 
-from intake_fixtures import bl43_workspace, records_for, rows_for
+from intake_fixtures import ENERGY_120, STEM, bl43_workspace, records_for, rows_for, write_scan
 from isar.intake import inputs, scans, store, values
-from isar.intake.inputs import (Change, Condition, apply, calibration_inputs_key, changes, damage_lines, fallbacks,
-                                index_entries, inputs_hash, read_entries, scan_inputs, unit_inputs)
+from isar.intake.gpi import GpiScan
+from isar.intake.inputs import (Change, Condition, analyzer_q, apply, calibration_inputs_key, calibration_slit,
+                                changes, damage_lines, fallbacks, index_entries, inputs_hash, named_key,
+                                read_entries, scan_inputs, unit_inputs)
 from isar.session.state import content_hash
 
 ROW = {"scan": "spec1:42", "data_revision": "aa",
@@ -281,3 +285,90 @@ def test_index_names_the_file_line_and_cannot_be_built_without_it(root):
     assert [d.line for d in index_entries(r.entries, lines=r.lines).damaged] == [1, 2]
     with pytest.raises(TypeError):
         index_entries(r.entries)
+
+
+# --- the gpi contribution (C-effective-gpi) ----------------------------------------------------------
+def _gpi(accepted=True, *, slit="40x40", setting="40x40", q=None, name="sarf_z_s1_40_40"):
+    curves = {"a03": {"file": "sarf_z_s1_40_40_a03", "sha256": "z3"}, "a05": None}
+    return GpiScan("spec1:42", "S", "D:/data/gpi_files/gpi.S", "ab" * 32, accepted,
+                   None if accepted else "gpi.S: |Q| disagrees", q if q is not None else {"a03": [1.0, 0.0, 2.0]},
+                   slit, name, setting, curves, ())
+
+
+def _gsi(root, g, row=ROW):
+    return scan_inputs(row, _index(root), g)
+
+
+def test_an_accepted_gpi_slit_is_used_above_any_file_slit(root):
+    s = _gsi(root, _gpi()).facts["slit"]
+    assert (s.used_value, s.used_source, s.gpi_value, s.disagreement) == ("40x40", "gpi", "40x40", False)
+    row = {**ROW, "facts": {**ROW["facts"], "slit": {"value": "60x60", "source": "header"}}}
+    s = _gsi(root, _gpi(), row).facts["slit"]
+    assert (s.used_value, s.used_source, s.file_value, s.file_source) == ("40x40", "gpi", "60x60", "header")
+
+
+def test_an_accepted_gpi_hkl_is_the_analyzer_q_above_the_file_name_hkl(root):
+    si = _gsi(root, _gpi())
+    assert analyzer_q(ROW, si, "a03") == ([1.0, 0.0, 2.0], "gpi")
+    assert analyzer_q(ROW, si, "a05") == (None, "none")
+    assert unit_inputs(ROW, si, "a03", None)["q"] == {"value": [1.0, 0.0, 2.0], "source": "gpi"}
+    assert analyzer_q(ROW, _gsi(root, None), "a03") == ([0.5, 0.5, 3.0], "filename")
+
+
+def test_a_user_slit_differing_from_the_named_set_drops_the_set(root):
+    values.save_value(root, "slit", "60x60", ["spec1:42"])
+    si = _gsi(root, _gpi())
+    s = si.facts["slit"]
+    assert (s.used_value, s.used_source, s.disagreement) == ("60x60", "user", True)
+    assert si.named is None and "60x60" in si.named_dropped and calibration_slit(si) == "60x60"
+    assert _gsi(root, _gpi(setting=None)).named is None                 # an unknown setting is dropped too
+    values.save_value(root, "slit", "40x40", ["spec1:42"])
+    si = _gsi(root, _gpi())
+    assert (si.named, si.named_dropped, calibration_slit(si)) == ("sarf_z_s1_40_40", None, "40x40")
+
+
+def test_the_named_set_decides_the_calibration_slit(root):
+    si = _gsi(root, _gpi(slit="60x60", setting="40x40"))
+    assert si.facts["slit"].used_value == "60x60" and calibration_slit(si) == "40x40"
+    assert calibration_slit(_gsi(root, _gpi(slit="60x60", setting=None))) == "60x60"
+
+
+def test_a_rejected_gpi_gives_every_value_as_without_one(root):
+    plain, rejected = _gsi(root, None), _gsi(root, _gpi(accepted=False))
+    assert plain.facts == rejected.facts and rejected.named is None and rejected.named_dropped is None
+    assert analyzer_q(ROW, rejected, "a03") == analyzer_q(ROW, plain, "a03")
+    assert unit_inputs(ROW, rejected, "a03", CAL) == unit_inputs(ROW, plain, "a03", CAL)
+
+
+def test_apply_takes_the_accepted_gpi_values_as_a_copy(parsed):
+    root, rec, row = parsed
+    before = content_hash(rec)
+    g = dataclasses.replace(_gpi(q={"a03": [1.0, 0.0, 2.0]}), scan=row["scan"])
+    si = scan_inputs(row, _index(root), g)
+    eff = apply(rec, si)
+    assert eff.facts["slit"] == {"value": "40x40", "source": "gpi", "file": g.file}
+    assert (eff.spectra["a03"].q, eff.spectra["a03"].q_source) == ([1.0, 0.0, 2.0], "gpi")
+    assert eff.spectra["a05"] is rec.spectra["a05"]
+    assert eff.facts["resolution_set"] == {"value": "sarf_z_s1_40_40", "setting": "40x40", "source": "gpi",
+                                           "file": g.file, "curves": g.curves}
+    assert content_hash(rec) == before and rec.spectra["a03"].q_source != "gpi"
+    assert apply(rec, scan_inputs(row, _index(root), dataclasses.replace(g, accepted=False))) is rec
+
+
+def test_import_rows_carry_each_analyzers_data_q(tmp_path):
+    ws, data = bl43_workspace(tmp_path, stems=("A",))
+    write_scan(data, stem=f"{STEM}_A", energy=ENERGY_120, q_nm={"a03": 10.0, "a04": 11.46})
+    (row,) = rows_for(ws, data)
+    assert {d: a["Q_nm"] for d, a in row["analyzers"].items()} == {"a03": 10.0, "a04": 11.46, "a05": None}
+
+
+def test_the_named_set_enters_the_calibration_key_only_when_in_force():
+    k = dict(data_revision="aa", folder="D:/rf", pattern="p", library="f1", declared_slit="40x40",
+             analyzers=["a03"], counts_accepted=[])
+    today = inputs._canonical_hash(k)                                  # the key as it was before gpi files
+    assert calibration_inputs_key(**k) == calibration_inputs_key(**k, named=None) == today
+    a = named_key("sarf_z_s1_40_40", {"a03": {"file": "f", "sha256": "z3"}, "a05": None})
+    assert a == {"set": "sarf_z_s1_40_40", "curves": {"a03": "z3", "a05": None}} and named_key(None, {}) is None
+    b = named_key("sarf_y_s2_40_40", {"a03": {"file": "g", "sha256": "y3"}, "a05": None})
+    keys = {calibration_inputs_key(**k), calibration_inputs_key(**k, named=a), calibration_inputs_key(**k, named=b)}
+    assert len(keys) == 3

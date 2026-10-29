@@ -20,6 +20,7 @@ import json
 from pathlib import Path
 
 from isar.intake import curves as intake_curves
+from isar.intake import gpi as intake_gpi
 from isar.intake import fit_inputs as intake_fit_inputs
 from isar.intake import inputs as intake_inputs
 from isar.intake import scans as intake_scans
@@ -31,7 +32,7 @@ from isar.session.workspace import (POLICY_NAME, SESSION_NAME, STATE_NAME, REPOR
 
 from . import intake_view
 from .evaluate import evaluate_model as _evaluate_model
-from .scan_keys import split_key
+from .scan_keys import match_member, split_key
 from .views import (BranchModelView, CampaignView, CardView, CertificationStatusView, FileView,
                     FitView, GroupView, LastIngestView, MasterAssessmentView, ScanView)
 
@@ -347,13 +348,7 @@ class Workspace:
             resolved, unresolved = [], []
             for raw_label in master.members or ():
                 label = str(raw_label)
-                match = by_unit.get(label)
-                if match is None:
-                    try:
-                        candidates = by_scan.get(int(label), [])
-                    except ValueError:
-                        candidates = []
-                    match = candidates[0] if len(candidates) == 1 else None
+                match = match_member(label, by_unit, by_scan)
                 if match is None:
                     unresolved.append(label)
                 elif match not in resolved:
@@ -697,6 +692,16 @@ class Workspace:
     def _curve_check(self):
         return self._parse("curve_check", lambda: intake_curves.read_curve_check(self.root), None)
 
+    @property
+    def gpi_check(self):
+        """The latest gpi check (``report/gpi.json``: which gpi files were used or rejected, and why), or None
+        when none was made yet or it is unreadable. Read-only; parsed once per :meth:`refresh`."""
+        return self._parse("gpi_check", lambda: intake_gpi.read_gpi_check(self.root), None)
+
+    def _gpi_entries(self):
+        """The gpi entries in force, by scan key: the latest check's, or none when its folder is not the one saved."""
+        return self._parse("gpi_entries", lambda: intake_gpi.entries_in_force(self.root), {})
+
     def _folder_now(self):
         """The resolution folder in force now (the saved setting, else the card's), or None."""
         def load():
@@ -723,7 +728,7 @@ class Workspace:
         self._note_intake_damage()
         return intake_view.fact_rows(
             self._intake_rows(), self._intake_index(), self._state().tabulated_calibration,
-            self._curve_check(), self._folder_now(), scans)
+            self._curve_check(), self._folder_now(), scans, self._gpi_entries())
 
     def conditions(self, scans=None) -> list:
         """The BL43 conditions in force (excluded scans, dead analyzers, accepted counts) of ``scans`` (scan
@@ -732,7 +737,7 @@ class Workspace:
         :meth:`fact_rows` parses (once per :meth:`refresh`).
         """
         self._note_intake_damage()
-        return intake_view.condition_rows(self._intake_rows(), self._intake_index(), scans)
+        return intake_view.condition_rows(self._intake_rows(), self._intake_index(), scans, self._gpi_entries())
 
     def fit_inputs(self, units=None) -> list:
         """Per unit key (``"spec1:42:a03"``; None = all) with a pass on record: its latest fast and latest
@@ -754,7 +759,7 @@ class Workspace:
             passes = {}
         return intake_view.fit_inputs(
             passes, self._intake_rows(), self._intake_index(), self._state().tabulated_calibration,
-            self._curve_check(), self._folder_now(), units)
+            self._curve_check(), self._folder_now(), units, self._gpi_entries())
 
     # ---- change notifications ---------------------------------------------
     def watch(self, callback, *, debounce_ms: float = 200,
@@ -763,7 +768,7 @@ class Workspace:
 
         ``callback(changed: set[str])`` is invoked (coalesced within ``debounce_ms``) with the
         logical names that changed — a subset of ``{"results", "events", "report", "card_state",
-        "snapshot", "intake_entries", "intake_settings", "intake_scans", "fit_inputs", "curves"}``. It runs on a background daemon thread owned by the watcher (never this thread
+        "snapshot", "intake_entries", "intake_settings", "intake_scans", "fit_inputs", "curves", "gpi"}``. It runs on a background daemon thread owned by the watcher (never this thread
         or a GUI thread), so a GUI must marshal it onto its own loop. The watcher does not refresh
         this ``Workspace``; call ``ws.refresh()`` inside the callback before re-reading. Supports
         ``with ws.watch(cb) as w:``. See :mod:`isar.workspace_api.watch` for the full thread model.

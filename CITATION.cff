@@ -20,6 +20,7 @@ license: GPL-3.0-or-later
 
 repository-code: "https://github.com/ammerritt-gh/ISAR"
 url: "https://github.com/ammerritt-gh/ISAR"
+doi: "10.5281/zenodo.23771477"
 
 keywords:
   - inelastic scattering

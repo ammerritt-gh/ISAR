@@ -123,6 +123,19 @@ def _validated_peak(value, index: int) -> str:
     return value
 
 
+def _central_qe(item, index):
+    """The BL43LXU central QE: its width is fitted unless the item pins one (``width``)."""
+    from isar.analyze.components import CentralQE
+    if item.get("width") is None:
+        return CentralQE(prefix=str(item["prefix"]))
+    width = _finite_float(item["width"], f"model component {index} width",
+                          reason_code=MALFORMED_MANIFEST)
+    if not width > 0.0:
+        raise ModelManifestError(MALFORMED_MANIFEST,
+                                 f"model component {index} width must be positive")
+    return CentralQE(prefix=str(item["prefix"]), width=width)
+
+
 def build_composite(manifest, quasielastic_fwhm=None):
     """Reconstruct the registered :class:`~isar.analyze.components.CompositeModel` of a manifest.
 
@@ -143,6 +156,7 @@ def build_composite(manifest, quasielastic_fwhm=None):
             peak=_validated_peak(item.get("peak", "stokes+astokes"), index)),
         "elastic": lambda item, index: Elastic(),
         "quasielastic": lambda item, index: QuasiElastic(),
+        "central_qe": lambda item, index: _central_qe(item, index),
         "constant_background": lambda item, index: ConstantBackground(),
     }
     components = []

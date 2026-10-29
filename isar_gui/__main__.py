@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import sys
 from typing import Callable
 
@@ -46,6 +47,8 @@ def run(argv: list[str], *, windowless: bool, show_error: Callable[[str], None])
         log.critical("GUI failed to start", exc_info=True)
     finally:
         sys.stdout, sys.stderr = saved
+    if os.environ.get("ISAR_GUI_SELFTEST_RESULT"):  # the self-test reads the exit code and the log only
+        return rc
     show_error(f"{reason}\n\n{details}")
     return rc
 

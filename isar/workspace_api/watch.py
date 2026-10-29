@@ -56,6 +56,7 @@ _WATCHED: dict[str, tuple[str, ...]] = {
     "curves": ("report", "curves.json"),                  # the curve check, at each import and run start
     "inter_user": ("intake", "inter_spectra.jsonl"),      # anchors, picks, locks and the inter-spectra settings
     "inter_log": ("report", "inter_spectra.jsonl"),       # the batches and refits; written after their payloads
+    "gpi": ("report", "gpi.json"),                        # the gpi check, beside the curve check
 }
 
 

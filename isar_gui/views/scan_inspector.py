@@ -211,7 +211,8 @@ def inspector_lines(row: SpectrumRow | PooledRow, set_row: ScanSetRow | None, un
         lines.append(Line("Scan numbers", text, text))
     lines.append(Line("Analyzer", row.analyzer or "—", row.analyzer or ""))
     lines.append(fact("Temperature", set_row.temperature if set_row else no_set))
-    lines.append(fact("Q", row.q))
+    q = row.q if row.q_abs.value is None and row.q.value is not None else row.q_abs   # |Q|; the hkl where none
+    lines.append(fact("Q", q))
     lines.append(fact("Slit", set_row.slit if set_row else no_set))
     points = "—" if row.n_points is None else str(row.n_points)
     lines.append(Line("Points", points, "" if row.n_points is not None else "number of points not recorded"))

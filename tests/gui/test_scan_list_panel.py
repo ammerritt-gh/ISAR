@@ -147,8 +147,9 @@ def test_default_and_optional_columns(qtbot, monkeypatch, sample):
     panel, vm, _ = _make(qtbot, monkeypatch, sample)
     hidden = {c: panel._view.isColumnHidden(i) for i, c in enumerate(COLUMNS)}
     # the sample holds stored fast- and deep-pass results, so those two columns are on by themselves
-    assert hidden == {"scan": False, "T": False, "Q": False, "parsed": False,
-                      "fast": False, "deep": False, "anchor": True, "flag": True, "lock": True, "inter": True,
+    assert hidden == {"scan": False, "T": False, "hkl": False, "absq": True, "gpi": False, "rf": False,
+                      "parsed": False, "fast": False, "deep": False,
+                      "anchor": True, "flag": True, "lock": True, "inter": True,
                       "slit": True, "file": True}      # the inter-spectra columns wait for an inter-spectra state
     assert _model_item(panel, f"set:{KEY_A}", "fast").text() == "…"       # no current-results read here: no coverage claimed
     cell = _model_item(panel, f"spec:{A[4]}", "fast")
@@ -162,19 +163,22 @@ def test_default_and_optional_columns(qtbot, monkeypatch, sample):
 
 def test_a_missing_value_is_a_dash_with_its_reason(qtbot, monkeypatch, sample):
     panel, vm, _ = _make(qtbot, monkeypatch, sample)
-    q = _model_item(panel, f"spec:{A[5]}", "Q")
-    assert q.text() == "—" and q.toolTip() == "not in the file"
+    hkl = _model_item(panel, f"spec:{A[5]}", "hkl")
+    assert hkl.text() == "" and hkl.toolTip() == "no hkl in the file"
+    absq = _model_item(panel, f"spec:{A[5]}", "absq")
+    assert absq.text() == "—" and absq.toolTip() == "not in the file"
     assert _model_item(panel, f"spec:{A[5]}", "parsed").text() == "no Q"
     slit = _model_item(panel, f"set:{KEY_A}", "slit")
     assert slit.text() == "—" and slit.toolTip() == "not in the file"
-    assert panel._model.horizontalHeaderItem(COLUMNS.index("Q")).text() == "Q"      # mixed units
+    assert panel._model.horizontalHeaderItem(COLUMNS.index("hkl")).text() == "hkl"
 
 
-def test_q_header_carries_a_shared_unit_and_the_cells_drop_it(qtbot, monkeypatch, sample):
+def test_absq_header_carries_its_unit_and_the_cells_drop_it(qtbot, monkeypatch, sample):
     only_bl43 = dataclasses.replace(sample, sets=sample.sets[1:])
     panel, vm, _ = _make(qtbot, monkeypatch, only_bl43)
-    assert panel._model.horizontalHeaderItem(COLUMNS.index("Q")).text() == "Q (nm⁻¹)"
-    assert _model_item(panel, f"spec:{A[3]}", "Q").text() == "20.3"
+    assert panel._model.horizontalHeaderItem(COLUMNS.index("absq")).text() == "|Q| (nm⁻¹)"
+    assert _model_item(panel, f"spec:{A[3]}", "absq").text() == "20.3"
+    assert _model_item(panel, f"spec:{A[3]}", "absq").toolTip() == "20.3 nm⁻¹ (from header)"
 
 
 # ---------------------------------------------------------------------------------------------
@@ -198,7 +202,7 @@ def test_same_temperature_sets_stay_distinct_through_selection_and_the_analyzer_
     assert _model_item(panel, "ana:a04").text() == "a04 (1 of 2 selected)"
     assert vm.selection.active == B[4] and _current_key(panel) == B[4]
     assert len(display.calls) == n                                  # the regroup asked for nothing
-    assert _model_item(panel, "ana:a04", "Q").text() == ""            # the count joined the name in the first column
+    assert _model_item(panel, "ana:a04", "hkl").text() == ""         # the count joined the name in the first column
     assert _model_item(panel, "ana:a04", "T").text() == ""
 
     panel._sort_actions["set"].trigger()
@@ -523,15 +527,17 @@ def test_a_view_model_with_an_intake_hands_the_read_its_holders_reads(monkeypatc
                         lambda ws, **reads: seen.append(reads) or ScanListSnapshot())
     vm = ScanListViewModel(SimpleNamespace())
     assert seen == [{}]                                     # no holder: the read makes its own
-    intake = SimpleNamespace(fact_rows=None, fit_inputs=None, summary=None)
+    intake = SimpleNamespace(fact_rows=None, fit_inputs=None, summary=None, attention=None)
     vm.set_intake(intake)
     vm.on_workspace_changed(None)
-    assert set(seen[-1]) == {"fact_rows", "fit_inputs", "import_summary"}
+    assert set(seen[-1]) == {"fact_rows", "fit_inputs", "import_summary", "needs_attention"}
+    assert seen[-1]["needs_attention"].evaluated is False     # the worker has not read readiness yet
     assert seen[-1]["fact_rows"] == () and seen[-1]["fit_inputs"] == ()
     assert seen[-1]["import_summary"].n_scans == 0 and not seen[-1]["import_summary"].files_not_read
-    intake.fit_inputs, intake.fact_rows, intake.summary = ("p",), ("f",), "summary"
+    intake.fit_inputs, intake.fact_rows, intake.summary, intake.attention = ("p",), ("f",), "summary", "att"
     vm.on_workspace_changed(None)
-    assert seen[-1] == {"fact_rows": ("f",), "fit_inputs": ("p",), "import_summary": "summary"}
+    assert seen[-1] == {"fact_rows": ("f",), "fit_inputs": ("p",), "import_summary": "summary",
+                        "needs_attention": "att"}
 
 
 # ---------------------------------------------------------------------------------------------

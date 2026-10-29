@@ -28,7 +28,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from isar.workspace_api.scan_list import (Fact, ScanListSnapshot, ScanSetRow,
+from isar.workspace_api.scan_list import (Fact, Mark, ScanListSnapshot, ScanSetRow,
                                           SpectrumRow, Status, UnreadFile)
 
 STEM_A = "CsV3Sb5_97K_0p5_0p5_3_sum"
@@ -257,6 +257,15 @@ def pooled_workspace(root: Path) -> Path:
 _NOT_IN_FILE = "not in the file"
 _MISSING_SLIT = Fact(None, None, "missing", "missing", _NOT_IN_FILE)
 _NOT_RUN = Status("not run", False)
+_NO_HKL = Fact(None, "rlu", "missing", "missing", "no hkl in the file")
+# no import record and no gpi folder: the gpi cross says why, and the rf column has not been read
+_NO_GPI = Mark(False, "gpi: no folder", "no gpi folder is chosen")
+_RF_UNREAD = Mark(None, "rf: not read yet", "ISAR has not read the curve state of this experiment yet")
+
+
+def _set_marks(n: int) -> dict:
+    return {"gpi": Mark(False, f"gpi: {n} of {n} analyzers not good", "no gpi folder is chosen"),
+            "rf": Mark(None, "rf: not read yet", "ISAR has not read this yet")}
 
 
 def _incoming_path(ws_root: Path, name: str) -> str:
@@ -271,14 +280,15 @@ def _bl43_spectrum(ws_root: Path, stem: str, set_key: str, number: int, *, fast:
                    deep: Status = _NOT_RUN, fitted: bool = False, with_q: bool = True) -> SpectrumRow:
     det = f"a{number:02d}"
     key = f"{set_key}:{det}"
-    q = (Fact(round(20.0 + number / 10, 3), "nm⁻¹", "header", "file") if with_q
-         else Fact(None, None, "missing", "missing", _NOT_IN_FILE))
+    q_abs = (Fact(round(20.0 + number / 10, 3), "nm⁻¹", "header", "file") if with_q
+             else Fact(None, None, "missing", "missing", _NOT_IN_FILE))
     parsed = (Status("ok", True) if with_q
               else Status("no Q", True, "read; Q is not in the file"))
     name = f"{stem}_{det}"
-    return SpectrumRow(key=key, set_key=set_key, analyzer=det, q=q, parsed=parsed, fast=fast,
+    return SpectrumRow(key=key, set_key=set_key, analyzer=det, q=_NO_HKL, parsed=parsed, fast=fast,
                        deep=deep, file_name=name, file_path=_incoming_path(ws_root, name),
-                       n_points=_N_BINS, fit=_fit(key) if fitted else None)
+                       n_points=_N_BINS, fit=_fit(key) if fitted else None, q_abs=q_abs,
+                       gpi=_NO_GPI, rf=_RF_UNREAD)
 
 
 def sample_snapshot(ws_root: Path) -> ScanListSnapshot:
@@ -305,17 +315,17 @@ def sample_snapshot(ws_root: Path) -> ScanListSnapshot:
         key=key58, set_key=KEY_SINGLE, analyzer="a06",
         q=Fact((4.0, 0.075, 0.0), "rlu", "filename", "file"), parsed=Status("ok", True),
         fast=_NOT_RUN, deep=_NOT_RUN, file_name=BA122_FILE,
-        file_path=_incoming_path(ws_root, BA122_FILE), n_points=8)
+        file_path=_incoming_path(ws_root, BA122_FILE), n_points=8, gpi=_NO_GPI, rf=_RF_UNREAD)
     sets = (
         ScanSetRow(key=KEY_SINGLE, label="58", experiment_id="spec1", scan_numbers=(58,),
                    summed=False, n_merged=None, temperature=Fact(26.0, "K", "filename", "file"),
-                   slit=_MISSING_SLIT, spectra=(single,), files_received=1),
+                   slit=_MISSING_SLIT, spectra=(single,), files_received=1, **_set_marks(1)),
         ScanSetRow(key=KEY_B, label=STEM_B, experiment_id=STEM_B, scan_numbers=(), summed=True,
                    n_merged=2, temperature=temp, slit=_MISSING_SLIT, spectra=tuple(b),
-                   unread=(unread_member,), files_received=5),
+                   unread=(unread_member,), files_received=5, **_set_marks(4)),
         ScanSetRow(key=KEY_A, label=STEM_A, experiment_id=STEM_A, scan_numbers=(), summed=True,
                    n_merged=2, temperature=temp, slit=_MISSING_SLIT, spectra=tuple(a),
-                   files_received=4),
+                   files_received=4, **_set_marks(4)),
     )
     not_read = (
         UnreadFile(path=_incoming_path(ws_root, BAD_FILE), name=BAD_FILE,
@@ -325,4 +335,43 @@ def sample_snapshot(ws_root: Path) -> ScanListSnapshot:
         UnreadFile(path=_incoming_path(ws_root, "notes.txt"), name="notes.txt",
                    reason="not recognised as a data file"),
     )
-    return ScanListSnapshot(sets=sets, files_not_read=not_read, pooled=())
+    return ScanListSnapshot(sets=sets, files_not_read=not_read, pooled=(), has_gpi=True, has_rf=True)
+
+
+# ---------------------------------------------------------------------------
+# a BL43 set with a gpi file and a curve library, imported (the hkl, gpi and rf columns)
+# ---------------------------------------------------------------------------
+GPI_SET = "Smp_100K_0p5_0p5_3_A"        # the scan set's file stem, as ``intake_fixtures`` names it
+
+
+def build_bl43_gpi_workspace(tmp_path: Path, *, gpi: str = "accepted", drop_curve: str | None = None,
+                             n_analyzers: int = 3, off_integer=(), left_out=()) -> Path:
+    """A generated, imported BL43 workspace (one scan set, ``GPI_SET``) with a resolution folder and, by
+    ``gpi``, an accepted gpi file (``"accepted"``), one whose ``#Q=`` is beyond tolerance for its second
+    analyzer (``"rejected"``) or none (``"none"``); ``drop_curve`` (e.g. ``"a04"``) removes that analyzer's
+    curve from the folder; ``off_integer`` names analyzers whose counts are not raw (their calibration is held);
+    ``left_out`` names analyzers the .var sidecar lists but no file holds, so the import leaves them out of the set.
+    Returns the workspace root, with the curve and gpi checks written as an import
+    writes them. The gpi hkl of analyzer ``i`` is ``(0.5, 0.5, 3 + 0.5 i)``; generated data only."""
+    import intake_fixtures as fx
+    from isar.session import ingest
+    assert gpi in ("accepted", "rejected", "none"), gpi
+    analyzers = tuple(f"a{3 + i:02d}" for i in range(n_analyzers))
+    skip = [(drop_curve, s) for s in fx.SETTINGS] if drop_curve else []
+    ws, data = fx.bl43_workspace(Path(tmp_path), stems=("A",), analyzers=analyzers, slit=(40, 40),
+                                 library_skip=skip, off_integer=off_integer)
+    fx.write_library(ws.root / "rf", {"40x40": 1.3}, [a for a in analyzers if a != drop_curve],
+                     prefix="sarf_z")                 # the curve set the gpi file names
+    q_nm = {a: round(10.0 + 1.46 * i, 2) for i, a in enumerate(analyzers)}
+    fx.write_scan(data, stem=GPI_SET, analyzers=analyzers + tuple(left_out), seed=1, energy=fx.ENERGY_120,
+                  slit=(40, 40), q_nm=q_nm, off_integer=off_integer, centroids={} if left_out else None)
+    for a in left_out:                                  # listed on the .var sidecar, never imported
+        (data / f"{GPI_SET}_{a}").unlink()
+    if gpi != "none":
+        hkl = {a: (0.5, 0.5, 3.0 + 0.5 * i) for i, a in enumerate(analyzers)}
+        gpi_q = dict(q_nm, **({analyzers[1]: 5.0} if gpi == "rejected" else {}))
+        fx.write_gpi(data, GPI_SET, q_nm=gpi_q, hkl=hkl)
+    card, session = ws.load()
+    ingest.ingest_batch(card, session, [data], workspace_root=ws.root)
+    ws.save(card, session)
+    return ws.root

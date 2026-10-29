@@ -5,9 +5,8 @@ concerns. The dimension tabs answer "how is the data arranged"; a :class:`ScanFi
 units do I care about right now", and it applies ACROSS every tab — so "group by temperature, show
 only analyzer 9" is expressible where before it was not.
 
-This module is deliberately Qt-free (imports only stdlib + the :class:`~isar_gui.viewmodels.scans.ScanUnit`
-dataclass) so the predicate + query parser are unit-testable without a QApplication and so nothing Qt
-leaks toward the read-only facade. The GUI widgets stay dumb: they build a :class:`ScanFilter` and
+This module is deliberately Qt-free (imports only stdlib and the facade's :func:`~isar.workspace_api.scan_list.hkl_bin`),
+so the predicate + query parser are unit-testable without a QApplication and nothing Qt leaks toward the read-only facade. The GUI widgets stay dumb: they build a :class:`ScanFilter` and
 hand it to the view-model, which applies it.
 
 Two entry points:
@@ -42,6 +41,8 @@ import logging
 import re
 from dataclasses import dataclass, field, replace
 
+from isar.workspace_api.scan_list import hkl_bin
+
 log = logging.getLogger(__name__)
 
 # ``T`` comparison token, e.g. ``T>100`` / ``t>=4.2`` / ``T=300``. Case-insensitive on the leading T.
@@ -69,19 +70,6 @@ def _fmt_q(hkl) -> str:
         return "[" + ", ".join(f"{float(v):.3g}" for v in hkl) + "]"
     except (TypeError, ValueError):
         return ""
-
-
-def _q_bin(hkl, q_step: float):
-    """Integer grid key for ``hkl`` on ``q_step`` — the same binning the q auto-groups use.
-
-    Returns ``None`` when the vector is absent or non-numeric (such a unit simply cannot satisfy a
-    q filter). ``q_step<=0`` also folds to ``None`` (no binning possible)."""
-    if not hkl or q_step is None or q_step <= 0:
-        return None
-    try:
-        return tuple(int(round(float(v) / q_step)) for v in hkl)
-    except (TypeError, ValueError):
-        return None
 
 
 @dataclass(frozen=True)
@@ -139,8 +127,8 @@ class ScanFilter:
                 elif t > self.t_max + _T_EPS:
                     return False
         if self.q_target is not None:
-            want = _q_bin(self.q_target, q_step)
-            got = _q_bin(getattr(unit, "q", None), q_step)
+            want = hkl_bin(self.q_target, q_step)
+            got = hkl_bin(getattr(unit, "q", None), q_step)
             if want is None or got is None or want != got:
                 return False
         if self.text.strip():
@@ -272,7 +260,7 @@ def _text_token_matches(tok: str, unit, hay: str, q_step: float) -> bool:
         if temp is not None and abs(temp - n) <= 0.5:
             return True
         for vec in (getattr(unit, "q", None), getattr(unit, "q_target", None)):
-            b_want, b_got = _q_bin((n, n, n), q_step), _q_bin(vec, q_step)
+            b_want, b_got = hkl_bin((n, n, n), q_step), hkl_bin(vec, q_step)
             if b_want is not None and b_got is not None and any(c == b_want[0] for c in b_got):
                 return True
         num = getattr(unit, "scan_number", None)

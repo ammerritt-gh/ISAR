@@ -286,10 +286,14 @@ def _fixture(name):
 
 
 def _hypothesis(ctx, label):
+    from isar.analyze.loop import without_component
     from isar.analyze.phonon import enumerate_phonon_multimode, enumerate_phonon_structures
 
-    return {h.label: h for h in enumerate_phonon_structures(ctx)
-            + enumerate_phonon_multimode(ctx, 2)}[label]
+    # BL43LXU enumerates only elastic + central QE structures; these fits are of the reduced models
+    hyps = [without_component(h, "qe") for h in enumerate_phonon_structures(ctx)
+            + enumerate_phonon_multimode(ctx, 2)]
+    hyps += [without_component(h, "elastic") for h in hyps if h is not None]
+    return {h.label: h for h in hyps if h is not None}[label]
 
 
 def test_the_optimizer_sees_only_the_nonlinear_parameters(monkeypatch):

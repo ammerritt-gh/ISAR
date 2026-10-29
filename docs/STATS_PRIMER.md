@@ -328,7 +328,7 @@ screens, in this order:
 |---|---|---|
 | a mode's height at or below `twin_height_frac` (1e-3) of the height ceiling | that mode is not there | the count below, same elastic variant, without that mode |
 | a mode's energy ω₀ at the zero-energy edge of the window, or its line shape equal to the elastic line's within `elastic_twin_tolerance` | that mode is the elastic line | the count below, with the elastic line |
-| the elastic height at or below the same fraction | there is no elastic line | the same count without the elastic line |
+| the elastic height at or below the same fraction | there is no elastic line | the same count without the elastic line (not on BL43LXU: the elastic line is never removed there, §2.1) |
 | two modes closer than `twin_coincide_fwhm` (0.5) resolution FWHM | one mode | the count below with the pair merged, one pair at a time (exactly coincident delta pairs first); the all-pairs merge is one more candidate |
 | a mode's width Γ at the floor | that mode is resolution limited | the same model with that Γ pinned at the floor: a delta-function mode convolved with the resolution |
 | the flat background at or below the same fraction of its ceiling | there is no background | the same model without its background |
@@ -391,7 +391,9 @@ Widths and energies stay declared.
 | mode width Γ | `1/(Γ + 0.12 meV)` on `(0, 20)` meV, normalised on `[0, 20]` (a softened log-uniform: equal weight per factor of ten, finite at zero, overdamped widths allowed); a delta mode has no width factor | a tenth of the resolution FWHM as the knee; the 20 meV cap |
 | mode / elastic height h | flat on `[0, 1.2 x max count]` | the spectrum's highest count |
 | flat background (counts per point) | flat on `[0, max count]` | the spectrum's highest count |
-| quasi-elastic area | flat on `(0, scale x exposure x resolution FWHM)` (the v4 rule; out of this recipe's scope) | the exposure, the resolution width |
+| quasi-elastic area (IN8's fixed-width component, `QuasiElastic`) | flat on `(0, scale x exposure x resolution FWHM)` (the v4 rule; out of this recipe's scope) | the exposure, the resolution width |
+| central QE height `qe.h` (BL43LXU) | the height prior, unchanged: flat on `[0, 1.2 x max count]` | the spectrum's highest count |
+| central QE width `qe.width` (BL43LXU, fitted; none when the card pins `quasielastic_fwhm`) | zero below w; flat from w to 2w; above 2w the log density falls 1 nat per w, linearly, with no cap in the ruling; renormalised on `[w, 2w + 40 w]`, the knee rounded over ±0.05 w; its own recipe id `isar.central-qe-recipe/1` | the resolution FWHM w |
 
 **The height coordinate.** A peak's amplitude coordinate is its convolved height h (glossary): the
 maximum of its continuous convolved Stokes-side profile, in counts per point at the spectrum's
@@ -453,6 +455,37 @@ guidelines signature as `prior_recipe_settings`), marks every stored per-scan an
 fast pass, and every deep pass, stale: it is redone when next asked for, never deleted. A pooled
 master is the exception: it is carried while its member set and predictive contract are unchanged,
 so a recipe change does not mark it stale; force the masters to refit them under /6.
+
+**The central quasi-elastic component (BL43LXU only).** Every BL43LXU model is the elastic line, one
+central quasi-elastic component (QE), the phonons and an optional flat background; the QE is not a
+phonon and does not change a model's phonon count. The elastic line is never removed on BL43LXU, not
+even at zero height: a zero QE is removed (the reduced model without it is priced on its own), and a
+model with no elastic line is never offered. It is phenomenological, a "central excess" with no
+mechanism claimed: ISAR reports a fitted spectral weight and a fitted width, never a relaxation time, a
+mobile fraction or a process. Its shape is a Lorentzian of fitted intrinsic FWHM centred on the
+calibrated energy zero, times the relaxational detailed-balance factor `(E/kT) / (1 - exp(-E/kT))` at
+the sample temperature (its gain side is weaker than its loss side by exactly `exp(-E/kT)`, and it is
+finite at zero; 1 when the temperature is unknown), applied to the intrinsic shape before the
+convolution with the measured resolution, at every width, and never renormalised over the numerical
+grid. Its height is the peak value of its convolved curve, the phonons' convention, so the height prior
+above applies unchanged. Because the detailed-balance form decays slowly at high energy, its integral
+over all energies is not finite: the **spectral weight** ISAR reports is the integral of the intrinsic
+(unconvolved) shape over the fitted energy window, and is labelled so wherever it is reported. The
+width prior is a penalty, not a cap (operator, 2026-10-29): below w not allowed (a QE narrower than
+about one resolution FWHM can stand in for the elastic line; central broadening narrower than that is
+treated as unresolved and stays with the elastic line; the floor was w/4 until the operator's choice B,
+"1 FWHM should be ok"), flat to 2w ("a bit wider than resolution" costs nothing), then 1 nat per w. Two
+numerical choices are not rulings: the support ends where the penalty reaches 40 nats (the dropped
+tail carries e^-40 of the mass, and the evidence needs a finite box), and the knee at 2w is rounded
+over ±0.05 w, the half-width the near-zero ramp uses, so the fast pass's finite-difference optimiser
+and Hessian never sit on a kink (at most 0.0125 nats from the ruled line). On each of its three pieces
+(flat, Gaussian corner, exponential tail) the density has a closed-form CDF and inverse, so the fast
+pass's Laplace evidence (`SpectrumPrior.ln_qe_width`) and the nested sampler's transform
+(`ResolvedPrior` kind `qe_width`) are one density, `prior.QEWidthPrior`. The QE is
+switched on by instrument, not by a card setting; the recipe id and its settings enter the guidelines
+signature of a BL43LXU card only (`central_qe`), so stored BL43LXU fits read stale and every other
+instrument's signature, hence its stored currency, is unchanged. The near-zero phonon penalty above is
+unchanged, so a low-energy phonon still competes with the QE.
 
 **Known limit: the Laplace evidence inside the ramp.** A Gaussian likelihood times the penalised
 prior is not a Gaussian, so the fast pass's posterior-mode Laplace evidence is no longer exact for a

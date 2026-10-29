@@ -202,9 +202,9 @@ def test_selection_examples_cover_clicked_group_refresh_step_and_clear_rules():
 
 def _spectrum(key: str, set_key: str, analyzer: str, q=None) -> SpectrumRow:
     missing = Status("not run", False)
-    return SpectrumRow(key, set_key, analyzer,
-                       Fact(q, "nm⁻¹" if q is not None else None, "header", "file"),
-                       missing, missing, missing, None, None, None)
+    return SpectrumRow(key, set_key, analyzer, Fact(None, "rlu", "missing", "missing"),
+                       missing, missing, missing, None, None, None,
+                       q_abs=Fact(q, "nm⁻¹" if q is not None else None, "header", "file"))
 
 
 def _snapshot(*, scan_numbers=(12,), label="X", q=23.0234, temperature=97.0,

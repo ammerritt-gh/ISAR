@@ -57,15 +57,17 @@ class StartPoint:
     ``parsed``, ``rows`` and ``data_revision`` are keyed by scan (``"exp:scan"``): the parsed records, their
     import rows and their ``content_hash``. ``is_fresh(prev, det, *, chash, ghash, calfp)`` is today's
     freshness test; ``write_stub(task)`` writes a unit's pre-dispatch measurement stub; ``loaded`` is the
-    run's curve snapshot; ``checkpoint`` the deadline-resume store, or None."""
+    run's curve snapshot; ``checkpoint`` the deadline-resume store, or None; ``gpi`` (scan key -> its entry of the
+    gpi check the caller just ran) what each scan's inputs take from its gpi file."""
 
     def __init__(self, root, card, g, runcal, *, parsed: dict, rows: dict, data_revision: dict,
-                 passes, run_id: str, session, is_fresh, write_stub, loaded, checkpoint=None):
+                 passes, run_id: str, session, is_fresh, write_stub, loaded, checkpoint=None, gpi=None):
         self.root = Path(root)
         self.card, self.g, self.runcal = card, g, runcal
         self.parsed, self.rows, self.data_revision = parsed, rows, data_revision
         self.passes, self.run_id, self.session = tuple(passes), run_id, session
         self.is_fresh, self.write_stub, self.loaded, self.checkpoint = is_fresh, write_stub, loaded, checkpoint
+        self.gpi = dict(gpi or {})
         self.carried: set[str] = set()                # unit ids the start point carried
         self.recalibrated: dict[str, dict] = {}       # scan key -> calibration state computed at a start point
         self.frozen: dict = {}                        # scan key -> the effective record the scan started with
@@ -85,7 +87,7 @@ class StartPoint:
                 state = calibrations.calibrate_scan_state(self.card, eff, data_hash=chash, base_dir=self.root,
                                                           loaded=self.loaded)
                 self.recalibrated[key] = state
-        return state, calibrations.scan_view(self.runcal, key, state, self.loaded)
+        return state, calibrations.scan_view(self.runcal, key, state, calibrations.curves_for(eff, self.loaded))
 
     def _reused(self, scan_id, chash, ghash, h):
         """A deadline-resume checkpoint of this unit made with these very inputs, else None."""
@@ -101,13 +103,15 @@ class StartPoint:
         Fills ``frozen``, ``views``, ``recalibrated`` and the units :meth:`finished_lines` stamps."""
         key = group[0][5].rsplit(":", 1)[0]
         read = store.read_all(self.root, store.ENTRIES)            # the freeze: the saves on disk now
-        si = inputs.scan_inputs(self.rows[key], inputs.index_entries(read.entries, lines=read.lines))
+        si = inputs.scan_inputs(self.rows[key], inputs.index_entries(read.entries, lines=read.lines),
+                                self.gpi.get(key))
         eff = inputs.apply(self.parsed[key], si)
         state, view = self._calibration(key, eff, si)
         chash = self.data_revision[key]
         T = unit_data.scan_temperature(eff)
         out = []
-        for _rec, det, q, _T, sample, scan_id, _chash, _ghash, seed in group:
+        for _rec, det, _q, _T, sample, scan_id, _chash, _ghash, seed in group:
+            q = inputs.analyzer_q(self.rows[key], si, det)[0]      # an accepted gpi HKL, else the file's Q
             ghash = canonical_hash(guide_mod.guidelines_signature(self.g, scan_number=eff.scan_number, q=q, T=T))
             unit = inputs.unit_inputs(self.rows[key], si, det, state)
             h = inputs.inputs_hash(unit)

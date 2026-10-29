@@ -8,6 +8,11 @@ and prices each distinct solution by the box-rule Laplace evidence at its poster
 equally over its V(k) variants and its 2^k delta/width masks. No nested sampling, no bootstrap and
 no second pass run here.
 
+On BL43LXU every starting variant is elastic + central QE (:class:`~isar.analyze.components.CentralQE`)
++ k phonons, with and without a flat background (V(k) = 2). The models without the elastic line or
+without the QE are built only on demand, when a twin screen names them; each starting model and
+the reduced models built from it are one group, which prices exactly one label (:func:`_superseded`).
+
 Qt-free (ISAR hard rule 6). Units: meV; heights in counts per point at ``ctx.exposure_reference``;
 areas in counts x meV; evidence in nats; ``time.perf_counter`` seconds.
 """
@@ -28,10 +33,11 @@ from scipy.optimize import least_squares, linear_sum_assignment, minimize
 from scipy.special import gammaln, logsumexp, xlogy
 
 from isar.analyze import backends, catalogue, loop, prior
-from isar.analyze.components import Elastic, PhononDHO, phonon_unit_columns
+from isar.analyze.components import (QE_WEIGHT_CONVENTION, CentralQE, Elastic, PhononDHO, QuasiElastic,
+                                     central_qe_columns, phonon_unit_columns)
 from isar.analyze.estimators import FMIN
 from isar.analyze.lineshapes import KB, voigt_area_for_height
-from isar.analyze.phonon import GAMMA_FLOOR, _peak_omega0
+from isar.analyze.phonon import GAMMA_FLOOR, _peak_omega0, central_qe_admissible
 from isar.analyze.progress import ProgressFn, emitter
 
 log = logging.getLogger(__name__)
@@ -59,6 +65,7 @@ SPLIT_FRACTIONS = (0.75, 0.25)     # an audit split's lower part carries this sh
 NEAR_ZERO_SIGMAS = 4.5
 NEAR_ZERO_MAX_MODES = 3
 COINCIDENT_DELTA_MEV = 1e-6   # two delta modes closer than this are one mode, merged first
+QE_START_WIDTHS_FWHM = (1.0, 1.5, 3.0)   # central QE starting widths (x FWHM), inside its support; starts only
 CACHE_SIZE = 4096             # unit columns kept, keyed by (omega0, Gamma, peak selector)
 # The red-first switch of the delta-mode twin rule: a module flag the acceptance worker may set;
 # never a setting, never read from the environment.
@@ -161,6 +168,24 @@ class ModelResult:
     hypothesis: object               # (new) the catalogue Hypothesis (delta twin: with its derived context)
     fit: object | None               # (new) loop.StructureFitResult, no refit: at map_params for a priced
                                      #   model, at the TRF optimum (cov None) for an unpriced one or a twin
+    qe: bool = False                 # the model carries a CentralQE (BL43LXU)
+    on_demand: bool = False          # a reduced variant the twin rule built (never a starting candidate)
+    removed: tuple[str, ...] = ()    # prefixes it lacks against its starting variant ("elastic", "qe")
+    superseded: bool = False         # fitted, never priced: another label of its group was priced
+    parent: str = ""                 # the group key: its starting model's label (its own for a starting
+                                     #   model; the delta suffix included)
+
+@dataclass(frozen=True)
+class QEResult:
+    """The selected model's central QE (BL43LXU), at its posterior mode."""
+    height: float                 # qe.h at the posterior mode (counts per point, reference exposure)
+    width: float                  # intrinsic FWHM, meV
+    pinned: bool                  # width from the card, not fitted
+    weight: float                 # counts x meV: CentralQE.spectral_weight at the posterior mode
+    window: tuple[float, float]   # meV, the energy window the weight integrates over
+    convention: str               # components.QE_WEIGHT_CONVENTION
+    sigma_height: float | None    # posterior-mode covariance sd; None when unavailable
+    sigma_width: float | None     # None when pinned or unavailable
 
 @dataclass(frozen=True)
 class SpectrumFlag:
@@ -179,7 +204,8 @@ class FastPassResult:
     close_call_alternatives: tuple[int, ...]
     numerically_marginal: bool
     search_limit_reason: Literal["", "ceiling"]      # records before 2026-10-27 may say "safety_budget"
-    models: tuple[ModelResult, ...]  # every model tried, ascending (n_peaks, elastic, background, delta_modes)
+    models: tuple[ModelResult, ...]  # every model tried, ascending (n_peaks, elastic, background, qe,
+                                     #   delta_modes)
     selected: ModelResult | None
     peaks: tuple[PeakResult, ...]    # the selected model's, ascending omega0
     elastic_height: float | None
@@ -198,6 +224,7 @@ class FastPassResult:
                                      # "families": {family: {"fits": int, "seconds": float}}; "seed_count": int
     n_fits: int                      # TRF calls made
     deep_pass_candidate: bool        # state is unresolved, close_call or search_limited
+    qe: QEResult | None = None       # the selected model's central QE; None when it has none
 
 
 def poisson_residuals(y, mu) -> np.ndarray:
@@ -229,10 +256,19 @@ class _Variant:
     elastic: bool
     background: bool
     peaks: tuple                      # each mode's PhononDHO peak selector, from the catalogue
+    qe: bool = False                  # carries a CentralQE
+    on_demand: bool = False           # a reduced variant built by the twin rule
+    start: "_Variant | None" = None   # the starting variant an on-demand one was reduced from
+    removed: tuple = ()               # the prefixes it lacks against ``start``
 
     @property
     def label(self) -> str:
         return str(self.hyp.label)
+
+    @property
+    def origin(self) -> "_Variant":
+        """The starting variant: itself, or the one an on-demand variant was built from."""
+        return self.start or self
 
 
 @dataclass(eq=False)
@@ -256,6 +292,18 @@ class _Model:
     soft_priors: list                 # (position, ResolvedPrior) truncated Gaussian of each soft coordinate
     groups: list = field(default_factory=list)   # energy positions of each group of exchangeable modes
     basins: list = field(default_factory=list)
+    qe_h: int | None = None           # position of qe.h (None: no central QE)
+    qe_w: int | None = None           # position of qe.width (None: no QE, or its width pinned)
+    qe_pin: float | None = None       # the card-pinned QE width, meV
+
+    def qe_width(self, theta) -> float:
+        return self.qe_pin if self.qe_w is None else float(theta[self.qe_w])
+
+    @property
+    def parent(self) -> str:
+        """The group key: the starting variant's label with this model's delta suffix."""
+        v = self.variant
+        return v.origin.label + str(self.hyp.label)[len(v.label):]
 
 
 @dataclass(eq=False)
@@ -295,6 +343,14 @@ class _Basin:
     @property
     def model_id(self) -> str:
         return f"{self.model.hyp.label}#{self.index}"
+
+    @property
+    def label(self) -> str:
+        return str(self.model.hyp.label)
+
+    @property
+    def parent(self) -> str:
+        return self.model.parent
 
     def terminal(self) -> "_Basin":
         b = self
@@ -337,7 +393,30 @@ class _Tally:
     dismissed_counts: dict             # count -> best-found-fit dismissal and its comparison
 
 
-def _tally(entries, contending_margin: float) -> _Tally:
+def _superseded(entries) -> dict:
+    """One result per group (decision 6): ``{id(entry): kept label}`` for every entry of a group's
+    other labels. ``entries`` carry ``parent`` (the group key), ``label``, ``status`` and ``ln_z``.
+    Of a group's labels with a priced basin, the one with the largest ln Z (its basins summed) is
+    kept; every entry of every other label of that group is superseded. A group with no priced label
+    supersedes nothing."""
+    groups = {}
+    for e in entries:
+        groups.setdefault(e.parent, {}).setdefault(e.label, []).append(e)
+    out = {}
+    for labels in groups.values():
+        priced = {}
+        for lab, es in labels.items():
+            z = [e.ln_z for e in es if e.status in _PRICED and e.ln_z is not None]
+            if z:
+                priced[lab] = float(logsumexp(z))
+        if not priced:
+            continue
+        kept = max(priced, key=lambda lab: (priced[lab], lab))
+        out.update({id(e): kept for lab, es in labels.items() if lab != kept for e in es})
+    return out
+
+
+def _tally(entries, contending_margin: float, superseded=()) -> _Tally:
     """Step 9: count evidence, probabilities, the selected model and the contending counts.
 
     ``entries`` carry ``count``, ``status``, ``ln_z``, ``ln_model_prior``, ``ln_like`` and
@@ -346,9 +425,12 @@ def _tally(entries, contending_margin: float) -> _Tally:
     ln L + ln model prior falls below the leading count's ln Z minus the margin (operator Q1,
     2026-10-28). This is a local-fit heuristic, not a guaranteed evidence bound. Both ln L and
     ln Z include the same saturated-likelihood constant. Entirely unfitted counts contend;
-    twins alone do not add a competing count. Any priced basin still supplies its count's value."""
+    twins alone do not add a competing count. Any priced basin still supplies its count's value.
+    ``superseded`` (ids, :func:`_superseded`) are skipped entirely: never priced, never live."""
     terms, by_count = {}, {}
     for e in entries:
+        if id(e) in superseded:
+            continue
         by_count.setdefault(e.count, []).append(e)
         if e.status in _PRICED and e.ln_z is not None:
             terms[id(e)] = e.ln_model_prior + e.ln_z
@@ -616,21 +698,22 @@ class _Engine:
         for n in range(settings.mode_ceiling + 1):
             found = []
             for s in catalogue.enumerate_count_structures(ctx, n):
-                if any(getattr(c, "prefix", None) == "qe" for c in s.components):
-                    continue                     # design sec. 5: quasi-elastic stays out (R13)
+                if any(c is QuasiElastic or isinstance(c, QuasiElastic) for c in s.components):
+                    continue                     # design sec. 5: IN8's quasi-elastic stays out (R13)
                 for hyp in (s, loop.without_background(s)):
                     if hyp is None or (structures is not None and hyp.label not in structures
                                        and s.label not in structures):
                         continue
-                    comps = hyp.build().components
-                    found.append(_Variant(
-                        n, hyp, elastic=any(c.prefix == "elastic" for c in comps),
-                        background=any(c.prefix == "bg" for c in comps),
-                        peaks=tuple(c.peak for c in comps if isinstance(c, PhononDHO))))
+                    found.append(self._new_variant(n, hyp))
             self.variants[n] = found
             for v in found:
-                self._by_flags.setdefault((n, v.elastic, v.background), v)
-        self.seed_elastic = any(v.elastic for vs in self.variants.values() for v in vs)
+                self._by_flags.setdefault((n, v.elastic, v.background, v.qe), v)
+        self._reduced = {}                       # on-demand variants, never in self.variants
+        starting = [v for vs in self.variants.values() for v in vs]
+        self.seed_elastic = any(v.elastic for v in starting)
+        self.seed_qe = any(v.qe for v in starting)
+        self.qe_start = None                     # meV, chosen before the seed (_choose_qe_start)
+        self.qe_start_widths = []                # the free-width starting widths it chose from
         self.models = {}
         self.cache = OrderedDict()
         self.timing = {name: 0.0 for name in STAGES}
@@ -656,9 +739,41 @@ class _Engine:
             if self._stack:
                 self._stack[-1] += elapsed
 
-    def variant(self, k, elastic, background):
-        """The variant at count ``k`` with those flags, or None."""
-        return self._by_flags.get((k, bool(elastic), bool(background)))
+    @staticmethod
+    def _new_variant(k, hyp, **kw):
+        comps = hyp.build().components
+        return _Variant(k, hyp, elastic=any(c.prefix == "elastic" for c in comps),
+                        background=any(c.prefix == "bg" for c in comps),
+                        peaks=tuple(c.peak for c in comps if isinstance(c, PhononDHO)),
+                        qe=any(isinstance(c, CentralQE) for c in comps), **kw)
+
+    def variant(self, k, elastic, background, qe=False):
+        """The variant at count ``k`` with those flags, or None (``qe`` defaults to the off-BL43LXU
+        value; every engine call passes the parent's explicitly). A starting variant when there is
+        one; else (only where the starting variants carry the QE) the reduced variant built from
+        the starting variant of the same count and background, without the elastic line and/or the
+        QE, built once and cached outside ``self.variants``."""
+        key = (k, bool(elastic), bool(background), bool(qe))
+        if key in self._by_flags:
+            return self._by_flags[key]
+        if not self.seed_qe:
+            return None
+        if key not in self._reduced:
+            self._reduced[key] = self._reduce(*key)
+        return self._reduced[key]
+
+    def _reduce(self, k, elastic, background, qe):
+        start = next((v for v in self.variants.get(k, ()) if v.background == background and v.qe), None)
+        if start is None or (elastic and not start.elastic):
+            return None
+        removed = tuple(p for p, drop in (("elastic", start.elastic and not elastic), ("qe", not qe))
+                        if drop)
+        hyp = start.hyp
+        for prefix in removed:
+            hyp = loop.without_component(hyp, prefix)
+            if hyp is None:
+                return None
+        return self._new_variant(k, hyp, on_demand=True, start=start, removed=removed)
 
     def basins(self):
         return [b for m in list(self.models.values()) if m is not None for b in m.basins]
@@ -684,8 +799,19 @@ class _Engine:
                 self.cache.popitem(last=False)
         return [got[k] for k in keys]
 
+    def qe_column(self, width) -> np.ndarray:
+        """The central QE's unit column at intrinsic FWHM ``width`` (exposure-free), from the same LRU."""
+        key = ("qe", float(width))
+        if key in self.cache:
+            self.cache.move_to_end(key)
+            return self.cache[key]
+        col = self.cache[key] = central_qe_columns(self.x, self.ctx, [float(width)])[0][0]
+        while len(self.cache) > CACHE_SIZE:
+            self.cache.popitem(last=False)
+        return col
+
     def mean(self, model, theta):
-        """``exposure x (sum h_i col_i + elastic.h x elastic column + bg.BG)``."""
+        """``exposure x (sum h_i col_i + elastic.h x elastic column + qe.h x QE column + bg.BG)``."""
         total = np.zeros_like(self.y)
         if model.modes:
             units = self.units([(theta[a], theta[b]) for a, b, _ in model.modes], model.variant.peaks)
@@ -693,6 +819,8 @@ class _Engine:
                 total += theta[c] * col
         if model.el is not None:
             total += theta[model.el] * self.el_col
+        if model.qe_h is not None:
+            total += theta[model.qe_h] * self.qe_column(model.qe_width(theta))
         if model.bg is not None:
             total += theta[model.bg]
         return total * self.expo
@@ -746,13 +874,17 @@ class _Engine:
             key = tuple((tag, soft_by_pos.get(j, "pinned")) for tag, j in (("Gamma", g), ("h", c))
                         if j in soft_by_pos or (j in fixed_pos and not (j == g and m in delta)))
             by_key.setdefault(key, []).append(a)
+        qe = next((c for c in composite.components if isinstance(c, CentralQE)), None)
         return _Model(variant=variant, delta=delta, hyp=hyp, cctx=cctx, names=names, lo=lo, hi=hi,
                       fixed_pos=list(fixed_pos), fixed_vals=list(fixed_vals),
                       free=np.array([i for i in range(len(names)) if i not in set(fixed_pos)], int),
                       soft=soft, modes=modes,
                       el=names.index("elastic.h") if "elastic.h" in names else None,
                       bg=names.index("bg.BG") if "bg.BG" in names else None,
-                      omit=omit, soft_priors=soft_priors, groups=list(by_key.values()))
+                      omit=omit, soft_priors=soft_priors, groups=list(by_key.values()),
+                      qe_h=names.index("qe.h") if qe is not None else None,
+                      qe_w=names.index("qe.width") if "qe.width" in names else None,
+                      qe_pin=None if qe is None else qe.width)
 
     def modes_of(self, model, theta) -> list:
         """[(omega0, Gamma, h, delta)] per mode, ascending omega0 for a canonical point."""
@@ -760,19 +892,25 @@ class _Engine:
                 for i, (a, b, c) in enumerate(model.modes)]
 
     def linear_of(self, model, theta) -> dict:
-        return {"elastic": None if model.el is None else float(theta[model.el]),
-                "bg": None if model.bg is None else float(theta[model.bg])}
+        def at(pos):
+            return None if pos is None else float(theta[pos])
+        return {"elastic": at(model.el), "bg": at(model.bg), "qe_h": at(model.qe_h),
+                "qe_width": at(model.qe_w)}
 
     # ---- one fit ---------------------------------------------------------------------------------
     def _start(self, model, modes, linear):
-        """The start vector: the modes' values, the given elastic/background heights, the pins; any
-        height left unset (``None``) solved by Poisson NNLS with the others held."""
+        """The start vector: the modes' values, the given elastic/background/QE values, the pins; a
+        free QE width not given starts at ``qe_start``; any height left unset (``None``) solved by
+        Poisson NNLS with the others held."""
         theta = np.full(len(model.names), np.nan)
         for (a, b, c), (e, g, h, _d) in zip(model.modes, modes):
             theta[a], theta[b], theta[c] = e, g, (np.nan if h is None else h)
-        for key, pos in (("elastic", model.el), ("bg", model.bg)):
+        for key, pos in (("elastic", model.el), ("bg", model.bg), ("qe_h", model.qe_h),
+                         ("qe_width", model.qe_w)):
             if pos is not None and linear and linear.get(key) is not None:
                 theta[pos] = linear[key]
+        if model.qe_w is not None and not np.isfinite(theta[model.qe_w]):
+            theta[model.qe_w] = self.qe_start
         ok = np.isfinite(theta)
         theta[ok] = np.clip(theta[ok], model.lo[ok], model.hi[ok])
         theta[model.fixed_pos] = model.fixed_vals
@@ -791,6 +929,8 @@ class _Engine:
             return self.el_col * self.expo
         if i == model.bg:
             return self.expo
+        if i == model.qe_h:
+            return self.qe_column(model.qe_width(theta)) * self.expo
         j = next(j for j, (_a, _b, c) in enumerate(model.modes) if c == i)
         a, b, _c = model.modes[j]
         return self.units([(theta[a], theta[b])], [model.variant.peaks[j]])[0][0] * self.expo
@@ -875,7 +1015,11 @@ class _Engine:
                 return False
             if abs(a[c] - b[c]) > s.basin_height_frac * max(a[c], b[c]):
                 return False
-        return True
+        if model.qe_w is not None and abs(a[model.qe_w] - b[model.qe_w]) > \
+                s.basin_gamma_frac * max(w, a[model.qe_w], b[model.qe_w]):
+            return False
+        h = model.qe_h
+        return h is None or abs(a[h] - b[h]) <= s.basin_height_frac * max(a[h], b[h])
 
     def _place(self, model, theta, cost, family, nfev, message):
         for b in model.basins:
@@ -908,24 +1052,41 @@ class _Engine:
         w = math.exp(-e0 / self.kT) if self.kT else 0.0
         return side(e0) + w * side(-e0)
 
-    def _seed_linear_cols(self):
-        return ([self.el_col] if self.seed_elastic else []) + [np.ones_like(self.y)]
+    def _choose_qe_start(self):
+        """``qe_start``: the pinned width, else of the QE_START_WIDTHS_FWHM the one whose Poisson NNLS
+        of [elastic, QE column, flat] costs least. Starting points only; the prior is unchanged."""
+        pins = [c.width for vs in self.variants.values() for v in vs for c in v.hyp.components
+                if isinstance(c, CentralQE) and c.width is not None]
+        if pins:
+            self.qe_start = pins[0]
+            return
+        lo, hi = self.sp.bounds("qe_width")
+        widths = list(dict.fromkeys(float(np.clip(f * self.fwhm, lo, hi)) for f in QE_START_WIDTHS_FWHM))
+        self.qe_start_widths = widths
+        costs = [self._seed_nnls(self._seed_linear_cols(w), 0)[1] for w in widths]
+        self.qe_start = widths[int(np.argmin(costs))]
+
+    def _seed_linear_cols(self, qe_width=None):
+        qe = [self.qe_column(self.qe_start if qe_width is None else qe_width)] if self.seed_qe else []
+        return ([self.el_col] if self.seed_elastic else []) + qe + [np.ones_like(self.y)]
 
     def _seed_nnls(self, cols, n_peaks):
         sp = self.sp
         phi = np.column_stack(cols) * self.expo[:, None]
-        hi = np.array([sp.height_hi] * (n_peaks + self.seed_elastic) + [sp.background_hi])
+        hi = np.array([sp.height_hi] * (n_peaks + self.seed_elastic + self.seed_qe)
+                      + [sp.background_hi])
         a = backends.poisson_nnls(phi, self.y, np.zeros(phi.shape[1]), np.zeros(phi.shape[1]), hi)
         r = poisson_residuals(self.y, phi @ a)
         return a, float(r @ r)
 
     def _seed_fit(self, peaks, linear):
         """Joint TRF of the PV seed model, every centre free; (peaks ascending, cost) or None."""
-        sp, k, el = self.sp, len(peaks), self.seed_elastic
+        sp, k, el, qe = self.sp, len(peaks), self.seed_elastic, self.seed_qe
         z0 = np.array([v for p in peaks for v in p] + list(linear), dtype=float)
-        lo = np.array([sp.e_lo, self.g_lo, 0.0] * k + [0.0] * (el + 1))
-        hi = np.array([sp.e_hi, self.g_hi, sp.height_hi] * k + [sp.height_hi] * el
+        lo = np.array([sp.e_lo, self.g_lo, 0.0] * k + [0.0] * (el + qe + 1))
+        hi = np.array([sp.e_hi, self.g_hi, sp.height_hi] * k + [sp.height_hi] * (el + qe)
                       + [sp.background_hi])
+        qe_col = self.qe_column(self.qe_start) if qe else None
 
         def mean(z):
             mu = np.zeros_like(self.y)
@@ -933,6 +1094,8 @@ class _Engine:
                 mu += z[3 * i + 2] * self._pv(z[3 * i], z[3 * i + 1])
             if el:
                 mu += z[3 * k] * self.el_col
+            if qe:
+                mu += z[3 * k + el] * qe_col
             return (mu + z[-1]) * self.expo
 
         def residual(z):
@@ -950,6 +1113,8 @@ class _Engine:
         fit (NNLS heights), all refitted jointly after each insertion, until a peak adds less than
         ``seed_stop_gain`` or the ceiling. Starting points only: [(omega0, Gamma, h)]."""
         sp, w = self.sp, self.fwhm
+        if self.seed_qe:
+            self._choose_qe_start()
         base = self._seed_linear_cols()
         a, _ = self._seed_nnls(base, 0)
         prev = self._seed_fit([], a)
@@ -1041,9 +1206,13 @@ class _Engine:
                 hinted = self._hint_start(seed, k)
                 if hinted is not None:
                     starts.append(("hint", hinted))
+            starts = [(family, modes, None) for family, modes in starts]
+            if k == 0:                       # the other QE starting widths (none when pinned)
+                starts += [("qe_width", [], {"qe_width": w}) for w in self.qe_start_widths
+                           if w != self.qe_start]
             for v in self.variants[k]:
-                for family, modes in starts:
-                    self.fit(v, modes, family)
+                for family, modes, linear in starts:
+                    self.fit(v, modes, family, linear)
 
     # ---- twins ------------------------------------------------------------------------------------
     def resolve(self, b, point):
@@ -1079,21 +1248,29 @@ class _Engine:
 
         for j, (_a, _g, c) in enumerate(model.modes):                  # 1 amplitude
             if c in free and point[c] <= s.twin_height_frac * sp.height_hi:
-                twin("zero height", names[c], self.variant(k - 1, v.elastic, v.background),
+                twin("zero height", names[c], self.variant(k - 1, v.elastic, v.background, v.qe),
                      without(j), lin)
                 return
         for j, (a, _g, c) in enumerate(model.modes):                   # 2 energy
             lo = model.lo[a]
             railed = a in free and point[a] <= lo + loop.DEGENERATE_LIMIT_TOL * max(abs(lo), 1.0)
             if railed or self._mimics_elastic(model, point, j):
-                target = self.variant(k - 1, True, v.background)
+                target = self.variant(k - 1, True, v.background, v.qe)
                 if target is not None:
                     merged = dict(lin, elastic=(lin["elastic"] or 0.0) + float(point[c]))
                     twin("elastic limit", names[a], target, without(j), merged)
                 return
         if model.el is not None and model.el in free \
-                and point[model.el] <= s.twin_height_frac * sp.height_hi:       # 3 elastic
-            twin("zero elastic", names[model.el], self.variant(k, False, v.background), modes, lin)
+                and point[model.el] <= s.twin_height_frac * sp.height_hi \
+                and not central_qe_admissible(self.ctx):                       # 3 elastic
+            # never on BL43LXU: the elastic line stays in every model, and a zero QE falls to 3b
+            twin("zero elastic", names[model.el], self.variant(k, False, v.background, v.qe),
+                 modes, lin)
+            return
+        if model.qe_h is not None and model.qe_h in free \
+                and point[model.qe_h] <= s.twin_height_frac * sp.height_hi:     # 3b QE
+            twin("zero qe", names[model.qe_h], self.variant(k, v.elastic, v.background, False),
+                 modes, lin)
             return
         if self._coincident(model, modes, lin, twin):                     # 4 coincident
             return
@@ -1106,7 +1283,8 @@ class _Engine:
                     return
         if model.bg is not None and model.bg in free \
                 and point[model.bg] <= s.twin_height_frac * sp.background_hi:   # 6 background
-            twin("zero background", names[model.bg], self.variant(k, v.elastic, False), modes, lin)
+            twin("zero background", names[model.bg], self.variant(k, v.elastic, False, v.qe),
+                 modes, lin)
 
     def _mimics_elastic(self, model, point, j) -> bool:
         """A mode whose unit column is the elastic column (both of maximum 1) within tolerance."""
@@ -1131,7 +1309,7 @@ class _Engine:
             d = abs(modes[i][0] - modes[j][0])
             return (not (modes[i][3] and modes[j][3] and d < COINCIDENT_DELTA_MEV), d)
 
-        target = self.variant(k - 1, v.elastic, v.background)
+        target = self.variant(k - 1, v.elastic, v.background, v.qe)
         for i, j in sorted(pairs, key=order):
             merged = _merge_pair(modes[i], modes[j], modes[i][3] and modes[j][3])
             rest = [m for n, m in enumerate(modes) if n not in (i, j)]
@@ -1142,7 +1320,7 @@ class _Engine:
         chained = _merge_chain(modes, distance)
         if len(pairs) > 1 and len(chained) < k:
             twin("coincident", names[model.modes[pairs[0][1]][0]],
-                 self.variant(len(chained), v.elastic, v.background), chained, lin,
+                 self.variant(len(chained), v.elastic, v.background, v.qe), chained, lin,
                  reason="all-pairs merge")
         return True
 
@@ -1163,6 +1341,10 @@ class _Engine:
             lp += sp.ln_height(theta[model.el])
         if model.bg is not None and model.bg not in omit:
             lp += sp.ln_background(theta[model.bg])
+        if model.qe_h is not None and model.qe_h not in omit:
+            lp += sp.ln_height(theta[model.qe_h])
+        if model.qe_w is not None and model.qe_w not in omit:
+            lp += sp.ln_qe_width(theta[model.qe_w])
         return lp + sum(p.logpdf(float(theta[i])) for i, p in model.soft_priors)
 
     def objective(self, model, theta):
@@ -1284,20 +1466,22 @@ class _Engine:
     def audit(self):
         """Step 7: from the best non-twin basin of every contending count, deletions and merges
         down, moved centres and changed widths, splits both ways, shoulders and broad additions up."""
-        tally = _tally(self.basins(), self.s.contending_margin)
+        basins = self.basins()
+        tally = _tally(basins, self.s.contending_margin, _superseded(basins))
         for k in sorted(set(tally.priced_contenders) | set(tally.unpriced_contenders)):
             parent = max((b for b in self.basins() if b.count == k and b.theta is not None
                           and b.status not in ("degenerate_twin", "not_fitted")),
                          key=lambda b: b.ln_like, default=None)
             if parent is None:
                 continue
-            v = parent.model.variant
-            for family, n, modes in self._audit_starts(parent):
-                self.fit(self.variant(n, v.elastic, v.background), modes, family)
+            v = parent.model.variant.origin       # an on-demand parent's starts fit its starting variant
+            for family, n, modes, linear in self._audit_starts(parent):
+                self.fit(self._by_flags.get((n, v.elastic, v.background, v.qe)), modes, family, linear)
 
     def _audit_starts(self, parent):
         s, sp, w = self.s, self.sp, self.fwhm
-        modes = self.modes_of(parent.model, parent.theta)
+        model = parent.model
+        modes = self.modes_of(model, parent.theta)
         k = len(modes)
         out = []
         if k >= 1:
@@ -1329,6 +1513,11 @@ class _Engine:
                 for width in BROAD_WIDTHS_MEV:
                     out.append(("broad", k + 1, modes + [(float(e), width,
                                                           BROAD_HEIGHT_FRAC * sp.height_hi, False)]))
+        out = [(family, n, m, None) for family, n, m in out]
+        if model.qe_w is not None:           # the QE width moved both ways, the heights re-solved
+            i = model.qe_w
+            clipped = {float(np.clip(parent.theta[i] * f, model.lo[i], model.hi[i])) for f in WIDTH_FACTORS}
+            out += [("qe_width", k, modes, {"qe_width": w}) for w in sorted(clipped)]   # a clip may repeat
         return out
 
     def run(self):
@@ -1383,7 +1572,8 @@ class _Engine:
             fit.fit_semantics["prior_recipe"] = self.sp.provenance()
         return fit
 
-    def _model_result(self, b, probability):
+    def _model_result(self, b, probability, kept=None):
+        """``kept``: the label priced for ``b``'s group when ``b`` is superseded, else None."""
         model = b.model
         names, free = model.names, model.free
         priced = b.status in _PRICED
@@ -1391,6 +1581,11 @@ class _Engine:
         fitted = b.theta is not None
         point = b.theta_map if priced else b.theta
         terminal = b.terminal() if b.status == "degenerate_twin" else None
+        reason = b.reason
+        if kept is not None:
+            note = f"superseded: {kept} priced for its group"
+            reason = f"{reason}; {note}" if reason else note
+        v = model.variant
         return ModelResult(
             model_id=b.model_id, label=str(model.hyp.label), n_peaks=model.variant.k,
             elastic=model.variant.elastic, background=model.variant.background,
@@ -1398,14 +1593,35 @@ class _Engine:
             evidence_status=b.status, ln_z=b.ln_z if priced else None, ln_like=b.ln_like,
             ln_prior=b.ln_prior if priced else None, cost=b.cost,
             twin_of=None if terminal is None else terminal.model_id,
-            n_basins=1 if priced else 0, reason=b.reason,
+            n_basins=1 if priced else 0, reason=reason,
             params=({n: float(v) for n, v in zip(names, b.theta)} if fitted else {}),
             map_params=({n: float(v) for n, v in zip(names, b.theta_map)} if priced else None),
             free=tuple(names[i] for i in free), cov=cov, probability=float(probability),
             k_free=int(free.size), pinned=tuple(b.pinned) if priced else (),
             boundary_method=b.boundary_method if priced else "",
             posterior_iterations=b.posterior_iterations, hypothesis=model.hyp,
-            fit=self._structure_fit(b, point, cov) if fitted else None)
+            fit=self._structure_fit(b, point, cov) if fitted else None,
+            qe=v.qe, on_demand=v.on_demand, removed=tuple(v.removed), superseded=kept is not None,
+            parent=model.parent)
+
+    def _qe_result(self, b):
+        """The selected basin's central QE at its posterior mode, or None (no QE, or nothing priced)."""
+        if b is None or b.theta_map is None or b.model.qe_h is None:
+            return None
+        model, t = b.model, b.theta_map
+        height, width = float(t[model.qe_h]), model.qe_width(t)
+        cov = self._full_cov(b)
+
+        def sd(i):
+            v = None if cov is None or i is None else float(cov[i, i])
+            return math.sqrt(v) if v is not None and v > 0 else None
+
+        used = np.asarray(self.ctx.x_used, dtype=float) - float(self.ctx.center)
+        return QEResult(height=height, width=width, pinned=model.qe_w is None,
+                        weight=CentralQE().spectral_weight({"h": height, "width": width}, self.ctx),
+                        window=(float(used.min()), float(used.max())),
+                        convention=QE_WEIGHT_CONVENTION, sigma_height=sd(model.qe_h),
+                        sigma_width=sd(model.qe_w))
 
     # ---- the selected model's peaks: values only; thresholds are applied by _classify ---------------------
     def _area_per_h(self, peak, e, g):
@@ -1554,8 +1770,10 @@ class _Engine:
                                            reason=f"no start converged for model {m.hyp.label}"))
             basins = sorted(self.basins(), key=lambda b: (b.count, b.model.variant.elastic,
                                                           b.model.variant.background,
+                                                          b.model.variant.qe,
                                                           b.model.delta, b.index))
-            tally = _tally(basins, s.contending_margin)
+            superseded = _superseded(basins)
+            tally = _tally(basins, s.contending_margin, superseded)
             prob = {id(b): (math.exp(tally.terms[id(b)] - tally.total) if id(b) in tally.terms else 0.0)
                     for b in basins}
             spreads = []
@@ -1574,7 +1792,7 @@ class _Engine:
             selected = tally.selected
             preferred = tally.preferred
             reason = "ceiling" if preferred is not None and preferred == s.mode_ceiling else ""
-            results = [self._model_result(b, prob[id(b)]) for b in basins]
+            results = [self._model_result(b, prob[id(b)], superseded.get(id(b))) for b in basins]
             by_id = {id(b): r for b, r in zip(basins, results)}
             peaks, extras = self._peaks(selected)
             t_map = None if selected is None else selected.theta_map
@@ -1583,11 +1801,12 @@ class _Engine:
             # (evidence_gap None): what the survival test and the ambiguity flag compare against
             alternatives = []
             for b in basins:
-                if b is not selected and b.status in _PRICED:
+                if b is not selected and id(b) in tally.terms:
                     alternatives.append(self._alternative(b, b.theta_map, prob[id(b)],
                                                           tally.terms[id(selected)] - tally.terms[id(b)]))
             for k in tally.unpriced_contenders:
                 best = max((b for b in basins if b.count == k and b.theta is not None
+                            and id(b) not in superseded
                             and b.status not in ("degenerate_twin", "not_fitted")),
                            key=lambda b: b.ln_like, default=None)
                 if best is not None:
@@ -1618,7 +1837,7 @@ class _Engine:
             flag_statistics=flag_statistics, prior_provenance=self.sp.provenance(),
             arena_fingerprint=loop.data_likelihood_fingerprint(self.ctx),
             ln_like_saturated=self.sat, settings=s, timing=timing, n_fits=self.n_fits,
-            **_apply(c))
+            qe=self._qe_result(selected), **_apply(c))
 
     def _alternative(self, b, theta, probability, gap):
         omega0 = sorted(float(theta[a]) for a, _g, _c in b.model.modes)
