@@ -362,10 +362,10 @@ def case_fresh(ctx: Ctx):
     ctx.state["inst"] = inst
     res = ctx.script(ctx.p1, inst, ctx.install_args(base), "install", INSTALL_TIMEOUT)
     expect(res, 0, "installed", "STEP=selftest ok")
-    if "CHECK gui PASS" not in res.log_text or "SELFTEST PASS" not in res.log_text:
-        raise Fail("log has no 'CHECK gui PASS' / 'SELFTEST PASS'")
-    if "CHECK native-plugin" in res.log_text and "CHECK native-plugin PASS" not in res.log_text:
-        raise Fail("native-plugin check did not pass")
+    # a native start is proven by the hidden native GUI line (K1), or in the fallback form by a native-plugin PASS
+    native = any(ln.startswith(("CHECK gui PASS platform windows", "CHECK native-plugin PASS")) for ln in res.lines())
+    if not native or "SELFTEST PASS" not in res.log_text:
+        raise Fail("no native start proven: need 'CHECK gui PASS platform windows' or 'CHECK native-plugin PASS', and 'SELFTEST PASS'")
     for name in PAYLOAD[:-3] + ["launcher/run-isar.bat", "launcher/collect-diagnostics.bat",
                                 "launcher/WINDOWS-install-ISAR.bat", "launcher/isar-win-64.lock"]:
         if not (base / name).exists():
