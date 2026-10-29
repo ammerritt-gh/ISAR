@@ -20,8 +20,8 @@ keeps its raw data and is surfaced to you with its reason.
 - **`resolved`** — a clean, confident fit. *Use the number* (you can still confirm it). These are the
   scans you don't have to touch first.
 - **`flagged`** (`model_incomplete`) — there's a usable ω₀, but the model is imperfect: the fit left a
-  *structured* residual (often a broad quasi-elastic component the elastic+DHO+background model doesn't
-  capture). The energy is probably fine; *glance at it* before relying on it. This is not a rejection —
+  *structured* residual (on instruments other than BL43LXU, often a broad quasi-elastic component the
+  elastic+DHO+background model doesn't capture; BL43LXU models carry a central QE). The energy is probably fine; *glance at it* before relying on it. This is not a rejection —
   it's "good number, imperfect model."
 
 ### Declined — ISAR is steering you to look
