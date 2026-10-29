@@ -211,10 +211,12 @@ def test_the_core_store_and_records_load_no_numerics_and_no_qt():
 
 
 def test_the_read_facade_adds_no_scipy_qt_or_coupled_numerics():
-    """Measured against ``isar.workspace_api`` alone: the facade and the session package add none of these. numpy
-    is already loaded by that package, so an added numpy import cannot show here."""
-    base = _modules_after("import isar.workspace_api")
-    added = _modules_after("import isar.workspace_api.inter_spectra, isar.session.inter_spectra") - base
+    """Measured against the facade's own dependencies. Importing ``isar.workspace_api`` runs the facade, so a base
+    that imports the package would hide every import the facade makes. numpy is in the base, so it cannot show."""
+    base = _modules_after("import isar.intake.inter_spectra, isar.intake.inputs, isar.intake.scans, isar.intake.store, "
+                          "isar.schema.card, isar.session.state, isar.session.workspace")
+    assert not [m for m in base if m.startswith(("isar.workspace_api", "isar.session.inter_spectra"))]
+    added = _modules_after("import isar.workspace_api.inter_spectra") - base
     heavy = sorted(m for m in added if m.split(".")[0] in ("scipy", "PySide6")
                    or (m.startswith("isar.analyze.coupled.") and m != "isar.analyze.coupled.settings"))
     assert heavy == [], heavy
