@@ -525,15 +525,17 @@ def test_a_view_model_with_an_intake_hands_the_read_its_holders_reads(monkeypatc
                         lambda ws, **reads: seen.append(reads) or ScanListSnapshot())
     vm = ScanListViewModel(SimpleNamespace())
     assert seen == [{}]                                     # no holder: the read makes its own
-    intake = SimpleNamespace(fact_rows=None, fit_inputs=None, summary=None)
+    intake = SimpleNamespace(fact_rows=None, fit_inputs=None, summary=None, attention=None)
     vm.set_intake(intake)
     vm.on_workspace_changed(None)
-    assert set(seen[-1]) == {"fact_rows", "fit_inputs", "import_summary"}
+    assert set(seen[-1]) == {"fact_rows", "fit_inputs", "import_summary", "needs_attention"}
+    assert seen[-1]["needs_attention"].evaluated is False     # the worker has not read readiness yet
     assert seen[-1]["fact_rows"] == () and seen[-1]["fit_inputs"] == ()
     assert seen[-1]["import_summary"].n_scans == 0 and not seen[-1]["import_summary"].files_not_read
-    intake.fit_inputs, intake.fact_rows, intake.summary = ("p",), ("f",), "summary"
+    intake.fit_inputs, intake.fact_rows, intake.summary, intake.attention = ("p",), ("f",), "summary", "att"
     vm.on_workspace_changed(None)
-    assert seen[-1] == {"fact_rows": ("f",), "fit_inputs": ("p",), "import_summary": "summary"}
+    assert seen[-1] == {"fact_rows": ("f",), "fit_inputs": ("p",), "import_summary": "summary",
+                        "needs_attention": "att"}
 
 
 # ---------------------------------------------------------------------------------------------
