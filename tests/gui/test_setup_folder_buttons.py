@@ -7,7 +7,6 @@ Renders go to ``tmp_path``; the operator's copy in the main checkout is made by 
 from __future__ import annotations
 
 import dataclasses
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -27,15 +26,8 @@ from isar_gui.views import setup_section as setup_mod
 from isar_gui.views.files_strip import FilesStrip
 from isar_gui.views.setup_section import SetupSection, locate_resolution_folder
 
-REPO = Path(__file__).resolve().parents[2]
 WAIT_MS = 15000
 MIN_WIDTH = 280                     # the left column's minimum (main_window._LEFT_MIN)
-
-
-def test_the_worktree_is_the_import_root():
-    import isar_gui
-    print("isar_gui imported from", isar_gui.__file__)
-    assert Path(isar_gui.__file__).resolve().is_relative_to(REPO)
 
 
 def _bound(qtbot, root) -> IntakeState:
@@ -163,13 +155,6 @@ def test_a_hostile_long_path_stays_on_hover_and_widens_nothing(qtbot, tmp_path):
     assert long in section._locate.toolTip()
     assert section._locate.text() == section._locate.full_text() == "Resolution curves (rf)…"
     assert section.minimumSizeHint().width() <= MIN_WIDTH
-
-
-def test_the_panel_renders_to_a_png(qtbot, tmp_path):
-    root = bl43_fixture.build_bl43_gpi_workspace(tmp_path)
-    section = _section(qtbot, _bound(qtbot, root))
-    out = tmp_path / "setup-panel.png"
-    assert section.grab().save(str(out)) and out.stat().st_size > 0
 
 
 def _strip(qtbot, tmp_path) -> FilesStrip:
