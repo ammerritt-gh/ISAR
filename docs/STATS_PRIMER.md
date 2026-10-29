@@ -371,7 +371,7 @@ python docs/stats/make_figures.py --only akaike --workspace <path-to-mvp_zone_te
 How many peaks a spectrum holds is a model-selection question, so it is decided the way §2 decides
 everything: by evidence, with the Occam penalty paid out of the priors. That penalty is only as
 honest as the priors. The **mode prior recipe** (`isar/analyze/prior.py`, version
-`isar.mode-prior-recipe/5`) is one rule, set before fitting and identical for every spectrum.
+`isar.mode-prior-recipe/6`) is one rule, set before fitting and identical for every spectrum.
 Starting values may come from the data (a seed is not a prior).
 
 **Empirical Bayes, for amplitudes only.** Recipe /4 built every bound from declared quantities and
@@ -386,7 +386,7 @@ Widths and energies stay declared.
 
 | Parameter | Prior | Built from |
 |---|---|---|
-| mode energy E0 (`omega0`) | uniform and ordered on `(1e-3, min(20, highest fitted energy))` meV | the fit window |
+| mode energy E0 (`omega0`) | flat times the near-zero penalty, renormalised, and ordered on `(1e-3, min(20, highest fitted energy))` meV: no penalty at and above one resolution FWHM w, rising 10 nats per w to a 7.5-nat ceiling at w/4 and below | the fit window; the resolution FWHM |
 | mode width Γ | `1/(Γ + 0.12 meV)` on `(0, 20)` meV, normalised on `[0, 20]` (a softened log-uniform: equal weight per factor of ten, finite at zero, overdamped widths allowed); a delta mode has no width factor | a tenth of the resolution FWHM as the knee; the 20 meV cap |
 | mode / elastic height h | flat on `[0, 1.2 x max count]` | the spectrum's highest count |
 | flat background (counts per point) | flat on `[0, max count]` | the spectrum's highest count |
@@ -408,7 +408,73 @@ resolution FWHM to keep a "phonon" from standing in for the elastic line; measur
 world, that floor moved the spurious mode up to 0.82 meV rather than removing it. Version 4 removed
 the floor (operator direction, 2026-10-23) and recipe /5 keeps it removed. A mode that drifts onto
 the elastic line is handled by the degenerate-limit rule (§2): a fit railed at a limit is treated
-as its degenerate twin. The window is now capped at 20 meV (E0 is positive, 0 to 20 meV).
+as its degenerate twin. The window is now capped at 20 meV (E0 is positive, 0 to 20 meV). Recipe /6
+adds a soft penalty near zero (next paragraph), not a floor: the support still starts at 1e-3 meV
+and a mode below the ramp pays at most 7.5 nats, so strong enough data still place it there, where
+v3's hard floor forbade it outright.
+
+**The near-zero energy penalty (recipe /6).** The fit models the elastic line as the measured
+resolution curve and nothing wider, so a central line a little broader than resolution can only be
+widened by a mode a fraction of a meV from zero, whose anti-Stokes partner is nearly as strong as
+its Stokes side at low energy; under a flat energy prior that pair cost nothing extra and displaced
+the elastic line (CsV3Sb5 at 97 K, analyzer a06: a five-mode model with no elastic line and its
+first mode at 0.27 meV won by 2.6 nats). Recipe /6 (operator ruling 2026-10-29: "a linear penalty,
+ramping up from 1 FWHM with 0 penalty to some penalty ceiling at, say, 1/4 FWHM, giving us 5 nats at
+1/2 FWHM") multiplies each mode energy's flat density by `exp(-penalty(E))`, E in meV from zero
+energy transfer and the penalty measured in the spectrum's total resolution FWHM w (the width the
+fast pass's twin rules use): 0 at and above w, rising linearly at 10 nats per w (2.5 nats at 3w/4,
+5 at w/2), and the ceiling, 7.5 nats, at and below w/4. It applies to every DHO mode energy that
+takes the recipe's default, narrow or broad, at every temperature and on every instrument, and one
+implementation (`prior.EnergyPrior`) serves every route that prices or samples it: the fast pass
+(`SpectrumPrior.ln_energies`), the prior bundle's Laplace lane (`PriorBundle.logpdf_ordered`) and its
+nested-sampling transform (`transform_ordered`). An energy whose prior is replaced (a transported
+soft constraint, a catalogue entry's declared prior) keeps the replacing prior alone; the elastic
+line, background and quasi-elastic terms are untouched. The two corners are rounded by a C1
+quadratic blend over ±0.05 w, because the fast pass finds the posterior mode with a
+finite-difference L-BFGS-B and takes a central-difference Hessian there: with exact corners a
+weakly determined mode sits on the kink at w, and on a toy with the fast pass's optimiser options
+55 of 183 such optima ended in a line-search failure, which the fast pass records as no evidence
+(none did with rounded corners). The blend departs from the ramp by at most 0.125 nats (0.125 at w
+instead of 0, 7.375 at w/4 instead of 7.5) and leaves 3w/4 and w/2 exact (operator: "Acceptable",
+2026-10-29). The density is renormalised over the energy window, so it stays a proper prior; the
+penalised region is a small part of the window (for w = 1 meV on a 20 meV window, ln Z = 2.949
+against ln 20 = 2.996), so an energy above the ramp gains about 0.05 nats. A real low-energy mode
+still wins when the data favour it by more than the penalty. Accepted side effect: inside the ramp
+the penalty's slope pulls a poorly determined mode's fitted energy upward, away from zero, by about
+the slope times the energy's variance; such modes already carry the near-elastic mark. On the
+campaign path the rung-1 Laplace sits at the likelihood fit, which never saw the penalty, so a free
+energy whose posterior reaches the ramp (fitted E minus 3 sd below w + 0.05 w) takes the MAP refit
+under the full bundle (rung 2, named in `validity["unseen_informative"]`). The ramp's numbers are
+`PriorSettings.energy_ramp_*`, not a card setting (a `[fitting.prior]` key naming one warns and is
+dropped), and every fit records them (`recipe_provenance()["energy_penalty"]`, in meV, with the FWHM
+it read). The version bump, and a later change to any ramp default (the recipe defaults are in the
+guidelines signature as `prior_recipe_settings`), marks every stored fast and deep pass stale: it is
+redone when next asked for, never deleted.
+
+**Known limit: the Laplace evidence inside the ramp.** A Gaussian likelihood times the penalised
+prior is not a Gaussian, so the fast pass's posterior-mode Laplace evidence is no longer exact for a
+mode in or near the ramp (the flat /5 prior had no such error). Measured for a one-dimensional
+Gaussian likelihood in E of standard deviation sd, centred at 57 points from 0.1 w to 1.5 w, times
+the penalised prior (w = 1 meV, window `[1e-3, 20]` meV), `laplace_log_evidence` at the posterior
+mode against adaptive quadrature:
+
+| sd | exact minus Laplace (nats) |
+|---|---|
+| 0.02 w | -0.001 to +0.007 |
+| 0.05 w | -0.034 to +0.030 |
+| 0.1 w | -0.103 to +0.234 |
+| 0.2 w | -0.253 to +0.457 |
+| 0.5 w | -0.445 to +1.108 |
+| 1 w | -0.414 to +1.706 (largest with the mode in the upper corner, about 1.05 w) |
+
+Laplace mostly under-prices, so it errs against a poorly determined low mode, but not always. At sd
+= 0.1 w one centre (0.2 w) had no evidence at all: its mode sat in the lower corner, whose concave
+curvature (-c/(2 x 0.05 w) = -100 per w squared) cancels the likelihood's 1/sd squared there, so
+the Hessian is singular (`no_evidence`). `tests/analyze/test_prior_recipe.py` asserts only the
+well-determined regime: at sd up to 0.05 w the two agree to 0.05 nats across the grid, corners
+included. No escalation is added to the fast pass for broad modes: Laplace is already not promised
+accurate for a prior-dominated coordinate (below), and close calls go to the deep pass, which
+samples this prior exactly.
 
 **The evidence: posterior mode, exact Hessian, box rule.** The fast pass and `laplace_log_evidence`
 take the evidence at the posterior mode (likelihood times prior), with the exact Hessian H of
@@ -451,40 +517,46 @@ default scale. The pooled-master path normalises by monitor only: a master with 
 nominal exposure `1e6` on the monitor scale, not seconds. That gap is the pooled path's own.
 
 **Mode identities.** The modes of one structure are exchangeable: swapping two labels gives the same
-curve, so every solution appears N! times in the likelihood. A flat prior per label then makes the
-two evidence lanes disagree by ln N! (6.6 nats at six modes): nested sampling finds all N! copies,
-while a Laplace expansion at one fitted point sees one. The recipe orders the energies and puts one
-normalised joint density on the ordered region, N!/W^N for N modes in a window of width W. The
-Laplace evidence reads it as a function of the set of energies (`ordered_energy_log_prior`) and
-nested sampling draws it as the order statistics of uniforms (`ordered_energy_transform`); the
-catalogue's prior bundle carries both (`logpdf_ordered`, `transform_ordered`). Each lane gets the
+curve, so every solution appears N! times in the likelihood. A labelled prior per mode then makes
+the two evidence lanes disagree by ln N! (6.6 nats at six modes): nested sampling finds all N!
+copies, while a Laplace expansion at one fitted point sees one. The recipe orders the energies and
+puts one normalised joint density on the ordered region, N! prod g(E_i) for N modes, g the
+one-energy density (flat times the near-zero penalty, renormalised over the window; a flat g gives
+recipe /5's N!/W^N for a window of width W). The Laplace evidence reads it as a function of the set
+of energies (`ordered_energy_log_prior`) and nested sampling draws the order statistics of N
+uniforms mapped through g's inverse CDF (`ordered_energy_transform`; g's CDF is increasing, so the
+order holds and the draw samples the density exactly); the catalogue's prior bundle carries both
+(`logpdf_ordered`, `transform_ordered`). Each lane gets the
 N! exactly once and the two agree. The ordering is on E0 (`omega0`), the sampled coordinate, where that
 normalisation is exact. It applies only to exchangeable
 modes: every other parameter of each mode (Γ, h) must carry the same prior density as the others. The
 modes are split into groups that are exchangeable among themselves, and each group of two or more is
-ordered on its own, N!/W^N per group. A prior that singles out one mode's amplitude or width puts
+ordered on its own, N! prod g per group. A prior that singles out one mode's amplitude or width puts
 that mode in a group of its own, so its energy keeps the labelled prior. The recipe's own width
 prior is not part of that comparison: a delta-function mode (Γ pinned at the floor by a degenerate
 twin, §2, and so with no width factor) is ordered together with the finite-width modes, one k!, one
 ordered transform over every mode's E0.
 
-**The k! in the Laplace path.** The Laplace expansion at one labelled mode with `ln(k!/W^k)` equals
-the integral over all k! label copies with the flat `1/W^k`. Omitting the k! would add a spurious
-ln(k+1) penalty per extra peak. It is checked (`tests/analyze/test_prior_v5.py`) on two peaks of
-equal height with free positions: the brute-force grid gives ln Z = -237.3786, Laplace with the k!
-gives -237.3789, and without it -238.0720. Two peaks of fixed, different heights with only positions
+**The k! in the Laplace path.** The Laplace expansion at one labelled mode with `ln(k! prod g)`
+equals the integral over all k! label copies with the labelled `prod g`. Omitting the k! would add a
+spurious ln(k+1) penalty per extra peak. It is checked (`tests/analyze/test_prior_v5.py`) on two
+peaks of equal height with free positions: the brute-force grid gives ln Z = -237.2862, Laplace with
+the k! gives -237.2865, and without it -237.9796 (recipe /6; /5's flat prior gave -237.3786,
+-237.3789 and -238.0720). Two peaks of fixed, different heights with only positions
 free have one label copy, so a k! test must use equal heights or free all of each peak's
 parameters, or it cannot tell right from wrong.
 
-**Status [Implemented; sensitivity check run].** The recipe, the ordered prior, the box-rule
-Laplace, the softened log-uniform width and the signature are implemented and tested. The fitter's
+**Status [Implemented; sensitivity check run].** The recipe, the ordered prior, the near-zero
+energy penalty (recipe /6), the box-rule Laplace, the softened log-uniform width and the signature
+are implemented and tested. The fitter's
 bounds come from the recipe (`loop.build_problem` reads `prior.mode_bounds`, which resolves
 `prior.resolve_prior_for`, so the TRF box and the Laplace box are one source). The fast pass's
 Laplace evidence takes its prior from the same recipe (`SpectrumPrior`), as do both evidence lanes
 (`evidence.py`, `errors/bayes.py`), which price modes under the ordered energy prior. The campaign
-path's `PriorBundle` carries the same width density (`ResolvedPrior.kind = "softlog"`). `fit_one`
-runs the fast pass (§2.2) with the card's `max_modes` as its ceiling. The sensitivity check has
-run once on the 56 le Tacon spectra (`run-isar-proofs.bat letacon`; TODO.md FIT-4 has the totals).
+path's `PriorBundle` carries the same width density (`ResolvedPrior.kind = "softlog"`) and the same
+energy density (`"energy_ramp"`). `fit_one` runs the fast pass (§2.2) with the card's `max_modes` as
+its ceiling. Every sensitivity arm carries the energy penalty's defaults (no arm is added for it).
+The sensitivity check has run once, under recipe /5, on the 56 le Tacon spectra (`run-isar-proofs.bat letacon`; TODO.md FIT-4 has the totals).
 Most count decisions depend on the prior there; which arm to trust is the operator's call.
 
 **The delivery [Implemented].** `fit_one` runs the fast pass on every spectrum (§2.2) and records
