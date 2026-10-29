@@ -274,7 +274,7 @@ def _kinds(attention) -> dict:
     return {g.kind: g for g in attention.groups} if attention is not None and attention.evaluated else {}
 
 
-def _rf_reason(c, groups, scans) -> str | None:
+def _rf_reason(c, groups, scans, left) -> str | None:
     if c.folder is None:
         return "no resolution folder is set"
     if c.check_stale:
@@ -285,9 +285,11 @@ def _rf_reason(c, groups, scans) -> str | None:
         return c.problem
     if "resolution_folder" in groups:
         return groups["resolution_folder"].items[0].reason
-    # a counts hold stops calibrate before its curve_missing group, so the per-analyzer readiness is counted too
+    # a counts hold stops calibrate before its curve_missing group, so the per-analyzer readiness is counted too;
+    # an analyzer the import left out of its set has no curve to hold (``left``: the (scan, analyzer) pairs)
     missing = {(i.scan, i.analyzer) for i in groups["curve_missing"].items} if "curve_missing" in groups else set()
-    missing |= {(s.scan, a) for s in scans.values() for a, r in s.analyzers.items() if r.curve_kind == "missing"}
+    missing |= {(s.scan, a) for s in scans.values() for a, r in s.analyzers.items()
+                if r.curve_kind == "missing" and (s.scan, a) not in left}
     if missing:
         n = len(missing)
         return f"{n} analyzer{' has' if n == 1 else 's have'} no resolution curve"
@@ -317,7 +319,8 @@ def folder_status(summary, settings, attention) -> tuple[FolderStatus | None, Fo
         return None, None
     c, groups = summary.curves, _kinds(attention)
     scans = attention.scans if attention is not None and attention.evaluated else {}
-    rf = _status("Resolution curves folder", c.folder, _HOW.get(c.source), _rf_reason(c, groups, scans))
+    left = {(s.scan, a) for s in summary.incomplete_sets for a in s.missing_analyzers}
+    rf = _status("Resolution curves folder", c.folder, _HOW.get(c.source), _rf_reason(c, groups, scans, left))
     check = summary.gpi
     saved = getattr(settings, "gpi_folder", None)
     if saved is not None:

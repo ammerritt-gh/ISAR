@@ -239,6 +239,14 @@ def test_folder_status_a_held_analyzer_with_no_curve_is_not_a_good_rf_folder(tmp
     assert not rf.good and rf.reason == "1 analyzer has no resolution curve"
 
 
+def test_folder_status_an_analyzer_left_out_of_the_set_is_not_counted_missing(tmp_path):
+    # a06 is on the .var sidecar with no file: the import leaves it out, and the gpi file names curves for a03-a05 only
+    root = build_bl43_gpi_workspace(tmp_path, left_out=("a06",))
+    assert set(_spectra(_snap(root))) == {"a03", "a04", "a05"}
+    rf, gpi = _status(root)
+    assert rf.good and rf.reason is None and gpi.good
+
+
 def test_folder_status_a_new_folder_is_not_good_until_checked(tmp_path):
     root = build_bl43_gpi_workspace(tmp_path)
     other = tmp_path / "elsewhere"

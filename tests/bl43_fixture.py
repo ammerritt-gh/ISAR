@@ -344,11 +344,12 @@ GPI_SET = "Smp_100K_0p5_0p5_3_A"        # the scan set's file stem, as ``intake_
 
 
 def build_bl43_gpi_workspace(tmp_path: Path, *, gpi: str = "accepted", drop_curve: str | None = None,
-                             n_analyzers: int = 3, off_integer=()) -> Path:
+                             n_analyzers: int = 3, off_integer=(), left_out=()) -> Path:
     """A generated, imported BL43 workspace (one scan set, ``GPI_SET``) with a resolution folder and, by
     ``gpi``, an accepted gpi file (``"accepted"``), one whose ``#Q=`` is beyond tolerance for its second
     analyzer (``"rejected"``) or none (``"none"``); ``drop_curve`` (e.g. ``"a04"``) removes that analyzer's
-    curve from the folder; ``off_integer`` names analyzers whose counts are not raw (their calibration is held).
+    curve from the folder; ``off_integer`` names analyzers whose counts are not raw (their calibration is held);
+    ``left_out`` names analyzers the .var sidecar lists but no file holds, so the import leaves them out of the set.
     Returns the workspace root, with the curve and gpi checks written as an import
     writes them. The gpi hkl of analyzer ``i`` is ``(0.5, 0.5, 3 + 0.5 i)``; generated data only."""
     import intake_fixtures as fx
@@ -361,8 +362,10 @@ def build_bl43_gpi_workspace(tmp_path: Path, *, gpi: str = "accepted", drop_curv
     fx.write_library(ws.root / "rf", {"40x40": 1.3}, [a for a in analyzers if a != drop_curve],
                      prefix="sarf_z")                 # the curve set the gpi file names
     q_nm = {a: round(10.0 + 1.46 * i, 2) for i, a in enumerate(analyzers)}
-    fx.write_scan(data, stem=GPI_SET, analyzers=analyzers, seed=1, energy=fx.ENERGY_120, slit=(40, 40), q_nm=q_nm,
-                  off_integer=off_integer)
+    fx.write_scan(data, stem=GPI_SET, analyzers=analyzers + tuple(left_out), seed=1, energy=fx.ENERGY_120,
+                  slit=(40, 40), q_nm=q_nm, off_integer=off_integer, centroids={} if left_out else None)
+    for a in left_out:                                  # listed on the .var sidecar, never imported
+        (data / f"{GPI_SET}_{a}").unlink()
     if gpi != "none":
         hkl = {a: (0.5, 0.5, 3.0 + 0.5 * i) for i, a in enumerate(analyzers)}
         gpi_q = dict(q_nm, **({analyzers[1]: 5.0} if gpi == "rejected" else {}))
