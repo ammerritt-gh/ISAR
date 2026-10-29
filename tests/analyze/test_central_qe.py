@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from scipy.integrate import quad
+from scipy.integrate import quad, trapezoid
 
 from isar.analyze import catalogue, components, phonon, prior
 from isar.analyze.components import (CentralQE, CompositeModel, ConstantBackground, Elastic, PhononDHO,
@@ -125,8 +125,16 @@ def test_the_spectral_weight_is_the_intrinsic_integral_over_the_window():
     peak = np.convolve(shape, kernel * dx, mode="same").max()
     lo, hi = ctx.window
     inside = (grid >= lo) & (grid <= hi)
-    area = np.trapezoid(shape[inside], grid[inside])
+    area = trapezoid(shape[inside], grid[inside])
     assert weight == pytest.approx(h * area / peak, rel=2e-3)
+
+
+def test_the_spectral_weight_needs_no_numpy_two(monkeypatch):
+    # pyproject allows NumPy 1.26, which has no np.trapezoid: the weight must compute without it.
+    ctx = _ctx()
+    expected = CentralQE().spectral_weight({"width": 2.5, "h": 40.0}, ctx)
+    monkeypatch.delattr(np, "trapezoid", raising=False)
+    assert CentralQE().spectral_weight({"width": 2.5, "h": 40.0}, ctx) == pytest.approx(expected, rel=1e-12)
 
 
 # --------------------------------------------------------------------------------------- the seeds

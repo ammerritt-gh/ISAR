@@ -257,7 +257,9 @@ def central_qe_columns(x, ctx, widths, *, weights=False):
     lo, hi = float(used.min()), float(used.max())
     inside = conv.grid[(conv.grid > lo) & (conv.grid < hi)]
     E = np.concatenate(([lo], inside, [hi]))
-    return cols, np.trapezoid(intrinsic(E), E, axis=1) / peak
+    f = intrinsic(E)
+    area = np.sum(0.5 * (f[:, 1:] + f[:, :-1]) * np.diff(E), axis=1)   # trapezoid rule; NumPy 1.x has no np.trapezoid
+    return cols, area / peak
 
 
 class CentralQE(Component):
