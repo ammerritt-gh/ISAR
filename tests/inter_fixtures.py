@@ -58,10 +58,24 @@ def build_inter_workspace(root: Path, temperatures: Sequence[float] = (100, 150,
     card, session = ws.load()
     ingest.ingest_batch(card, session, [incoming], data_dir=ws_root / "data", workspace_root=ws_root)
     if fits:       # stamp_fit's effect on every spectrum, in one load and save (stamp_fit per spectrum: about 10 s)
+        from isar.intake import inputs, scans as intake_scans, store
+        from isar.session import calibrations, currentness, guidelines as guide_mod
+        g, runcal = guide_mod.resolve(card), calibrations.calibration_view(card)
+        rows = intake_scans.read_scans(ws_root)
+        read = store.read_all(ws_root, store.ENTRIES)
+        index = inputs.index_entries(read.entries, lines=read.lines)
         for key in session.scans:
-            det = key.rsplit(":", 1)[1]
-            session.scans[key].detectors = {det: outcome(det, "resolved")}
-            session.scans[key].status, session.scans[key].reasons = "fitted", []
+            scan, det = key.rsplit(":", 1)
+            entry = session.scans[key]
+            si = inputs.scan_inputs(rows[scan], index)
+            unit = inputs.unit_inputs(rows[scan], si, det, card.state.tabulated_calibration.get(scan))
+            entry.detectors = {det: outcome(det, "resolved")}
+            entry.status, entry.reasons = "fitted", []
+            # what file_fit stamps: the inputs hash, and the guidelines hash the judge reads back (stored_now)
+            entry.guidelines_hash = currentness.stored_now(entry, det, g=g, runcal=runcal, row=rows[scan],
+                                                           scan_inputs=si, curves_now=None).guidelines_hash
+            entry.provenance = {**(entry.provenance or {}), "fit_inputs": {
+                "run": "", "hash": inputs.inputs_hash(unit), "fallbacks": list(inputs.fallbacks(unit))}}
         _write_results_csv(ws, session)
     ws.save(card, session)
     return ws_root

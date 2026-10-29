@@ -213,3 +213,19 @@ def test_the_bl43_like_workspace_has_six_scans_of_28_spectra_each_with_a_fast_so
         det = key.rsplit(":", 1)[1]
         assert session.scans[key].detectors[det]["fast_pass"]["state"] == "resolved", key
     assert (ws / "report" / "intake_scans.json").exists()
+
+
+def test_a_stamped_fast_solo_carries_the_fit_inputs_hash_of_its_spectrum(tmp_path):
+    from isar.intake import inputs, scans as intake_scans, store
+    from isar.session import currentness
+    from isar.session.workspace import Workspace
+    ws = build_inter_workspace(tmp_path)
+    _, session = Workspace.open(ws).load()
+    rows = intake_scans.read_scans(ws)
+    read = store.read_all(ws, store.ENTRIES)
+    index = inputs.index_entries(read.entries, lines=read.lines)
+    key = spectrum_keys(ws)[-1]
+    scan, det = key.rsplit(":", 1)
+    fresh = inputs.inputs_hash(inputs.unit_inputs(rows[scan], inputs.scan_inputs(rows[scan], index), det, None))
+    assert (session.scans[key].provenance or {}).get("fit_inputs", {}).get("hash") == fresh
+    assert "fast" in currentness.current_passes(ws, [key])[key]
