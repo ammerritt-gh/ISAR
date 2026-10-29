@@ -264,27 +264,43 @@ def _are(n: int, noun: str = "") -> str:
 
 def _leave_text(s, when: str) -> str:
     """What leaving the experiment now loses (design step 17), from the queue's ``LeaveSummary``."""
+    # The queue counts batches inside running and waiting; the analyzer files are what is left over.
+    n_run, n_wait = s.n_running - s.n_batches, s.n_waiting - s.n_batches_waiting
+    mixed = bool(s.n_batches or s.n_batches_waiting)       # then "analyzers" is said in full, never "are waiting" alone
     said = []
-    if s.n_running:
-        running = f"{_are(s.n_running, 'analyzer')} running"
+    if n_run:
+        running = f"{_are(n_run, 'analyzer')} running"
         if s.n_running_deep:
             minutes = int((s.longest_deep_s or 0.0) // 60)
             running += (f" (one deep pass, {minutes} min in)" if s.n_running_deep == 1
                         else f" ({s.n_running_deep} deep passes, the longest {minutes} min in)")
         said.append(running)
-    if s.n_waiting:
-        said.append(f"{_are(s.n_waiting) if s.n_running else _are(s.n_waiting, 'analyzer')} waiting")
+    if s.n_batches:
+        said.append(f"{_are(s.n_batches, 'inter-spectra batch')} running")
+    if n_wait:
+        said.append(f"{_are(n_wait) if n_run and not mixed else _are(n_wait, 'analyzer')} waiting")
+    if s.n_batches_waiting:
+        said.append(f"{_are(s.n_batches_waiting, 'inter-spectra batch')} waiting")
     if s.n_saving:
         said.append(f"{_are(s.n_saving, 'finished result')} being saved")
     text = (", ".join(said[:-1]) + " and " + said[-1] if len(said) > 1 else said[0]) + "."
     lost = []
-    if s.n_running:
-        lost.append("stops the running analyzer, discarding its work" if s.n_running == 1
+    if n_run:
+        lost.append("stops the running analyzer, discarding its work" if n_run == 1
                     else "stops the running analyzers, discarding their work")
-    if s.n_waiting:
+    if n_wait:
         lost.append("forgets the waiting ones")
     if lost:
         text += " Leaving " + (", and ".join(lost) if len(lost) > 1 else lost[0]) + "."
+    batch_lost = []
+    if s.n_batches:
+        batch_lost.append("stops the running batch after its current ring or sweep, keeping what it saved"
+                          if s.n_batches == 1 else
+                          "stops the running batches after their current rings or sweeps, keeping what they saved")
+    if s.n_batches_waiting:
+        batch_lost.append("forgets the waiting batch" if s.n_batches_waiting == 1 else "forgets the waiting batches")
+    if batch_lost:
+        text += " Leaving " + (", and ".join(batch_lost) if len(batch_lost) > 1 else batch_lost[0]) + "."
     if s.n_saving:
         text += f" Every finished result is saved {when}."
     return text

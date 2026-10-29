@@ -151,6 +151,8 @@ class LeaveSummary:
     longest_deep_s: float | None  # the longest-running deep item's elapsed seconds
     n_waiting: int
     n_saving: int
+    n_batches: int = 0            # the running batches, already counted in n_running
+    n_batches_waiting: int = 0    # the waiting batches, already counted in n_waiting
 
 
 # ---- the controller's own records ----------------------------------------------------------------------
@@ -541,23 +543,26 @@ class QueueController(QObject):
             return None
         snap = self._queue.snapshot()
         now = self._clock()
-        running = saving = waiting = deep = 0
+        running = saving = waiting = deep = batches = batches_waiting = 0
         longest: float | None = None
         for v in (*snap.fast, *snap.deep, *snap.inter):
             status = self._status(v, self._recs[v.item_id])
+            batch = int(v.pass_kind == "inter")
             if status == "waiting":
                 waiting += 1
+                batches_waiting += batch
             elif status == "saving":
                 saving += 1
             else:
                 running += 1
+                batches += batch
                 if v.pass_kind == "deep":
                     deep += 1
                     if v.started_at is not None:
                         longest = max(longest or 0.0, now - v.started_at)
         if not (running or saving or waiting):
             return None
-        return LeaveSummary(running, deep, longest, waiting, saving)
+        return LeaveSummary(running, deep, longest, waiting, saving, batches, batches_waiting)
 
     def writes_busy(self) -> str | None:
         """Why the folder is being written right now, or None."""
