@@ -117,7 +117,7 @@ from isar_gui.views.scans_page import ScansPage
 from isar_gui.views.scan_inspector import ScanInspectorPanel
 from isar_gui.views.scan_list import ScanListPanel
 from isar_gui.views.scan_table_dock import ScanTableDock
-from isar_gui.views.setup_section import RUN_TEXT, RUN_TIP, SetupSection, locate_resolution_folder
+from isar_gui.views.setup_section import RUN_TEXT, RUN_TIP, SetupSection, locate_gpi_folder, locate_resolution_folder
 from isar_gui.views.scans_dock import ScansDock
 from isar_gui.selection import ORIGIN_GROUP, ORIGIN_LIST, ORIGIN_OTHER
 from isar_gui.watch_bridge import WatchBridge
@@ -234,7 +234,7 @@ class _EmptyWorkspace:
 
 # The watch events after which the intake reads are re-read (the intake files and what they derive from).
 _INTAKE_RELOAD = frozenset({"snapshot", "results", "card", "card_state", "intake_entries",
-                           "intake_settings", "intake_scans", "fit_inputs", "curves"})
+                           "intake_settings", "intake_scans", "fit_inputs", "curves", "gpi"})
 # The status bar's and Processing panel's word for each kind the coordinator emits.
 _ACTIVITY_VERBS = {"ingest": "Ingesting", "drive": "Campaign running", "compile": "Compiling campaign",
                    "export": "Exporting"}
@@ -444,6 +444,8 @@ class MainWindow(QMainWindow):
         self._loc_wired: WeakSet = WeakSet()
         self.log_dock = LogDock(self)
         # The one Qt-side holder of the intake reads and writers (stage two); every intake panel reads it.
+        # (file, sha256, problem) of each rejected gpi file the notice has shown in this GUI session.
+        self._gpi_shown: set[tuple] = set()
         self.intake = IntakeState(self)
         self._build_frame()
         self._bind_workspace(ws)
@@ -831,6 +833,7 @@ class MainWindow(QMainWindow):
         self.experiment_strip.rename_requested.connect(self.rename_experiment)
         self.experiment_strip.details_requested.connect(self._open_details)
         self.setup_section.locate_requested.connect(self._locate_resolution_folder)
+        self.setup_section.gpi_locate_requested.connect(self._locate_gpi_folder)
         self.setup_section.run_requested.connect(lambda: self.start_analysis())   # looked up at the click
         self.attention_list.locate_requested.connect(self._locate_resolution_folder)
         self.attention_list.add_data_requested.connect(self.files_strip.choose_files)
@@ -841,6 +844,7 @@ class MainWindow(QMainWindow):
         for changed in (self.intake.changed, self.intake.worker_changed, self.scan_list_vm.snapshot_changed):
             changed.connect(self._push_run_row)
         self.intake.saved.connect(self.log)
+        self.intake.changed.connect(self._announce_gpi_rejections)
         self.files_strip.paths_dropped.connect(self._on_paths_dropped)
         self.files_strip.log_message.connect(self.log)
         self._folder_watcher.status_changed.connect(self.files_strip.set_watch_status)
@@ -881,6 +885,31 @@ class MainWindow(QMainWindow):
         """*Choose curves folder…* (setup line, attention list, readiness list): the one route; a refused save is
         shown in the setup section (and, like every save, in the Log)."""
         self.setup_section.show_save_outcome(locate_resolution_folder(self, self.intake))
+
+    def _locate_gpi_folder(self) -> None:
+        """*Choose gpi folder…* on the setup line: the one route that saves a gpi folder the user picks; a refused
+        save is shown in the setup section (and, like every save, in the Log)."""
+        self.setup_section.show_save_outcome(locate_gpi_folder(self, self.intake))
+
+    def _announce_gpi_rejections(self) -> None:
+        """One non-modal notice for the gpi files newly rejected since the last notice in this GUI session: a refresh
+        that finds nothing new shows nothing, and a file whose problem changed shows again."""
+        gpi = None if self.intake.summary is None else self.intake.summary.gpi
+        if gpi is None:
+            return
+        rejected = list(dict.fromkeys((s.file, s.sha256, s.problem) for s in gpi.scans.values() if not s.accepted))
+        fresh = [k for k in rejected if k not in self._gpi_shown]
+        if not fresh:
+            return
+        self._gpi_shown.update(fresh)
+        text = ("ISAR did not use these gpi files:\n\n" + "\n".join(f"• {problem}" for _f, _sha, problem in fresh)
+                + "\n\nNothing from a file listed here is used: no Q, slit or curve set for its scan sets. Fix the "
+                  "file, then add the data again or start the analysis; ISAR reads it again then.")
+        box = QMessageBox(QMessageBox.Icon.Warning, "gpi files not used", text, QMessageBox.StandardButton.Ok, self)
+        box.setObjectName("gpi_notice")
+        box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        box.open()                              # never exec(): the window and the suite keep running
+        box.setWindowModality(Qt.WindowModality.NonModal)   # open() makes it window-modal, which blocks the window
 
     def _open_details(self) -> None:
         """*Details…* on the strip and *Add details* in the one-time note."""
