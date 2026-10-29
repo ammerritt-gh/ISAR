@@ -108,13 +108,13 @@ def _collect_on_the_main_thread_only(request):
     covers its own threads with ``collector_guard``; this does the same for the harness's.
 
     So the collector is off for the test and runs once on the main thread at the end, after the
-    windows are closed. A module that tests the collector itself sets ``COLLECTOR_UNDER_TEST = True``.
+    windows are closed. A test that exercises the collector itself carries ``collector_under_test``.
     """
     import gc
 
     from isar_gui import collector_guard
 
-    if getattr(request.module, "COLLECTOR_UNDER_TEST", False):
+    if request.node.get_closest_marker("collector_under_test"):
         yield
         return
 

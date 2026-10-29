@@ -20,8 +20,6 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-COLLECTOR_UNDER_TEST = True          # tests/gui/conftest.py keeps the collector off for other tests
-
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QDialog, QFileDialog, QPushButton
 
@@ -262,6 +260,7 @@ def test_a_worker_failure_is_an_error_and_empty_marks(qtbot, monkeypatch, s2_bui
     assert "ZeroDivisionError" in intake.error
 
 
+@pytest.mark.collector_under_test
 def test_no_collection_runs_on_the_intake_worker_and_the_collector_comes_back(qtbot, s2_built):
     """A cyclic collection on the worker could finalize Qt objects off the GUI thread (the suite's hang:
     the worker parked right after re-enabling the collector, at its first allocation)."""
