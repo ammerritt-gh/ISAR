@@ -365,9 +365,9 @@ class ScanListPanel(QWidget):           # acts through the VM; asks the window o
             self._add_action(menu, REMOVE_TEXT, vm.remove_selected, REMOVE_TIP)
         if any(vm.is_removed(k) for k in keys):
             self._add_action(menu, RESTORE_TEXT, vm.restore_selected, RESTORE_TIP)
-        has_fast = bool(vm.selected_fast_keys())
+        can_anchor = bool(vm.anchorable_keys())
         if any(not vm.is_anchor(k) for k in keys):
-            self._anchor_action(menu, "Set as anchor", True, has_fast)
+            self._anchor_action(menu, "Set as anchor", True, can_anchor)
         if any(vm.is_anchor(k) for k in keys):
             self._anchor_action(menu, "Remove anchor", False, True)
         read = self._add_action(menu, READ_TEXT, lambda: self.read_again_requested.emit(keys))
@@ -376,10 +376,10 @@ class ScanListPanel(QWidget):           # acts through the VM; asks the window o
                         if keys else "Select one or more scans first.")
         menu.popup(self._view.viewport().mapToGlobal(point))
 
-    def _anchor_action(self, menu: QMenu, text: str, anchored: bool, has_fast: bool) -> None:
-        """Set or remove the anchor on the selected spectra; with none holding a fast-pass result it is disabled, and
-        the tooltip says why."""
-        if not has_fast:
+    def _anchor_action(self, menu: QMenu, text: str, anchored: bool, can_act: bool) -> None:
+        """Set or remove the anchor on the selected spectra; with none that can take it (unanchored, with a fast-pass
+        result) it is disabled, and the tooltip says why."""
+        if not can_act:
             tip = NO_FAST_TIP
         elif anchored:
             tip = ("Mark the selected spectra as anchors. An anchored batch grows outward from them, "
@@ -387,7 +387,7 @@ class ScanListPanel(QWidget):           # acts through the VM; asks the window o
         else:
             tip = "Take the selected spectra off the anchors list. Their fits are not changed."
         action = self._add_action(menu, text, lambda: self._vm.set_anchor_selected(anchored), tip)
-        action.setEnabled(has_fast)
+        action.setEnabled(can_act)
 
     @staticmethod
     def _add_action(menu: QMenu, text: str, slot, tip: str = "") -> QAction:

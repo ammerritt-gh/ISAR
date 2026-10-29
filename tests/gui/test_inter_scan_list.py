@@ -204,6 +204,26 @@ def test_anchoring_with_no_fast_result_is_disabled_and_says_why(made):
     assert inter.calls == []
 
 
+def test_set_as_anchor_acts_only_on_the_unanchored_selected_spectra_with_a_fast_result(made):
+    panel, vm, inter = made
+    _publish(inter, revision="2", anchors=(A[3],))
+    vm.select_keys((A[3], A[4]))                                  # A3 is already an anchor
+    _right_click(panel, f"spec:{A[4]}")
+    _menu(panel)["Set as anchor"].trigger()
+    assert inter.calls == [("set_anchors", ((A[4],), True, None))]
+
+
+def test_set_as_anchor_is_disabled_when_the_only_fast_result_is_on_an_anchor(made):
+    panel, vm, inter = made
+    _publish(inter, revision="2", anchors=(A[3],))
+    vm.select_keys((A[3], A[5]))                                  # A5 has no fast-pass result
+    _right_click(panel, f"spec:{A[5]}")
+    action = _menu(panel)["Set as anchor"]
+    assert not action.isEnabled() and action.toolTip() == NO_FAST_TIP
+    action.trigger()
+    assert inter.calls == []
+
+
 def test_an_anchor_without_a_fast_result_can_still_be_removed(made):
     panel, vm, inter = made
     _publish(inter, revision="2", anchors=(A[5],))
