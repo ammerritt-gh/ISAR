@@ -76,7 +76,7 @@ CONTRACT = (
     ("isar.analyze.coupled.types", "TermInput", ["term", "held"]),
     ("isar.analyze.coupled.types", "Snapshot",
      ["snapshot_id", "stage_id", "unit", "fit_id", "context", "own", "own_record", "terms", "settings",
-      "batch_kind"]),
+      "batch_kind", "fast"]),
     ("isar.analyze.coupled.types", "Assignment",
      ["unit", "snapshot_id", "count", "slots", "origins", "factors", "discrete", "triggers", "candidates",
       "coverage", "search_limited", "changed", "reasons"]),
