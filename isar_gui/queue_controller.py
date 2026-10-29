@@ -103,7 +103,7 @@ class FinishedGroup:              # one line per scan set and pass
 class BatchView:                  # one inter-spectra batch: the dock's row (C-queue)
     item_id: str
     batch_id: str                 # "b" + 12 hex, minted by start_inter_batch
-    label: str                    # "Batch 3": the number this window gave it
+    label: str                    # "Inter-spectra batch, started 14:32": its kind and start time
     kind: Literal["anchored", "simultaneous"]
     direction: str | None
     status: QueueStatus
@@ -183,7 +183,7 @@ class _Rec:
         batch = view.pass_kind == "inter"
         self.set_key = "" if batch else scan_prefix(view.unit_key)
         self.analyzer = "" if batch else str(split_key(view.unit_key)[2])
-        self.label = label                          # a batch's name ("Batch 3"); "" for a file
+        self.label = label                          # a batch's name ("Inter-spectra batch, started 14:32"); "" for a file
         self.spec = spec                            # a batch's start object, as the service gets it; None for a file
         self.results: dict[str, _Result] = {}       # fast and deep: the one result of each pass
         self.saves: list[_Result] = []              # a batch: every ring or sweep, in arrival order
@@ -241,8 +241,7 @@ class QueueController(QObject):
         self._auto_fast = True
         self._recs: dict[str, _Rec] = {}
         self._bind_no = 0
-        self._n_batches = 0
-        self._seen_finished = 0                 # how many of the scheduler's finished items were noted
+        self._seen_finished = 0                # how many of the scheduler's finished items were noted
         self._stages: list[tuple[_Rec, str, str | None, float]] = []   # saved fast stages of deep items
         self._held_adds: list[tuple[tuple[str, ...], str, bool]] = []
         self._saved_batch: list[str] = []
@@ -303,7 +302,6 @@ class QueueController(QObject):
         self._stages.clear()
         self._seen_finished = 0
         self._bind_no += 1
-        self._n_batches = 0
         self._holds = 0
         self._hold_sent = self._hold_confirmed = False
 
@@ -590,8 +588,7 @@ class QueueController(QObject):
         preview = batch_preview(self._root, req)
         if not preview.can_start:
             return False, preview.reason or "the batch cannot start"
-        self._n_batches += 1
-        label = f"Batch {self._n_batches}"
+        label = f"Inter-spectra batch, started {time.strftime('%H:%M')}"   # local time: the start the operator pressed
         spec = {"batch_id": "b" + secrets.token_hex(6), "kind": req.kind, "direction": req.direction,
                 "anchors": list(req.anchors) if req.kind == "anchored" else [], "members": list(preview.members)}
         view = self._queue.add_inter(spec["batch_id"], preview.members)

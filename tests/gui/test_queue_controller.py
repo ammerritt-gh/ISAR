@@ -793,6 +793,9 @@ def test_the_real_service_starts_for_an_item_and_shuts_down_cleanly(qtbot, monke
 # ---- a batch: one inter item with the batch object, progress, saves, stop and a refusal (S1U14, packet 3) -----
 ANCHORED = BatchRequest(kind="anchored", direction="q", anchors=(A06,), selection=())
 LINE = "1 anchor \u00b7 spread in q \u00b7 3 spectra \u00b7 2 rings"
+# a batch is named by its kind and its start time (local HH:MM), never by a per-window number
+BATCH_NAME = r"Inter-spectra batch, started \d\d:\d\d"
+QUEUED_RE = rf"Queued {BATCH_NAME} \(anchored\): {re.escape(LINE)}"
 
 
 def _start_batch(r, monkeypatch, members=(A06, A07, A08), *, can_start=True, reason=None):
@@ -809,7 +812,7 @@ def _batch_saved(iid, key, keys, status="done"):
 def test_a_batch_is_one_inter_item_that_starts_with_its_spec_and_is_listed_as_a_batch(rig, monkeypatch):
     r = rig(cores=2)
     ok, message = _start_batch(r, monkeypatch)
-    assert ok and message.startswith("Queued Batch 1"), message
+    assert ok and re.fullmatch(QUEUED_RE, message), message
     (start,) = r.wait_commands("start", 1)
     batch = start["batch"]
     assert re.fullmatch(r"b[0-9a-f]{12}", batch["batch_id"])
@@ -819,10 +822,11 @@ def test_a_batch_is_one_inter_item_that_starts_with_its_spec_and_is_listed_as_a_
     view = r.ctrl.view()
     assert view.n_running == {"fast": 0, "deep": 0, "inter": 1} and [i.item_id for i in view.inter] == [start["item_id"]]
     (b,) = view.batches
-    assert (b.label, b.kind, b.direction, b.status, b.n_total, b.cores) == ("Batch 1", "anchored", "q", "running", 3, 2)
+    assert re.fullmatch(BATCH_NAME, b.label) and (b.kind, b.direction, b.status, b.n_total, b.cores) == (
+        "anchored", "q", "running", 3, 2)
     assert r.ctrl.marks() == {}                                 # a batch is no mark on its files
     assert r.ctrl.writes_busy() and r.ctrl.leave_summary().n_running == 1
-    assert f"Queued Batch 1 (anchored): {LINE}" in r.lines
+    assert any(re.fullmatch(QUEUED_RE, line) for line in r.lines)
 
 
 def test_a_second_batch_on_the_same_files_waits_for_the_first_and_says_so(rig, monkeypatch):
@@ -831,8 +835,8 @@ def test_a_second_batch_on_the_same_files_waits_for_the_first_and_says_so(rig, m
     r.wait_commands("start", 1)
     _start_batch(r, monkeypatch)                                # the same three spectra
     newer, older = r.ctrl.view().batches                        # newest first
-    assert (newer.label, newer.status, newer.reason) == ("Batch 2", "waiting", "waiting for Batch 1 to finish")
-    assert (older.label, older.status) == ("Batch 1", "running")
+    assert (newer.status, newer.reason) == ("waiting", f"waiting for {older.label} to finish")
+    assert older.status == "running" and re.fullmatch(BATCH_NAME, older.label)
     assert len(r.commands("start")) == 1
 
 
@@ -855,7 +859,8 @@ def test_batch_progress_and_each_saved_ring_reach_the_view_and_the_results_saved
     r.emit(_result(iid, key, "inter", event="end"), _batch_saved(iid, key, ()))   # the end record, saved
     r.emit(_finished(iid))
     r.wait(lambda: r.ctrl.view().batches[0].status == "done")
-    assert r.lines[-1] == "Batch finished: Batch 1 (anchored): 2 refitted, 0 failed, 1 not reached"
+    assert r.lines[-1] == (f"Batch finished: {r.ctrl.view().batches[0].label} (anchored): "
+                           "2 refitted, 0 failed, 1 not reached")
 
 
 def test_a_batch_whose_process_ends_without_an_end_record_settles_failed_though_its_rings_were_saved(rig, monkeypatch):
@@ -881,7 +886,7 @@ def test_a_stopped_batch_keeps_its_saved_rings_says_what_it_kept_and_never_settl
     r.wait_commands("stop", 1)
     r.emit(_finished(iid, end="stopped"))
     r.wait(lambda: r.ctrl.view().batches[0].status == "stopped")
-    assert r.lines[-1] == "Stopped: Batch 1 (anchored): kept 1 ring"
+    assert r.lines[-1] == f"Stopped: {r.ctrl.view().batches[0].label} (anchored): kept 1 ring"
     assert r.saved == [(A06, A07)]
 
 
@@ -894,7 +899,7 @@ def test_a_batch_whose_save_failed_settles_failed_with_the_writers_reason(rig, m
                                         "error": "WorkspaceBusy: timed out"}, _finished(iid))
     r.wait(lambda: r.ctrl.view().batches[0].status == "failed")
     assert r.ctrl.view().batches[0].reason == "not saved: WorkspaceBusy: timed out"
-    assert r.lines[-1] == "Failed: Batch 1 (anchored): not saved: WorkspaceBusy: timed out"
+    assert r.lines[-1] == f"Failed: {r.ctrl.view().batches[0].label} (anchored): not saved: WorkspaceBusy: timed out"
 
 
 def test_a_batch_the_preview_refuses_is_not_queued_and_the_preview_says_why(rig, monkeypatch):
