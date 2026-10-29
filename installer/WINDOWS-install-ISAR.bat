@@ -389,7 +389,9 @@ if "%TEST_FAIL%"=="download" set "LOCK_NAME=isar-win-64.lock.test-fail-download"
 "%CURL%" --fail -sS -L --proto =https -o "%WORK%\isar-win-64.lock" "https://raw.githubusercontent.com/%GH_REPO%/%COMMIT%/installer/%LOCK_NAME%" >>"%LOG%" 2>&1 <nul
 set "ERR=the package lock could not be downloaded; check the internet connection and try again"
 if errorlevel 1 goto fail
-findstr /x /c:"@EXPLICIT" "%WORK%\isar-win-64.lock" >nul 2>nul
+:: /b, not /x: the lock is stored and served with LF endings, and findstr
+:: matches /x and $ only before a CR.
+findstr /b /l /c:"@EXPLICIT" "%WORK%\isar-win-64.lock" >nul 2>nul
 set "ERR=the downloaded package lock is not in micromamba's explicit format"
 if errorlevel 1 goto fail
 call :sha256 "%WORK%\isar-win-64.lock"

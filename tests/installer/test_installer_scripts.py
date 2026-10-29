@@ -142,6 +142,24 @@ def test_bat_files_are_crlf_in_the_index():
         assert eol.get(rel) == "i/crlf", f"{rel}: {eol.get(rel, 'not in the index')}"
 
 
+def test_lock_format_check_accepts_the_lock_as_served(tmp_path):
+    """The engine's own @EXPLICIT check, run on the committed lock's bytes (stored and served LF):
+    findstr /x and $ match only before a CR, so an exact-line check refused every real lock."""
+    line = next(ln for ln in _code_lines(_text(ENGINE)) if "@EXPLICIT" in ln and "findstr" in ln)
+    lock = (INSTALLER / "isar-win-64.lock").read_bytes()
+    assert b"\r" not in lock  # the case under test: the lock as raw GitHub serves it
+    work = tmp_path / "wörk dir"
+    work.mkdir()
+    probe = tmp_path / "probe.bat"
+    probe.write_bytes(("@echo off\r\nsetlocal DisableDelayedExpansion\r\n%s\r\n"
+                       "if errorlevel 1 (echo REFUSED) else echo PASSED\r\n" % line).encode("ascii"))
+    env = _sandbox(tmp_path, WORK=str(work))
+    for content, want in ((lock, "PASSED"), (b"# platform: win-64\nhttps://x/a.conda#00\n", "REFUSED")):
+        (work / "isar-win-64.lock").write_bytes(content)
+        rc, out = run_bat(probe, env=env)
+        assert out.strip() == want, (line, out)
+
+
 def test_release_constant_matches_pyproject():
     version = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
     assert re.search(r'(?m)^set "ISAR_RELEASE=v%s"\r?$' % re.escape(version), _text(ENGINE))
