@@ -624,6 +624,7 @@ def _pass_not_drawn(row, pass_name, fit, resolution, resolution_error, fine_raw,
                 "phonon_dho": ("mode", None, f"Mode {prefix}"),
                 "elastic": ("elastic", None, "Elastic"),
                 "quasielastic": ("quasielastic", None, "Quasielastic"),
+                "central_qe": ("quasielastic", None, "QE"),
                 "constant_background": ("background", None, "Background"),
             }
             if kind not in roles or prefix not in parts_by_prefix:

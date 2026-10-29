@@ -120,10 +120,11 @@ def model_manifest_of(best, by_hyp) -> dict | None:
     hyp = by_hyp.get(best.label)
     if hyp is None:
         return None
-    from isar.analyze.components import (ConstantBackground, Elastic, PhononDHO,
+    from isar.analyze.components import (CentralQE, ConstantBackground, Elastic, PhononDHO,
                                          QuasiElastic)
     kinds = {PhononDHO: "phonon_dho", Elastic: "elastic",
-             QuasiElastic: "quasielastic", ConstantBackground: "constant_background"}
+             QuasiElastic: "quasielastic", ConstantBackground: "constant_background",
+             CentralQE: "central_qe"}
     components = []
     composite = hyp.build()
     for component in composite.components:
@@ -133,6 +134,8 @@ def model_manifest_of(best, by_hyp) -> dict | None:
         item = {"type": kind, "prefix": str(component.prefix)}
         if isinstance(component, PhononDHO):
             item["peak"] = str(component.peak)
+        if isinstance(component, CentralQE) and component.width is not None:
+            item["width"] = float(component.width)   # a pinned width is part of the model
         components.append(item)
     parameters = {name: float(best.params[name]) for name in composite.param_names()
                   if name in best.params}
