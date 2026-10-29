@@ -565,6 +565,8 @@ def case_decoy(ctx: Ctx):
                      INSTALL_TIMEOUT, extra_env={"MAMBA_ROOT_PREFIX": str(decoy), "CONDA_PREFIX": str(decoy)})
     expect(res, 0, "uninstalled")
     assert_payload_gone(i3)
+    if locator(ctx.p2).get("ISAR_BASE", "").lower() == str(i3).lower():
+        raise Fail("the locator still names the removed installation")
     if not notes.exists() or not i3.exists():
         raise Fail("my-notes.txt or the base folder was removed")
     assert_unchanged(decoy_before, sha_tree(decoy), "the decoy developer root")
@@ -585,6 +587,8 @@ def case_interrupt_uninstall(ctx: Ctx):
     res = ctx.script(ctx.p1, inst, ["/uninstall", "/dir", str(base), "/yes", "/delete-profile", "yes"], "uninstall-finish", INSTALL_TIMEOUT)
     expect(res, 0, "uninstalled")
     assert_payload_gone(base)
+    if locator(ctx.p1).get("ISAR_BASE", "").lower() == str(base).lower():
+        raise Fail("the locator still names the removed installation")
     if (ctx.p1.appdata / "isar_gui").exists():
         raise Fail("the temporary GUI profile was not deleted by /delete-profile yes")
     # the end screen names the uninstall log; match its file name only (the path's accent garbles in the console code page)
@@ -606,6 +610,8 @@ def case_standalone_uninstall(ctx: Ctx):
     res = ctx.script(ctx.p1, uninst, ["/yes", "/delete-profile", "no"], "standalone-uninstall")
     expect(res, 0, "uninstalled")
     assert_payload_gone(base)
+    if locator(ctx.p1).get("ISAR_BASE", "").lower() == str(base).lower():
+        raise Fail("the locator still names the removed installation")
 
 
 def case_latest(ctx: Ctx):
