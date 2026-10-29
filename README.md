@@ -24,17 +24,24 @@ and ILL IN8 — analyzes them, and can choose and run the next measurement itsel
 
 ## Installation
 
-On Windows, double-click **`setup-isar-env.bat`**. It fetches micromamba if needed, builds the
-`isar` environment and installs ISAR into it; run it again after updating ISAR. A one-click
-installer like TAVI's is planned.
+On Windows, download **`WINDOWS-install-ISAR-vX.Y.Z.bat`** from the
+[latest release](https://github.com/ammerritt-gh/ISAR/releases/latest) and double-click it. It
+asks where to install, builds a private environment from a pinned package lock inside that
+folder, checks that ISAR runs, and offers a desktop shortcut to the ISAR Launcher.
+`WINDOWS-install-ISAR-latest.bat` on the same page always installs the newest release, and
+`WINDOWS-uninstall-ISAR.bat` removes an installation when the launcher is gone. Your workspaces
+are never deleted. The [installation guide](installer/ISAR-Installation-README.md) has the details.
 
 ISAR does not install TAVI; campaigns against the simulated instrument need TAVI's own installer.
 
+Working from a source checkout instead: double-click `setup-isar-env.bat` to build the `isar`
+environment, then `run-isar-gui.bat` to start the GUI.
+
 ## Running ISAR
 
-Double-click **`run-isar-gui.bat`** to open the GUI, or drag a workspace folder onto it to open
-that workspace. ISAR also has a command line: in the `isar` environment, `isar --help` lists its
-commands.
+Open the **ISAR Launcher** (the desktop shortcut, or `ISAR-Launcher.bat` in the install folder)
+and choose Start. The same menu offers Repair, Collect diagnostics and Uninstall. ISAR also has a
+command line: `isar --help` lists its commands.
 
 ## Troubleshooting
 
