@@ -56,6 +56,11 @@ def q_missing(na):
     return [] if g is None else sorted(i.analyzer for i in g.items)
 
 
+def unchecked(exp):
+    """Back to never checked: the import wrote a check, so take it away (no report/gpi.json = never checked)."""
+    (exp.root / "report" / "gpi.json").unlink(missing_ok=True)
+
+
 @pytest.fixture
 def exp(tmp_path):
     return Exp(tmp_path)
@@ -68,9 +73,12 @@ def test_import_root_is_the_worktree():
     assert Path(isar.__file__).resolve().parents[1] == Path(__file__).resolve().parents[2]
 
 
-def test_without_a_check_nothing_changes_and_q_is_missing_everywhere(exp):
-    assert q_missing(exp.na()) == ["a03", "a04", "a05"]
-    assert grp(exp.na(), "gpi_rejected") is None and grp(exp.na(), "gpi_folder_changed") is None
+def test_without_a_check_nothing_changes_and_q_is_missing_everywhere(tmp_path):
+    e = Exp(tmp_path, gpi=False)                             # imported before the gpi file was there
+    fx.write_gpi(e.data, SET, q_nm=Q, hkl=HKL)
+    unchecked(e)
+    assert q_missing(e.na()) == ["a03", "a04", "a05"]
+    assert grp(e.na(), "gpi_rejected") is None and grp(e.na(), "gpi_folder_changed") is None
 
 
 def test_an_accepted_file_clears_q_missing_and_holds_only_the_analyzer_without_its_named_curve(exp):
@@ -194,6 +202,7 @@ def test_the_calibration_pending_judgement_uses_the_run_s_key(exp):
 
 
 def test_the_import_summary_carries_the_check_and_reads_a_broken_one_as_none(exp):
+    unchecked(exp)
     assert import_summary(exp.root).gpi is None
     check = exp.check()
     assert import_summary(exp.root).gpi == check == read_gpi_check(exp.root)
@@ -202,6 +211,7 @@ def test_the_import_summary_carries_the_check_and_reads_a_broken_one_as_none(exp
 
 
 def test_the_workspace_reads_the_check_and_the_q_row_comes_from_the_gpi(exp):
+    unchecked(exp)
     ws = Workspace(exp.root)
     assert ws.gpi_check is None
     exp.check()
