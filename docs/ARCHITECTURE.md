@@ -228,7 +228,10 @@ destroying data," and it is enforced in code, not aspirational:
 **Tabulated elastic calibration (`tabulated_elastic`; the BL43 format file switches it on).** The folder of measured
 resolution curves, one per analyzer and slit, is the experiment's saved folder (`intake/settings.jsonl`),
 discovered or chosen in the GUI; with none saved, an `rf/` beside the imported data is discovered and
-saved at the first import or run (`isar/intake/curves.py`). Each curve is identified by its content, and
+saved at the first import or run (`isar/intake/curves.py`).
+A `gpi_files/` folder beside the data is discovered the same way for the scan
+sets' gpi files (`isar/intake/gpi.py`): an accepted gpi file gives each analyzer's HKL, the slit and the named curve
+set, and `report/gpi.json` records each check. Each curve is identified by its content, and
 `report/curves.json` records the folder in force and what it holds. `calibrations.refresh_tabulated`
 runs in `isar run` after routing and writes `card.state.tabulated_calibration["exp:scan"]`, never
 the policy. Each analyzer's entry records the curve file and hash its zero was fitted with, and each
@@ -476,12 +479,13 @@ rulings W1–W3.)*
 |---|---|
 | Stage I: parsers (S30, IN8, SPring-8 BL43LXU processed per-analyzer files in both layouts), reduce, calibration state, card | Implemented |
 | BL43LXU file sets at ingest (one scan per set, `parse_set`), facts with sources, per-analyzer exposure, count recovery to raw counts | Implemented |
-| Q by rung: rung 1 (the analyzer's own HKL from a header or filename) and rung 4 (no Q) | Implemented |
+| Q by rung: rung 1 (the analyzer's own HKL from a header, a filename or an accepted gpi file) and rung 4 (no Q) | Implemented |
 | Q by rung: rung 2 (from the sample motor angles) and rung 3 (from the arm-centre HKL, approximate) | Planned (waits for the SIXCIRCLE geometry) |
 | Tabulated per-analyzer resolution (SARF curve per analyzer and slit) in the fit, in place of the Voigt | Implemented |
 | Slit ladder: declared slit, else inferred from the elastic lines; `slit_mismatch`, `slit_inferred`, `slit_ambiguous` alerts | Implemented |
 | Per-analyzer elastic zero (`tabulated_elastic`) with labelled `pipeline_zero` fallback; real-data proof `proofs/test_bl43_resolution.py` | Implemented |
 | Resolution-curve folder as an experiment setting, `rf/` discovery, curve content identity (BL43LXU) | Implemented |
+| gpi files beside the data (BL43LXU): per-analyzer HKL, the analyzer slit and the named curve set, taken only when the file's Q magnitudes agree with the data's `#Q=` within 0.15 /nm; real-data proof `proofs/test_bl43_gpi.py` | Implemented |
 | User values and conditions for BL43 (checked, append-only, applied at each scan's start point; counts accepted lifts the hold on unrecovered counts) | Implemented |
 | Fit inputs per analyzer and pass, with "values changed since last fit" | Implemented |
 | Readiness per use, the needs-attention list, the import summary and the conditions read (BL43LXU; read-only, computed on read from the persisted records) | Implemented |
