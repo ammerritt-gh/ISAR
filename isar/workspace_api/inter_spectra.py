@@ -47,10 +47,10 @@ class FlagInfo:
 
 @dataclass(frozen=True)
 class SpectrumInter:
-    key: str; fit_id: str                 # the authoritative fit ("fast" or a refit id), stale rule already applied
-    in_use: bool                          # fit_id != "fast"
-    source: Literal["fast", "batch", "pick", "lock"]
-    label: str                            # "Fast solo" | "Batch 2 · sweep 3"
+    key: str; fit_id: str | None          # the authoritative fit ("fast" or a refit id), stale rule already applied; None: nothing to use
+    in_use: bool                          # a refit is in use
+    source: Literal["fast", "batch", "pick", "lock"] | None    # None exactly when fit_id is None
+    label: str                            # "Fast solo" | "Batch 2 · sweep 3" | "No fit in use"
     flag: FlagInfo | None
     locked: bool; locked_fit_id: str | None; lock_stale: bool
     stale: bool                           # own refits exist but are stale, so the fast solo stands in
@@ -104,6 +104,7 @@ STALE_WORDS = {"inputs_changed": "its own inputs changed since the refit",
 NO_ANCHOR = "choose at least one anchor first"
 NO_DIRECTION = "choose a direction first (q, T, or q and T)"
 NO_SELECTION = "select at least two spectra first"
+NO_FIT = "No fit in use"
 NO_Q = "spreading in q needs each analyzer's accepted hkl; none is accepted for this scan"
 NOT_COUPLED = ("no accepted hkl", "unknown spectrum")       # provider reasons the preview does not count as a note
 _SEV = {"info": 0, "warn": 1, "serious": 2}
@@ -188,18 +189,22 @@ def _flag(c: _Ctx, line: records.RefitLine, payload: dict | None, *, stale_locke
 
 
 def _label(c: _Ctx, r: authority.Resolution) -> str:
-    base = authority.fit_label(c.lines.get(r.fit) if r.fit not in (None, FAST) else None, c.log.batches)
     if r.source == "fallback":
         chosen = authority.fit_label(c.lines.get(r.chosen), c.log.batches)
-        return f"Fast solo ({chosen} is out of date: {_stale_text(r.stale)})"
+        shown = "Fast solo" if r.fit == FAST else NO_FIT
+        return f"{shown} ({chosen} is out of date: {_stale_text(r.stale)})"
+    if r.fit is None:
+        return NO_FIT
+    base = authority.fit_label(c.lines.get(r.fit) if r.fit != FAST else None, c.log.batches)
     return {"pick": f"Your pick: {base}", "lock": f"Locked: {base}"}.get(r.source, base)
 
 
 def _spectrum(c: _Ctx, unit: str, r: authority.Resolution) -> SpectrumInter:
     line = c.lines.get(r.fit) if r.fit not in (None, FAST) else None
     lock_stale = r.locked and r.stale is not None
+    source = None if r.fit is None else "fast" if r.source in ("fast_solo", "fallback") else r.source
     return SpectrumInter(
-        key=unit, fit_id=r.fit or FAST, in_use=line is not None, source="fast" if r.source in ("fast_solo", "fallback") else r.source,
+        key=unit, fit_id=r.fit, in_use=line is not None, source=source,
         label=_label(c, r),
         flag=None if line is None else _flag(c, line, records.read_payload(c.root, line), stale_locked=lock_stale),
         locked=r.locked, locked_fit_id=r.lock_fit, lock_stale=lock_stale, stale=r.source == "fallback",

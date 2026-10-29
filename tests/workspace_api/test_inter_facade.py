@@ -257,16 +257,31 @@ def test_a_refit_with_no_interval_has_no_errors_available(root):
     assert [e.errors_available for e in inter_history(root, k1)] == [True, False]
 
 
-def test_a_held_spectrum_offers_no_fast_solo_even_while_its_detectors_remain(root):
-    """Held for calibration, the ledger entry keeps its detectors but no fast solo fit exists (C-authority)."""
+def _hold(root, unit):
+    """Held for calibration: the ledger entry keeps its detectors, but no fast solo fit stands for the spectrum."""
     from bl43_fixture import _load, _save
+    ws, card, session = _load(root)
+    session.scans[unit].status = "held_for_calibration"
+    _save(ws, card, session)
+
+
+def test_a_held_spectrum_offers_no_fast_solo_even_while_its_detectors_remain(root):
     k1 = spectrum_keys(root)[0]
-    sws, card, session = _load(root)
-    session.scans[k1].status = "held_for_calibration"
-    _save(sws, card, session)
+    _hold(root, k1)
     save(root, B1, [_refit(k1, F1, _hashes(root, [k1])[k1])])
     assert [e.fit_id for e in inter_history(root, k1)] == [F1]
     assert inter_overview(root).by_key[k1].fit_id == F1
+
+
+def test_a_spectrum_with_no_fast_solo_and_a_stale_refit_reports_no_fit(root):
+    """Nothing to use: no fit id, no source, and a plain label, never the fast solo's (C-gui-reads)."""
+    k1 = spectrum_keys(root)[0]
+    _hold(root, k1)
+    save(root, B1, [_refit(k1, F1, _hashes(root, [k1])[k1])])
+    recalibrate(root, *k1.rsplit(":", 1), 0.25)                 # the refit is now out of date; nothing stands in
+    s = inter_overview(root).by_key[k1]
+    assert (s.fit_id, s.in_use, s.source, s.stale) == (None, False, None, True)
+    assert s.label == "No fit in use (Batch 1 · ring 1 is out of date: its own inputs changed since the refit)"
 
 
 # ---------------------------------------------------------------------------
