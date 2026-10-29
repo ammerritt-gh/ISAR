@@ -385,14 +385,14 @@ def test_a_missing_seam_guard_widens_the_tolerance_instead_of_vanishing():
     ok, lost = _ring_mate("b", 14.0), _ring_mate("b", 14.0)
     lost.modes = (replace(lost.modes[0], guard=None, guard_source="unavailable"),)
     for mate in (ok, lost):
-        mate.ell = 22.0
+        mate.fit = {"energy_support_meV": [0.0, 22.0]}
     known = R.seam_report(_ring_mate("a", 8.0), ok, link, S)
     unknown = R.seam_report(_ring_mate("a", 8.0), lost, link, S)
     assert known["over"] and not unknown["over"]                       # ell/sqrt(12) = 6.4 meV, not 0
     assert unknown["pairs"][0]["guard_unavailable"] and unknown["pairs"][0]["U"] < known["pairs"][0]["U"]
-    # the real RefitResult carries the window width it was fitted in
+    # a real refit's record carries the window it was fitted in
     snap = t_pair(spectrum([(8.0, 0.4, 40.0)], seed=1), [(8.0, 0.4, 40.0)], ["b1"], [(8.0, 0.4, 40.0)], ["b1"])
-    assert R.refit(snap, stage="both").ell == pytest.approx(R._Spec(snap).ell)
+    assert R._ell(R.refit(snap, stage="both")) == pytest.approx(R._Spec(snap).ell)
 
 
 def test_a_continuing_unmatched_mode_keeps_its_id_across_sweeps():

@@ -878,7 +878,7 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
         F=F, delta_fast=delta_fast, flag=flag, why_changed=why, overlay=overlay if drawn else None,
         overlay_unavailable=None if drawn else f"a {status} refit is not drawn",
         covariance=cov_out, errors="conditional" if cov is not None else "unavailable", normalisers=normalisers,
-        starts=eng.n_fits + rel.n_fits, timing=timing, priced=tuple(priced), cache_hits=hits, ell=spec.ell)
+        starts=eng.n_fits + rel.n_fits, timing=timing, priced=tuple(priced), cache_hits=hits)
 
 
 def _fast_modes(fast: Held, ids, energy, *, exact_only: bool) -> dict[str, HeldMode]:
@@ -1005,6 +1005,7 @@ def _record(eng, spec, a, model, theta, cov, sd, rel_sd, modes, ids, D, status):
     fit = _finite({
         "schema": RECORD_SCHEMA, "source": "inter_refit", "status": status,
         "state": "close_call" if p_k is not None and p_k < spec.snap.settings.confidence else "resolved",
+        "energy_support_meV": [spec.lo, spec.hi],
         "preferred_count": a.count, "count_probabilities": dict(cp),
         "probabilities_conditional": a.discrete == "priced", "close_call_alternatives": [],
         "numerically_marginal": False, "search_limit_reason": "", "deep_pass_candidate": False,
@@ -1038,6 +1039,13 @@ def total_objective(factors: Iterable[Factor], energies: Mapping[tuple[str, str]
     return rules.total_objective(factors, energies, data, unary, cc.potential)
 
 
+def _ell(r) -> float:
+    """The energy-window width of a refit's spectrum, from the support its record carries (0 if none: a
+    failed refit has no modes, so no guard is ever asked of it)."""
+    lo, hi = (r.fit or {}).get("energy_support_meV") or (0.0, 0.0)
+    return float(hi) - float(lo)
+
+
 def seam_report(a: RefitResult, b: RefitResult, link: Link, settings: InterSettings) -> dict:
     """Read-only mismatch of two ring-mates across one link (spec 0): for each branch both carry, the
     change factor's P and unlevelled U with both ends' guards (pair convention); nothing is added to either
@@ -1056,7 +1064,7 @@ def seam_report(a: RefitResult, b: RefitResult, link: Link, settings: InterSetti
     pairs = []
     for br in sorted(set(ga) & set(gb)):
         # an unavailable guard widens by the spec's fallback ell/sqrt(12) (that spectrum's window), never 0
-        sa, sb = (m.guard if m.guard is not None else r.ell / math.sqrt(12.0)
+        sa, sb = (m.guard if m.guard is not None else _ell(r) / math.sqrt(12.0)
                   for m, r in ((ga[br], first), (gb[br], second)))
         f = cc.Factor(f"seam:{link.a}|{link.b}:{br}", br, (link.a, link.b), (1.0, -1.0),
                       s=math.sqrt(base * base + sa * sa + sb * sb), C=s.penalty_cap, kind=kind, w=w, d=d,
