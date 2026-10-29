@@ -346,19 +346,21 @@ found the resolution curves.
   *Incomplete set* and *files not read* open, in place, the list behind them: each incomplete set with the
   analyzers it lacks and why (and the state of its sidecar), and each unread file with its reason (hover
   shows its full path). Before the first import it says "Nothing read yet".
-- **Resolution curves**: "Resolution curves: <folder> (found beside the data)", "(chosen by you)", or, in the warning colour, "No resolution curves yet. Choose
-  the folder that holds them." (the backend's longer text, with the folder it looked beside, is on hover).
-  *Choose curves folder…* opens a folder chooser and saves the folder you pick at once as this experiment's
-  resolution folder; the analysis uses it. The same button, named *Choose resolution-curve folder…*, sits in the
-  needs-attention group and the readiness list that ask for it. A saved folder is checked at the next import or
-  when an analysis starts, and the section says so until then: a curve file added or replaced in the folder is
-  seen at that point, not before. If another `rf/` folder was found beside newly dropped data, the section names
-  it with *Use this curves folder*; ISAR never switches to it by itself. Hover the counts line for what a scan
-  set, an analyzer and a spectrum are.
+- **Resolution curves and gpi files**: two folder buttons on one row, *Resolution curves (rf)…* and, for
+  BL43LXU only, *gpi files…*. Each shows a green check when its folder is good and a red cross when it is not.
+  Hover a button for its full path and how it was chosen (*found beside the data* or *chosen by you*), or, when
+  it is not good, for the reason. A missing curve gives a cross that says how many analyzers lack one. The last
+  curve check's problem, when it found one, is on its own line in the warning colour. Pressing a button opens a
+  folder chooser and saves the folder you pick at once as this experiment's folder; the analysis uses it. The
+  same curves chooser, named *Choose resolution-curve folder…*, sits in the needs-attention group and the
+  readiness list that ask for it. A saved folder is checked at the next import or when an analysis starts, and
+  the section says so until then: a curve file added or replaced in the folder is seen at that point, not before.
+  If another `rf/` folder was found beside newly dropped data, the section names it with *Use this curves
+  folder*; ISAR never switches to it by itself. Hover the counts line for what a scan set, an analyzer and a
+  spectrum are.
 
-The gpi folder is one line under the resolution curves: "gpi folder: <path> (found beside the data)", "(chosen by
-you)", or "gpi folder: none". *Choose gpi folder…* saves the folder you pick at once. Its gpi files are used
-after the data is read again or the analysis starts; the button's hover text says so.
+The gpi files button sits beside the curves button. Its gpi files are used after the data is read again or the
+analysis starts; the button's hover text says so.
 
 *Experiment info…* on the experiment line opens the experiment's name (with *Rename…*), its folder, and six optional
 fields: title, proposal, sample, people, dates and notes. They are kept with the experiment and no fit reads
@@ -408,10 +410,20 @@ saving); try again"). Press *Save* again once it is free.
 
 Each top-level row is a scan set. Its label is the scan number when its files carry exactly one, and
 otherwise the set's name (for example `CsV3Sb5_97K_0p5_0p5_3_sum`). Expand it to see its analyzers. The
-columns *Scan*, *T*, *Q* and *Parsed* always show; *Columns ▾* adds *Fast pass*, *Deep pass*, *Slit* and
-*File name*. *Fast pass* and *Deep pass* switch on by themselves the first time a result of that pass exists in
-the experiment; if you switch one off (or on) from *Columns ▾*, ISAR remembers your choice and no longer
-overrides it. A set row's summary counts spectra, or files received for *Parsed*.
+columns *Scan*, *T*, *hkl* and *Parsed* always show; *Columns ▾* adds *|Q| (nm⁻¹)*, *Fast pass*, *Deep pass*,
+*Slit*, *File name* and, on BL43LXU, *gpi* and *rf* (shown by default there). *Fast pass* and *Deep pass* switch
+on by themselves the first time a result of that pass exists in the experiment; if you switch one off (or on)
+from *Columns ▾*, ISAR remembers your choice and no longer overrides it. A set row's summary counts spectra, or
+files received for *Parsed*.
+
+The *hkl* column is the analyzer's hkl in r.l.u., the value a fit uses: on BL43LXU the accepted gpi file's, else
+the file's own. Its hover names the source. It is blank when there is no hkl, and its hover gives the reason.
+*|Q| (nm⁻¹)* is the file's own |Q| where the file gives one (a dash otherwise); it is never mixed into the hkl
+column. A pooled row shows an hkl only when all its members fall in one bin, and says on hover when they differ.
+*gpi* and *rf* give each analyzer a check or a cross; a scan set shows a check only when every analyzer is good,
+else a cross. A *gpi* cross means the gpi file is not used, no gpi file matches the set, or the file gives this
+analyzer no hkl; an *rf* cross means its curve is missing, has no slit yet, or its folder has a problem. Hover
+either for the file name or the reason.
 
 Every status is a coloured dot with a word. The list and the inspector show a plain word; hover it to see the
 fitting code's own word and one line on what it means (the filter box matches either word). The export keeps the fitting code's words (`count_state` and the rest).
@@ -438,8 +450,8 @@ analyzer's own data file back through the same route a drop takes. If a file is 
 one, the status bar and the Log say so and tell you to drag the file into the window to add it again. The same
 message appears if ISAR cannot read the file. A removed scan read again stays removed.
 
-A dash (—) marks a missing temperature or Q; hover over it for the reason. Both passes are shown side by
-side and neither is picked as the result.
+A dash (—) marks a missing temperature or |Q|; hover over it for the reason.
+A blank hkl cell has no hkl, and its hover gives the reason. Both passes are shown side by side and neither is picked as the result.
 
 **Out of date.** When an input a pass used has changed since the pass ran (a temperature or slit you saved, the
 resolution folder, a dead analyzer, changed data), the *Fast pass* or *Deep pass* word keeps its stored text
@@ -553,8 +565,8 @@ or mm and an optional reason; a later one supersedes the earlier) and *Use the f
 available only when you have one). The analyzer block has *Leave out analyzer…* / *Use analyzer again…*, and *Accept counts as they are…* /
 *Take back acceptance…* when its counts may not be raw. Q and the counts' origin are shown only. The counts' origin
 reads like "N = (y/e)², 60 bins tested, none off an integer": how the counts were recovered and how many bins
-were off a whole number. When the files carry no hkl, Q shows the file's |Q| in nm⁻¹ and says campaign planning needs the
-hkl. Under the table, **What can be done with this analyzer** gives each step's state (ready, fallback, pending, held) with the engine's
+were off a whole number. When the files carry no hkl, Q shows the file's |Q| in nm⁻¹, as the scan list's |Q|
+column does, and says campaign planning needs the hkl. Under the table, **What can be done with this analyzer** gives each step's state (ready, fallback, pending, held) with the engine's
 reason. Everything here is the engine's read; the window computes none of it.
 
 ### The analysis queue and the Campaign tab
@@ -1005,7 +1017,7 @@ after the check below, and the check accepts or rejects the whole file.
 
 - **Finding the folder.** A `gpi_files/` folder beside the imported data is saved as the experiment's gpi folder
   when none is saved, as `rf/` is, and the setup section says *found beside the data* or *chosen by you*. ISAR
-  never switches a saved folder. *Choose gpi folder…* on the setup line saves the folder you pick at once.
+  never switches a saved folder. The *gpi files…* button in the setup section saves the folder you pick at once.
 - **Matching.** `gpi.<set>` belongs to the scan set whose analyzer files are `<set>_aNN`, matched by file name. A
   `problem_name1` inside the file that names another set is noted, not refused.
 - **The check.** For every imported analyzer of the set, the file's Q magnitude (`Q_aNN`) must agree with the
