@@ -360,6 +360,17 @@ class ScanListViewModel(ViewModel):
         """The selected spectrum keys; a pooled master is neither removed nor read again."""
         return tuple(key for key in self.selection.keys if isinstance(self._snapshot.spectrum(key), SpectrumRow))
 
+    def source_paths(self, key: str) -> tuple[str, ...]:
+        """The data file(s) a spectrum was read from: its analyzer's own file, as the File column shows it, else
+        every file that produced its scan set. Empty when none is recorded."""
+        row = self._snapshot.spectrum(key)
+        if not isinstance(row, SpectrumRow):
+            return ()
+        if row.file_path:
+            return (row.file_path,)
+        return tuple(f.path for f in getattr(self._ws, "files", ())
+                     if f.classification == "measurement" and row.set_key in f.scan_ids)
+
     def remove_selected(self) -> None:
         keys = [key for key in self.selected_spectra() if key not in self._removed]
         if keys:

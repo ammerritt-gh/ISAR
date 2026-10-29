@@ -370,6 +370,8 @@ class MainWindow(QMainWindow):
         self._close_when_operations_finish = False
         self._bound = False           # True once a first workspace binding exists (rebind guard)
         self._gui_store: GuiStore | None = None   # per-workspace GUI-only state (watched folders)
+        self._reread_paths: tuple[str, ...] | None = None   # the batch "Read source file again" sent, until it ends
+        self._reread_running = False                        # True while that batch's job is the one running
         # {resolved_path: (size, mtime)} of manifest files, rebuilt once per facade refresh (bind +
         # each "snapshot" watch tick). Lets the folder watcher's per-second is_known guard be an O(1)
         # dict lookup instead of resolving every manifest row every poll — the beamtime-scale freeze
@@ -727,6 +729,7 @@ class MainWindow(QMainWindow):
         self.files_strip = FilesStrip(self)
         self.scan_list = ScanListPanel(self.scan_list_vm)
         self.scan_list_vm.store_dirty.connect(self._on_groups_changed)
+        self.scan_list.read_again_requested.connect(self._read_source_again)
         self.scan_inspector = ScanInspectorPanel(self.scan_list_vm)
         self.scan_inspector.set_intake(self.intake)
         self.scan_inspector.setMinimumWidth(_INSPECTOR_MIN)
@@ -1606,7 +1609,32 @@ class MainWindow(QMainWindow):
         self._ingest_controller.request_ingest(paths)
 
     # ---- ingest-controller signal slots -----------------------------------
+    def _read_source_again(self, keys) -> None:
+        """Send the selected scans' source files through the drop route again. Any file that cannot be sent is said
+        in the status bar and the Log, with the way out: drag the file in again."""
+        paths: list[str] = []
+        for key in keys:
+            found = self.scan_list_vm.source_paths(key)
+            if not found:
+                row = self.scan_list_vm.snapshot.spectrum(key)
+                name = f"{self._scan_label(row.set_key)} {row.analyzer or key}"
+                self._say_reread_failure(name, "no source file is recorded for this scan")
+                return
+            paths += [str(Path(p)) for p in found if str(Path(p)) not in paths]
+        gone = next((p for p in paths if not Path(p).is_file()), None)
+        if gone is not None:
+            self._say_reread_failure(Path(gone).name, f"the file is no longer at {gone}")
+            return
+        self._reread_paths = tuple(paths)
+        self._ingest_controller.request_ingest(paths)
+
+    def _say_reread_failure(self, name: str, reason: str) -> None:
+        text = f"Could not read {name} again ({reason}). Drag the file into the window to add it again."
+        self.statusBar().showMessage(text)
+        self.log(text)
+
     def _on_ingest_started(self, paths) -> None:
+        self._reread_running = self._reread_paths is not None and tuple(paths) == self._reread_paths
         n = len(paths)
         self.statusBar().showMessage(f"Ingesting {n} path{'s' if n != 1 else ''}…")
         dock = getattr(self, "card_dock", None)
@@ -1618,6 +1646,8 @@ class MainWindow(QMainWindow):
     def _on_ingest_report(self, report) -> None:
         """A completed ingest: informational status + log (deduped is a cue, never modal), and a
         transient highlight of the files that produced added/updated scans."""
+        if self._reread_running:
+            self._reread_paths, self._reread_running = None, False
         # Parse errors are a non-terminal ingest outcome: preserve the manifest evidence, but let
         # the watched-folder policy retry the unchanged physical file on its bounded backoff.
         self._folder_watcher.record_ingest_report(report)
@@ -1686,6 +1716,10 @@ class MainWindow(QMainWindow):
         if code != 0:
             self.log_dock.show()
             self.log_dock.raise_()
+        if self._reread_running:
+            names = ", ".join(Path(p).name for p in self._reread_paths)
+            self._reread_paths, self._reread_running = None, False
+            self._say_reread_failure(names, cause)
 
     def _on_watched_files_stable(self, paths) -> None:
         """A watched folder settled some new files — enqueue them for ingest (serialized)."""
