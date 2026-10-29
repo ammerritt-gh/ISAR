@@ -836,6 +836,9 @@ def test_engine_profile_move_is_undone_and_leaves_the_real_profile_alone(tmp_pat
     env = _sandbox(tmp_path)
     real = str(tmp_path / "real profile")
     env["USERPROFILE"] = real
+    # The echoed path must be ASCII: cmd writes non-ASCII in the console's code page, which varies.
+    env["TEMP"] = env["TMP"] = str(tmp_path / "plain temp")
+    (tmp_path / "plain temp").mkdir()
     text = _text(ENGINE)
     body = ['set "WORK=%TEMP%\\w"', 'mkdir "%WORK%"', "call :mm_profile_on", "echo ON=%USERPROFILE%",
             "call :mm_profile_off", "echo OFF=%USERPROFILE%", "exit /b 0", *_label_block(text, "mm_profile_on"),
