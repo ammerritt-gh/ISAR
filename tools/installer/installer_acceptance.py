@@ -177,6 +177,16 @@ def stop_gui(base: Path) -> None:
         kill_tree(pid)
 
 
+def wait_gui_exit(base: Path, seconds: float) -> list[int]:
+    """Poll for this installation's ISAR GUI processes until none is left or the time is up."""
+    end = time.monotonic() + seconds
+    pids = gui_pids(base)
+    while pids and time.monotonic() < end:
+        time.sleep(1)
+        pids = gui_pids(base)
+    return pids
+
+
 def quote_arg(a: str) -> str:
     return a if re.fullmatch(r"[A-Za-z0-9_./:\\=-]+", a) else '"%s"' % a
 
@@ -407,6 +417,11 @@ def case_launcher(ctx: Ctx):
             raise Fail(f"platform {got.get('platform')}, expected windows")
         if not [p for p in ctx.logs_now(ctx.p1) if p.name.startswith("launch-")]:
             raise Fail("no launch-*.log")
+        # Start returns before the GUI it began has finished exiting, and the next case deletes env\, which a live GUI holds
+        if wait_gui_exit(base, 30):
+            stop_gui(base)  # kills by pid, never by image name
+            if wait_gui_exit(base, 10):
+                raise Fail("an ISAR GUI from this installation would not stop")
         ok = True
     finally:
         if not ok:  # a hung GUI would otherwise refuse the cases after this one
@@ -793,8 +808,10 @@ def self_check() -> int:
         try:
             assert proc.pid in gui_pids(ctx.base["i1"]), "gui_pids missed a process under its installation"
             assert gui_pids(ctx.base["i2"]) == [], "gui_pids matched a process of another installation"
+            assert wait_gui_exit(ctx.base["i1"], 2) == [proc.pid], "wait_gui_exit missed a live process"
             stop_gui(ctx.base["i1"])
             proc.wait(timeout=30)  # raises if the kill by pid did not reach the process
+            assert wait_gui_exit(ctx.base["i1"], 10) == [], "wait_gui_exit still sees a stopped process"
         finally:
             if proc.poll() is None:
                 kill_tree(proc.pid)
