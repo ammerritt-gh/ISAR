@@ -852,8 +852,9 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
         # corr(omega0, Gamma) is the regime rule, not identifiability, so it does not enter here
         release_ok = (relsig is not None and relsig < spec.ell / math.sqrt(12.0)
                       and ai not in rel_railed)
-        mstatus = ("poorly_determined" if cond is None else "held_by_neighbours" if not release_ok
-                   else "determined_by_own_data")
+        # only a slot with a neighbour factor can be held by neighbours; an unmatched one is just poorly pinned
+        mstatus = ("poorly_determined" if cond is None else "determined_by_own_data" if release_ok
+                   else "held_by_neighbours" if by_branch.get(slots[m]) else "poorly_determined")
         modes.append(HeldMode(branch=ids[m], omega0=e, gamma=g, height=h, guard=max(found) if found else None,
                               guard_source=source, status=mstatus,
                               regime=_regime(spec.fs, spec.fwhm, e, g, corr.get(m)), pinned=ai in model.fixed_pos))

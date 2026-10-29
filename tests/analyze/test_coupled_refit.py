@@ -371,6 +371,15 @@ def test_a_near_tied_exchange_prices_but_a_clear_association_stays_skipped():
     assert R._Spec(clear).triggers == () and R.assign_jobs(clear)[0].discrete == "skipped"
 
 
+def test_a_poorly_pinned_unmatched_mode_is_not_held_by_neighbours():
+    true = [(6.0, 6.0, 10.0)]
+    weak = t_pair(spectrum(true, scale=0.5, seed=2), true, ["fast:y#0"], true, ["b1"])
+    r = R.refit(weak, stage="continuous", assignment=R._Spec(weak).skipped())       # slot None: no neighbour factor
+    assert r.assignment.slots == (None,) and r.modes[0].status == "poorly_determined"
+    held = R.refit(t_pair(spectrum(true, scale=0.5, seed=2), true, ["b1"], true, ["b1"]), stage="both")
+    assert held.modes[0].status == "held_by_neighbours"                              # a matched slot still reads it
+
+
 def test_a_missing_seam_guard_widens_the_tolerance_instead_of_vanishing():
     link = Link("q", "a", "b", 0.1, None)
     ok, lost = _ring_mate("b", 14.0), _ring_mate("b", 14.0)
