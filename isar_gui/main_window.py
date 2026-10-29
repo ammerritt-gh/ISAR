@@ -908,8 +908,8 @@ class MainWindow(QMainWindow):
         box = QMessageBox(QMessageBox.Icon.Warning, "gpi files not used", text, QMessageBox.StandardButton.Ok, self)
         box.setObjectName("gpi_notice")
         box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        box.open()                              # never exec(): the window and the suite keep running
-        box.setWindowModality(Qt.WindowModality.NonModal)   # open() makes it window-modal, which blocks the window
+        box.setWindowModality(Qt.WindowModality.NonModal)   # set before showing: Qt ignores a change once visible
+        box.show()                              # never exec(): the window and the suite keep running
 
     def _open_details(self) -> None:
         """*Details…* on the strip and *Add details* in the one-time note."""

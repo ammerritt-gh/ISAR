@@ -11,8 +11,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 import intake_fixtures as fx
 from isar.intake import settings
@@ -88,7 +87,7 @@ def test_one_notice_for_a_bad_file_judged_against_28_analyzers_and_none_on_refre
     shown = notices(w)
     assert len(shown) == 1
     assert f"gpi.{SET}" in shown[0].text() and "a10" in shown[0].text()
-    assert shown[0].windowModality() == Qt.WindowModality.NonModal      # open() alone would block the window
+    assert QApplication.activeModalWidget() is None      # a window-modal notice would block the main window
     w.intake.reload()                                   # a refresh that finds the same result
     assert len(notices(w)) == 1
 
