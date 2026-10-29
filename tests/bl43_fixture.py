@@ -68,9 +68,10 @@ def _write(path: Path, text: str) -> None:
 
 
 def _analyzer_file(path: Path, number: int, *, with_q: bool = True, with_t: bool = True,
-                   off_integer: bool = False) -> None:
+                   off_integer: bool = False, temperature: float = 97.0) -> None:
     """One analyzer file in ``sp8_bl43.emit_file``'s six-column ``_i`` layout. ``off_integer``: the
-    printed error of every third bin squares to half a count more, so (y/e)^2 is off an integer there."""
+    printed error of every third bin squares to half a count more, so (y/e)^2 is off an integer there.
+    ``temperature`` is the trailer's ``#T=`` value (the file name carries its own token)."""
     monitor, secs = 1e5, 10.0
     rows = ["#      meV      secs   npts          norm_i             y_i            ye_i"]
     for i, energy in enumerate(_ENERGY):
@@ -81,7 +82,7 @@ def _analyzer_file(path: Path, number: int, *, with_q: bool = True, with_t: bool
     if with_q:
         rows.append(f"#Q=   {20.0 + number / 10:.3f} /nm")
     if with_t:
-        rows.append("#T=  97.000 K")
+        rows.append(f"#T=  {temperature:.3f} K")
     _write(path, "\n".join(rows) + "\n")
 
 
