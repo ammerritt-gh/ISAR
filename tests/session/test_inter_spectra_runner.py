@@ -360,3 +360,185 @@ def test_assignments_that_disagree_on_a_branch_carry_no_factor_for_it(tmp_path):
     assert sweep1[x]["came_out"]["assignment"]["factors"] == []
     assert sweep1[y]["came_out"]["assignment"]["factors"] == []
     assert log.batches[spec.batch_id].end["state"] == "settled"
+
+
+# ---------------------------------------------------------------------------
+# check 3: the pool
+# ---------------------------------------------------------------------------
+class _SpyPool:
+    """Stands in for ProcessPoolExecutor: records its size and the jobs submitted, runs each inline."""
+    made: list = []
+
+    def __init__(self, max_workers):
+        self.max_workers, self.submitted = max_workers, 0
+        _SpyPool.made.append(self)
+
+    def submit(self, fn, *args):
+        self.submitted += 1
+        f = Future()
+        f.set_result(fn(*args))
+        return f
+
+    def shutdown(self, *a, **k):
+        pass
+
+
+def test_the_pool_is_capped_by_isar_workers_and_one_job_runs_inline(tmp_path, monkeypatch):
+    monkeypatch.setenv("ISAR_WORKERS", "2")                         # the conftest's nested-pool guard value
+    assert runner.pool_size(8, 10) == 2 and runner.pool_size(1, 10) == 1 and runner.pool_size(8, 1) == 1
+    ws = _workspace(tmp_path, (100, 150, 200), 2)
+    k = _keys(ws)
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", _SpyPool)
+    _SpyPool.made = []
+    bench = Bench(ws)
+    spec = _anchored(ws, [k["a03", 100.0], k["a04", 150.0]])        # ring 1: three refits, ring 2: one
+    bench.run(spec, cores=8)
+    (pool,) = _SpyPool.made
+    assert pool.max_workers == 2
+    assert pool.submitted == 3                                      # ring 2's single refit ran inline
+    assert [r.cores for r in bench.results if r.status == "cores"] == [2]
+    overlays = [p["overlay"]["fast_pass"] for _, p in _lines(ws, spec.batch_id)]
+    assert len(overlays) == 4 and {o["workers"] for o in overlays} == {1}    # the core is always told 1
+    # one core: no pool at all, no cores notice
+    _SpyPool.made = []
+    bench = Bench(ws)
+    bench.run(_anchored(ws, [k["a03", 100.0], k["a04", 150.0]]), cores=1)
+    assert _SpyPool.made == [] and not [r for r in bench.results if r.status == "cores"]
+
+
+def _alive(pid: int) -> bool:
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    handle = k32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong()
+        return not k32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value == 259
+    finally:
+        k32.CloseHandle(handle)
+
+
+def test_stopping_a_batch_in_the_service_kills_its_pool_workers(tmp_path):
+    """The real service runs the real runner on the fake core (``_inter_fakes:run_batch``): ring 1's refits hang
+    in two pool workers; a stop ends the item and every pool worker is gone by the time it is reported."""
+    ws = _workspace(tmp_path, (100, 150, 200), 2)
+    k = _keys(ws)
+    pid_dir = tmp_path / "pids"
+    pid_dir.mkdir()
+    _set_fast(ws, {k[d, t]: (5.0, {"pid_dir": str(pid_dir), "hang": True}) for d in ("a03", "a04") for t in (100.0, 200.0)})
+    spec = _anchored(ws, [k["a03", 150.0], k["a04", 150.0]])        # ring 1: four hanging refits
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(HERE), os.environ.get("PYTHONPATH")]))}
+    proc = subprocess.Popen([sys.executable, "-m", "isar.session.analysis_service", "--workspace", str(ws),
+                             "--inter-target", "_inter_fakes:run_batch"], cwd=REPO, env=env,
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    events = []
+
+    def send(**cmd):
+        proc.stdin.write((json.dumps(cmd) + "\n").encode("utf-8"))
+        proc.stdin.flush()
+
+    def wait(ev, timeout_s=60.0):
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            events.append(json.loads(line))
+            if events[-1].get("ev") == ev:
+                return events[-1]
+        raise AssertionError(f"no {ev}; events: {events}")
+
+    pids = []
+    try:
+        wait("ready")
+        send(op="start", item_id="b1", unit_key=f"inter:{spec.batch_id}:batch", cores=2, batch=spec.to_json(),
+             **{"pass": "inter"})
+        root_pid = wait("started")["pid"]
+        deadline = time.monotonic() + 60
+        while len(list(pid_dir.iterdir())) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        pids = [int(f.name.split("-")[1]) for f in pid_dir.iterdir()]
+        assert len(pids) == 2 and root_pid not in pids and all(_alive(p) for p in pids)
+        send(op="stop", item_id="b1")
+        assert wait("finished")["end"] == "stopped"
+        deadline = time.monotonic() + 5
+        while any(_alive(p) for p in [root_pid, *pids]) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not any(_alive(p) for p in [root_pid, *pids])
+        send(op="shutdown")
+        assert proc.wait(30) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        for p in pids:
+            if _alive(p):
+                subprocess.run(["taskkill", "/PID", str(p), "/F"], capture_output=True, check=False) \
+                    if os.name == "nt" else os.kill(p, 9)
+
+
+# ---------------------------------------------------------------------------
+# check 5: timing against a target nothing enforces
+# ---------------------------------------------------------------------------
+def test_a_batch_far_over_its_target_still_completes_and_records_its_timing(tmp_path):
+    ws = _workspace(tmp_path, (100, 150, 200), 2)
+    k = _keys(ws)
+    _set_fast(ws, {key: (5.0, {"sleep": 0.1}) for key in k.values()})
+    bench = Bench(ws)
+    spec = _anchored(ws, [k["a03", 100.0], k["a04", 100.0]])
+    log = bench.run(spec, target_s=0.2)
+    end = log.batches[spec.batch_id].end
+    t = end["timing"]
+    assert end["state"] == "completed" and end["rings_done"] == 2 and end["done"] == 4
+    assert len([s for s in log.stages if s.batch == spec.batch_id]) == 2          # every ring saved
+    for name in ("wall_s", "prepare_s", "ship_s", "save_s", "continuous_s", "assign_s", "likelihood_s",
+                 "uncertainty_s", "starts"):
+        assert name in t
+    assert [(s["kind"], s["index"], s["width"], s["n_refits"]) for s in t["stages"]] == [("ring", 1, 2, 2),
+                                                                                        ("ring", 2, 2, 2)]
+    assert t["wall_s"] >= sum(s["wall_s"] for s in t["stages"]) >= 0.4
+    assert (t["target_s"], t["over_target"]) == (0.2, True)
+    assert bench.end().status == "done"
+
+
+# ---------------------------------------------------------------------------
+# the real core, end to end (not slow: 2 analyzers x 2 temperatures, tiny generated spectra, one core)
+# ---------------------------------------------------------------------------
+def test_the_real_core_runs_both_batch_kinds_end_to_end(tmp_path):
+    from isar.session.file_fit import FileItem, fit_file
+    from isar.session import ingest
+    ws = fx.workspace(tmp_path, sample="Smp")
+    fx.write_library(ws.root / "rf", analyzers=("a03", "a04"))
+    assert fx.save_resolution_folder(ws.root, ws.root / "rf").ok
+    for i, temp in enumerate((100, 200)):
+        fx.write_scan(tmp_path / "data", stem=f"Smp_{temp}K_0p5_0p5_3", analyzers=("a03", "a04"), seed=1 + i,
+                      energy=fx.ENERGY_120)
+    text = ws.policy_path.read_text(encoding="utf-8").replace("min_fit_points = 6", "min_fit_points = 6\nmax_modes = 1")
+    ws.policy_path.write_text(text, encoding="utf-8", newline="\n")
+    card, session = ws.load()
+    ingest.ingest_batch(card, session, [tmp_path / "data"], workspace_root=ws.root)
+    ws.save(card, session)
+    for key in list(ws.load()[1].scans):
+        out = []
+        fit_file(ws.root, FileItem("q", key, "fast", 1), progress=None, emit=out.append)
+        assert writer.save_results(ws.root, [r.payload for r in out if r.payload is not None]) == [None, None]
+    assert inter_values.save_settings(ws.root, {"sweep_cap": 3}).ok
+    k = _keys(ws.root)
+    for spec in (_anchored(ws.root, [k["a03", 100.0], k["a04", 100.0]]),
+                 _simultaneous(ws.root, list(k.values()))):
+        bench = Bench(ws.root)
+        log = bench.run(spec, core=None)
+        end = log.batches[spec.batch_id].end
+        print(spec.kind, end["state"], json.dumps(end["timing"], indent=1))
+        assert end["state"] in ("completed", "settled", "did_not_settle"), end
+        lines = [r for r in log.refits if r.batch == spec.batch_id]
+        assert lines and all(r.status in records.ELIGIBLE for r in lines)
+        assert all(records.read_payload(ws.root, r)["overlay"]["fast_pass"]["source"] == "inter_refit" for r in lines)
+        if spec.kind == "anchored":
+            assert end["done"] == 2 and {r.accept.decision for r in lines} == {"authoritative"}
