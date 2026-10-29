@@ -847,6 +847,8 @@ class _Run:
                                                               inputs=self.inputs.get(k), context=self.ctx[k],
                                                               T=self.nodes[k].T)
                             data[k], unary[k] = r.D, r.unary
+                        elif isinstance(r, Exception) or r.status == "failed":
+                            move = math.inf              # rules.settled: a failed block is never quiet
                 self.sweeps = n
                 entries =[self.entry(k, snaps2[k], R_all[k], self.identity_flags(ids, k), stage1.pop(k, None))
                            for k in snaps2]

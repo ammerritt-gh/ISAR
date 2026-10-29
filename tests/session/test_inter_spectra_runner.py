@@ -309,6 +309,14 @@ def test_a_batch_that_cannot_settle_ends_at_the_cap_and_keeps_its_results(tmp_pa
     assert {r.accept.decision for r in log.refits if r.batch == spec.batch_id} == {"authoritative"}
 
 
+def test_a_member_that_fails_every_sweep_keeps_the_batch_from_settling(tmp_path):
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep", "fail": True}, {"toy": "keep"}, {"toy": "keep"}))
+    assert inter_values.save_settings(ws, {"sweep_cap": 3}).ok
+    spec = _simultaneous(ws, (x, y, z))
+    end = Bench(ws).run(spec).batches[spec.batch_id].end
+    assert (end["state"], end["sweeps"], end["failed"]) == ("did_not_settle", 3, 1)
+
+
 def test_a_count_change_in_a_later_round_reopens_the_sweeps(tmp_path):
     ws, x, y, z = _chain(tmp_path, ({"toy": "average", "change_rounds": [2]}, {"toy": "keep"}, {"toy": "average"}))
     bench = Bench(ws)
