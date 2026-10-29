@@ -403,6 +403,8 @@ def case_launcher(ctx: Ctx):
         got = json.loads(result.read_text(encoding="utf-8"))
         if got.get("nonce") != nonce:
             raise Fail("result nonce does not match")
+        if got.get("platform") != "windows":
+            raise Fail(f"platform {got.get('platform')}, expected windows")
         if not [p for p in ctx.logs_now(ctx.p1) if p.name.startswith("launch-")]:
             raise Fail("no launch-*.log")
         ok = True
