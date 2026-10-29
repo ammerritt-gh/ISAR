@@ -445,6 +445,14 @@ the steering roadmap ([design/steering.md](docs/design/steering.md) §10). Only 
       name the paths it used, so it is no longer part of this item.)
       **Acceptance:** it is either promoted into `docs/assets/` with a manifest entry, or
       rewritten to stop presenting an unavailable artifact as the reader's next step.
+- [ ] **DRV-6 — Declared hypotheses reach real fits.** A declared acoustic/optic hypothesis moves no
+      real discovery placement: the production catalogue declares no identity-conditioned priors, so
+      every real fit's identity is None and `_resolve_hypothesis` never matches (design/scene.md,
+      SCENE-5 closure). The mechanism is live at engine level
+      (`tests/scene/test_scene_eig.py::test_declared_hypothesis_changes_the_score`). Its 44 s strict-xfail
+      tripwire was deleted 2026-10-29; the attachment-semantics design discussion comes first.
+      **Acceptance:** on the FCC world, with vs without a declared acoustic hypothesis, the real closed
+      loop places at least one scan differently, pinned by a new A/B test.
 
 ---
 

@@ -14,10 +14,6 @@ import pytest
 from drive._closed_loop import fcc_sample_knowledge, fcc_step, run_closed_loop
 from isar.scene.agenda import AGENDA_STORE
 
-ACOUSTIC_HYP = {"acoustic": {"preset": "acoustic", "zc_energy": {"mode": 0.0, "sigma": 0.3},
-                             "confidence": 0.8}}
-
-
 def _decision_signature(run) -> tuple:
     """The observable shape of a closed-loop run's placements: the (node, generator) sequence
     the planner actually chose. Two runs that "place measurably differently" (plan §4.1) must
@@ -27,45 +23,7 @@ def _decision_signature(run) -> tuple:
 
 
 # ----------------------------------------------------------------------------
-# 1. Acoustic-priority: the declared-hypothesis A/B (5.2's A2 obligation)
-# ----------------------------------------------------------------------------
-@pytest.mark.slow
-@pytest.mark.xfail(
-    strict=True,
-    reason="FINDING (SCENE-5 5.4, the 5.2 A2 obligation): identical worlds/seeds, real "
-          "closed-loop physics, WITH vs WITHOUT the declared acoustic hypothesis produce "
-          "BYTE-IDENTICAL decision sequences -- no sensitivity at all. Root-caused, not a "
-          "harness bug: isar.analyze.catalogue.DEFAULT_CATALOGUE declares NO "
-          "parameter_priors on any entry, so _identity_candidates() returns () and every real "
-          "fit's Hypothesis.identity is None (isar/analyze/catalogue.py:296-308, H9(e)). "
-          "isar.scene.phenomena._resolve_hypothesis only ever matches a NAMED identity "
-          "(isar/scene/phenomena.py:240-244) -- with identity always None, the declared "
-          "hypotheses mapping this test threads through plan_next_action can never reach a "
-          "real-fit-derived belief. The mechanism is fully live at the scoring-engine unit "
-          "level with hand-set identities (tests/scene/test_scene_eig.py::"
-          "test_declared_hypothesis_changes_the_score) -- this is specifically the gap the "
-          "plan's 5.2 advisory named: 'the planner-level hypothesis-sensitivity test is "
-          "spy-based ... failure to do so is a finding, not a pass.' Per the plan's own "
-          "instruction this is reported, not tuned around: closing it needs an owner decision "
-          "on identity-conditioned catalogue priors (SCENE-7's calibration), out of this "
-          "slice's scope.")
-def test_acoustic_priority_declared_hypothesis_moves_real_placements(tmp_path: Path):
-    step = fcc_step(spacing=0.1)
-    kwargs = dict(sample_knowledge=fcc_sample_knowledge(), max_rounds=4, step=step)
-
-    t0 = time.time()
-    with_hyp = run_closed_loop(tmp_path / "with", "fcc_warm", hypotheses=ACOUSTIC_HYP, **kwargs)
-    without_hyp = run_closed_loop(tmp_path / "without", "fcc_warm", hypotheses=None, **kwargs)
-    print(f"\nacoustic-priority A/B: with={with_hyp.wall_seconds:.1f}s "
-         f"without={without_hyp.wall_seconds:.1f}s")
-
-    assert not with_hyp.wall_ceiling_hit and not without_hyp.wall_ceiling_hit
-    assert _decision_signature(with_hyp) != _decision_signature(without_hyp), (
-        "the declared acoustic hypothesis must move at least one real placement")
-
-
-# ----------------------------------------------------------------------------
-# 2. Full-range: both phonons found and mapped; classification stays honestly inert
+# 1. Full-range: both phonons found and mapped; classification stays honestly inert
 # ----------------------------------------------------------------------------
 @pytest.mark.slow
 def test_full_range_discovery_finds_and_maps_both_phonons(tmp_path: Path):
@@ -109,7 +67,7 @@ def test_full_range_discovery_finds_and_maps_both_phonons(tmp_path: Path):
 
 
 # ----------------------------------------------------------------------------
-# 3. Boundary-convergence + temperature A/B
+# 2. Boundary-convergence + temperature A/B
 # ----------------------------------------------------------------------------
 @pytest.mark.slow
 def test_boundary_convergence_temperature_ab_picks_different_probes(tmp_path: Path):

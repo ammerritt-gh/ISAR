@@ -961,8 +961,9 @@ belief in production. The mechanism is fully live at the scoring-engine unit lev
 identities) — the gap is end-to-end attachment, not the mechanism itself. Corollary: the 5.0
 gapless-anchor machinery is inert in production for the same reason. Owner chose to record and
 defer: SCENE-5 closes with the honest narrowed claim — hypothesis machinery proven live at engine
-level; end-to-end ATTACHMENT is named open work. The permanent tripwire is a strict xfail,
-`tests/drive/test_fcc_battery.py::test_acoustic_priority_declared_hypothesis_moves_real_placements`.
+level; end-to-end ATTACHMENT is named open work (TODO.md DRV-6). Its strict-xfail
+tripwire was deleted on 2026-10-29 (operator ruling, test-cost split): 44 s per run to re-prove a
+recorded gap; whoever closes the gap writes the A/B test that proves it.
 Hypothesis-attachment semantics (structural/geometric matching as the likely shape, vs H9(e)
 identity priors) is docketed as its own future design discussion, not decided here.
 
@@ -998,8 +999,8 @@ challenge battery runs (slow lane, `tests/drive/test_fcc_battery.py`): full-rang
 and maps both phonons with classification honestly inert (no identity-conditioned priors, per
 the finding above); boundary-convergence buys discrimination near the extinct fold rather than
 re-measuring one point, and the chosen probes differ between warm and cold runs with no
-temperature branch anywhere in steering code; the acoustic-priority run stands as the permanent
-xfail tripwire recorded above.
+temperature branch anywhere in steering code; the acoustic-priority gap stays open as recorded
+above.
 
 ## 7. Status discipline
 
