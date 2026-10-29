@@ -7,13 +7,15 @@ use arrives from the engine as ``on_cores``.
 
 Rules (design steps 4, 6, 7, 8, 10, 13, 16):
 
-* Every item is one analyzer file (``unit_key``) with one pass. Fast items start before deep ones;
-  within a pass the oldest *runnable* item starts first.
-* A file is occupied from the claim until its item settles, saving included. A deep item also
-  waits while a fast item for its file waits.
-* A fast item takes one core. A deep item starts only while no fast item runs, claims every idle
-  core, and gives back what it cannot use through ``on_cores``; the next ``next_starts`` hands those
-  on, fast first.
+* Every fast or deep item is one analyzer file (``unit_key``) with one pass. An inter item is one
+  batch over its ``members`` files: it occupies all of them, waits for waiting or running fast items
+  on them, and blocks fast and deep items on them while it runs. Fast items start before deep and
+  inter items; within a pass the oldest *runnable* item starts first.
+* A file is occupied from the claim until its item settles, saving included. A deep or inter item
+  also waits while a fast item for its file waits.
+* A fast item takes one core. A deep or inter item starts only while no fast item runs, claims every
+  idle core, and gives back what it cannot use through ``on_cores``; the next ``next_starts`` hands
+  those on, fast first.
 * A lowered cores setting changes no running item; nothing starts while cores_in_use >= setting.
 
 shortcut: every call scans all items ever added (settled ones stay so late events return False);
@@ -26,13 +28,14 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Iterable, Literal, Mapping
 
-PassKind = Literal["fast", "deep"]
+PassKind = Literal["fast", "deep", "inter"]
 ItemState = Literal["waiting", "running", "saving",  # active
                     "done", "done_warning", "already_current", "held", "failed", "stopped"]  # settled
 SkipReason = Literal["current", "waiting", "running"]
 End = Literal["completed", "stopped", "failed"]
 
-_PASSES = ("fast", "deep")
+_PASSES = ("fast", "deep")                    # the passes ``add`` takes; inter items come from add_inter
+_RESULT_PASSES = ("fast", "deep", "inter")
 _ENDS = ("completed", "stopped", "failed")
 _RESULT_STATUSES = ("done", "done_warning", "already_current", "held", "failed")
 _ACTIVE = ("waiting", "running", "saving")
@@ -54,6 +57,7 @@ class ItemView:
     started_at: float | None                 # the caller's clock, from on_started
     progress: Mapping[str, object] | None    # last C-progress dict, verbatim
     progress_at: float | None                # the caller's clock at that progress
+    members: tuple[str, ...] = ()            # the files occupied: (unit_key,) for fast and deep
 
 
 @dataclass(frozen=True)
@@ -78,17 +82,19 @@ class QueueSnapshot:
     fast: tuple[ItemView, ...]               # active fast items, by seq
     deep: tuple[ItemView, ...]               # active deep items, by seq
     finished: tuple[ItemView, ...]           # settled items, in settle order, until clear_finished()
+    inter: tuple[ItemView, ...] = ()         # active batch items, by seq
 
 
 class _Result:
     """One result the item's process sent for one pass, and what became of its save."""
 
-    __slots__ = ("status", "reason", "saving", "saved", "error")
+    __slots__ = ("status", "reason", "saving", "end_record", "saved", "error")
 
-    def __init__(self, status: str, reason: str | None, saving: bool) -> None:
+    def __init__(self, status: str, reason: str | None, saving: bool, end_record: bool = False) -> None:
         self.status = status
         self.reason = reason
         self.saving = saving
+        self.end_record = end_record     # a batch's end payload: its verdict settles the batch
         self.saved: bool | None = None   # None until the writer answers (only meaningful if saving)
         self.error: str | None = None
 
@@ -98,18 +104,21 @@ class _Result:
 
 
 class _Item:
-    def __init__(self, item_id: str, unit_key: str, pass_kind: str, automatic: bool, seq: int) -> None:
+    def __init__(self, item_id: str, unit_key: str, pass_kind: str, automatic: bool, seq: int,
+                 members: tuple[str, ...]) -> None:
         self.item_id = item_id
         self.unit_key = unit_key
         self.pass_kind = pass_kind
         self.automatic = automatic
         self.seq = seq
+        self.members = members
         self.state: str = "waiting"
         self.cores = 0
         self.reason: str | None = None
         self.end: str | None = None
         self.end_reason: str | None = None
-        self.results: dict[str, _Result] = {}
+        self.results: dict[str, _Result] = {}  # fast and deep: the one result of each pass
+        self.saves: list[_Result] = []         # inter: every ring or sweep, in arrival order
         self.started_at: float | None = None
         self.progress: Mapping[str, object] | None = None
         self.progress_at: float | None = None
@@ -124,7 +133,14 @@ class _Item:
 
     @property
     def pending(self) -> bool:
-        return any(r.pending for r in self.results.values())
+        return any(r.pending for r in (*self.results.values(), *self.saves))
+
+    @property
+    def saved_passes(self) -> frozenset[str]:
+        got = {p for p, r in self.results.items() if r.saving and r.saved}
+        if any(r.saving and r.saved for r in self.saves):
+            got.add("inter")
+        return frozenset(got)
 
 
 class AnalysisQueue:
@@ -167,10 +183,18 @@ class AnalysisQueue:
         views = []
         for key in add:
             self._seq += 1
-            it = _Item(f"{self._prefix}{self._seq}", key, pass_kind, automatic, self._seq)
+            it = _Item(f"{self._prefix}{self._seq}", key, pass_kind, automatic, self._seq, (key,))
             self._items[it.item_id] = it
             views.append(self._view(it))
         return AddReport(added=tuple(views), skipped=tuple(skipped))
+
+    def add_inter(self, batch_id: str, members: Iterable[str], *, automatic: bool = False) -> ItemView:
+        """One batch over its member files; always added, since a batch may run as often as wanted."""
+        self._seq += 1
+        it = _Item(f"{self._prefix}{self._seq}", f"inter:{batch_id}:batch", "inter", automatic, self._seq,
+                   tuple(members))
+        self._items[it.item_id] = it
+        return self._view(it)
 
     def addable(self, unit_keys: Iterable[str], pass_kind: PassKind,
                 current: Mapping[str, frozenset[str]]) -> tuple[str, ...]:
@@ -186,19 +210,20 @@ class AnalysisQueue:
     # -- starting ------------------------------------------------------------------------------
 
     def _blocker(self, x: _Item) -> _Item | None:
-        """The same-file item x waits for: an active one, else (for deep) a waiting fast one."""
+        """The item x waits for: an active one on its files, else (deep and inter) a waiting fast one."""
+        files = set(x.members)
         for y in self._items.values():
-            if y is not x and y.unit_key == x.unit_key and y.occupies_file:
+            if y is not x and y.occupies_file and files & set(y.members):
                 return y
-        if x.pass_kind == "deep":
+        if x.pass_kind != "fast":
             for y in self._items.values():
-                if y.unit_key == x.unit_key and y.pass_kind == "fast" and y.state == "waiting":
+                if y.pass_kind == "fast" and y.state == "waiting" and files & set(y.members):
                     return y
         return None
 
-    def _oldest_runnable(self, pass_kind: str) -> _Item | None:
+    def _oldest_runnable(self, pass_kinds: tuple[str, ...]) -> _Item | None:
         for it in self._items.values():
-            if it.state == "waiting" and it.pass_kind == pass_kind and self._blocker(it) is None:
+            if it.state == "waiting" and it.pass_kind in pass_kinds and self._blocker(it) is None:
                 return it
         return None
 
@@ -223,11 +248,11 @@ class AnalysisQueue:
         starts: list[Start] = []
         free = self._cores - self._in_use
         while free >= 1:
-            it = self._oldest_runnable("fast")
+            it = self._oldest_runnable(("fast",))
             if it is not None:
                 cores = 1
             else:
-                it = self._oldest_runnable("deep") if self._deep_may_start() else None
+                it = self._oldest_runnable(("deep", "inter")) if self._deep_may_start() else None
                 if it is None:
                     break
                 cores = self._deep_share(free)
@@ -272,22 +297,28 @@ class AnalysisQueue:
         return True
 
     def on_result(self, item_id: str, pass_kind: PassKind, status: str, reason: str | None,
-                  *, saving: bool) -> bool:
-        if pass_kind not in _PASSES:
+                  *, saving: bool, end_record: bool = False) -> bool:
+        if pass_kind not in _RESULT_PASSES:
             raise ValueError(f"unknown pass {pass_kind!r}")
         if status not in _RESULT_STATUSES:
             raise ValueError(f"unknown result status {status!r}")
         it = self._item(item_id)
         if it.state != "running":
             return False
-        it.results[pass_kind] = _Result(status, reason, saving)
+        if pass_kind == "inter":
+            it.saves.append(_Result(status, reason, saving, end_record))
+        else:
+            it.results[pass_kind] = _Result(status, reason, saving)
         return True
 
     def _save_answer(self, item_id: str, pass_kind: str, saved: bool, error: str | None) -> bool:
         it = self._item(item_id)
         if it.state not in ("running", "saving"):
             return False
-        res = it.results.get(pass_kind)
+        if pass_kind == "inter":
+            res = next((r for r in it.saves if r.pending), None)   # the writer answers in arrival order
+        else:
+            res = it.results.get(pass_kind)
         if res is None or not res.pending:
             return False
         res.saved = saved
@@ -337,6 +368,9 @@ class AnalysisQueue:
 
     def _settle(self, it: _Item) -> None:
         """The settled-state table: an item ends once its process ended and every save answered."""
+        if it.pass_kind == "inter":
+            self._settle_batch(it)
+            return
         own = it.results.get(it.pass_kind)
         fast = it.results.get("fast")
         if own is not None:
@@ -352,6 +386,24 @@ class AnalysisQueue:
             self._set_settled(it, "failed", it.end_reason or "the fitting process failed")
         else:
             self._set_settled(it, "failed", "the fitting process ended without a result")
+
+    def _settle_batch(self, it: _Item) -> None:
+        """A batch settles on a failed save first, then a user stop, then a process failure, else on its end
+        record's verdict; a process that ends without one has failed, however many rings it saved."""
+        failed = next((r for r in it.saves if r.saving and r.saved is False), None)
+        last = it.saves[-1] if it.saves else None
+        if failed is not None:
+            self._set_settled(it, "failed", f"not saved: {failed.error}")
+        elif it.end == "stopped":
+            self._set_settled(it, "stopped", "stopped by the user; completed rings/sweeps are kept")
+        elif it.end == "failed":
+            self._set_settled(it, "failed", it.end_reason or "the fitting process failed")
+        elif last is None:
+            self._set_settled(it, "failed", "the fitting process ended without a result")
+        elif last.end_record:
+            self._set_settled(it, last.status, last.reason)
+        else:
+            self._set_settled(it, "failed", "the batch ended without an end record")
 
     # -- settings and views --------------------------------------------------------------------
 
@@ -378,8 +430,9 @@ class AnalysisQueue:
             cores=it.cores, reason=it.reason,
             waiting_on=blocker.item_id if blocker else None,
             runnable=waiting and blocker is None,
-            saved_passes=frozenset(p for p, r in it.results.items() if r.saving and r.saved),
+            saved_passes=it.saved_passes,
             started_at=it.started_at, progress=it.progress, progress_at=it.progress_at,
+            members=it.members,
         )
 
     def snapshot(self) -> QueueSnapshot:
@@ -391,4 +444,5 @@ class AnalysisQueue:
             fast=tuple(self._view(it) for it in active if it.pass_kind == "fast"),
             deep=tuple(self._view(it) for it in active if it.pass_kind == "deep"),
             finished=tuple(self._view(self._items[i]) for i in self._finished),
+            inter=tuple(self._view(it) for it in active if it.pass_kind == "inter"),
         )

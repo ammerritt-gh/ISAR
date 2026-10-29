@@ -23,7 +23,7 @@ def fin(q, item_id, pass_kind, status="done", reason=None):
 
 def state(q, item_id):
     snap = q.snapshot()
-    for v in snap.fast + snap.deep + snap.finished:
+    for v in snap.fast + snap.deep + snap.inter + snap.finished:
         if v.item_id == item_id:
             return v
     raise AssertionError(f"{item_id} not in snapshot")
@@ -303,6 +303,122 @@ def test_events_after_abandon_return_false_and_waiting_items_stay():
     assert ids(q.next_starts()) == [("q3", "fast", 1)]
 
 
+def test_inter_item_shape_and_fast_members_first():
+    q = AnalysisQueue(8)
+    q.add(["A"], "fast", automatic=True, current=NONE)             # q1 runs
+    assert ids(q.next_starts()) == [("q1", "fast", 1)]
+    v = q.add_inter("b1", ["A", "B"])                              # q2 waits for q1
+    assert (v.unit_key, v.pass_kind, v.members) == ("inter:b1:batch", "inter", ("A", "B"))
+    assert state(q, "q1").members == ("A",)
+    assert q.next_starts() == []
+    assert state(q, "q2").waiting_on == "q1"
+    assert [w.item_id for w in q.snapshot().inter] == ["q2"]
+    fin(q, "q1", "fast")                                           # saving still blocks the batch
+    assert q.next_starts() == []
+    q.on_saved("q1", "fast")
+    assert ids(q.next_starts()) == [("q2", "inter", 8)]           # the batch claims every idle core
+
+
+def test_running_batch_blocks_fast_and_deep_on_members_only_and_gives_cores_back():
+    q = AnalysisQueue(4)
+    q.add_inter("b1", ["A", "B"])
+    assert ids(q.next_starts()) == [("q1", "inter", 4)]
+    q.add(["A"], "fast", automatic=True, current=NONE)             # q2 (member)
+    q.add(["B"], "deep", automatic=False, current=NONE)            # q3 (member)
+    q.add(["C"], "fast", automatic=True, current=NONE)             # q4 (not a member)
+    assert q.next_starts() == []
+    assert q.on_cores("q1", 2)                                     # the batch gives back two cores
+    assert ids(q.next_starts()) == [("q4", "fast", 1)]
+    assert (state(q, "q2").waiting_on, state(q, "q3").waiting_on) == ("q1", "q1")
+
+
+def test_batch_waits_only_for_running_items_on_its_members():
+    q = AnalysisQueue(4)
+    q.add(["A", "B"], "deep", automatic=False, current=NONE)       # q1 (A), q2 (B)
+    assert ids(q.next_starts()) == [("q1", "deep", 4)]
+    assert q.on_cores("q1", 2)
+    assert ids(q.next_starts()) == [("q2", "deep", 2)]
+    q.add_inter("b1", ["A"])                                       # q3 waits for q1 only
+    assert state(q, "q3").waiting_on == "q1"
+    fin(q, "q1", "deep")
+    q.on_saved("q1", "deep")
+    assert ids(q.next_starts()) == [("q3", "inter", 2)]           # q2 on B keeps running
+
+
+def test_overlapping_batches_serialise_and_no_fast_item_runs_before_a_batch():
+    q = AnalysisQueue(4)
+    q.add(["F"], "fast", automatic=True, current=NONE)             # q1 runs
+    assert ids(q.next_starts()) == [("q1", "fast", 1)]
+    q.add_inter("b1", ["A", "B"])                                  # q2: waits while fast runs
+    assert q.next_starts() == []
+    fin(q, "q1", "fast")
+    q.on_saved("q1", "fast")
+    assert ids(q.next_starts()) == [("q2", "inter", 4)]
+    q.add_inter("b2", ["B", "C"])                                  # q3 overlaps q2 on B
+    assert q.next_starts() == []
+    assert state(q, "q3").waiting_on == "q2"
+    fin(q, "q2", "inter")
+    q.on_saved("q2", "inter")
+    assert ids(q.next_starts()) == [("q3", "inter", 4)]
+
+
+def test_batch_results_accumulate_and_settle_after_every_save():
+    q = AnalysisQueue(4)
+    q.add_inter("b1", ["A"])
+    q.next_starts()                                                # q1
+    q.on_result("q1", "inter", "done", None, saving=True)          # ring 1
+    q.on_result("q1", "inter", "done", None, saving=True)          # ring 2
+    assert q.on_saved("q1", "inter")
+    assert state(q, "q1").state == "running"                       # the process still runs between rings
+    assert q.on_saved("q1", "inter")
+    q.on_result("q1", "inter", "done_warning", "1 spectrum not reached", saving=True, end_record=True)   # ring 3, the end
+    q.on_finished("q1", "completed", None)
+    assert state(q, "q1").state == "saving"
+    assert q.on_saved("q1", "inter")
+    v = q.snapshot().finished[0]
+    assert (v.state, v.reason, v.saved_passes) == ("done_warning", "1 spectrum not reached", frozenset({"inter"}))
+
+
+def test_a_batch_that_completes_without_an_end_record_settles_failed_not_on_its_last_ring():
+    q = AnalysisQueue(4)
+    q.add_inter("b1", ["A"])
+    q.next_starts()                                                # q1
+    q.on_result("q1", "inter", "done", None, saving=True)          # ring 1 saved, then the process ends
+    q.on_saved("q1", "inter")
+    q.on_finished("q1", "completed", None)
+    assert (state(q, "q1").state, state(q, "q1").reason) == ("failed", "the batch ended without an end record")
+
+
+def test_stopped_or_failed_batch_with_saved_rings_does_not_settle_done():
+    q = AnalysisQueue(4)
+    q.add_inter("b1", ["A"])
+    q.next_starts()                                                # q1
+    q.on_result("q1", "inter", "done", None, saving=True)
+    q.on_saved("q1", "inter")
+    q.on_finished("q1", "stopped", None)
+    v = state(q, "q1")
+    assert (v.state, v.reason, v.saved_passes) == (
+        "stopped", "stopped by the user; completed rings/sweeps are kept", frozenset({"inter"}))
+    q.add_inter("b2", ["A"])                                       # q2
+    q.next_starts()
+    q.on_result("q2", "inter", "done", None, saving=True)
+    q.on_saved("q2", "inter")
+    q.on_finished("q2", "failed", "the fitting process crashed")
+    assert (state(q, "q2").state, state(q, "q2").reason) == ("failed", "the fitting process crashed")
+
+
+def test_failed_save_settles_the_batch_failed():
+    q = AnalysisQueue(4)
+    q.add_inter("b1", ["A"])
+    q.next_starts()                                                # q1
+    q.on_result("q1", "inter", "done", None, saving=True)          # ring 1 saved
+    assert q.on_saved("q1", "inter")
+    q.on_result("q1", "inter", "done", None, saving=True)          # ring 2 cannot be written
+    q.on_finished("q1", "completed", None)
+    assert q.on_save_failed("q1", "inter", "WorkspaceBusy")
+    assert (state(q, "q1").state, state(q, "q1").reason) == ("failed", "not saved: WorkspaceBusy")
+
+
 def test_random_sequence_keeps_the_invariants():
     rng = random.Random(20261027)
     q = AnalysisQueue(8)
@@ -312,26 +428,28 @@ def test_random_sequence_keeps_the_invariants():
 
     def check_after_starts(before_in_use):
         snap = q.snapshot()
-        items = snap.fast + snap.deep
-        occupied = [v.unit_key for v in items if v.state in ("running", "saving")]
+        items = snap.fast + snap.deep + snap.inter
+        occupied = [f for v in items if v.state in ("running", "saving") for f in v.members]
         assert len(occupied) == len(set(occupied))
         assert snap.cores_in_use == sum(v.cores for v in items if v.state == "running")
         assert all(v.cores == 0 for v in items if v.state != "running")
         return snap, items
 
     for _ in range(600):
-        op = rng.choice(["add", "add", "start", "start", "cores", "end", "end", "save", "setc", "pause"])
+        op = rng.choice(["add", "add", "batch", "start", "start", "cores", "end", "end", "save", "setc", "pause"])
         snap = q.snapshot()
-        running = [v for v in snap.fast + snap.deep if v.state == "running"]
+        running = [v for v in snap.fast + snap.deep + snap.inter if v.state == "running"]
         if op == "add":
             q.add(rng.sample(keys, rng.randint(1, 3)), rng.choice(["fast", "deep"]),
                   automatic=rng.random() < 0.5, current=NONE)
+        elif op == "batch":
+            q.add_inter(f"b{rng.randrange(10**6)}", rng.sample(keys, rng.randint(1, 3)))
         elif op == "start":
             before = snap.cores_in_use
             started = q.next_starts()
             for s in started:
                 assert s.item_id not in handed_out                 # nothing is returned twice
-                assert s.cores >= 1 and (s.pass_kind == "deep" or s.cores == 1)
+                assert s.cores >= 1 and (s.pass_kind != "fast" or s.cores == 1)
                 handed_out.add(s.item_id)
             snap2, items = check_after_starts(before)
             assert snap2.cores_in_use <= max(snap.cores_setting, before)

@@ -15,6 +15,9 @@ The service is not a coordinator job: it runs beside ``WorkspaceOperationCoordin
 an ingest or an export is never queued behind the analysis. Times are ``time.monotonic()`` seconds taken
 here when an event arrives, never the service's clock. Returned views are frozen; callers never mutate them.
 
+A batch (:meth:`start_inter_batch`) is one ``inter`` item: it appears in :attr:`QueueView.batches`, never in
+the per-file marks.
+
 shortcut: ``view()``, ``marks()`` and every event rebuild their answer from the scheduler's snapshot, O(items);
 fine for the hundreds of items of a beamtime, cache per change if a queue ever holds many thousands.
 """
@@ -22,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -33,6 +37,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 
 from isar.session.analysis_queue import AnalysisQueue
 from isar.session.analysis_queue import ItemView as _SchedItem
+from isar.workspace_api.inter_spectra import BatchRequest, batch_preview
 from isar.workspace_api.scan_keys import scan_prefix, split_key
 from isar.workspace_api.scan_list import PooledRow
 from isar_gui.process import ProcessRunner
@@ -49,7 +54,8 @@ _SHUTDOWN_SILENCE_S = 120.0     # an algorithm setting: shutdown waits for the s
 _PASSES = ("fast", "deep")
 _LOOK = ("held", "failed", "done_warning")             # what "needs a look" counts; stopped is the user's own act
 _COMPLETE = ("done", "done_warning", "already_current")  # settled with a result in the folder (or one already there)
-_PROGRESS_KEYS = ("pass", "phase", "step", "of", "stage", "stages")
+_PROGRESS_KEYS = ("pass", "phase", "step", "of", "stage", "stages", "kind", "index", "round", "done", "failed",
+                 "not_reached", "fixed", "total")
 _CRASH = "the analysis process ended unexpectedly; see {log}"
 _UNCONFIRMED = "not confirmed saved; re-add it"
 
@@ -62,7 +68,7 @@ class ItemView:
     set_key: str                  # scan_prefix(unit_key)
     set_label: str                # the scan list's label for set_key; set_key when unknown
     analyzer: str                 # split_key(unit_key)[2]
-    pass_kind: Literal["fast", "deep"]
+    pass_kind: Literal["fast", "deep", "inter"]
     status: QueueStatus
     reason: str | None            # plain words; None for waiting/running/saving/done
     automatic: bool
@@ -94,6 +100,24 @@ class FinishedGroup:              # one line per scan set and pass
 
 
 @dataclass(frozen=True)
+class BatchView:                  # one inter-spectra batch: the dock's row (C-queue)
+    item_id: str
+    batch_id: str                 # "b" + 12 hex, minted by start_inter_batch
+    label: str                    # "Inter-spectra batch, started 14:32": its kind and start time
+    kind: Literal["anchored", "simultaneous"]
+    direction: str | None
+    status: QueueStatus
+    reason: str | None            # plain words: waiting for, failed, stopped, a warning
+    n_total: int                  # the scope's members
+    cores: int | None             # running only
+    progress: Mapping | None      # the latest progress keys the service sent
+    not_reached_reasons: tuple[tuple[str, int], ...]   # always () for now: the protocol sends counts, not reasons
+    started_at: float | None
+    step_started_at: float | None
+    finished_at: float | None
+
+
+@dataclass(frozen=True)
 class QueueView:
     bound: bool
     fast: tuple[QueueGroup, ...]
@@ -109,6 +133,8 @@ class QueueView:
     cores_in_use: int
     service: ServiceState
     service_error: str | None     # plain words with the log path, when service == "failed"
+    batches: tuple[BatchView, ...] = ()     # newest first; finished ones stay until clear_finished
+    inter: tuple[ItemView, ...] = ()        # the active batch items, by seq
 
 
 @dataclass(frozen=True)
@@ -131,10 +157,11 @@ class LeaveSummary:
 class _Result:
     """One result the service reported for one pass of an item, and what became of its save."""
 
-    __slots__ = ("saving", "saved", "error")
+    __slots__ = ("saving", "event", "saved", "error")
 
-    def __init__(self, saving: bool) -> None:
+    def __init__(self, saving: bool, event: str | None = None) -> None:
         self.saving = saving
+        self.event = event                  # a batch's payload: "start", "stage" or "end"; None for a file
         self.saved: bool | None = None      # None: not yet answered (only meaningful when ``saving``)
         self.error: str | None = None
 
@@ -146,24 +173,42 @@ class _Result:
 class _Rec:
     """What the controller knows about an item that the scheduler does not keep."""
 
-    __slots__ = ("item_id", "unit_key", "pass_kind", "automatic", "set_key", "analyzer", "results",
-                 "final", "finished_at", "override")
+    __slots__ = ("item_id", "unit_key", "pass_kind", "automatic", "set_key", "analyzer", "label", "spec", "results",
+                 "saves", "final", "finished_at", "override")
 
-    def __init__(self, view: _SchedItem) -> None:
+    def __init__(self, view: _SchedItem, spec: dict | None = None, label: str = "") -> None:
         self.item_id = view.item_id
         self.unit_key = view.unit_key
         self.pass_kind = view.pass_kind
         self.automatic = view.automatic
-        self.set_key = scan_prefix(view.unit_key)
-        self.analyzer = str(split_key(view.unit_key)[2])
-        self.results: dict[str, _Result] = {}
+        batch = view.pass_kind == "inter"
+        self.set_key = "" if batch else scan_prefix(view.unit_key)
+        self.analyzer = "" if batch else str(split_key(view.unit_key)[2])
+        self.label = label                          # a batch's name ("Inter-spectra batch, started 14:32"); "" for a file
+        self.spec = spec                            # a batch's start object, as the service gets it; None for a file
+        self.results: dict[str, _Result] = {}       # fast and deep: the one result of each pass
+        self.saves: list[_Result] = []              # a batch: every payload's save, in arrival order
         self.final: str | None = None       # the scheduler's settled state, once seen
         self.finished_at: float | None = None
         self.override: str | None = None    # a reason the scheduler cannot know (the process died)
 
     def pending(self, pass_kind: str) -> bool:
+        if pass_kind == "inter":
+            return any(r.pending for r in self.saves)
         res = self.results.get(pass_kind)
         return res is not None and res.pending
+
+    def any_pending(self) -> bool:
+        return any(r.pending for r in (*self.results.values(), *self.saves))
+
+    def answer(self, pass_kind: str, saved: bool, error: str | None = None) -> None:
+        """The writer's answer; a batch answers in arrival order, so it is the oldest save still pending."""
+        if pass_kind == "inter":
+            res = next((r for r in self.saves if r.pending), None)
+        else:
+            res = self.results.get(pass_kind)
+        if res is not None:
+            res.saved, res.error = saved, error
 
 
 def _service_argv(python_exe: str, root: Path, log_path: Path) -> list[str]:
@@ -197,7 +242,7 @@ class QueueController(QObject):
         self._auto_fast = True
         self._recs: dict[str, _Rec] = {}
         self._bind_no = 0
-        self._seen_finished = 0                 # how many of the scheduler's finished items were noted
+        self._seen_finished = 0                # how many of the scheduler's finished items were noted
         self._stages: list[tuple[_Rec, str, str | None, float]] = []   # saved fast stages of deep items
         self._held_adds: list[tuple[tuple[str, ...], str, bool]] = []
         self._saved_batch: list[str] = []
@@ -263,7 +308,7 @@ class QueueController(QObject):
 
     def _has_work(self) -> bool:
         snap = self._queue.snapshot()
-        return bool(snap.fast or snap.deep)
+        return bool(snap.fast or snap.deep or snap.inter)
 
     def _drop_service(self) -> None:
         """Kill the service tree now and forget it (an idle one, or a defect path); waiters are released."""
@@ -324,6 +369,27 @@ class QueueController(QObject):
             automatic=v.automatic, runnable=v.runnable, cores=v.cores or None, started_at=v.started_at,
             step_started_at=v.progress_at, progress=v.progress, finished_at=rec.finished_at)
 
+    def _name(self, rec: _Rec) -> str:
+        """A file's pass in words (``97 K a06 (fast pass)``), or a batch's name."""
+        if rec.pass_kind == "inter":
+            return rec.label
+        return f"{self._label(rec.set_key)} {rec.analyzer} ({rec.pass_kind} pass)"
+
+    def _batch(self, v: _SchedItem) -> BatchView:
+        rec = self._recs[v.item_id]
+        status = self._status(v, rec)
+        if status == "waiting":
+            blocker = None if v.waiting_on is None else self._recs.get(v.waiting_on)
+            reason = None if blocker is None else f"waiting for {self._name(blocker)} to finish"
+        else:
+            reason = self._reason(v, rec, status)
+        spec = rec.spec
+        return BatchView(
+            item_id=v.item_id, batch_id=spec["batch_id"], label=rec.label, kind=spec["kind"],
+            direction=spec["direction"], status=status, reason=reason, n_total=len(spec["members"]),
+            cores=v.cores or None, progress=v.progress, not_reached_reasons=(),
+            started_at=v.started_at, step_started_at=v.progress_at, finished_at=rec.finished_at)
+
     def _stage_item(self, rec: _Rec, status: str, reason: str | None, at: float) -> ItemView:
         """The fast pass a deep item did first, once saved: a finished fast result in its own right."""
         return ItemView(
@@ -335,19 +401,22 @@ class QueueController(QObject):
     def view(self) -> QueueView:
         q = self._queue
         if q is None:
-            return QueueView(False, (), (), (), {"fast": 0, "deep": 0}, {"fast": 0, "deep": 0}, 0, 0, False,
-                             self._blocked(), self._cores, 0, self._service, self._service_error)
+            return QueueView(False, (), (), (), {"fast": 0, "deep": 0, "inter": 0}, {"fast": 0, "deep": 0, "inter": 0},
+                             0, 0, False, self._blocked(), self._cores, 0, self._service, self._service_error)
         snap = q.snapshot()
         totals: dict[tuple[str, str], list[int]] = {}
         for rec in self._recs.values():
+            if rec.pass_kind == "inter":
+                continue
             t = totals.setdefault((rec.set_key, rec.pass_kind), [0, 0])
             t[1] += 1
             t[0] += rec.final in _COMPLETE
-        n_running = {"fast": 0, "deep": 0}
-        n_waiting = {"fast": 0, "deep": 0}
+        n_running = {"fast": 0, "deep": 0, "inter": 0}
+        n_waiting = {"fast": 0, "deep": 0, "inter": 0}
         n_saving = 0
         groups: dict[str, list[QueueGroup]] = {}
-        for kind, items in (("fast", snap.fast), ("deep", snap.deep)):
+        inter: tuple[ItemView, ...] = ()
+        for kind, items in (("fast", snap.fast), ("deep", snap.deep), ("inter", snap.inter)):
             views = [self._item(v) for v in items]
             for iv in views:
                 if iv.status == "waiting":
@@ -356,6 +425,9 @@ class QueueController(QObject):
                     n_running[kind] += 1
                 else:
                     n_saving += 1
+            if kind == "inter":
+                inter = tuple(views)
+                continue
             by_set: dict[str, list[ItemView]] = {}
             for iv in views:
                 by_set.setdefault(iv.set_key, []).append(iv)
@@ -365,12 +437,11 @@ class QueueController(QObject):
                 done, total = totals.get((set_key, kind), (0, 0))
                 groups[kind].append(QueueGroup(set_key, members[0].set_label, all(m.automatic for m in members),
                                                done, total, tuple(members)))
-        fin: dict[tuple[str, str], list[ItemView]] = {}
-        n_look = 0
         settled = [self._item(v) for v in snap.finished] + [self._stage_item(*s) for s in self._stages]
-        for iv in sorted(settled, key=lambda i: i.finished_at or 0.0):
+        n_look = sum(iv.status in _LOOK for iv in settled)       # a failed batch needs a look as much as a file
+        fin: dict[tuple[str, str], list[ItemView]] = {}
+        for iv in sorted((i for i in settled if i.pass_kind != "inter"), key=lambda i: i.finished_at or 0.0):
             fin.setdefault((iv.set_key, iv.pass_kind), []).append(iv)
-            n_look += iv.status in _LOOK
         finished = []
         for (set_key, kind), members in fin.items():
             counts: dict[str, int] = {}
@@ -378,9 +449,11 @@ class QueueController(QObject):
                 counts[m.status] = counts.get(m.status, 0) + 1
             look = tuple(m for m in members if m.status in ("held", "failed", "stopped", "done_warning") or kind == "deep")
             finished.append(FinishedGroup(set_key, members[0].set_label, kind, counts, look))   # type: ignore[arg-type]
+        batches = tuple(self._batch(v) for v in sorted(
+            (*snap.inter, *(v for v in snap.finished if v.pass_kind == "inter")), key=lambda v: v.seq, reverse=True))
         return QueueView(True, tuple(groups["fast"]), tuple(groups["deep"]), tuple(finished), n_running, n_waiting,
                          n_saving, n_look, snap.paused, self._blocked(), snap.cores_setting, snap.cores_in_use,
-                         self._service, self._service_error)
+                         self._service, self._service_error, batches=batches, inter=inter)
 
     def selection(self) -> Selection:
         snap = self._list.snapshot
@@ -470,7 +543,7 @@ class QueueController(QObject):
         now = self._clock()
         running = saving = waiting = deep = 0
         longest: float | None = None
-        for v in (*snap.fast, *snap.deep):
+        for v in (*snap.fast, *snap.deep, *snap.inter):
             status = self._status(v, self._recs[v.item_id])
             if status == "waiting":
                 waiting += 1
@@ -490,7 +563,7 @@ class QueueController(QObject):
         """Why the folder is being written right now, or None."""
         if self._queue is not None:
             snap = self._queue.snapshot()
-            if any(v.state != "waiting" for v in (*snap.fast, *snap.deep)):
+            if any(v.state != "waiting" for v in (*snap.fast, *snap.deep, *snap.inter)):
                 return "analysis is running: press Pause and wait for the running analyzers to finish"
         if self._holds:
             return "a copy or an export is reading the experiment"
@@ -507,6 +580,25 @@ class QueueController(QObject):
         keys = self.selection().keys
         if keys:
             self._request_add(keys, pass_kind, automatic=False)
+
+    def start_inter_batch(self, req: BatchRequest) -> tuple[bool, str]:
+        """Queue one batch from the dock's request. The preview is read again here, so a scope that changed since
+        it was shown is judged as it is now; the id is minted here, since the GUI may not import the engine."""
+        if self._queue is None:
+            return False, "no experiment is open"
+        preview = batch_preview(self._root, req)
+        if not preview.can_start:
+            return False, preview.reason or "the batch cannot start"
+        label = f"Inter-spectra batch, started {time.strftime('%H:%M')}"   # local time: the start the operator pressed
+        spec = {"batch_id": "b" + secrets.token_hex(6), "kind": req.kind, "direction": req.direction,
+                "anchors": list(req.anchors) if req.kind == "anchored" else [], "members": list(preview.members)}
+        view = self._queue.add_inter(spec["batch_id"], preview.members)
+        self._recs[view.item_id] = _Rec(view, spec=spec, label=label)
+        message = f"Queued {label} ({req.kind}): {preview.line}"
+        self.log_line.emit(message)
+        self.changed.emit()
+        self._pump()
+        return True, message
 
     def fast_pass_all_ready(self) -> None:
         keys, _why = self._ready()
@@ -533,7 +625,7 @@ class QueueController(QObject):
         service's ``finished`` event."""
         snap = self._queue.snapshot() if self._queue is not None else None
         running = snap is not None and any(v.item_id == item_id and v.state == "running"
-                                           for v in (*snap.fast, *snap.deep))
+                                           for v in (*snap.fast, *snap.deep, *snap.inter))
         if not (running and self._send({"op": "stop", "item_id": item_id})):
             log.warning("stop %s: it is not running", item_id)
 
@@ -626,7 +718,7 @@ class QueueController(QObject):
 
     def _has_waiting(self) -> bool:
         snap = self._queue.snapshot()
-        return any(v.state == "waiting" for v in (*snap.fast, *snap.deep))
+        return any(v.state == "waiting" for v in (*snap.fast, *snap.deep, *snap.inter))
 
     def _pump(self) -> None:
         """Start the service on the first item that can start, then send each start the scheduler hands out."""
@@ -643,8 +735,11 @@ class QueueController(QObject):
             return
         starts = q.next_starts()
         for s in starts:
-            if not self._send({"op": "start", "item_id": s.item_id, "unit_key": s.unit_key,
-                               "pass": s.pass_kind, "cores": s.cores}):
+            cmd = {"op": "start", "item_id": s.item_id, "unit_key": s.unit_key, "pass": s.pass_kind,
+                   "cores": s.cores}
+            if s.pass_kind == "inter":
+                cmd["batch"] = self._recs[s.item_id].spec
+            if not self._send(cmd):
                 log.warning("could not send start for %s: the analysis process is not accepting commands", s.item_id)
         if starts:
             self.changed.emit()
@@ -717,7 +812,7 @@ class QueueController(QObject):
             log.warning("started for %s, which is not running", ev["item_id"])
 
     def _ev_progress(self, ev: dict) -> None:
-        self._queue.on_progress(ev["item_id"], {k: ev.get(k) for k in _PROGRESS_KEYS}, at=self._clock())
+        self._queue.on_progress(ev["item_id"], {k: ev[k] for k in _PROGRESS_KEYS if k in ev}, at=self._clock())
 
     def _ev_cores(self, ev: dict) -> None:
         self._queue.on_cores(ev["item_id"], int(ev["cores"]))
@@ -725,15 +820,24 @@ class QueueController(QObject):
 
     def _ev_result(self, ev: dict) -> None:
         pass_kind, saving = ev["pass"], bool(ev.get("saving"))
-        if self._queue.on_result(ev["item_id"], pass_kind, ev["status"], ev.get("reason"), saving=saving):
-            self._recs[ev["item_id"]].results[pass_kind] = _Result(saving)
+        end_record = ev.get("event") == "end"
+        if self._queue.on_result(ev["item_id"], pass_kind, ev["status"], ev.get("reason"), saving=saving,
+                                 end_record=end_record):
+            rec = self._recs[ev["item_id"]]
+            if pass_kind == "inter":
+                rec.saves.append(_Result(saving, ev.get("event")))
+            else:
+                rec.results[pass_kind] = _Result(saving)
 
     def _ev_saved(self, ev: dict) -> None:
         iid, pass_kind = ev["item_id"], ev["pass"]
         if self._queue.on_saved(iid, pass_kind):
             rec = self._recs[iid]
-            rec.results[pass_kind].saved = True
-            self._saved_batch.append(rec.unit_key)
+            rec.answer(pass_kind, True)
+            if pass_kind == "inter":
+                self._saved_batch.extend(ev["keys"])        # a batch reports its spectra, not its own key
+            else:
+                self._saved_batch.append(rec.unit_key)
             if rec.pass_kind == "deep" and pass_kind == "fast" and ev.get("status") in ("done", "done_warning"):
                 self._stages.append((rec, ev["status"], ev.get("reason"), self._clock()))
             QTimer.singleShot(0, self._flush_saved)
@@ -743,8 +847,7 @@ class QueueController(QObject):
         iid, pass_kind = ev["item_id"], ev["pass"]
         error = str(ev.get("error"))
         if self._queue.on_save_failed(iid, pass_kind, error):
-            res = self._recs[iid].results[pass_kind]
-            res.saved, res.error = False, error
+            self._recs[iid].answer(pass_kind, False, error)
         self._pump()
 
     def _ev_finished(self, ev: dict) -> None:
@@ -790,10 +893,28 @@ class QueueController(QObject):
             self._log_settled(v, rec)
         self._seen_finished = len(snap.finished)
 
+    def _batch_words(self, v: _SchedItem, rec: _Rec, status: str, reason: str | None) -> str:
+        kind = rec.spec["kind"]
+        name = f"{rec.label} ({kind})"
+        if status == "stopped":
+            kept = sum(1 for r in rec.saves if r.saved and r.event == "stage")   # rings and sweeps, not start or end
+            return f"Stopped: {name}: kept {kept} " + (_plural(kept, "ring", "rings") if kind == "anchored"
+                                                       else _plural(kept, "sweep", "sweeps"))
+        if status in ("held", "failed"):
+            return f"{status.capitalize()}: {name}: {reason}"
+        if status == "done_warning":
+            return f"Finished with a warning: {name}: {reason}"
+        p = v.progress or {}
+        return (f"Batch finished: {name}: {p.get('done', 0)} refitted, {p.get('failed', 0)} failed, "
+                f"{p.get('not_reached', 0)} not reached")
+
     def _log_settled(self, v: _SchedItem, rec: _Rec) -> None:
         status = self._status(v, rec)
-        what = f"{self._label(rec.set_key)} {rec.analyzer} ({rec.pass_kind} pass)"
         reason = self._reason(v, rec, status)
+        if rec.pass_kind == "inter":
+            self.log_line.emit(self._batch_words(v, rec, status, reason))
+            return
+        what = self._name(rec)
         if status in ("held", "failed"):
             self.log_line.emit(f"{status.capitalize()}: {what}: {reason}")
         elif status == "done_warning":
@@ -884,9 +1005,12 @@ class QueueController(QObject):
         self._silence.start(int(_SHUTDOWN_SILENCE_S * 1000))
 
     def _log_unconfirmed(self, why: str) -> None:
-        unconfirmed = [rec.unit_key for rec in self._recs.values() if any(r.pending for r in rec.results.values())]
-        if unconfirmed:
-            self.log_line.emit(f"Not confirmed saved when {why}: " + self._grouped(unconfirmed))
+        pending = [rec for rec in self._recs.values() if rec.any_pending()]
+        files = self._grouped([rec.unit_key for rec in pending if rec.pass_kind != "inter"])
+        batches = ", ".join(rec.label for rec in pending if rec.pass_kind == "inter")
+        named = "; ".join(part for part in (files, batches) if part)
+        if named:
+            self.log_line.emit(f"Not confirmed saved when {why}: {named}")
 
     def _on_silence(self) -> None:
         log.error("analysis process silent for %.0f s while stopping; killing it", _SHUTDOWN_SILENCE_S)
