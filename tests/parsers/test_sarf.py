@@ -223,3 +223,15 @@ def test_a_named_set_is_reached_even_where_the_slit_lookup_keeps_another(tmp_pat
     (rf / "sarf_z_s1_40_40_a03").write_text("# replaced\n 0 1 1\n 1 0 0\n", encoding="utf-8", newline="\n")
     with pytest.raises(ValueError, match="changed"):
         sarf.curve_from_reference(ref)
+
+
+def test_with_named_takes_the_snapshot_fingerprint_and_does_not_rehash_the_folder(tmp_path, monkeypatch):
+    from intake_fixtures import write_library
+    from isar.intake.curves import load_curves, with_named
+    rf = tmp_path / "rf"
+    write_library(rf, {"40x40": 2.0}, ("a03",), prefix="sarf_z")
+    loaded = load_curves(rf, PATTERN)
+    real, hashed = sarf.fingerprint, []
+    monkeypatch.setattr(sarf, "fingerprint", lambda *a, **k: hashed.append(a) or real(*a, **k))
+    assert len(with_named(loaded, "sarf_z_s1_40_40").identity) == 1
+    assert hashed == []                                   # one hash of the folder per check, not one per call

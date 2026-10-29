@@ -133,14 +133,15 @@ def _load_named(folder: Path, pattern: str, name: str, fp: str) -> ResolutionLib
     return hit[1]
 
 
-def load_named(folder, pattern: str, name: str) -> ResolutionLibrary:
+def load_named(folder, pattern: str, name: str, fp: str | None = None) -> ResolutionLibrary:
     """Only the curves of the named set (a gpi file's ``sarf_name``): files named exactly ``<name>_<analyzer>``,
     keyed (detector, setting) as ``load_library``, so another set at the same slit never hides them.
-    Loaded once per process per state of the folder. FileNotFoundError when there is no folder."""
+    Loaded once per process per state of the folder. ``fp``: the folder's fingerprint from the caller's own
+    snapshot, so no second hash of every file. FileNotFoundError when there is no folder."""
     folder = Path(folder)
     if not folder.is_dir():
         raise FileNotFoundError(f"resolution folder {folder} not found")
-    return _load_named(folder, pattern, name, fingerprint(folder, pattern))
+    return _load_named(folder, pattern, name, fp or fingerprint(folder, pattern))
 
 
 def _library(matches) -> ResolutionLibrary:

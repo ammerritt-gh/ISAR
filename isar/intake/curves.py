@@ -152,7 +152,7 @@ def with_named(loaded: LoadedCurves, name: str | None) -> LoadedCurves:
         return loaded
     from isar.parsers import sarf   # imported here: the read side never loads a parser
     try:
-        library = sarf.load_named(loaded.folder, loaded.pattern, name)
+        library = sarf.load_named(loaded.folder, loaded.pattern, name, loaded.fingerprint)
     except (OSError, ValueError, re.error) as exc:
         log.warning("resolution curves: the named set %s could not be loaded (%s); no curve from it", name, exc)
         library = ResolutionLibrary()
