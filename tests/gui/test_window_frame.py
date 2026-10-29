@@ -676,6 +676,22 @@ def test_summary_tone_is_the_worst_and_dot_icons_are_cached(qtbot):
         assert TONE_COLOR[tone].startswith("#")
 
 
+def test_state_icons_differ_in_shape_not_only_colour_and_are_cached(qtbot):
+    from PySide6.QtGui import QColor
+    from isar_gui.theme import state_icon
+    assert state_icon(True) is state_icon(True) and state_icon(False) is state_icon(False)
+    images = {good: state_icon(good).pixmap(12, 12).toImage() for good in (True, False)}
+
+    def ink(img):
+        return {(x, y) for x in range(img.width()) for y in range(img.height())
+                if img.pixelColor(x, y).alpha() > 128}
+    assert ink(images[True]) != ink(images[False])             # shape first: not one mark in two colours
+    for good, tone in ((True, Tone.OK), (False, Tone.ERR)):    # and the colour is the tone's token
+        x, y = next(iter(sorted(ink(images[good]))))
+        c, want = images[good].pixelColor(x, y), QColor(TONE_COLOR[tone])
+        assert (c.red(), c.green(), c.blue()) == (want.red(), want.green(), want.blue())
+
+
 def test_natural_key_orders_digits_as_numbers_and_ignores_case():
     assert sorted(["a14", "a3", "A04"], key=natural_key) == ["a3", "A04", "a14"]
     assert sorted(["102", "58"], key=natural_key) == ["58", "102"]
