@@ -97,6 +97,7 @@ set "RC=%ERRORLEVEL%"
 set "OUTCOME=failed"
 if "%RC%"=="0" set "OUTCOME=installed"
 if "%RC%"=="2" set "OUTCOME=refused"
+if "%RC%"=="3" set "OUTCOME=installed-selftest-failed"
 >>"%LOG%" echo(OUTCOME=%OUTCOME%
 cd /d "%SystemRoot%" 2>nul
 rd /s /q "%WORK%" 2>nul

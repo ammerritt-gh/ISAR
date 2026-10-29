@@ -1018,10 +1018,12 @@ def test_latest_logs_an_outcome_after_the_release_installer_returns():
     exit code is logged writes OUTCOME= before the script exits with that code."""
     lines = _code_lines(_text(LATEST))
     i = next(n for n, ln in enumerate(lines) if "RELEASE INSTALLER EXIT" in ln)
-    tail = "\n".join(lines[i:i + 8])
+    tail = "\n".join(lines[i:i + 9])
     j = tail.index("OUTCOME=%OUTCOME%")
     assert j < tail.index("exit /b %RC%")
     assert 'if "%RC%"=="0" set "OUTCOME=installed"' in tail and 'set "OUTCOME=failed"' in tail
+    # exit 3 is the release installer's self-test failure: its install stands, and the log must say so
+    assert 'if "%RC%"=="3" set "OUTCOME=installed-selftest-failed"' in tail
 
 
 def test_running_recheck_after_closing_isar_clears_the_refusal(tmp_path):
