@@ -9,6 +9,8 @@ import os
 from dataclasses import replace
 
 import pytest
+from PySide6.QtCore import QEvent
+from PySide6.QtWidgets import QApplication
 
 import isar
 from gui.inter_fakes import FakeInterState, make_entry, make_history, make_overview
@@ -404,3 +406,18 @@ def test_bar_legend_and_drawn_curve_name_the_same_fit(setup, reads, fit, layout,
     assert page.inter_bar.lock_button.isEnabled() == (kind == viewed_kind)
 
 
+def test_a_deleted_page_leaves_no_listener_on_the_inter_state_for_the_next_page(qtbot, scans_view_ws_readonly):
+    """The InterState outlives each page, so a listener a deleted page left behind fires into a dead view model."""
+    ws = Workspace.open(scans_view_ws_readonly)
+    inter = FakeInterState()
+    old = ScansPage(ScanListViewModel(ws), ws)
+    old.set_inter(inter)
+    old.deleteLater()
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    page = ScansPage(ScanListViewModel(ws), ws)
+    qtbot.addWidget(page)
+    page.set_inter(inter)
+    fired = []
+    page.vm.refreshed.connect(lambda: fired.append(1))
+    inter.history_ready.emit(ONE_MODE)
+    assert fired == [1]

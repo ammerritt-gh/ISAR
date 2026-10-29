@@ -93,6 +93,7 @@ from isar_gui.viewmodels import (
 )
 from isar_gui.viewmodels.campaign import CampaignViewModel
 from isar_gui.viewmodels.intake import IntakeState
+from isar_gui.viewmodels.inter_state import InterState
 from isar_gui.viewmodels.sandbox import SandboxViewModel
 from isar_gui.viewmodels.scan_list import ScanListViewModel
 from isar_gui.views.campaign_dock import CampaignDock
@@ -461,6 +462,8 @@ class MainWindow(QMainWindow):
         self.log_dock = LogDock(self)
         # The one Qt-side holder of the intake reads and writers (stage two); every intake panel reads it.
         self.intake = IntakeState(self)
+        # The inter-spectra state: one per window, beside the intake it writes through.
+        self.inter = InterState(self.intake, self)
         self._build_frame()
         self._bind_workspace(ws)
         self._bound = True
@@ -474,6 +477,7 @@ class MainWindow(QMainWindow):
         # exists, so the saved layout (or the default for this screen) is applied once and nothing
         # re-arranges when the first data arrives.
         self.scan_list_vm.load_view_state(self._session)
+        self.processing_panel.inter_box.load_view_state(self._session)
         self._restore_layout()
         self._sync_workspace_actions()
         QTimer.singleShot(0, self, self._surface_session_security_warnings)
@@ -594,6 +598,7 @@ class MainWindow(QMainWindow):
         self.scan_list_vm.set_workspace(self._ws)
         self.experiment_strip.set_experiment(root)
         self.intake.bind(root)
+        self.inter.bind(root)
         self._queue.bind(root, auto_fast=True if self._gui_store is None else self._gui_store.auto_fast_pass(),
                          keep_waiting=self._renaming)
         self.files_strip.bind(self.files_vm, root is not None)   # experiment_open
@@ -657,6 +662,7 @@ class MainWindow(QMainWindow):
         restore the persisted view + auto-follow, and make it the visible central page."""
         host = CenterHost(self)
         self.scans_page = ScansPage(self.scan_list_vm, self._ws, parent=self)
+        self.scans_page.set_inter(self.inter)
         host.add_page("scan", "Scan(s)", self.scans_page)
         host.add_page(
             "plane", "Plane (q, E)",
@@ -735,6 +741,7 @@ class MainWindow(QMainWindow):
         self.selection.active_changed.connect(self._on_selection_active)
         self.selection.changed.connect(self._on_selection_changed)
         self.scan_list_vm.set_intake(self.intake)
+        self.scan_list_vm.set_inter(self.inter)
         self.intake.changed.connect(lambda: self.scan_list_vm.on_workspace_changed(None))
         self.intake.worker_changed.connect(lambda: self.scan_list_vm.on_workspace_changed(None))
         self.setup_section = SetupSection(self.intake)
@@ -764,12 +771,14 @@ class MainWindow(QMainWindow):
                              if self._operations.has_campaign() else None),
             resolve_draft=self._resolve_dirty_card, show_scan=self._raise_inspector_if_auto, parent=self)
         self.processing_panel.set_controller(self._queue)
+        self.processing_panel.set_inter(self.inter, self.scan_list_vm)
         self.processing_rail.set_controller(self._queue)
         self.scan_list_vm.set_queue(self._queue)
         self._queue.log_line.connect(self.log)
         self._queue.auto_fast_changed.connect(self._on_auto_fast_changed)
         self._queue.changed.connect(self._push_run_row)
         self._queue.results_saved.connect(self._on_results_saved)
+        self._queue.results_saved.connect(lambda _keys: self.inter.reload())   # a batch's saves change its fits
         self._operations.set_writer_guard(self._campaign_refusal)
 
         self._group_shortcuts = []
@@ -857,6 +866,7 @@ class MainWindow(QMainWindow):
         for changed in (self.intake.changed, self.intake.worker_changed, self.scan_list_vm.snapshot_changed):
             changed.connect(self._push_run_row)
         self.intake.saved.connect(self.log)
+        self.inter.saved.connect(self.log)
         self.files_strip.paths_dropped.connect(self._on_paths_dropped)
         self.files_strip.log_message.connect(self.log)
         self._folder_watcher.status_changed.connect(self.files_strip.set_watch_status)
@@ -1472,6 +1482,7 @@ class MainWindow(QMainWindow):
         self._stop_watch_bridge()
         self._folder_watcher.configure([], True, reset_binding=True)
         self.intake.wait_idle()                 # its reads hold files open in the folder (WinError 5)
+        self.inter.wait_idle()                  # the inter-spectra reads hold files open in it too
         self._renaming = True                   # the re-bind keeps the queue's waiting items
         try:
             renamed = self._wsm.rename(name)
@@ -2838,6 +2849,7 @@ class MainWindow(QMainWindow):
             self.scans_page.save_view_state(self._session)
         self.scan_list_vm.save_view_state(self._session)
         self._session.view_state["attention_list"] = {"expanded": self.attention_list.is_expanded()}
+        self.processing_panel.inter_box.save_view_state(self._session)
         # Persist the central view switcher (current page + auto-follow) alongside the other
         # view-state writes; restored on the next ready bind (default: Scan page, auto-follow on).
         if self._center_host is not None:
