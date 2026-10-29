@@ -11,6 +11,7 @@ Every wait is bounded; nothing here touches the operator's profile (the conftest
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sys
 import time
@@ -26,6 +27,7 @@ from PySide6.QtCore import QObject, Signal
 import bl43_fixture
 import bl43_intake_fixture
 from isar.workspace_api import Workspace
+from isar.workspace_api.inter_spectra import BatchPreview, BatchRequest
 from isar.workspace_api.scan_list import Fact, PooledRow, ScanListSnapshot, ScanSetRow, SpectrumRow, Status
 from isar_gui import queue_controller as qc
 from isar_gui.queue_controller import QueueController
@@ -153,9 +155,9 @@ def rig(qtbot, monkeypatch, tmp_path):
 A06, A07, A08, A09 = (unit(SET, f"a{n:02d}") for n in (6, 7, 8, 9))
 
 
-def _result(iid, key, pass_kind="fast", status="done", reason=None, saving=True):
+def _result(iid, key, pass_kind="fast", status="done", reason=None, saving=True, event=None):
     return {"ev": "result", "item_id": iid, "unit_key": key, "pass": pass_kind, "status": status,
-            "reason": reason, "saving": saving}
+            "reason": reason, "saving": saving, "event": event}
 
 
 def _saved(iid, key, pass_kind="fast", status="done", reason=None):
@@ -175,7 +177,7 @@ def test_two_fast_items_run_save_and_count_once_saved(rig):
     assert r.lines == ["Queued for a fast pass: 97 K a06, a07"]
     starts = r.wait_commands("start", 2)
     assert [(c["unit_key"], c["pass"], c["cores"]) for c in starts] == [(A06, "fast", 1), (A07, "fast", 1)]
-    assert r.ctrl.view().n_running == {"fast": 2, "deep": 0} and r.ctrl.view().service == "ready"
+    assert r.ctrl.view().n_running == {"fast": 2, "deep": 0, "inter": 0} and r.ctrl.view().service == "ready"
     assert r.ctrl.marks()[A06] == {"fast": "running"}
     iid = r.id_of(A06)
 
@@ -246,7 +248,7 @@ def test_a_deep_items_fast_stage_shows_on_the_fast_mark_and_lands_as_a_finished_
     start = r.wait_commands("start", 1)[0]
     assert (start["unit_key"], start["pass"], start["cores"]) == (A08, "deep", 4)
     iid = start["item_id"]
-    assert r.ctrl.view().n_running == {"fast": 0, "deep": 1}
+    assert r.ctrl.view().n_running == {"fast": 0, "deep": 1, "inter": 0}
     fast_step = {"ev": "progress", "item_id": iid, "t": 1.0, "pass": "fast", "phase": "ladder", "step": 2, "of": 5,
                  "stage": None, "stages": None}
     r.emit(fast_step)
@@ -786,6 +788,143 @@ def test_the_real_service_starts_for_an_item_and_shuts_down_cleanly(qtbot, monke
     events = [json.loads(ln)["ev"] for ln in stdout_log.read_text(encoding="utf-8").splitlines() if ln.startswith("{")]
     assert events[0] == "ready" and events[-1] == "bye"            # ordered: the service said goodbye itself
     assert len(list(runs.glob("queue-*.service.log"))) == 1
+
+
+# ---- a batch: one inter item with the batch object, progress, saves, stop and a refusal (S1U14, packet 3) -----
+ANCHORED = BatchRequest(kind="anchored", direction="q", anchors=(A06,), selection=())
+LINE = "1 anchor \u00b7 spread in q \u00b7 3 spectra \u00b7 2 rings"
+# a batch is named by its kind and its start time (local HH:MM), never by a per-window number
+BATCH_NAME = r"Inter-spectra batch, started \d\d:\d\d"
+QUEUED_RE = rf"Queued {BATCH_NAME} \(anchored\): {re.escape(LINE)}"
+
+
+def _start_batch(r, monkeypatch, members=(A06, A07, A08), *, can_start=True, reason=None):
+    monkeypatch.setattr(qc, "batch_preview", lambda root, req: BatchPreview(
+        can_start=can_start, reason=reason, members=tuple(members), line=LINE, notes=()))
+    return r.ctrl.start_inter_batch(ANCHORED)
+
+
+def _batch_saved(iid, key, keys, status="done"):
+    return {"ev": "saved", "item_id": iid, "unit_key": key, "pass": "inter", "status": status, "reason": None,
+            "keys": list(keys), "refused": 0}
+
+
+def test_a_batch_is_one_inter_item_that_starts_with_its_spec_and_is_listed_as_a_batch(rig, monkeypatch):
+    r = rig(cores=2)
+    ok, message = _start_batch(r, monkeypatch)
+    assert ok and re.fullmatch(QUEUED_RE, message), message
+    (start,) = r.wait_commands("start", 1)
+    batch = start["batch"]
+    assert re.fullmatch(r"b[0-9a-f]{12}", batch["batch_id"])
+    assert start["unit_key"] == f"inter:{batch['batch_id']}:batch" and (start["pass"], start["cores"]) == ("inter", 2)
+    assert batch == {"batch_id": batch["batch_id"], "kind": "anchored", "direction": "q", "anchors": [A06],
+                     "members": [A06, A07, A08]}
+    view = r.ctrl.view()
+    assert view.n_running == {"fast": 0, "deep": 0, "inter": 1} and [i.item_id for i in view.inter] == [start["item_id"]]
+    (b,) = view.batches
+    assert re.fullmatch(BATCH_NAME, b.label) and (b.kind, b.direction, b.status, b.n_total, b.cores) == (
+        "anchored", "q", "running", 3, 2)
+    assert r.ctrl.marks() == {}                                 # a batch is no mark on its files
+    assert r.ctrl.writes_busy() and r.ctrl.leave_summary().n_running == 1
+    assert any(re.fullmatch(QUEUED_RE, line) for line in r.lines)
+
+
+def test_a_second_batch_on_the_same_files_waits_for_the_first_and_says_so(rig, monkeypatch):
+    r = rig(cores=2)
+    _start_batch(r, monkeypatch)
+    r.wait_commands("start", 1)
+    _start_batch(r, monkeypatch)                                # the same three spectra
+    newer, older = r.ctrl.view().batches                        # newest first
+    assert (newer.status, newer.reason) == ("waiting", f"waiting for {older.label} to finish")
+    assert older.status == "running" and re.fullmatch(BATCH_NAME, older.label)
+    assert len(r.commands("start")) == 1
+
+
+def test_batch_progress_and_each_saved_ring_reach_the_view_and_the_results_saved_signal(rig, monkeypatch):
+    r = rig(cores=2)
+    _start_batch(r, monkeypatch)
+    (start,) = r.wait_commands("start", 1)
+    iid, key = start["item_id"], start["unit_key"]
+    progress = {"ev": "progress", "item_id": iid, "t": 1.0, "pass": "inter", "kind": "anchored", "stage": "ring",
+                "index": 1, "of": 2, "round": None, "phase": "assign", "done": 2, "failed": 0, "not_reached": 1,
+                "fixed": 1, "total": 3}
+    r.emit(progress)
+    r.wait(lambda: r.ctrl.view().batches[0].progress is not None)
+    assert r.ctrl.view().batches[0].progress == {k: v for k, v in progress.items() if k not in ("ev", "item_id", "t")}
+    r.emit(_result(iid, key, "inter"))                          # ring 1 handed to the writer
+    r.wait(lambda: r.ctrl.view().batches[0].status == "saving")
+    r.emit(_batch_saved(iid, key, (A06, A07)))
+    r.wait(lambda: r.saved)
+    assert r.saved == [(A06, A07)] and r.ctrl.view().batches[0].status == "running"
+    r.emit(_result(iid, key, "inter", event="end"), _batch_saved(iid, key, ()))   # the end record, saved
+    r.emit(_finished(iid))
+    r.wait(lambda: r.ctrl.view().batches[0].status == "done")
+    assert r.lines[-1] == (f"Batch finished: {r.ctrl.view().batches[0].label} (anchored): "
+                           "2 refitted, 0 failed, 1 not reached")
+
+
+def test_a_batch_whose_process_ends_without_an_end_record_settles_failed_though_its_rings_were_saved(rig, monkeypatch):
+    r = rig(cores=2)
+    _start_batch(r, monkeypatch)
+    (start,) = r.wait_commands("start", 1)
+    iid, key = start["item_id"], start["unit_key"]
+    r.emit(_result(iid, key, "inter", event="stage"), _batch_saved(iid, key, (A06, A07)))
+    r.wait(lambda: r.saved)
+    r.emit(_finished(iid))
+    r.wait(lambda: r.ctrl.view().batches[0].status == "failed")
+    assert r.ctrl.view().batches[0].reason == "the batch ended without an end record"
+
+
+def test_a_stopped_batch_counts_its_saved_rings_and_not_its_start_payload(rig, monkeypatch):
+    r = rig(cores=2)
+    _start_batch(r, monkeypatch)
+    (start,) = r.wait_commands("start", 1)
+    iid, key = start["item_id"], start["unit_key"]
+    r.emit(_result(iid, key, "inter", event="start"), _batch_saved(iid, key, ()))
+    for spectrum in (A06, A07, A08):
+        r.emit(_result(iid, key, "inter", event="stage"), _batch_saved(iid, key, (spectrum,)))
+    r.wait(lambda: {A06, A07, A08} <= {k for keys in r.saved for k in keys})
+    r.ctrl.stop(iid)
+    r.wait_commands("stop", 1)
+    r.emit(_finished(iid, end="stopped"))
+    r.wait(lambda: r.ctrl.view().batches[0].status == "stopped")
+    assert r.lines[-1] == f"Stopped: {r.ctrl.view().batches[0].label} (anchored): kept 3 rings"
+
+
+def test_a_stopped_batch_keeps_its_saved_rings_says_what_it_kept_and_never_settles_done(rig, monkeypatch):
+    r = rig(cores=2)
+    _start_batch(r, monkeypatch)
+    (start,) = r.wait_commands("start", 1)
+    iid, key = start["item_id"], start["unit_key"]
+    r.emit(_result(iid, key, "inter", event="stage"), _batch_saved(iid, key, (A06, A07)))
+    r.wait(lambda: r.saved)
+    r.ctrl.stop(iid)
+    r.wait_commands("stop", 1)
+    r.emit(_finished(iid, end="stopped"))
+    r.wait(lambda: r.ctrl.view().batches[0].status == "stopped")
+    assert r.lines[-1] == f"Stopped: {r.ctrl.view().batches[0].label} (anchored): kept 1 ring"
+    assert r.saved == [(A06, A07)]
+
+
+def test_a_batch_whose_save_failed_settles_failed_with_the_writers_reason(rig, monkeypatch):
+    r = rig(cores=2)
+    _start_batch(r, monkeypatch)
+    (start,) = r.wait_commands("start", 1)
+    iid, key = start["item_id"], start["unit_key"]
+    r.emit(_result(iid, key, "inter"), {"ev": "save_failed", "item_id": iid, "unit_key": key, "pass": "inter",
+                                        "error": "WorkspaceBusy: timed out"}, _finished(iid))
+    r.wait(lambda: r.ctrl.view().batches[0].status == "failed")
+    assert r.ctrl.view().batches[0].reason == "not saved: WorkspaceBusy: timed out"
+    assert r.lines[-1] == f"Failed: {r.ctrl.view().batches[0].label} (anchored): not saved: WorkspaceBusy: timed out"
+
+
+def test_a_batch_the_preview_refuses_is_not_queued_and_the_preview_says_why(rig, monkeypatch):
+    r = rig(cores=2)
+    ok, message = _start_batch(r, monkeypatch, can_start=False, reason="no accepted hkl for the anchor")
+    assert (ok, message) == (False, "no accepted hkl for the anchor")
+    view = r.ctrl.view()
+    assert view.batches == () and view.n_waiting == {"fast": 0, "deep": 0, "inter": 0}
+    assert r.commands("start") == []
 
 
 # ---- the words ---------------------------------------------------------------------------------------------

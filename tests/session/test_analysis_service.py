@@ -24,7 +24,9 @@ from isar.session.atomic import WorkspaceBusy, workspace_write_lock
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-FAKE = ["--fit-target", "_service_fakes:fit_file", "--save-target", "_service_fakes:save_results"]
+INTER_FAKE = ["--inter-target", "_inter_service_fakes:run_batch", "--inter-save-target",
+              "_inter_service_fakes:save_inter"]
+FAKE = ["--fit-target", "_service_fakes:fit_file", "--save-target", "_service_fakes:save_results", *INTER_FAKE]
 PROGRESS_KEYS = ("pass", "phase", "step", "of", "stage", "stages")
 
 
@@ -90,7 +92,8 @@ class Svc:
     def __init__(self, root: Path, *, fake: bool = True, executable=None, fit_target=None) -> None:
         self.root = root
         env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(HERE), os.environ.get("PYTHONPATH")]))}
-        targets = ["--fit-target", fit_target, "--save-target", "_service_fakes:save_results"] if fit_target else FAKE
+        targets = ["--fit-target", fit_target, "--save-target", "_service_fakes:save_results",
+                                             *INTER_FAKE] if fit_target else FAKE
         argv = [executable or sys.executable, "-m", "isar.session.analysis_service", "--workspace", str(root),
                 "--log", str(root / "service.log"), *(targets if fake else [])]
         self.proc = subprocess.Popen(argv, cwd=REPO, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -614,3 +617,160 @@ def test_a_real_fast_item_on_a_generated_bl43_workspace_is_saved_and_reads_curre
     lines = fit_inputs.read_log(ws.root)
     for kind in ("started", "finished"):
         assert [ln["run"] for ln in lines if ln.get("kind") == kind and ln.get("unit") == unit] == [stamp["run"]]
+
+
+# ---------------------------------------------------------------------------
+# inter-spectra batches: the ack pipe and the end line (fake --inter-target / --inter-save-target)
+# ---------------------------------------------------------------------------
+def _batch(batch_id: str, members=("E:1:r1", "E:1:r2")) -> dict:
+    return {"batch_id": batch_id, "kind": "anchored", "direction": "q", "anchors": [members[0]],
+            "members": list(members)}
+
+
+def _start_inter(svc: Svc, item_id: str, batch_id: str, *, members=("E:1:r1", "E:1:r2"), cores: int = 2,
+                 **override) -> None:
+    cmd = {"op": "start", "item_id": item_id, "unit_key": f"inter:{batch_id}:batch", "pass": "inter",
+           "cores": cores, "batch": _batch(batch_id, members)}
+    svc.send(**{**cmd, **override})
+
+
+@pytest.fixture
+def inter_workspace(workspace):
+    """``make(batches, fast=None) -> root`` with the inter fake's plan beside the fast fake's."""
+    def make(batches: dict, fast: dict | None = None) -> Path:
+        root = workspace(fast or {})
+        (root / "fake_inter_plan.json").write_text(json.dumps(batches), encoding="utf-8")
+        return root
+    return make
+
+
+def _saved(root: Path) -> list[dict]:
+    return _jsonl(root / "inter_saved.jsonl")
+
+
+def test_inter_ack_round_trip_gives_each_result_its_own_verdict_after_its_save(inter_workspace, service):
+    root = inter_workspace({"b00000000001": {"stages": 3, "refuse": {"2": "locked since the batch started"},
+                                             "save_fail": 3}})
+    svc = service(root)
+    svc.wait("ready")
+    _start_inter(svc, "q1", "b00000000001")
+    assert svc.wait("finished", "q1")["end"] == "completed"
+    acks = {a["token"]: a for a in _jsonl(root / "acks-b00000000001.jsonl")}
+    assert [a["event"] for a in acks.values()] == ["start", "stage", "stage", "stage", "end"]
+    assert acks[2]["verdict"] == {"saved": True, "accepted": {"E:1:r1": f"f{1:012x}"}, "refused": {}}
+    assert acks[3]["verdict"]["refused"] == {"E:1:r2": "locked since the batch started"}
+    assert acks[4]["verdict"] == {"saved": False, "error": "the fake disk is full"}
+    # arrival order, and the events name what each save accepted or refused
+    assert [s["event"] for s in _saved(root)] == ["start", "stage", "stage", "end"]
+    saved = [e for e in svc.of("q1") if e["ev"] == "saved"]
+    assert [(e["pass"], e["keys"], e["refused"]) for e in saved[:3]] == [
+        ("inter", [], 0), ("inter", ["E:1:r1"], 0), ("inter", [], 1)]
+    failed = [e for e in svc.of("q1") if e["ev"] == "save_failed"]
+    assert [e["error"] for e in failed] == ["the fake disk is full"]
+    assert [e["ev"] for e in svc.of("q1")].count("result") == 5
+    assert [e["event"] for e in svc.of("q1") if e["ev"] == "result"] == ["start", "stage", "stage", "stage", "end"]
+    assert [e for e in svc.of("q1") if e["ev"] == "progress"][0]["stage"] == "ring"
+    assert svc.shutdown() == 0
+
+
+def test_inter_save_exception_acks_not_saved_and_the_batch_goes_on(inter_workspace, service):
+    root = inter_workspace({"b00000000002": {"stages": 1}})
+    svc = service(root)
+    svc.wait("ready")
+    (root / "inter_saved.jsonl").mkdir()                    # the fake save raises OSError on a directory
+    _start_inter(svc, "q1", "b00000000002")
+    assert svc.wait("finished", "q1")["end"] == "completed"
+    acks = _jsonl(root / "acks-b00000000002.jsonl")
+    assert acks and all(a["verdict"]["saved"] is False and a["verdict"]["error"] for a in acks)
+    assert [e["ev"] for e in svc.of("q1")].count("save_failed") == len(acks)
+    assert svc.shutdown() == 0
+
+
+def test_a_stop_mid_batch_keeps_what_was_handed_over_and_writes_one_stopped_end(inter_workspace, service):
+    root = inter_workspace({"b00000000003": {"stages": 2, "hang": 120}})
+    svc = service(root)
+    svc.wait("ready")
+    _start_inter(svc, "q1", "b00000000003")
+    svc.wait("saved", "q1", **{"pass": "inter", "keys": ["E:1:r2"]})      # the second ring is saved and acked
+    svc.send(op="stop", item_id="q1")
+    assert svc.wait("finished", "q1")["end"] == "stopped"
+    assert svc.shutdown() == 0
+    events = [(s["event"], s.get("end", {}).get("state")) for s in _saved(root)]
+    assert events == [("start", None), ("stage", None), ("stage", None), ("end", "stopped")]
+    assert [e["ev"] for e in svc.of("q1")].count("result") == 3          # the service's end line is quiet
+    assert not [e for e in svc.of("q1") if e["ev"] == "save_failed"]
+
+
+def test_the_runner_s_own_end_is_the_only_end_line(inter_workspace, service):
+    root = inter_workspace({"b00000000004": {"stages": 1}})
+    svc = service(root)
+    svc.wait("ready")
+    _start_inter(svc, "q1", "b00000000004")
+    assert svc.wait("finished", "q1")["end"] == "completed"
+    assert svc.shutdown() == 0
+    assert [s["event"] for s in _saved(root)].count("end") == 1
+
+
+def test_a_raising_runner_finishes_failed_and_the_service_ends_the_batch_failed(inter_workspace, service):
+    root = inter_workspace({"b00000000005": {"stages": 1, "raise": "pool exploded"}})
+    svc = service(root)
+    svc.wait("ready")
+    _start_inter(svc, "q1", "b00000000005")
+    done = svc.wait("finished", "q1")
+    assert done["end"] == "failed" and "pool exploded" in done["reason"]
+    assert svc.shutdown() == 0
+    ends = [s for s in _saved(root) if s["event"] == "end"]
+    assert len(ends) == 1 and ends[0]["end"]["state"] == "failed" and "pool exploded" in ends[0]["end"]["reason"]
+
+
+def test_shutdown_with_a_running_batch_stops_it_and_writes_the_end_once(inter_workspace, service):
+    root = inter_workspace({"b00000000006": {"stages": 1, "hang": 120}})
+    svc = service(root)
+    svc.wait("ready")
+    _start_inter(svc, "q1", "b00000000006")
+    svc.wait("saved", "q1", keys=["E:1:r1"])
+    assert svc.shutdown() == 0
+    assert svc.wait("finished", "q1")["end"] == "stopped"
+    assert [(s["event"], s.get("end", {}).get("state")) for s in _saved(root)] == [
+        ("start", None), ("stage", None), ("end", "stopped")]
+    assert svc.events[-1] == {"ev": "bye"}
+
+
+def test_a_batch_that_never_saved_its_start_gets_no_end_line_and_no_warning(inter_workspace, service):
+    root = inter_workspace({"b00000000007": {"pre_hang": 120}})
+    svc = service(root)
+    svc.wait("ready")
+    _start_inter(svc, "q1", "b00000000007")
+    svc.wait("started", "q1")
+    svc.send(op="stop", item_id="q1")
+    assert svc.wait("finished", "q1")["end"] == "stopped"
+    assert svc.shutdown() == 0
+    assert _saved(root) == []                                # the fake refused "unknown batch": nothing written
+    assert not [e for e in svc.events if e["ev"] == "log" and e["level"] == "warning"]
+
+
+def test_inter_starts_are_refused_for_a_bad_batch_or_an_overlap(inter_workspace, service):
+    root = inter_workspace({"b00000000008": {"stages": 0, "hang": 120}}, fast={"E:1:r2": {"hang": 60}})
+    svc = service(root)
+    svc.wait("ready")
+    bad = {"q1": {"batch": None}, "q2": {"batch": {**_batch("b00000000009"), "members": []}},
+           "q3": {"unit_key": "inter:bwrong:batch"}, "q4": {"batch": {**_batch("b00000000009"), "members": ["x"]}},
+           "q5": {"cores": 0}}
+    for iid, override in bad.items():
+        _start_inter(svc, iid, "b00000000009", **override)
+    for iid in bad:
+        assert svc.wait("finished", iid)["end"] == "failed"
+    assert not [e for e in svc.events if e["ev"] == "started"]
+    svc.start("f1", "E:1:r2")                                 # a fast item holds a member
+    svc.wait("started", "f1")
+    _start_inter(svc, "q6", "b00000000008")
+    assert "E:1:r2 is held by a running item (f1)" in svc.wait("finished", "q6")["reason"]
+    svc.send(op="stop", item_id="f1")
+    svc.wait("finished", "f1")
+    _start_inter(svc, "q7", "b00000000008")                    # now free; it hangs, holding both members
+    svc.wait("started", "q7")
+    _start_inter(svc, "q8", "b00000000010", members=("E:1:r2", "E:1:r3"))
+    assert "held by a running item (q7)" in svc.wait("finished", "q8")["reason"]
+    svc.start("f2", "E:1:r1")                                 # and a fast item on a member is refused too
+    assert "held by a running item (q7)" in svc.wait("finished", "f2")["reason"]
+    assert svc.shutdown() == 0

@@ -136,6 +136,9 @@ WORKSPACE_API_ALLOWED = {
     "isar.session.inter_spectra.authority",
     "isar.session.inter_spectra.preview",
     "isar.session.inter_spectra.q_provider",
+    "isar.session.inter_spectra.layout",
+    "isar.session.inter_spectra.rings",
+    "isar.session.inter_spectra.schedule",
 }
 
 # The facade's writers and runner, named out by the relative-import test below (the allow-list walk does not

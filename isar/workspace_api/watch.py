@@ -54,6 +54,8 @@ _WATCHED: dict[str, tuple[str, ...]] = {
     "intake_scans": ("report", "intake_scans.json"),      # the import record
     "fit_inputs": ("report", "fit_inputs.jsonl"),         # what each pass used (a scan start, an analyzer finish)
     "curves": ("report", "curves.json"),                  # the curve check, at each import and run start
+    "inter_user": ("intake", "inter_spectra.jsonl"),      # anchors, picks, locks and the inter-spectra settings
+    "inter_log": ("report", "inter_spectra.jsonl"),       # the batches and refits; written after their payloads
 }
 
 

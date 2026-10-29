@@ -34,6 +34,10 @@ from .scene_view import (Curve, GapEntry, HypothesisEntry, HypothesisMap, ModeMa
                          SceneRevisionView, hypothesis_map, scene_revision)
 from .agenda_view import (AgendaRevisionView, FreshnessReport, agenda_revision, read_transitions)
 from .decision_view import latest_decision
+from .inter_spectra import (
+    BatchPreview, BatchRequest, BatchSummary, FitEntry, FlagInfo, FlagReason, InterOverview, SpectrumInter,
+    batch_preview, fit_view_of, inter_history, inter_overview,
+)
 from .spectra import (
     AMPLITUDE_HEADING, CACHE_SIZE, CURVE_UNAVAILABLE, DEEP_DOES_NOT_REBUILD,
     ENERGY_HEADING, FINE_POINTS, LINEWIDTH_HEADING, MONITOR_NOT_STORED,
@@ -142,6 +146,20 @@ __all__ = [
     "SpectrumBundle",
     "SpectraCache",
     "spectrum_bundles",
+    # Inter-spectra fitting reads (never writes): the scan-list cells, a spectrum's fits, the batch preview,
+    # and the drawable view of one fit.
+    "BatchPreview",
+    "BatchRequest",
+    "BatchSummary",
+    "FitEntry",
+    "FlagInfo",
+    "FlagReason",
+    "InterOverview",
+    "SpectrumInter",
+    "batch_preview",
+    "fit_view_of",
+    "inter_history",
+    "inter_overview",
     "normalisation_reference",
     "nearest_power_of_ten",
     "normalised_points",

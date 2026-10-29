@@ -1,6 +1,7 @@
-"""The writers that run beside the analysis queue: ``save_results`` (C-save) and ``isar ingest``'s merge.
+"""The writers that run beside the analysis queue: ``save_results`` (C-save), ``save_inter`` (the inter-spectra
+store) and ``isar ingest``'s merge.
 
-Both hold the workspace write lock (:func:`isar.session.atomic.workspace_write_lock`) for their whole
+All three hold the workspace write lock (:func:`isar.session.atomic.workspace_write_lock`) for their whole
 read-modify-write and merge onto the files as they are on disk, never over them with a stale snapshot:
 
 - :func:`save_results` re-reads the ledger and card state, replaces only each payload's own analyzer pass
@@ -8,23 +9,30 @@ read-modify-write and merge onto the files as they are on disk, never over them 
   was re-read, or whose fast pass was replaced, while it was being fitted.
 - :func:`save_session_merged` saves an ingest's ledger by a three-way merge against the snapshot taken
   when it loaded, so a result saved meanwhile is kept.
+- :func:`save_inter` appends a batch's refits to ``report/inter_spectra`` and decides, against the locks and
+  input fingerprints on disk at that moment, which become authoritative; it writes nothing else.
 
 ``run_batch``, the campaign worker and the drive loop do not take the lock (docs/WORKSPACE_AND_CLI.md).
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
+import os
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
-from isar.intake import fit_inputs, scans as intake_scans
+from isar.intake import fit_inputs, inputs, inter_spectra, scans as intake_scans, store
 from isar.schema import _json
+from isar.schema.card import load_state
 from isar.session import calibrations, measurement_store
 from isar.session.atomic import workspace_write_lock
+from isar.session.inter_spectra import records
 from isar.session.outcome import _write_results_csv
 from isar.session.state import SessionState, _scan_entry_from_dict, canonical_hash
-from isar.session.workspace import Workspace
+from isar.session.workspace import STATE_NAME, Workspace
 
 log = logging.getLogger(__name__)
 
@@ -211,9 +219,206 @@ def save_inter(workspace_root, payloads: Sequence[dict]) -> list[dict | str]:
 
     Per payload: a verdict dict ``{"saved": True, "accepted": {unit: fit_id}, "refused": {unit: reason}}`` or a
     str (nothing of that payload was written). Raises PayloadError for a non-sequence; OSError and WorkspaceBusy
-    propagate. Filled by S1U5; ``isar.session.inter_spectra.records`` holds the file contract.
+    propagate. ``isar.session.inter_spectra.records`` holds the file contract. It never touches session.json,
+    results.csv or a fast solo fit, and never writes a pick, lock or anchor (it only reads them).
     """
-    raise NotImplementedError("stub: filled by S1U5")
+    if isinstance(payloads, (str, bytes, dict)) or not isinstance(payloads, Sequence):
+        raise PayloadError(f"save_inter takes a sequence of payloads, not {type(payloads).__name__}")
+    payloads = list(payloads)
+    problems = [_inter_problem(p) for p in payloads]
+    root = Path(workspace_root)
+    with workspace_write_lock(root):
+        logged = records.read_log(root)
+        user = inter_spectra.read_user(root)
+        starts = {b: info.intake_seq for b, info in logged.batches.items()}
+        ended = {b for b, info in logged.batches.items() if info.end is not None}
+        number = max((info.number for info in logged.batches.values()), default=0)
+        accepts = {r.fit: r.accept for r in logged.refits}
+        staged = {(s.batch, s.stage, s.index, s.round) for s in logged.stages}
+        declined: set[str] = set()                 # fit ids declined in this call
+        now: dict[str, str | None] = {}
+        reads = []                                 # (rows, index, tabulated), read once, inside the lock
+        out: list[dict | str] = []
+        for p, why in zip(payloads, problems):
+            if why is not None:
+                out.append(why)
+                continue
+            batch, event = p["batch"], p["event"]
+            verdict = {"saved": True, "accepted": {}, "refused": {}}
+            head = {"schema": records.SCHEMA_LOG, "batch": batch, "at": fit_inputs._now()}
+            if event == "start":
+                if batch not in starts:            # a repeated start is a retry: nothing written again
+                    number += 1
+                    _append_lines(root / records.LOG, [_line({**head, "kind": "batch_start", "number": number,
+                                                              **p["start"]})])
+                    starts[batch] = p["start"]["intake_seq"]
+                out.append(verdict)
+                continue
+            if batch not in starts:
+                out.append(f"unknown batch {batch}")
+                continue
+            if event == "end":
+                if batch not in ended:             # the first end of a batch wins
+                    _append_lines(root / records.LOG, [_line({**head, "kind": "batch_end", **p["end"]})])
+                    ended.add(batch)
+                out.append(verdict)
+                continue
+            body = p["stage"]
+            fresh = [r for r in {r["fit"]: r for r in body["refits"]}.values() if r["fit"] not in accepts]
+            needed = [u for r in fresh if r["status"] in records.ELIGIBLE
+                      for u in (r["unit"], *(c["unit"] for c in r["conditioned_on"])) if u not in now]
+            if needed:
+                if not reads:
+                    entries = store.read_all(root, store.ENTRIES)
+                    reads.append((intake_scans.read_scans(root),
+                                  inputs.index_entries(entries.entries, lines=entries.lines),
+                                  load_state(root / STATE_NAME).tabulated_calibration))
+                now.update(records.inputs_now_from(*reads[0], needed))
+            blobs, lines = [], []
+            for r in fresh:
+                accept = None
+                if r["status"] in records.ELIGIBLE:
+                    accept = _decide(r, user, now, starts[batch], declined)
+                    if accept.decision == "declined":
+                        declined.add(r["fit"])
+                accepts[r["fit"]] = accept
+                pl = r.get("payload")
+                if pl is not None:
+                    blobs.append(_line({"schema": records.SCHEMA_REFIT, "fit": r["fit"], "unit": r["unit"],
+                                        "came_in": pl.get("came_in"), "came_out": pl.get("came_out"),
+                                        "overlay": pl.get("overlay")}))
+                lines.append((r, accept, pl is not None))
+            name = f"{batch}.jsonl"
+            offset = _append_lines(root / records.PAYLOAD_DIR / name, blobs)
+            index = []
+            sizes = iter(len(b) for b in blobs)
+            for r, accept, has_payload in lines:
+                pointer = None
+                if has_payload:
+                    size = next(sizes)
+                    pointer, offset = [name, offset, size - 1], offset + size     # the length leaves out the newline
+                index.append(_line({
+                    **head, "kind": "refit", "fit": r["fit"], "unit": r["unit"], "stage": body["stage"],
+                    "index": body["index"], "status": r["status"], "reason": r.get("reason"), "seed": r.get("seed"),
+                    "inputs": r.get("inputs"),
+                    "conditioned_on": [{"unit": c["unit"], "fit": c["fit"], "inputs": c.get("inputs")}
+                                       for c in r["conditioned_on"]],
+                    "flag": r.get("flag"), "why_changed": r.get("why_changed"),
+                    "accept": None if accept is None else dataclasses.asdict(accept), "payload": pointer}))
+            key = (batch, body["stage"], body["index"], body.get("round"))
+            if key not in staged:                  # a repeated stage is a retry: its line is written once
+                staged.add(key)
+                index.append(_line({**head, "kind": "stage", "stage": body["stage"], "index": body["index"],
+                                    "round": body.get("round"), "progress": body.get("progress") or {},
+                                    "seams": body.get("seams") or [], "not_reached": body.get("not_reached") or {}}))
+            _append_lines(root / records.LOG, index)    # index last: a payload no index line names is never read
+            for r in body["refits"]:
+                accept = accepts.get(r["fit"])
+                if accept is None:
+                    continue
+                if accept.decision == "authoritative":
+                    verdict["accepted"][r["unit"]] = r["fit"]
+                else:
+                    verdict["refused"][r["unit"]] = records.refused_words(accept)
+            out.append(verdict)
+    return out
+
+
+_BATCH_ID = re.compile(r"b[0-9a-f]{12}")
+_FIT_ID = re.compile(r"f[0-9a-f]{12}")
+_START = {"batch_kind": str, "scope": dict, "anchors": list, "rings": dict, "seams": list, "settings": dict,
+          "preview": str, "fixed": dict, "unreached": dict, "terms": list, "metric": dict, "core": str,
+          "intake_seq": int, "epochs": dict}
+
+
+def _inter_problem(p) -> str | None:
+    """Why an inter payload cannot be saved (nothing of it is written); None when it can."""
+    if not isinstance(p, dict) or p.get("schema") != records.SCHEMA_SAVE:
+        return f"not an {records.SCHEMA_SAVE} payload"
+    batch, event = p.get("batch"), p.get("event")
+    if not (isinstance(batch, str) and _BATCH_ID.fullmatch(batch)) or p.get("unit") != f"inter:{batch}:batch" \
+            or p.get("pass") != "inter":
+        return f"unit {p.get('unit')!r} is not 'inter:<batch>:batch' of a batch id b + 12 hex ({batch!r})"
+    if event not in ("start", "stage", "end") or not isinstance(p.get(event), dict):
+        return f"event {event!r} is not start, stage or end with its block"
+    body = p[event]
+    if event == "start":
+        bad = [k for k, t in _START.items() if not isinstance(body.get(k), t) or isinstance(body.get(k), bool)]
+        return f"a start lacks {', '.join(bad)}" if bad else None
+    if event == "end":
+        return None if isinstance(body.get("state"), str) else "an end carries no state"
+    if body.get("stage") not in ("ring", "sweep") or not isinstance(body.get("index"), int) \
+            or not isinstance(body.get("refits"), list):
+        return "a stage carries no stage (ring or sweep), index or refits"
+    for r in body["refits"]:
+        if not isinstance(r, dict) or not isinstance(r.get("fit"), str) or not _FIT_ID.fullmatch(r["fit"]):
+            return f"a refit's fit id {r.get('fit') if isinstance(r, dict) else r!r} is not f + 12 hex"
+        fit, unit, status, pl = r["fit"], r.get("unit"), r.get("status"), r.get("payload")
+        if not isinstance(unit, str) or unit.count(":") < 2:
+            return f"refit {fit}: unit {unit!r} is not a spectrum key"
+        if status not in records.STATUSES:
+            return f"refit {fit}: status {status!r} is not one of {records.STATUSES}"
+        conds = r.get("conditioned_on")
+        if not isinstance(conds, list) or not all(isinstance(c, dict) and isinstance(c.get("unit"), str)
+                                                  and isinstance(c.get("fit"), str) for c in conds):
+            return f"refit {fit}: conditioned_on is not a list of {{unit, fit, inputs}}"
+        flag = r.get("flag")
+        if flag is not None and not (isinstance(flag, dict) and isinstance(flag.get("reasons"), list)
+                                     and "flagged" in flag and "score" in flag):
+            return f"refit {fit}: flag is not {{score, flagged, reasons}}"
+        if pl is not None and not isinstance(pl, dict):
+            return f"refit {fit}: payload is not an object"
+        if status in records.ELIGIBLE and not (pl is not None and isinstance(pl.get("overlay"), dict)):
+            return f"refit {fit} is {status} but carries no overlay"
+    return None
+
+
+def _decide(r: dict, user, now: dict, start_seq: int, declined: set) -> records.Accept:
+    """C-save-inter's acceptance check of one eligible refit, in the contract's order; ``now`` is inputs_now."""
+    def no(reason, detail=None):
+        return records.Accept("declined", reason, detail, user.max_seq)
+    lock = user.locks.get(r["unit"])
+    if lock is not None and lock.locked:
+        return no("locked", lock.fit)
+    own = now.get(r["unit"])
+    if own is not None and own != r.get("inputs"):
+        return no("inputs_changed")
+    conds = r["conditioned_on"]
+    for c in conds:
+        n = now.get(c["unit"])
+        if n is not None and n != c.get("inputs"):
+            return no("neighbour_inputs_changed", c["unit"])
+    for c in conds:
+        pick, lk = user.picks.get(c["unit"]), user.locks.get(c["unit"])
+        if (c["fit"] in declined
+                or (pick is not None and pick.seq > start_seq and pick.fit != c["fit"])
+                or (lk is not None and lk.locked and lk.seq > start_seq and lk.fit != c["fit"])):
+            return no("neighbour_fit_changed", c["unit"])
+    return records.Accept("authoritative", None, None, user.max_seq)
+
+
+def _line(obj: dict) -> bytes:
+    """One strict-JSON line; a non-finite float is written as null."""
+    return json.dumps(inputs._finite(obj), ensure_ascii=False, allow_nan=False).encode("utf-8") + b"\n"
+
+
+def _append_lines(path: Path, blobs: Sequence[bytes]) -> int:
+    """One open, one write and one fsync (as ``fit_inputs._append``); the byte offset the first blob lands at."""
+    if not blobs:
+        return 0
+    data = b"".join(blobs)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+b") as f:
+        if f.seek(0, os.SEEK_END):
+            f.seek(-1, os.SEEK_END)
+            if f.read(1) != b"\n":
+                log.warning("%s: ended an unterminated last line (a torn write) with a newline", path)
+                data = b"\n" + data
+        start = f.tell() + len(data) - sum(len(b) for b in blobs)
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    return start
 
 
 # --- the merge for a writer that holds a whole session snapshot (isar ingest) -----------------------
