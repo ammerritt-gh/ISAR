@@ -10,7 +10,8 @@ from PySide6.QtCore import Signal
 
 from isar.plotspec.builders import ScansCurve, ScansTrace, scans_spec, scans_residual_spec, stack_step
 from isar.plotspec.spec import PlotSpec
-from isar.workspace_api.spectra import NotDrawn, normalisation_reference, spectrum_bundles
+from isar.workspace_api.spectra import (NotDrawn, ZERO_BEAMLINE, ZERO_NONE, normalisation_reference,
+                                        spectrum_bundles)
 from isar.workspace_api.scan_list import PooledRow
 from isar_gui.selection import identity, unique_labels
 from isar_gui.viewmodels.base import ViewModel
@@ -22,6 +23,9 @@ SCALES = ('raw', 'normalised')
 STATE_KEY = 'scans_page'
 EMPTY, PLOT, LIST = range(3)
 DEEP_TOOLTIP = 'Deep pass: the slow nested-sampling refit.'
+ENERGY_LABEL = 'Energy transfer (meV)'
+NOT_ZEROED_LABEL = 'Energy, not zeroed (meV)'
+WAITING_FOR_ZERO = 'waiting for the fast pass to set the energy zero'
 
 
 @dataclass(frozen=True)
@@ -239,10 +243,16 @@ class ScansPageViewModel(ViewModel):
         traces, drawn_keys, not_drawn, deep_summaries = [], [], [], []
         residuals = None
         y_unit = 'Counts' if self.scale == 'raw' else 'Counts per reference monitor'
+        # A raw (not zeroed) axis never shares a plot with zeroed scans: the zeroed ones draw and the rest wait.
+        drawable = [b for b, s in zip(self._bundles, self._scaled) if not (b.not_drawn or s.not_drawn)]
+        zeroed_present = any(b.zero != ZERO_NONE for b in drawable)
         for bundle, scaled in zip(self._bundles, self._scaled):
             nd = bundle.not_drawn or scaled.not_drawn
             if nd:
                 not_drawn.append((bundle.key, nd.text))
+                continue
+            if zeroed_present and bundle.zero == ZERO_NONE:
+                not_drawn.append((bundle.key, WAITING_FOR_ZERO))
                 continue
             y_unit = scaled.y_unit
             curves, note = (), None
@@ -258,7 +268,8 @@ class ScansPageViewModel(ViewModel):
                     residuals = result.residuals
                     if self.fit == 'deep':
                         deep_summaries.append(summary)
-            traces.append(ScansTrace(labels[bundle.key], note, scaled.x, scaled.y, scaled.yerr,
+            tag = ' (beamline zero)' if bundle.zero == ZERO_BEAMLINE else ''
+            traces.append(ScansTrace(labels[bundle.key] + tag, note, scaled.x, scaled.y, scaled.yerr,
                                      scaled.kept, scaled.fine_x, curves, self.fit == 'deep',
                                      bundle.key == self.selection.active))
             drawn_keys.append(bundle.key)
@@ -278,8 +289,10 @@ class ScansPageViewModel(ViewModel):
         step = stack_step(traces) if self.hand_step is None else self.hand_step
         ylabel = y_unit + (', traces offset' if common['view'] == 'offset' and n >= 2 else '')
         # A selected but unavailable single spectrum uses the builder's honest empty-plot state.
+        raw_axis = bool(traces) and not zeroed_present
         main = scans_spec(traces=traces, view=common['view'] if traces else 'offset', step=step,
-                          ylabel=ylabel, curves_header=header)
+                          ylabel=ylabel, curves_header=header,
+                          xlabel=NOT_ZEROED_LABEL if raw_axis else ENERGY_LABEL)
         residual = (scans_residual_spec(trace=traces[0], residuals=residuals,
                                        ylabel=f'data − fit ({y_unit})')
                     if common['view'] == 'single' and traces and traces[0].curves else None)
