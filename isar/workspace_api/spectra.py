@@ -29,6 +29,10 @@ CACHE_SIZE = 64
 NOT_PARSED = "not_parsed"
 POOLED = "pooled"
 NO_ENERGY_ZERO = "no_energy_zero"
+# How a drawn spectrum's energy axis is zeroed: its fitted zero, the card's file-axis fallback, or none.
+ZERO_FIT = "fit"
+ZERO_BEAMLINE = "beamline"
+ZERO_NONE = "none"
 NO_MONITOR = "no_monitor"
 MONITOR_NOT_STORED = "monitor_not_stored"
 NO_PASS = "no_pass"
@@ -128,6 +132,7 @@ class SpectrumBundle:
     exposure_scale: np.ndarray | None
     m_ref: float | None
     fine_energy: np.ndarray
+    zero: str = ZERO_NONE
     _passes: Mapping[PassName, PassCurves | NotDrawn] = field(
         default_factory=dict, repr=False, compare=False)
 
@@ -502,7 +507,7 @@ def _resolution_token(fit):
         "center", "gauss_fwhm", "lorentz_fwhm", "T")))
 
 
-def _revision(row, unit):
+def _revision(row, unit, zero_fallback):
     digest = hashlib.sha256()
     digest.update(str(row.key).encode("utf-8"))
     for name in ("x", "counts", "variance", "mask", "monitor"):
@@ -530,6 +535,7 @@ def _revision(row, unit):
     digest.update(_resolution_token(fit).encode("utf-8"))
     digest.update(repr(row.fast).encode("utf-8"))
     digest.update(repr(row.deep).encode("utf-8"))
+    digest.update(repr(zero_fallback).encode("utf-8"))
     return digest.hexdigest()[:16]
 
 
@@ -660,7 +666,7 @@ def _pass_not_drawn(row, pass_name, fit, resolution, resolution_error, fine_raw,
             f"{pass_name} curve unavailable ({type(exc).__name__}: {exc})")
 
 
-def _bundle(ws, row, qe, cache):
+def _bundle(ws, row, qe, cache, zero_fallback):
     fit = row.fit
     summaries = _summaries(row, fit)
     try:
@@ -672,7 +678,7 @@ def _bundle(ws, row, qe, cache):
     if unit is None:
         return _not_drawn_bundle(
             row.key, "-", NotDrawn(NOT_PARSED, "not parsed or failed"), summaries)
-    revision = _revision(row, unit)
+    revision = _revision(row, unit, zero_fallback)
     if cache is not None and (hit := cache._get(revision)) is not None:
         return hit
     try:
@@ -698,13 +704,16 @@ def _bundle(ws, row, qe, cache):
     calib = fit.calib or {} if fit is not None else {}
     zero_source = calib.get("zero_source")
     zero = fit.energy_zero if fit is not None else None
-    shift = None
     if status == "absolute":
-        shift = zero if zero is not None and zero_source is not None else 0.0
-    elif (status == "needs_zero" and zero is not None
-          and zero_source in ("elastic_fit", "pipeline_zero", "interpolated")):
-        shift = zero
-    if shift is None:
+        shift, zero_kind = (zero if zero is not None and zero_source is not None else 0.0), ZERO_FIT
+    elif status == "needs_zero" and zero is not None and zero_source in (
+            "elastic_fit", "pipeline_zero", "interpolated"):
+        shift, zero_kind = zero, ZERO_FIT
+    elif status == "needs_zero" and zero_fallback == "file_axis":
+        shift, zero_kind = 0.0, ZERO_BEAMLINE       # the card's calibrated file axis is the zero until a fit sets one
+    elif status == "needs_zero":
+        shift, zero_kind = 0.0, ZERO_NONE           # the raw abscissa, shown as not zeroed; no zero is applied
+    else:
         return _not_drawn_bundle(
             row.key, revision, NotDrawn(NO_ENERGY_ZERO, "no energy zero yet"), summaries,
             unit=unit)
@@ -736,23 +745,33 @@ def _bundle(ws, row, qe, cache):
             resolution_error = exc
     passes = {}
     for pass_name in ("fast", "deep"):
-        passes[pass_name] = _pass_not_drawn(
-            row, pass_name, fit, resolution, resolution_error, fine_raw, raw_x,
-            counts, exposure_scale, qe)
+        if zero_kind == ZERO_NONE and fit is not None:    # a curve is in the fit's zero, which is not set yet
+            passes[pass_name] = NotDrawn(NO_ENERGY_ZERO, "no energy zero yet")
+        else:
+            passes[pass_name] = _pass_not_drawn(
+                row, pass_name, fit, resolution, resolution_error, fine_raw, raw_x,
+                counts, exposure_scale, qe)
     bundle = SpectrumBundle(
         key=row.key, revision=revision, not_drawn=None, summaries=summaries,
         energy=energy, counts=_readonly(counts), variance=_readonly(variance),
         kept=_readonly(kept, bool), monitor=monitor, exposure_stored=stored,
         exposure_source=source, exposure_scale=exposure_scale, m_ref=m_ref,
-        fine_energy=fine_energy, _passes=MappingProxyType(passes))
+        fine_energy=fine_energy, zero=zero_kind, _passes=MappingProxyType(passes))
     if cache is not None:
         cache._put(revision, bundle)
     return bundle
 
 
+def _zero_fallback(ws) -> str | None:
+    """The card's declared zero when no elastic line is fitted (``file_axis`` on BL43LXU), else None."""
+    calibration = getattr(getattr(ws.card, "policy", None), "calibration", None)
+    return calibration.get("zero_fallback") if isinstance(calibration, Mapping) else None
+
+
 def spectrum_bundles(ws, rows: Sequence[SpectrumRow | PooledRow], *,
                      cache: SpectraCache | None = None) -> tuple[SpectrumBundle, ...]:
     qe = getattr(getattr(ws.card, "policy", None), "quasielastic_fwhm", None)
+    zero_fallback = _zero_fallback(ws)
     out = []
     for row in rows:
         if isinstance(row, PooledRow):
@@ -760,7 +779,7 @@ def spectrum_bundles(ws, rows: Sequence[SpectrumRow | PooledRow], *,
             out.append(_not_drawn_bundle(
                 row.key, "-", NotDrawn(POOLED, "pooled master"), summaries))
         elif isinstance(row, SpectrumRow):
-            out.append(_bundle(ws, row, qe, cache))
+            out.append(_bundle(ws, row, qe, cache, zero_fallback))
         else:
             raise ValueError("rows must contain only SpectrumRow or PooledRow")
     return tuple(out)
