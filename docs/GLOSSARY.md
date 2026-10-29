@@ -53,13 +53,30 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **quasi-elastic** — a broad component sitting near zero energy transfer (real signal, not
   resolution). Since SCENE-1 it is its own catalogue phenomenon — a measurement target in its own
   right (linewidth ⇒ relaxation rate), distinct from *diffuse* scattering (broad in Q, elastic in
-  E; scene-level, not yet catalogued).
+  E; scene-level, not yet catalogued). On BL43LXU every model carries one central **QE** (below).
+- **QE (central quasi-elastic component)** — BL43LXU only, in every fast-pass, deep-pass and campaign
+  model: one Lorentzian of fitted intrinsic FWHM centred on the calibrated energy zero (never a fitted
+  centre), times the relaxational detailed-balance factor `(E/kT)/(1 - exp(-E/kT))` on the intrinsic
+  shape, convolved with the measured resolution; height and width are fitted jointly with the elastic
+  line, the phonons and the background. It is phenomenological (a "central excess": a weight and a
+  width, never a relaxation time, mobile fraction or process) and is not a phonon, so it changes no
+  model's phonon count. Its height is the convolved peak value (the phonons' convention); its
+  reported weight is the intrinsic shape integrated over the measured energy window, because the
+  detailed-balance form has no finite all-energy integral. The width prior is a penalty, not a cap:
+  not allowed below 1/4 resolution FWHM, flat to 2 FWHM, then -1 nat per FWHM (STATS_PRIMER). A card
+  `quasielastic_fwhm` pins the width and drops its prior. The elastic line is also in every BL43LXU
+  model; a component that fits to zero height is removed by the duplicate-model rule and the reduced
+  model is priced on its own evidence, as one result in place of its parent. Triple-axis, IN8's
+  fixed-width `QuasiElastic` and every other instrument are unchanged.
 - **phenomenon catalogue** — the single registry (`isar.phenomenon-catalogue/1`) of what can be
   present in a scan: acoustic, optic, elastic, quasielastic, unknown, bg_only. Each entry declares
   its local models and gates (the physics stays in `analyze/phonon.py`), plus dormant parameter
   priors, transport declarations, and constrained variants consumed when Laplace evidence lands.
-  Structure enumeration is catalogue-driven, including the phonon-less nulls `elastic+bg` and `bg`.
-- **elastic_only** — the verdict when the phonon-less `elastic+bg` candidate wins selection with a
+  Structure enumeration is catalogue-driven, including the phonon-less nulls `elastic+bg` and `bg`
+  (on BL43LXU the starting zero-phonon model is `elastic+qe+bg`; `elastic+bg` and `bg` appear there
+  only as reduced models the duplicate rule builds).
+- **elastic_only** — the verdict when the phonon-less `elastic+bg` candidate (on BL43LXU any
+  phonon-less winner) wins selection with a
   significant elastic line: a positive, scan-local, categorically humble claim (confidence
   hard-capped at 0.5); never region exclusion, never a Bragg identification.
 - **constraint transport** — carrying parameters fit in a clean region as *soft* constraints into
