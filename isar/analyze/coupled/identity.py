@@ -239,6 +239,23 @@ def _slot_support(a, m: int, settings: InterSettings) -> tuple[bool, list[dict]]
     return p >= settings.confidence, close
 
 
+def _carried_ids(a, own, energy: Sequence[float]) -> dict[int, str]:
+    """Unmatched slot m -> the branch of the incoming mode it continues: a one-to-one pairing, nearest in
+    energy first, of the assignment's unmatched modes with the incoming modes no slot names. A mode left
+    without a partner is a birth."""
+    used = {b for b in a.slots if b is not None}
+    free = [j for j, md in enumerate(own.modes) if md.branch not in used]
+    pairs = sorted((abs(energy[m] - own.modes[j].omega0), m, j)
+                   for m, b in enumerate(a.slots) if b is None for j in free)
+    paired_m, paired_j, carried = set(), set(), {}
+    for _, m, j in pairs:
+        if m not in paired_m and j not in paired_j:
+            paired_m.add(m)
+            paired_j.add(j)
+            carried[m] = own.modes[j].branch
+    return carried
+
+
 def _flag(flags: dict, code: str, units, refs=(), **values) -> None:
     entry = flags.setdefault(code, {"severity": SEVERITY_OF[code], "units": set(), "ids": set(), "values": []})
     entry["units"].update(units)
@@ -271,7 +288,8 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
     Support for a stage spectrum's slot is a linked held neighbour carrying the branch (or a dormant
     record of it) outside the stage; anchored, a ring-mate never supports (its matches are seams only).
     A slot of an unchanged assignment continues its own incoming mode at the same index (bookkeeping,
-    simultaneous); a changed one is governed by its slots alone. ``drift`` stays empty here
+    simultaneous); an unmatched slot of a changed one keeps the id of the incoming mode nearest in energy
+    that no slot names (one-to-one; a mode with none left is a birth). ``drift`` stays empty here
     (``drift_report`` runs at batch end). Nothing here prices, adds a factor or changes an assignment.
     """
     if batch_mode not in ("anchored", "simultaneous"):
@@ -337,6 +355,7 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
     for k in valid:
         a, refs, elig = assignments[k], tuple(modes[k]), eligible(k)
         own = previous.get(k)
+        carried = _carried_ids(a, own, energies[k]) if own is not None else {}
         continues = own is not None and not a.changed and len(own.modes) == a.count
         inherited = continues and a.discrete == "skipped"    # an untriggered decision is not re-tested for support
         for m, ref in enumerate(refs):
@@ -345,9 +364,7 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
             via = sorted((k, j) for j in elig if any(md.branch == b for md in previous[j].modes)
                          or any(d.branch == b for d in previous[j].dormant))
             supported = b is not None and bool(via)
-            # an unmatched mode keeps the incoming id at its index, unless the assignment names that branch
-            kept = own.modes[m].branch if own is not None and m < len(own.modes) else None
-            kept = kept if kept not in a.slots else None
+            kept = carried.get(m)
             plan[ref] = {"slot": b, "origin": origin, "confident": confident, "close": close,
                          "supported": supported, "inherited": inherited, "kept": kept,
                          "own": own.modes[m].branch if continues else None}

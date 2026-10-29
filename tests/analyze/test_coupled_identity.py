@@ -383,6 +383,17 @@ def test_an_unmatched_mode_keeps_its_own_incoming_id_across_a_count_change():
     assert [three.ids[ref] for ref in refs("k", 3)] == ["fast:k#0", "p", "f_k#2"]   # index 2 had no incoming id
 
 
+def test_a_carried_mode_keeps_its_id_when_a_lower_mode_is_matched():
+    # k's incoming mode sits high; neighbours tip k to two and match the new, lower mode to p (index 0)
+    A = held("A", "fA", [("p", 10.0)])
+    k = held("k", "fast", [("fast:k#0", 14.0)])
+    a = asg("k", "b:round1", ("p", None), changed=True)
+    r = run(["k"], [link("A", "k")], {"k": a}, {"A": A, "k": k}, mode="simultaneous", rings=None,
+            sid="b:round1", energies={"k": [10.0, 14.0]})
+    assert [r.ids[ref] for ref in refs("k", 2)] == ["p", "fast:k#0"]
+    assert r.flags == {}
+
+
 def test_a_confident_winner_with_a_close_rival_stays_confident():
     # p = 0.86 >= 0.80 and a rival 1.8 nats behind: a close call goes to review, it does not make the slot ambiguous
     A = held("A", "fA", [("p", 10.0), ("q", 12.0)])
