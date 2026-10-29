@@ -78,8 +78,9 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
 - **elastic_only** — the verdict when the phonon-less `elastic+bg` candidate wins selection with a
   significant elastic line: a positive, scan-local, categorically humble claim (confidence
   hard-capped at 0.5); never region exclusion, never a Bragg identification.
-  On BL43LXU there is no `elastic+bg` score for that elastic test, so a phonon-less winner is
-  reported `no_signal` with the phonon-less wording instead.
+  On BL43LXU that test's `elastic+bg` score exists only when the duplicate rule built that reduced
+  model, so a phonon-less winner such as `elastic+qe+bg` is reported `no_signal` with the
+  phonon-less wording instead.
 - **constraint transport** — carrying parameters fit in a clean region as *soft* constraints into
   complicated regions (crossings, spurions), assuming slow variation; declared per catalogue entry
   (smoothness class + scale in r.l.u.), one-directional, applied exactly once via the existing
