@@ -543,7 +543,7 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
 
     report = IngestReport()
     plan = discover(data_paths, card)
-    gpi_folder = None
+    gpi_folder = gpi_discovered = None
     if workspace_root is not None:
         try:
             check = intake_curves.check_curves(workspace_root, card, data_paths, by="import")
@@ -553,7 +553,7 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
             report.curves = {"error": f"{type(exc).__name__}: {exc}"}
         if intake_scans.applies(card):
             try:
-                gpi_folder = intake_gpi.gpi_folder_in_force(workspace_root, data_paths)
+                gpi_folder, gpi_discovered = intake_gpi.gpi_folder_in_force(workspace_root, data_paths)
             except Exception:  # noqa: BLE001 — the gpi check below reports it; the batch goes on
                 log.exception("ingest: gpi folder discovery failed")
 
@@ -646,7 +646,7 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
             log.exception("ingest: %s not written", intake_scans.INTAKE_SCANS)
             report.import_record_error = import_record_message(intake_scans.INTAKE_SCANS, exc)
         try:     # after the rows are recorded: the check judges every imported scan's #Q= as it now stands
-            check = intake_gpi.check_gpi(workspace_root, card, data_paths, by="import")
+            check = intake_gpi.check_gpi(workspace_root, card, data_paths, by="import", discovered=gpi_discovered)
             report.gpi = None if check is None else check.to_dict()
         except Exception as exc:  # noqa: BLE001 — a failed gpi check is reported, never aborts the batch
             log.exception("ingest: gpi check failed")

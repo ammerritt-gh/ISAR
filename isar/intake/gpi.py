@@ -251,12 +251,12 @@ def _discover(root, data_paths) -> str | None:
     return None
 
 
-def gpi_folder_in_force(root, data_paths) -> Path | None:
+def gpi_folder_in_force(root, data_paths) -> tuple[Path | None, str | None]:
     """The saved gpi folder, after saving a ``gpi_files/`` beside the data as ``discovered`` when none is saved
-    (a saved folder is never switched)."""
-    _discover(root, data_paths)
+    (a saved folder is never switched); and the folder this call saved, for the check to report."""
+    discovered = _discover(root, data_paths)
     saved = current_settings(root).gpi_folder
-    return None if saved is None else Path(saved.path)
+    return (None if saved is None else Path(saved.path)), discovered
 
 
 def _named_curves(card, root, name: str) -> tuple[dict[str, dict], str | None]:
@@ -333,14 +333,16 @@ def _entry(card, root, key: str, row: dict, file: Path, named_cache: dict) -> Gp
                    setting, named, tuple(notes))
 
 
-def check_gpi(root, card, data_paths, *, by: str, rows: Mapping[str, dict] | None = None) -> GpiCheck | None:
+def check_gpi(root, card, data_paths, *, by: str, rows: Mapping[str, dict] | None = None,
+              discovered: str | None = None) -> GpiCheck | None:
     """Discover the gpi folder, judge every imported scan whose set has a ``gpi.<set>`` file, and rewrite
     ``report/gpi.json`` whole. None unless the card is BL43's. ``rows`` defaults to every imported scan.
-    A failure reading one file is that file's entry; only a failure of the whole check propagates."""
+    ``discovered``: the folder an earlier call of this batch saved (``gpi_folder_in_force``), reported here as
+    this check's. A failure reading one file is that file's entry; only a failure of the whole check propagates."""
     if not scans.applies(card):
         return None
     root = Path(root)
-    discovered = _discover(root, data_paths)
+    discovered = discovered or _discover(root, data_paths)
     saved = current_settings(root).gpi_folder
     rows = scans.read_scans(root) if rows is None else rows
     entries: dict[str, GpiScan] = {}

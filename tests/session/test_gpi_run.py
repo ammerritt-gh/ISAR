@@ -117,6 +117,15 @@ def test_import_checks_the_gpi_files_after_recording_the_rows_and_does_not_list_
     assert not [p for p in record.get("files", {}) if "gpi_files" in p]
 
 
+def test_a_first_import_reports_the_gpi_folder_it_saved_as_discovered(tmp_path):
+    ws, data = _experiment(tmp_path)
+    report = _import(ws, data)
+    check = gpi.read_gpi_check(ws.root)
+    assert Path(check.discovered) == (data / "gpi_files").resolve() and check.setting_source == "discovered"
+    assert report.gpi["discovered"] == check.discovered
+    assert any("saved it as the experiment's gpi folder" in ln for ln in check.lines())
+
+
 def test_a_q_beyond_tolerance_takes_nothing_from_the_gpi_file(tmp_path, monkeypatch):
     ws, data = _experiment(tmp_path, data_q={**Q, "a04": Q["a04"] + 0.3})
     worker = _Worker(monkeypatch)
