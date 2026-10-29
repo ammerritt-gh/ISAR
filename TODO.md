@@ -682,12 +682,16 @@ conditions — these are wants, not commitments.
 - `tests/installer/test_installer_scripts.py:1` — the installer regression tests take about 35 s at
   `-n 4`, mostly one cmd or PowerShell start per row of the validator tables; check every row in one
   probe start. Revisit with the routine-suite trim, starting from `--durations=20`.
+- `isar/workspace_api/scan_list.py:510` — the gpi-folder state is judged twice, by the scan list's gpi
+  mark and by `intake_view.folder_status`, from different inputs, so a saved folder with no check yet
+  can read differently on the button and the rows; one helper over (saved setting, check), reusing
+  `readiness._stale`. Revisit when either judgement is next touched or the mismatch is reported.
 
 ---
 
 ## Notes
 
-routine suite 3.3 min, over its 1-min budget
+routine suite 2.3 min, over its 1-min budget
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test
