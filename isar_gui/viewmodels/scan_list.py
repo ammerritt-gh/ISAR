@@ -14,8 +14,8 @@ from PySide6.QtCore import Signal
 
 from isar.workspace_api import ImportSummary
 from isar.workspace_api.spectra import NOT_JUDGED_TEXT, SpectraCache
-from isar.workspace_api.scan_list import (Fact, Mark, PooledRow, ScanListSnapshot, ScanSetRow, SpectrumRow,
-                                          UnreadFile, natural_key, scan_list)
+from isar.workspace_api.scan_list import (ATTENTION_NOT_READ, Fact, Mark, PooledRow, ScanListSnapshot, ScanSetRow,
+                                          SpectrumRow, UnreadFile, natural_key, scan_list)
 from isar_gui import status_words
 from isar_gui.selection import ORIGIN_LIST, ORIGIN_OTHER, Selection
 from isar_gui.plain_words import drop_echo, plain_reason, source_words
@@ -430,7 +430,8 @@ class ScanListViewModel(ViewModel):
         intake = self._intake
         reads = {} if intake is None else {
             "fact_rows": intake.fact_rows or (), "fit_inputs": intake.fit_inputs or (),
-            "import_summary": intake.summary or _NO_SUMMARY}      # None (not read yet): no marks, no lists
+            "import_summary": intake.summary or _NO_SUMMARY,      # None (not read yet): no marks, no lists
+            "needs_attention": ATTENTION_NOT_READ if intake.attention is None else intake.attention}
         self._snapshot = scan_list(self._ws, **reads)
         self._auto = self._auto_columns()
         self.snapshot_changed.emit()

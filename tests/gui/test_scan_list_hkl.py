@@ -20,7 +20,8 @@ from PySide6.QtWidgets import QApplication
 
 from bl43_fixture import GPI_SET, build_bl43_gpi_workspace
 from isar.workspace_api import Workspace
-from isar.workspace_api.scan_list import Fact, scan_list
+from isar.workspace_api.intake_view import import_summary
+from isar.workspace_api.scan_list import ATTENTION_NOT_READ, Fact, scan_list
 from isar_gui.theme import state_icon
 from isar_gui.viewmodels.scan_list import COLUMNS, ScanListViewModel
 from isar_gui.views.scan_list import GUTTER, ScanListPanel
@@ -228,3 +229,23 @@ def test_a_refresh_that_changes_an_hkl_cell_keeps_selection_scroll_and_expansion
     assert vm.selection.keys == selected and vm.selection.active == moved.key
     assert panel._scroll_anchor() == anchor
     assert changes == []
+
+
+def test_a_refresh_before_the_worker_has_read_readiness_never_reads_it_on_the_window_thread(qtbot, monkeypatch, tmp_path):
+    root = build_bl43_gpi_workspace(tmp_path)
+    ws = Workspace.open(root)
+    evaluated = []
+
+    def spy(path):
+        evaluated.append(path)
+        return ATTENTION_NOT_READ
+    monkeypatch.setattr("isar.workspace_api.intake_view.needs_attention", spy)
+    intake = SimpleNamespace(fact_rows=tuple(ws.fact_rows()), fit_inputs=tuple(ws.fit_inputs()),
+                             summary=import_summary(root), attention=None)
+    vm = ScanListViewModel(ws)                  # its own constructor read comes before the window binds the intake
+    vm.set_intake(intake)
+    evaluated.clear()
+    vm.on_workspace_changed()
+    assert evaluated == []
+    (ss,) = vm.snapshot.sets
+    assert {(sp.rf.good, sp.rf.text) for sp in ss.spectra} == {(None, "rf: not read yet")}
