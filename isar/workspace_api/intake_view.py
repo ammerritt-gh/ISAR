@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 from isar.intake import inputs, readiness
 from isar.intake.inputs import Change
@@ -249,3 +250,76 @@ def needs_attention(root) -> readiness.NeedsAttention:
 def import_summary(root) -> readiness.ImportSummary:
     """What the imports read and did not, and where the curves were found (C-import-summary)."""
     return readiness.import_summary(root)
+
+
+@dataclass(frozen=True)
+class FolderStatus:
+    good: bool
+    path: str | None      # the folder in force, full path; None when there is none
+    how: str | None       # "found beside the data" | "chosen by you" | "from the card"; None without a folder
+    reason: str | None    # None when good; else the plain reason (readiness wording where it exists)
+    accessible: str       # "Resolution curves folder: good" / "gpi files folder: not good"
+
+
+_HOW = {"user": "chosen by you", "discovered": "found beside the data", "card": "from the card"}
+
+
+def _status(label: str, path, how, reason) -> FolderStatus:
+    return FolderStatus(reason is None, path, how if path else None, reason,
+                        f"{label}: {'good' if reason is None else 'not good'}")
+
+
+def _kinds(attention) -> dict:
+    """The needs-attention groups by kind; none while the readiness is not evaluated."""
+    return {g.kind: g for g in attention.groups} if attention is not None and attention.evaluated else {}
+
+
+def _rf_reason(c, groups) -> str | None:
+    if c.folder is None:
+        return "no resolution folder is set"
+    if c.check_stale:
+        return readiness.FOLDER_CHANGED
+    if c.checked_at is None:
+        return readiness.NOT_CHECKED
+    if c.problem:
+        return c.problem
+    if "resolution_folder" in groups:
+        return groups["resolution_folder"].items[0].reason
+    if "curve_missing" in groups:
+        n = len({(i.scan, i.analyzer) for i in groups["curve_missing"].items})
+        return f"{n} analyzer{' has' if n == 1 else 's have'} no resolution curve"
+    return None
+
+
+def _gpi_reason(saved_path, check, groups) -> str | None:
+    if saved_path is None:
+        return "no gpi folder is chosen"
+    if check is None or check.folder is None or Path(check.folder) != Path(saved_path) \
+            or "gpi_folder_changed" in groups:
+        return readiness.GPI_FOLDER_CHANGED
+    if not check.scans:
+        return "no gpi file matches the imported scans"
+    bad = [s for s in check.scans.values() if not s.accepted]
+    if bad:
+        n = len({s.file for s in bad})
+        return f"{n} gpi file{'' if n == 1 else 's'} not used: {bad[0].problem or 'the file was not used'}"
+    return None
+
+
+def folder_status(summary, settings, attention) -> tuple[FolderStatus | None, FolderStatus | None]:
+    """``(rf, gpi)`` for the setup panel; each None when the card has no such folder (not BL43LXU).
+    Pure over what the GUI's intake holder already read (``summary``, ``settings`` = ``current_settings(root)``
+    or None, ``attention``); reads no file."""
+    if summary is None or summary.curves is None:
+        return None, None
+    c, groups = summary.curves, _kinds(attention)
+    rf = _status("Resolution curves folder", c.folder, _HOW.get(c.source), _rf_reason(c, groups))
+    check = summary.gpi
+    saved = getattr(settings, "gpi_folder", None)
+    if saved is not None:
+        path, how = saved.path, _HOW.get(saved.source)
+    else:
+        path = None if check is None else check.folder
+        how = None if check is None else _HOW.get(check.setting_source)
+    gpi = _status("gpi files folder", path, how, _gpi_reason(path, check, groups))
+    return rf, gpi

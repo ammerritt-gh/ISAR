@@ -32,7 +32,7 @@ from isar.session.workspace import (POLICY_NAME, SESSION_NAME, STATE_NAME, REPOR
 
 from . import intake_view
 from .evaluate import evaluate_model as _evaluate_model
-from .scan_keys import split_key
+from .scan_keys import match_member, split_key
 from .views import (BranchModelView, CampaignView, CardView, CertificationStatusView, FileView,
                     FitView, GroupView, LastIngestView, MasterAssessmentView, ScanView)
 
@@ -348,13 +348,7 @@ class Workspace:
             resolved, unresolved = [], []
             for raw_label in master.members or ():
                 label = str(raw_label)
-                match = by_unit.get(label)
-                if match is None:
-                    try:
-                        candidates = by_scan.get(int(label), [])
-                    except ValueError:
-                        candidates = []
-                    match = candidates[0] if len(candidates) == 1 else None
+                match = match_member(label, by_unit, by_scan)
                 if match is None:
                     unresolved.append(label)
                 elif match not in resolved:
