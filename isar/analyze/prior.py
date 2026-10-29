@@ -607,7 +607,7 @@ class QEWidthSettings:
     ``floor_fwhm``, ``knee_fwhm`` and ``slope`` are operator rulings (2026-10-29); ``corner_fwhm`` and
     ``tail_nats`` are algorithm settings: the corner is the half-width the near-zero ramp uses, and
     the support ends where the penalty reaches ``tail_nats`` (e^-40 of the mass is dropped)."""
-    floor_fwhm: float = 0.25
+    floor_fwhm: float = 1.0
     knee_fwhm: float = 2.0
     slope: float = 1.0
     corner_fwhm: float = 0.05

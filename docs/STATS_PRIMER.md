@@ -393,7 +393,7 @@ Widths and energies stay declared.
 | flat background (counts per point) | flat on `[0, max count]` | the spectrum's highest count |
 | quasi-elastic area (IN8's fixed-width component, `QuasiElastic`) | flat on `(0, scale x exposure x resolution FWHM)` (the v4 rule; out of this recipe's scope) | the exposure, the resolution width |
 | central QE height `qe.h` (BL43LXU) | the height prior, unchanged: flat on `[0, 1.2 x max count]` | the spectrum's highest count |
-| central QE width `qe.width` (BL43LXU, fitted; none when the card pins `quasielastic_fwhm`) | zero below w/4; flat from w/4 to 2w; above 2w the log density falls 1 nat per w, linearly, with no cap in the ruling; renormalised on `[w/4, 2w + 40 w]`, the knee rounded over ±0.05 w; its own recipe id `isar.central-qe-recipe/1` | the resolution FWHM w |
+| central QE width `qe.width` (BL43LXU, fitted; none when the card pins `quasielastic_fwhm`) | zero below w; flat from w to 2w; above 2w the log density falls 1 nat per w, linearly, with no cap in the ruling; renormalised on `[w, 2w + 40 w]`, the knee rounded over ±0.05 w; its own recipe id `isar.central-qe-recipe/1` | the resolution FWHM w |
 
 **The height coordinate.** A peak's amplitude coordinate is its convolved height h (glossary): the
 maximum of its continuous convolved Stokes-side profile, in counts per point at the spectrum's
@@ -469,9 +469,10 @@ grid. Its height is the peak value of its convolved curve, the phonons' conventi
 above applies unchanged. Because the detailed-balance form decays slowly at high energy, its integral
 over all energies is not finite: the **spectral weight** ISAR reports is the integral of the intrinsic
 (unconvolved) shape over the fitted energy window, and is labelled so wherever it is reported. The
-width prior is a penalty, not a cap (operator, 2026-10-29): below w/4 not allowed (the convolved QE
-is the elastic line only in the zero-width limit, and central broadening narrower than w/4 is absorbed
-by the elastic line), flat to 2w ("a bit wider than resolution" costs nothing), then 1 nat per w. Two
+width prior is a penalty, not a cap (operator, 2026-10-29): below w not allowed (a QE narrower than
+about one resolution FWHM can stand in for the elastic line; central broadening narrower than that is
+treated as unresolved and stays with the elastic line; the floor was w/4 until the operator's choice B,
+"1 FWHM should be ok"), flat to 2w ("a bit wider than resolution" costs nothing), then 1 nat per w. Two
 numerical choices are not rulings: the support ends where the penalty reaches 40 nats (the dropped
 tail carries e^-40 of the mass, and the evidence needs a finite box), and the knee at 2w is rounded
 over ±0.05 w, the half-width the near-zero ramp uses, so the fast pass's finite-difference optimiser

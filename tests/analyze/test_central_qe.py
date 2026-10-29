@@ -38,11 +38,13 @@ def test_the_width_density_is_a_normalised_closed_form_distribution():
     w = np.linspace(p.lo, 15.0, 301)       # beyond ~25 meV the CDF is 1 to double precision
     np.testing.assert_allclose(p.ppf(p.cdf(w)), w, atol=1e-9)
     assert p.cdf(p.lo) == 0.0 and p.cdf(p.hi) == 1.0
-    # flat from the floor to the knee's corner, then 1 nat per FWHM (slope 1/fwhm per meV)
+    # the support starts at one resolution FWHM (operator, 2026-10-29: a narrower QE can stand in
+    # for the elastic line), flat to 2 FWHM, then 1 nat per FWHM (slope 1/fwhm per meV)
+    assert p.lo == pytest.approx(1.13) and p.log_pdf(0.99 * 1.13) == -math.inf
     assert p.log_pdf(p.lo) == pytest.approx(p.log_pdf(p.knee - 1.5 * p.corner))
     assert p.log_pdf(8.0) - p.log_pdf(5.0) == pytest.approx(-(8.0 - 5.0) / 1.13)
     assert p.log_pdf(p.lo - 1e-6) == -math.inf and p.log_pdf(p.hi + 1e-6) == -math.inf
-    flat = p.log_pdf(1.0)
+    flat = p.log_pdf(p.lo)
     assert flat - p.log_pdf(6.0) == pytest.approx(3.3, abs=0.05)
     assert flat - p.log_pdf(23.0) == pytest.approx(18.35, abs=0.05)
     assert flat - p.log_pdf(p.hi) == pytest.approx(40.0, abs=1e-9)    # the support ends at 40 nats
