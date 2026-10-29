@@ -257,3 +257,106 @@ def test_the_fingerprint_the_runner_stamps_is_the_one_the_writer_checks(tmp_path
     assert lines[stay].inputs == _now(ws, [stay])[stay] == stored is not None
     assert lines[stay].accept.decision == "authoritative"
     assert (lines[moved].accept.decision, lines[moved].accept.reason) == ("declined", "inputs_changed")
+
+
+# ---------------------------------------------------------------------------
+# check 2: simultaneous
+# ---------------------------------------------------------------------------
+def _chain(tmp_path, cfgs, fasts=(4.0, 6.0, 9.0)):
+    """One analyzer at 100, 150, 200 K: x - y - z by T-links; the plan's groups are (y) then (x, z)."""
+    ws = _workspace(tmp_path, (100, 150, 200), 1)
+    k = _keys(ws)
+    x, y, z = k["a03", 100.0], k["a03", 150.0], k["a03", 200.0]
+    _set_fast(ws, {u: (f, c) for u, f, c in zip((x, y, z), fasts, cfgs)})
+    return ws, x, y, z
+
+
+def test_a_simultaneous_batch_settles_gauss_seidel_on_one_frozen_stage_1(tmp_path):
+    """Stage 1 on one frozen snapshot, the sweeps in group order (each group sees the earlier groups' new values),
+    two quiet sweeps, then a reopened stage 1 that changes nothing: settled in 3 sweeps and 2 rounds."""
+    ws, x, y, z = _chain(tmp_path, ({"toy": "average"}, {"toy": "keep"}, {"toy": "average"}))
+    bench = Bench(ws)
+    spec = _simultaneous(ws, (x, y, z))
+    log = bench.run(spec)
+    end = log.batches[spec.batch_id].end
+    assert (end["state"], end["sweeps"], end["rounds"]) == ("settled", 3, 2)
+    lines = _lines(ws, spec.batch_id)
+    sweep1 = {r.unit: (r, p) for r, p in lines if r.index == 1}
+    for r, p in sweep1.values():
+        assert p["came_out"]["assignment"]["snapshot_id"] == f"{spec.batch_id}:round1"
+        assert p["came_in"]["stage_id"] == f"{spec.batch_id}:round1"
+        assert "stage1" in p["came_out"]                 # the round's stage 1 rides on its first sweep (E12)
+    assert all("stage1" not in p["came_out"] for r, p in lines if r.index > 1)
+    # Gauss-Seidel: x and z (group 2) are conditioned on y's sweep-1 refit, y (group 1) on their incoming fits
+    y_fit = sweep1[y][0].fit
+    assert [c.fit for c in sweep1[x][0].conditioned_on] == [y_fit]
+    assert {c.fit for c in sweep1[y][0].conditioned_on} == {"fast"}
+    final = {r.unit: p["came_out"]["energies"] for r, p in lines if r.index == 3}
+    assert final[x] == {"B": pytest.approx(5.0)} and final[z] == {"B": pytest.approx(7.5)}
+    assert bench.end().status == "done"
+
+
+def test_a_batch_that_cannot_settle_ends_at_the_cap_and_keeps_its_results(tmp_path):
+    ws, x, y, z = _chain(tmp_path, ({"toy": "oscillate"}, {"toy": "keep"}, {"toy": "keep"}))
+    assert inter_values.save_settings(ws, {"sweep_cap": 4}).ok
+    bench = Bench(ws)
+    spec = _simultaneous(ws, (x, y, z))
+    log = bench.run(spec)
+    end = log.batches[spec.batch_id].end
+    assert (end["state"], end["sweeps"]) == ("did_not_settle", 4)
+    assert bench.end().status == "done_warning" and "did not settle" in bench.end().reason
+    assert sorted(s.index for s in log.stages if s.batch == spec.batch_id) == [1, 2, 3, 4]
+    assert {r.accept.decision for r in log.refits if r.batch == spec.batch_id} == {"authoritative"}
+
+
+def test_a_count_change_in_a_later_round_reopens_the_sweeps(tmp_path):
+    ws, x, y, z = _chain(tmp_path, ({"toy": "average", "change_rounds": [2]}, {"toy": "keep"}, {"toy": "average"}))
+    bench = Bench(ws)
+    spec = _simultaneous(ws, (x, y, z))
+    end = bench.run(spec).batches[spec.batch_id].end
+    assert (end["state"], end["sweeps"], end["rounds"]) == ("settled", 5, 3)
+
+
+def test_refused_members_of_one_group_go_back_and_the_sweep_is_not_quiet(tmp_path):
+    """The user picks a fit for y during sweep 1: x and z (one group, both conditioned on y's batch refit) are
+    refused at save. Both held values go back (sweep 2 starts each from its incoming fit), and no sweep with a
+    refusal is quiet, so the batch never settles on them (the cap ends it) though no toy moves anything."""
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"}, {"toy": "keep"}, {"toy": "keep"}))
+    assert inter_values.save_settings(ws, {"sweep_cap": 3}).ok
+    bench = Bench(ws, _when("sweep", 1, "refine", lambda: inter_values.pick_fit(ws, y, "fast")))
+    spec = _simultaneous(ws, (x, y, z))
+    log = bench.run(spec)
+    lines = _lines(ws, spec.batch_id)
+    refused = {r.unit for r, _ in lines if r.index == 1 and r.accept.decision == "declined"}
+    assert refused == {x, z}
+    assert {r.unit: p["came_in"]["own"]["fit"] for r, p in lines if r.index == 2 and r.unit in (x, z)} == \
+        {x: "fast", z: "fast"}
+    assert log.batches[spec.batch_id].end["state"] == "did_not_settle"
+
+
+def test_a_lock_mid_sweep_is_refused_and_the_member_leaves_the_sweeps(tmp_path):
+    ws, x, y, z = _chain(tmp_path, ({"toy": "average"}, {"toy": "keep"}, {"toy": "average"}))
+    bench = Bench(ws, _when("sweep", 1, "refine", lambda: inter_values.set_lock(ws, x, locked=True, fit_id="fast")))
+    spec = _simultaneous(ws, (x, y, z))
+    log = bench.run(spec)
+    lines = _lines(ws, spec.batch_id)
+    (xr,) = [r for r, _ in lines if r.unit == x]
+    assert (xr.index, xr.accept.reason) == (1, "locked")
+    later_y = [r for r, _ in lines if r.unit == y and r.index > 1]
+    assert later_y and all(c.fit == "fast" for r in later_y for c in r.conditioned_on if c.unit == x)
+    assert log.batches[spec.batch_id].end["state"] == "settled"
+
+
+def test_assignments_that_disagree_on_a_branch_carry_no_factor_for_it(tmp_path):
+    """E18: x assigns its mode to branch B, y (changed, to C) does not carry B; after the stage boundary neither
+    carries a factor for B, and the shared objective over the stage sums without raising."""
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"}, {"toy": "keep", "slots": ["C"], "change_rounds": [1]},
+                                    {"toy": "keep"}))
+    spec = _simultaneous(ws, (x, y))
+    bench = Bench(ws)
+    log = bench.run(spec)
+    sweep1 = {r.unit: p for r, p in _lines(ws, spec.batch_id) if r.index == 1}
+    assert sweep1[x]["came_out"]["assignment"]["slots"] == ["B"]
+    assert sweep1[x]["came_out"]["assignment"]["factors"] == []
+    assert sweep1[y]["came_out"]["assignment"]["factors"] == []
+    assert log.batches[spec.batch_id].end["state"] == "settled"

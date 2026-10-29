@@ -430,7 +430,7 @@ class _Run:
         if spec.kind == "anchored":
             self.anchored()
         else:
-            raise _Ended("failed", "a simultaneous batch is not built yet")
+            self.simultaneous()
 
     def usable(self, units) -> list[str]:
         """Members that may be refitted and may condition: prepared, with a current fast pass (E10)."""
@@ -713,6 +713,165 @@ class _Run:
                                  "text": f"identity across this seam: {s['issue'].replace('_', ' ')}"},
                         "report": _plain(s)})
         return out
+
+    # -- simultaneous (E15)
+    def simultaneous(self) -> None:
+        from isar.analyze.coupled.types import TermInput
+        from isar.session.inter_spectra.preview import preview_simultaneous
+        from isar.session.inter_spectra.schedule import check_groups, plan_simultaneous
+        g, s = self.graph, self.settings
+        plan = plan_simultaneous(g, self.locks | self.stale_locks)
+        check_groups(plan)
+        self.ring_of = None
+        self.fixed = {u: "lock" for u in plan.held if u in self.locks}
+        held = {u: self.incoming[u] for u in self.fixed if u in self.incoming}
+        active = set()
+        for u in self.members:
+            if u in self.fixed or u in self.stale_locks:
+                continue
+            if u in plan.not_coupled:
+                self.not_reached.setdefault(u, plan.not_coupled[u])
+            elif u in self.incoming:
+                active.add(u)
+                held[u] = self.incoming[u]
+            else:
+                self.mark_unusable(u)
+        self.open_pool(len(active))
+        self.of = s.sweep_cap
+        self.start(anchors=(), rings={}, seams=[], preview=preview_simultaneous(g, plan).text, terms=plan.terms)
+        self.stage_name, self.sweeps, self.rounds = "plan", 0, 0
+        self.progress("plan")
+
+        def terms_of(k, state):
+            """Every term of ``k`` whose other members all have a held value (an unusable one conditions none)."""
+            out = []
+            for i in plan.terms_of.get(k, ()):
+                t = plan.terms[i]
+                others = [m for m in t.members if m != k]
+                if all(m in state for m in others):
+                    out.append(TermInput(t, tuple(state[m] for m in others)))
+            return out
+
+        def leave(new):
+            for u in new:
+                active.discard(u)
+
+        cache: dict = {}                                 # unit -> {job key: Priced}, kept across rounds
+        data, unary = {}, {}
+        prev_total, outcome = None, "settled"
+        while True:                                      # one round
+            self.rounds += 1
+            self.round = self.rounds
+            sid = f"{self.batch}:round{self.rounds}"
+            t_round = time.perf_counter()
+            leave(self.take_new_locks(held))
+            snaps = {}
+            for k in sorted(active):
+                terms = terms_of(k, held)
+                if terms:
+                    snaps[k] = self.snapshot(k, held[k], sid, terms)
+                else:
+                    active.discard(k)
+                    self.not_reached.setdefault(k, CUT_OFF)
+            if not snaps:
+                break
+            self.stage_name, self.index = "sweep", self.sweeps
+            self.progress("assign")
+            A = self.assign(snaps, cache)                # one frozen state for the whole round
+            ids, refs = self.identity(A, snaps, dict(held), sid)
+            A, rename = canonical_factors(A, ids, refs, {u: h for u, h in held.items() if u not in A})
+            held = {u: _renamed(h, rename) for u, h in held.items()}
+            self.stage_timing("round", self.rounds, t_round, len(snaps), 0)
+            if self.rounds > 1 and not any(a.changed for a in A.values()):
+                break                                    # the previous round ended quiet on this very state
+            stage1 = {k: {"round": self.rounds, "assignment": _plain(A[k]),
+                          "identity": {str(m): {"id": ids.ids.get(ref), "status": ids.status.get(ref)}
+                                       for m, ref in enumerate(refs[k])}} for k in A}
+            quiet = 0
+            while True:
+                if self.sweeps >= s.sweep_cap:
+                    outcome = "did_not_settle"
+                    break
+                t_sweep = time.perf_counter()
+                leave(self.take_new_locks(held))         # E11: a new lock leaves the sweeps as a fixed neighbour
+                before = dict(held)
+                n = self.sweeps + 1
+                self.stage_name, self.index = "sweep", n
+                self.progress("refine")
+                move, width, snaps2, R_all = 0.0, 0, {}, {}
+                for group in plan.groups:                # E8: Gauss-Seidel, each group sees the earlier groups
+                    ks = [k for k in group if k in active and k in A]
+                    if not ks:
+                        continue
+                    width = max(width, len(ks))
+                    gs = {k: self.snapshot(k, held[k], f"{self.batch}:sweep{n}", terms_of(k, held), stage_id=sid)
+                          for k in ks}
+                    R = self.refits(gs, A)
+                    for k in ks:
+                        r = R[k]
+                        snaps2[k], R_all[k] = gs[k], r
+                        if not isinstance(r, Exception) and r.status in _ELIGIBLE and r.fit is not None:
+                            old = {m.branch: m.omega0 for m in held[k].modes}
+                            move = max([move, *(abs(e - old[b]) for b, e in r.energies.items() if b in old)])
+                            held[k] = self.core.held_from_fit(r.fit, unit=k, fit=gs[k].fit_id,
+                                                              inputs=self.inputs.get(k), context=self.ctx[k],
+                                                              T=self.nodes[k].T)
+                            data[k], unary[k] = r.D, r.unary
+                self.sweeps = n
+                total = self.total(A, held, data, unary)
+                entries = [self.entry(k, snaps2[k], R_all[k], self.identity_flags(ids, k), stage1.pop(k, None))
+                           for k in snaps2]
+                verdict = self.save_stage("sweep", n, entries, [])
+                for k, snap in snaps2.items():
+                    if self.judge(k, R_all[k], verdict, snap.fit_id):
+                        self.records[snap.fit_id] = R_all[k].fit
+                    elif k in verdict["refused"]:        # E9: every refused member goes back, and the sweep is not quiet
+                        held[k] = before[k]
+                        move = math.inf
+                        if verdict["refused"][k] in (self.records_mod.REFUSED["locked"],
+                                                     self.records_mod.REFUSED["inputs_changed"]):
+                            active.discard(k)
+                self.stage_timing("sweep", n, t_sweep, width, len(snaps2))
+                self.progress("save")
+                quiet =quiet + 1 if move <= s.sweep_tol_meV else 0
+                improving = (prev_total is not None and total is not None
+                             and (prev_total - total) > s.cost_rel_tol * max(1.0, abs(prev_total)))
+                prev_total = total
+                if quiet >= 2 and not improving:         # converged; reopen counts and assignments next round
+                    break
+            if outcome == "did_not_settle":
+                break
+        self.drift = self.drift_of(held)
+        if outcome == "did_not_settle":
+            self.end("did_not_settle", f"did not settle within {s.sweep_cap} sweeps; its results are kept")
+        else:
+            self.end(outcome)
+
+    def total(self, A: dict, held: dict, data: dict, unary: dict) -> float | None:
+        """The one shared objective over the stage's factor set at the held energies (spec 4). A factor whose
+        member no longer carries its branch (its refit went back) is left out of this diagnostic sum."""
+        factors = {}
+        for a in A.values():
+            for f in a.factors:
+                factors.setdefault(f.factor_id, f)
+        energies, kept = {}, []
+        for fid, f in factors.items():
+            vals = {}
+            for m in f.members:
+                md = next((x for x in held[m].modes if x.branch == f.branch_id), None) if m in held else None
+                if md is None:
+                    break
+                vals[(m, fid)] = md.omega0
+            else:
+                energies.update(vals)
+                kept.append(f)
+        try:
+            total, _ = self.core.total_objective(kept, energies, {k: v for k, v in data.items() if v is not None},
+                                                 unary)
+        except ValueError:
+            log.exception("batch %s: the shared objective could not be summed", self.batch)
+            return None
+        return float(total)
 
     def drift_of(self, held: dict) -> dict | None:
         """Cumulative T drift per (series, analyzer, branch) over the final held fits (an endpoint diagnostic)."""
