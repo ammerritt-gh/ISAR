@@ -206,6 +206,16 @@ def save_results(workspace_root: Path | str, payloads: Sequence[dict]) -> list[s
     return verdicts
 
 
+def save_inter(workspace_root, payloads: Sequence[dict]) -> list[dict | str]:
+    """Inter-spectra payloads (``isar.inter-result/1``), under the write lock: validate all, then apply in order.
+
+    Per payload: a verdict dict ``{"saved": True, "accepted": {unit: fit_id}, "refused": {unit: reason}}`` or a
+    str (nothing of that payload was written). Raises PayloadError for a non-sequence; OSError and WorkspaceBusy
+    propagate. Filled by S1U5; ``isar.session.inter_spectra.records`` holds the file contract.
+    """
+    raise NotImplementedError("stub: filled by S1U5")
+
+
 # --- the merge for a writer that holds a whole session snapshot (isar ingest) -----------------------
 def _dumps(obj) -> str:
     return json.dumps(_json.to_jsonable(obj), sort_keys=True)     # NaN allowed, as the ledger writes it
