@@ -205,3 +205,15 @@ def test_gpi_folder_setting_refuses_like_the_resolution_folder(tmp_path):
     assert not again.ok and again.reason.startswith("a gpi folder is already saved")
     s = settings.current_settings(ws)
     assert s.gpi_folder.path == str(found.resolve()) and s.resolution_folder is None
+
+
+def test_a_named_curve_is_mapped_for_every_scan_of_the_check_not_just_the_first(exp):
+    # the named set loads once per check; a later scan with an analyzer the first lacks still gets its curve
+    root, card, data, rows = exp
+    write_library(root / "rf", {"40x40": 1.3}, ("a05",), prefix="sarf_z")
+    write_gpi(data, SET, q_nm=Q, hkl=HKL)
+    rows["Smp:1"]["analyzers"].pop("a05")
+    rows["Smp:2"] = {**rows["Smp:1"], "scan": "Smp:2", "analyzers": {d: {"Q_nm": q} for d, q in Q.items()}}
+    s = check_gpi(root, card, [data], by="import", rows=rows).scans
+    assert s["Smp:1"].accepted and s["Smp:2"].accepted
+    assert s["Smp:2"].curves["a05"]["file"] == "sarf_z_s1_40_40_a05"

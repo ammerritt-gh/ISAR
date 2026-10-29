@@ -259,20 +259,19 @@ def gpi_folder_in_force(root, data_paths) -> Path | None:
     return None if saved is None else Path(saved.path)
 
 
-def _named_curves(card, root, name: str, analyzers: list[str]) -> tuple[dict[str, dict | None], str | None]:
-    """Each imported analyzer's curve of the named set in the resolution folder in force (None: absent), and
-    why none could be looked up at all (None when the folder was read)."""
+def _named_curves(card, root, name: str) -> tuple[dict[str, dict], str | None]:
+    """Each analyzer's curve of the named set in the resolution folder in force (an absent one is not a key), and
+    why none could be looked up at all (None when the folder was read). Independent of any scan's analyzers."""
     folder, pattern, _source = curves.resolution_location(card, root)
     if folder is None or not pattern:
-        return dict.fromkeys(analyzers), "no resolution folder or pattern is in force"
+        return {}, "no resolution folder or pattern is in force"
     from isar.parsers import sarf   # imported here: the read side never loads a parser
     try:
         lib = sarf.load_named(folder, pattern, name)
     except (OSError, ValueError, re.error) as exc:
         log.warning("gpi files: the named set %s could not be loaded from %s (%s)", name, folder, exc)
-        return dict.fromkeys(analyzers), f"the resolution folder {folder} could not be read ({exc})"
-    by_det = {det: v for (det, _setting), v in sarf.curve_identity(folder, lib).items()}
-    return {det: by_det.get(det) for det in analyzers}, None
+        return {}, f"the resolution folder {folder} could not be read ({exc})"
+    return {det: v for (det, _setting), v in sarf.curve_identity(folder, lib).items()}, None
 
 
 def _setting(card, name: str, first: str | None) -> str | None:
@@ -318,7 +317,7 @@ def _entry(card, root, key: str, row: dict, file: Path, named_cache: dict) -> Gp
     if macro.sarf_name is not None:
         setting = _setting(card, macro.sarf_name, analyzers[0] if analyzers else None)
         if macro.sarf_name not in named_cache:
-            named_cache[macro.sarf_name] = _named_curves(card, root, macro.sarf_name, analyzers)
+            named_cache[macro.sarf_name] = _named_curves(card, root, macro.sarf_name)
         got, why = named_cache[macro.sarf_name]
         named = {det: got.get(det) for det in analyzers}
         if why is not None:
