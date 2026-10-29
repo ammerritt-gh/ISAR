@@ -16,17 +16,24 @@ from isar.workspace_api import ImportSummary
 from isar.workspace_api.spectra import NOT_JUDGED_TEXT, SpectraCache
 from isar.workspace_api.scan_list import (Fact, PooledRow, ScanListSnapshot, ScanSetRow, SpectrumRow,
                                           UnreadFile, natural_key, scan_list)
+from isar.workspace_api.inter_spectra import SpectrumInter
 from isar_gui import status_words
+from isar_gui.inter_words import COLUMN_TIPS, COLUMN_TITLES, SEVERITY_WORDS, reason_sentence
 from isar_gui.selection import ORIGIN_LIST, ORIGIN_OTHER, Selection
 from isar_gui.plain_words import drop_echo, plain_reason
 from isar_gui.theme import DEEP, FAST, PARSED, QUEUE_STATES, Tone, status_tone, summary_tone
 from isar_gui.viewmodels.base import ViewModel
 
-COLUMNS = ("scan", "T", "Q", "parsed", "fast", "deep", "slit", "file")   # model order
-OPTIONAL_COLUMNS = ("fast", "deep", "slit", "file")                      # Columns ▾; the rest always show
+COLUMNS = ("scan", "T", "Q", "parsed", "fast", "deep", "anchor", "flag", "lock", "inter",
+           "slit", "file")                                  # model order
+INTER_COLUMNS = ("anchor", "flag", "lock", "inter")   # a spectrum's inter-spectra state (C-gui-state)
+OPTIONAL_COLUMNS = ("fast", "deep", *INTER_COLUMNS, "slit", "file")    # Columns ▾; the rest always show
 RESULT_COLUMNS = ("fast", "deep")     # these switch on by themselves once that pass has a result or a queue mark
+AUTO_COLUMNS = RESULT_COLUMNS + INTER_COLUMNS    # what the auto rule may switch on, and a hand choice may hold off
 TITLES = {"scan": "Scan", "T": "T", "Q": "Q", "parsed": "Parsed", "fast": "Fast pass",
-          "deep": "Deep pass", "slit": "Slit", "file": "File name"}
+          "deep": "Deep pass", "slit": "Slit", "file": "File name",
+          "anchor": COLUMN_TITLES["anchor"], "flag": COLUMN_TITLES["flag"], "lock": COLUMN_TITLES["lock"],
+          "inter": COLUMN_TITLES["fit"]}
 SORTS = ("set", "temperature", "analyzer")
 # What a column holds, as the header's hover (E1/E2: the result columns are another batch's).
 HEADER_TIPS = {
@@ -37,7 +44,10 @@ HEADER_TIPS = {
                "the file was read but holds no temperature or no Q."),
     "slit": "Slit opening of the scan set, as the files give it (or as you entered it).",
     "file": "The file this spectrum was read from.",
+    "anchor": COLUMN_TIPS["anchor"], "flag": COLUMN_TIPS["flag"], "lock": COLUMN_TIPS["lock"],
+    "inter": COLUMN_TIPS["fit"],
 }
+_SEVERITY_TONE = {"info": Tone.OK, "warn": Tone.WARN, "serious": Tone.ERR}
 _STATE_KEY = "scan_list"
 _DASH = "—"
 REMOVED_TIP = ("Removed from the list: hidden here, from the Scans page and from the selection, but its data and "
@@ -136,6 +146,56 @@ def _coverage_cell(spectra, column: str, current, marks, what: str) -> Cell:
     return Cell(text, tip, summary_tone(tones), stale > 0)
 
 
+def _count_cell(have: int, total: int, what: str, tone: Tone | None = None) -> Cell:
+    """The ``3/28`` of a set or an analyzer's inter-spectra column; blank when none, as the coverage cells read."""
+    if not have:
+        return Cell("")
+    return Cell(f"{have}/{total}", f"{have} of {total} spectra {what}", tone)
+
+
+def _score(value: float | None) -> str:
+    return "not available" if value is None else f"{value:g}"
+
+
+def _anchor_cell(anchored: bool) -> Cell:
+    if not anchored:
+        return Cell("")
+    return Cell("anchor", COLUMN_TIPS["anchor"], Tone.OK)
+
+
+def _flag_cell(row: SpectrumInter | None) -> Cell:
+    if row is None or row.flag is None:
+        return Cell("")
+    flag = row.flag
+    head = (f"Score {_score(flag.score)}: cost of coupling {_score(flag.cost_of_coupling)} plus the largest link "
+            f"mismatch {_score(flag.link_mismatch)}.")
+    lines = [head, *(reason_sentence(r.code, r.detail) for r in flag.reasons)]
+    return Cell(SEVERITY_WORDS[flag.severity], "\n".join(lines), _SEVERITY_TONE[flag.severity])
+
+
+def _lock_cell(row: SpectrumInter | None) -> Cell:
+    if row is None or not row.locked:
+        return Cell("")
+    tip = "Locked: no batch will refit this spectrum."
+    if row.locked_fit_id:
+        tip += f" It stays on fit {row.locked_fit_id}."
+    if row.lock_stale:
+        return Cell("locked · stale", f"{tip}\n{reason_sentence('stale_locked_fit')}", Tone.WARN)
+    return Cell("locked", tip, Tone.OK)
+
+
+def _fit_cell(row: SpectrumInter | None) -> Cell:
+    if row is None:
+        return Cell("")
+    if row.in_use:
+        tip = f"{row.label}: the fit ISAR uses for this spectrum. The fast solo fit stays available beside it."
+        return Cell(row.label, tip, Tone.OK)
+    if row.stale:
+        tip = row.stale_text or "Its inter-spectra fits are out of date; the fast solo fit stands in until a new batch."
+        return Cell("stale: fast solo stands in", tip, Tone.WARN)
+    return Cell("")
+
+
 def _temperature(fact: Fact) -> float | None:
     v = fact.value
     return float(v) if isinstance(v, (int, float)) else None
@@ -164,8 +224,8 @@ def _status_words(row) -> list[str]:
     return out
 
 
-def spectrum_matches(terms, ss: ScanSetRow, sp: SpectrumRow) -> bool:
-    hay = (sp.analyzer, ss.label, sp.file_name, *_status_words(sp))
+def spectrum_matches(terms, ss: ScanSetRow, sp: SpectrumRow, inter=()) -> bool:
+    hay = (sp.analyzer, ss.label, sp.file_name, *_status_words(sp), *inter)
     return all(_term_hits(t, ss.temperature, hay) for t in terms)
 
 
@@ -202,6 +262,8 @@ class ScanListViewModel(ViewModel):
         self._store = None                    # the experiment's GuiStore, which keeps the removed scans
         self._removed: set[str] = set()       # scans removed from this list: hidden here, kept everywhere else
         self._show_removed = False            # the Show removed toggle: removed scans listed greyed
+        self._inter = None                    # the window's InterState (set_inter): anchors, flags, locks, fits
+        self._inter_revision = ""
         self._auto = self._auto_columns()
         self.selection.set_order(self._order_keys)
         self.selection.changed.connect(self._on_selection_changed)
@@ -241,6 +303,52 @@ class ScanListViewModel(ViewModel):
             self._auto = self._auto_columns()
             self.snapshot_changed.emit()
 
+    def set_inter(self, inter) -> None:
+        """The window's InterState: the anchors, flags, locks and fits in use the list shows (``None``: none)."""
+        if self._inter is not None:
+            self._inter.changed.disconnect(self._on_inter_changed)
+        self._inter = inter
+        if inter is not None:
+            inter.changed.connect(self._on_inter_changed)
+        self._on_inter_changed()
+
+    def _on_inter_changed(self) -> None:
+        """Rebuild only when the revision moved: InterState emits ``changed`` on every read, most with nothing new."""
+        revision = "" if self._inter is None else self._inter.revision
+        if revision != self._inter_revision:
+            self._inter_revision = revision
+            self._auto = self._auto_columns()
+            self.snapshot_changed.emit()
+
+    def _inter_row(self, key: str) -> SpectrumInter | None:
+        return None if self._inter is None else self._inter.row(key)
+
+    def _anchored(self) -> frozenset[str]:
+        return frozenset() if self._inter is None else frozenset(self._inter.anchors)
+
+    def is_anchor(self, key: str) -> bool:
+        return key in self._anchored()
+
+    def _inter_words(self, key: str) -> list[str]:
+        """The words the filter matches for a spectrum's inter-spectra state, as it matches its passes' words."""
+        row = self._inter_row(key)
+        words = ["anchor"] if key in self._anchored() else []
+        if row is not None:
+            words += (["flagged"] if row.flag is not None else []) + (["locked"] if row.locked else [])
+            words += [row.label] if row.in_use else []
+        return words
+
+    def selected_fast_keys(self) -> tuple[str, ...]:
+        """The selected spectra that hold a fast-pass result: the only ones an anchor can be set on."""
+        return tuple(key for key in self.selected_spectra() if self._snapshot.spectrum(key).fast.stored)
+
+    def set_anchor_selected(self, anchored: bool) -> None:
+        """Set or remove the anchor on the selected spectra with a fast-pass result. InterState shows the outcome
+        (its ``saved`` goes to the Log), so a refused write is not repeated here."""
+        keys = self.selected_fast_keys()
+        if keys and self._inter is not None:
+            self._inter.set_anchors(keys, anchored)
+
     @property
     def sort(self) -> str:
         return self._sort
@@ -269,13 +377,18 @@ class ScanListViewModel(ViewModel):
         return (self._sort, self._filter_text, frozenset(self._optional), frozenset(self._hidden), self._show_removed)
 
     def _auto_columns(self) -> set[str]:
-        """The result columns to show by themselves: a stored record of that pass exists or the queue marks one, and
-        the user has not switched the column off."""
+        """The columns to show by themselves: a result column when a stored record of that pass exists or the queue
+        marks one; an inter-spectra column when a listed spectrum has that state. The user's hand choice wins."""
         snap = self._snapshot
         rows = [sp for ss in snap.sets for sp in ss.spectra] + list(snap.pooled)
         queued = {p for mine in self._marks.values() for p in mine}
-        return {c for c in RESULT_COLUMNS if c not in self._hidden
+        auto = {c for c in RESULT_COLUMNS if c not in self._hidden
                 and (c in queued or any(getattr(r, c).stored for r in rows))}
+        anchored = self._anchored()
+        states = [i for i in (self._inter_row(r.key) for r in rows) if i is not None]
+        lit = {"anchor": any(r.key in anchored for r in rows), "flag": any(s.flag is not None for s in states),
+               "lock": any(s.locked for s in states), "inter": any(s.in_use for s in states)}
+        return auto | {c for c in INTER_COLUMNS if lit[c] and c not in self._hidden}
 
     def column_title(self, column: str) -> str:
         """The header; ``Q`` and ``T`` carry their unit when every present value has the same one."""
@@ -532,7 +645,7 @@ class ScanListViewModel(ViewModel):
         sets = []
         for ss in self._sorted_sets():
             listed = [sp for sp in ss.spectra if self._listed(sp.key)]
-            spectra = [sp for sp in listed if spectrum_matches(terms, ss, sp)]
+            spectra = [sp for sp in listed if spectrum_matches(terms, ss, sp, self._inter_words(sp.key))]
             if spectra or (listed and not terms):
                 sets.append((ss, spectra))
         files = [f for f in self._snapshot.files_not_read if file_matches(terms, f)]
@@ -595,6 +708,7 @@ class ScanListViewModel(ViewModel):
             "deep": _coverage_cell(ss.spectra, DEEP, self._current_map, self._marks, "analyzers"),
             "slit": _fact_cell(ss.slit),
             "file": Cell(""),
+            **self._inter_counts(ss.spectra),
         }
         children = tuple(self._spectrum_node(sp, with_unit) for sp in spectra)
         return Node(f"set:{ss.key}", "set", None, cells, children, name, description)
@@ -617,8 +731,27 @@ class ScanListViewModel(ViewModel):
             "slit": Cell(""),
             "file": (Cell(sp.file_name, sp.file_path or sp.file_name) if sp.file_name
                      else Cell(_DASH, "the analyzer's file cannot be told")),
+            "anchor": _anchor_cell(self.is_anchor(sp.key)),
+            "flag": _flag_cell(self._inter_row(sp.key)),
+            "lock": _lock_cell(self._inter_row(sp.key)),
+            "inter": _fit_cell(self._inter_row(sp.key)),
         }
         return Node(f"spec:{sp.key}", "spectrum", sp.key, cells, removed=removed)
+
+    def _inter_counts(self, spectra) -> dict[str, Cell]:
+        """The four inter-spectra cells of a set or an analyzer: how many of its spectra are anchors, flagged, locked
+        or on an inter-spectra fit."""
+        anchored = self._anchored()
+        rows = [self._inter_row(sp.key) for sp in spectra]
+        n = len(spectra)
+        severities = [r.flag.severity for r in rows if r is not None and r.flag is not None]
+        return {
+            "anchor": _count_cell(sum(sp.key in anchored for sp in spectra), n, "are anchors"),
+            "flag": _count_cell(len(severities), n, "are flagged for review",
+                                summary_tone(_SEVERITY_TONE[s] for s in severities)),
+            "lock": _count_cell(sum(r is not None and r.locked for r in rows), n, "are locked"),
+            "inter": _count_cell(sum(r is not None and r.in_use for r in rows), n, "use an inter-spectra fit"),
+        }
 
     def _analyzer_nodes(self, sets, with_unit: bool) -> list[Node]:
         """The analyzer flip: one top row per analyzer, every scan set's spectrum beneath it."""
@@ -645,6 +778,7 @@ class ScanListViewModel(ViewModel):
                                         "spectra read"),
                 "fast": _coverage_cell(all_sp, FAST, self._current_map, self._marks, "spectra"),
                 "deep": _coverage_cell(all_sp, DEEP, self._current_map, self._marks, "spectra"),
+                **self._inter_counts(all_sp),
             }
             nodes.append(Node(f"ana:{ana}", "analyzer", None, cells, children, name, description))
         return nodes
@@ -664,7 +798,7 @@ class ScanListViewModel(ViewModel):
     def save_view_state(self, session) -> None:
         session.view_state[_STATE_KEY] = {
             "columns": [c for c in OPTIONAL_COLUMNS if c in self._optional], "sort": self._sort,
-            "hidden": [c for c in RESULT_COLUMNS if c in self._hidden],      # not the auto-on ones: per experiment
+            "hidden": [c for c in AUTO_COLUMNS if c in self._hidden],        # not the auto-on ones: per experiment
             "show_removed": self._show_removed}
 
     def load_view_state(self, session) -> None:
@@ -675,7 +809,7 @@ class ScanListViewModel(ViewModel):
         optional = {c for c in cols if c in OPTIONAL_COLUMNS} if isinstance(cols, list) else self._optional
         sort = st.get("sort") if st.get("sort") in SORTS else self._sort
         off = st.get("hidden")
-        hidden = {c for c in off if c in RESULT_COLUMNS} if isinstance(off, list) else self._hidden
+        hidden = {c for c in off if c in AUTO_COLUMNS} if isinstance(off, list) else self._hidden
         show = st.get("show_removed")
         show_removed = show if isinstance(show, bool) else self._show_removed
         if optional != self._optional or sort != self._sort or hidden != self._hidden or show_removed != self._show_removed:

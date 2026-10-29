@@ -34,6 +34,9 @@ _HINT = "Select an analyzer row, then double-click it or press Open inspector."
 _HINT_NONE = "Select an analyzer row, or a scan-set row for all its analyzers, to open the inspector."
 _NEW_CONTAINER_KINDS = ("set", "analyzer")
 REMOVE_TEXT, RESTORE_TEXT, READ_TEXT = "Remove from list", "Restore to list", "Read source file again"
+REMOVE_TIP = "Hide the selected scans from this list, the Scans page and the selection. Their data and fits are kept."
+RESTORE_TIP = "Bring the selected removed scans back into this list."
+NO_FAST_TIP = "Select spectra that have a fast-pass result."
 
 GUTTER = 24
 
@@ -229,9 +232,11 @@ class ScanListPanel(QWidget):           # acts through the VM; asks the window o
 
         self._column_actions: dict[str, QAction] = {}
         column_menu = QMenu(self)
+        column_menu.setToolTipsVisible(True)
         for column in OPTIONAL_COLUMNS:
             action = column_menu.addAction(TITLES[column])
             action.setCheckable(True)
+            action.setToolTip(self._vm.header_tip(column))
             action.toggled.connect(lambda on, c=column: self._on_column_toggled(c, on))
             self._column_actions[column] = action
         self._columns_button = self._menu_button("Columns ▾", column_menu, "Choose the columns")
@@ -245,6 +250,7 @@ class ScanListPanel(QWidget):           # acts through the VM; asks the window o
                                         "Select them and choose Restore to list to bring them back.")
         self._removed_button.clicked.connect(self._vm.set_show_removed)
         self._row_menu = QMenu(self)          # the right-click menu on a scan row, rebuilt each time it opens
+        self._row_menu.setToolTipsVisible(True)
 
         self._model = QStandardItemModel(0, len(COLUMNS), self)
         self._view = _ScanTree(self)
@@ -356,18 +362,37 @@ class ScanListPanel(QWidget):           # acts through the VM; asks the window o
         menu = self._row_menu
         menu.clear()
         if any(not vm.is_removed(k) for k in keys):
-            self._add_action(menu, REMOVE_TEXT, vm.remove_selected)
+            self._add_action(menu, REMOVE_TEXT, vm.remove_selected, REMOVE_TIP)
         if any(vm.is_removed(k) for k in keys):
-            self._add_action(menu, RESTORE_TEXT, vm.restore_selected)
+            self._add_action(menu, RESTORE_TEXT, vm.restore_selected, RESTORE_TIP)
+        has_fast = bool(vm.selected_fast_keys())
+        if any(not vm.is_anchor(k) for k in keys):
+            self._anchor_action(menu, "Set as anchor", True, has_fast)
+        if any(vm.is_anchor(k) for k in keys):
+            self._anchor_action(menu, "Remove anchor", False, has_fast)
         read = self._add_action(menu, READ_TEXT, lambda: self.read_again_requested.emit(keys))
         read.setEnabled(bool(keys))
         read.setToolTip("Read the selected scans' files again, as a drop does. Hidden scans stay hidden."
                         if keys else "Select one or more scans first.")
         menu.popup(self._view.viewport().mapToGlobal(point))
 
+    def _anchor_action(self, menu: QMenu, text: str, anchored: bool, has_fast: bool) -> None:
+        """Set or remove the anchor on the selected spectra; with none holding a fast-pass result it is disabled, and
+        the tooltip says why."""
+        if not has_fast:
+            tip = NO_FAST_TIP
+        elif anchored:
+            tip = ("Mark the selected spectra as anchors. An anchored batch grows outward from them, "
+                   "and they are never refitted.")
+        else:
+            tip = "Take the selected spectra off the anchors list. Their fits are not changed."
+        action = self._add_action(menu, text, lambda: self._vm.set_anchor_selected(anchored), tip)
+        action.setEnabled(has_fast)
+
     @staticmethod
-    def _add_action(menu: QMenu, text: str, slot) -> QAction:
+    def _add_action(menu: QMenu, text: str, slot, tip: str = "") -> QAction:
         action = menu.addAction(text)
+        action.setToolTip(tip)
         action.triggered.connect(lambda _checked=False: slot())
         return action
 
