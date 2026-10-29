@@ -44,7 +44,7 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | Scan(s) view: Inter-spectra fitting menu, Make authoritative, Lock, reasons, error-bar label, waterfall | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/inter_fit_bar.py`, `isar_gui/viewmodels/scans_page.py`, `inter_fits.py` | `tests/gui/test_inter_fit_bar.py`, `test_inter_fits.py`, `test_scans_page_inter.py` |
 | Config > Inter-spectra fitting settings | Implemented | `isar_gui/main_window.py`, `isar_gui/views/inter_settings_dialog.py` | `tests/gui/test_inter_settings_dialog.py` |
 | Export and run report show the authoritative fit, labelled | Implemented | `isar/report/export.py`, `isar/report/run_report.py` | `tests/report/test_export_inter.py`, `tests/session/test_run_report_inter.py` |
-| Real-data proof and the timing record | Planned: not yet written, not run | — | — |
+| Real-data proof and the timing record | Partial: written and gated (`ISAR_LETACON_INTER=1`), not yet run on the real set | `proofs/test_letacon_inter_spectra.py`, `proofs/inter_spectra_checks.py` | `tests/test_inter_spectra_proof_checks.py` |
 
 ## 2. Terms
 
@@ -382,6 +382,6 @@ entry points here.
 ## 10. Measured so far
 
 Nothing about this pass has been measured on real data, and no timing has been taken on a real row. The
-real-data proof and the timing record are Planned (section 1). When either is run, a dated line goes here
+real-data proof and the timing record are Partial (section 1): the proof is written and has not been run. When either is run, a dated line goes here
 with its timing and flag results and no data values, because measured values never enter committed text
 (AGENTS.md hard rule 10).

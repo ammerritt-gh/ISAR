@@ -45,7 +45,7 @@ area.
   development** — the gate runs only when the owner names it (`ISAR_GOLDEN=1`, or
   `tools\run-isar-proofs.bat golden`). The le Tacon fast-pass proof (`proofs/test_letacon_fast_pass.py`, one to
   two hours: two 28-spectrum batches and the prior sensitivity check) is gated the same way and runs
-  only on `ISAR_LETACON=1`, or `tools\run-isar-proofs.bat letacon`.
+  only on `ISAR_LETACON=1`, or `tools\run-isar-proofs.bat letacon`. The inter-spectra proof (`proofs/test_letacon_inter_spectra.py`, hours: both temperatures through the analysis service) is gated the same way on `ISAR_LETACON_INTER=1`, or `tools\run-isar-proofs.bat inter`.
   A job worktree runs a proof on the main checkout's data with `ISAR_REAL_DATA=<main checkout>\real_data` (read only).
 - **Data folders.** `real_data/` — gitignored, main checkout only: the real facility files, each
   proof's measured expectations in `<proof stem>.expect.json` beside its data, and the sealed
