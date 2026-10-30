@@ -197,6 +197,7 @@ class _Pool:
                     out[key] = exc
                 finally:
                     self._note(key, False)
+                    self._tick(True)              # the job is back: publish it before the save waits on the ack
             return out
         if self.broken is not None:
             raise self.broken
@@ -232,6 +233,7 @@ class _Pool:
                     out[key] = exc
                 self._note(key, False)
             self._tick(False)                 # flushes a throttled transition
+        self._tick(True)                      # and the last one, which a throttle could have held back
         return {key: out[key] for key, _a, _k in calls}      # the order of calls, as before
 
     def close(self) -> None:

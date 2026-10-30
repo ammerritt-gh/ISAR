@@ -267,6 +267,19 @@ def test_a_pool_that_breaks_mid_stage_fails_the_rest_of_that_stage_and_the_next_
         pool.map("neg", [(i, (i,), {}) for i in range(2)])
 
 
+def test_a_map_ends_with_a_forced_publish_and_nothing_in_flight(monkeypatch):
+    # a throttled transition must not be the last word: the job that returned has to reach the members map
+    monkeypatch.setattr(_DyingPool, "ALIVE", 99)
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", _DyingPool)
+    for workers, calls in ((1, [(0, (1,), {})]), (2, [(i, (i,), {}) for i in range(3)])):
+        flying, seen = set(), []
+        pool = runner._Pool(operator, workers, watch=lambda k, on: flying.add(k) if on else flying.discard(k),
+                            tick=lambda force: seen.append((force, frozenset(flying))))
+        pool.map("neg", calls)
+        force, in_flight = seen[-1]
+        assert force and not in_flight, (workers, seen)
+
+
 @pytest.mark.parametrize("kind", ["anchored", "simultaneous"])
 def test_the_callback_and_the_pool_change_no_fit_count_save_or_progress(tmp_path, monkeypatch, kind):
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, [str(HERE), os.environ.get("PYTHONPATH")])))
