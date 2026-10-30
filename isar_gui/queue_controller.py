@@ -55,9 +55,14 @@ _PASSES = ("fast", "deep")
 _LOOK = ("held", "failed", "done_warning")             # what "needs a look" counts; stopped is the user's own act
 _COMPLETE = ("done", "done_warning", "already_current")  # settled with a result in the folder (or one already there)
 _PROGRESS_KEYS = ("pass", "phase", "step", "of", "stage", "stages", "kind", "index", "round", "done", "failed",
-                 "not_reached", "fixed", "total")
+                 "not_reached", "fixed", "total", "failed_reasons", "not_reached_reasons")
 _CRASH = "the analysis process ended unexpectedly; see {log}"
 _UNCONFIRMED = "not confirmed saved; re-add it"
+
+
+def _pairs(reasons) -> tuple[tuple[str, int], ...]:
+    """The runner's [[reason, n], ...] as tuples; nothing (an older event) gives ()."""
+    return tuple((str(why), int(n)) for why, n in reasons or ())
 
 
 # ---- what the views read ------------------------------------------------------------------------------
@@ -111,10 +116,11 @@ class BatchView:                  # one inter-spectra batch: the dock's row (C-q
     n_total: int                  # the scope's members
     cores: int | None             # running only
     progress: Mapping | None      # the latest progress keys the service sent
-    not_reached_reasons: tuple[tuple[str, int], ...]   # always () for now: the protocol sends counts, not reasons
+    not_reached_reasons: tuple[tuple[str, int], ...]   # the runner's [reason, n] pairs, as sent; () when none
     started_at: float | None
     step_started_at: float | None
     finished_at: float | None
+    failed_reasons: tuple[tuple[str, int], ...] = ()   # the same for failed spectra, in the runner's words
 
 
 @dataclass(frozen=True)
@@ -389,8 +395,10 @@ class QueueController(QObject):
         return BatchView(
             item_id=v.item_id, batch_id=spec["batch_id"], label=rec.label, kind=spec["kind"],
             direction=spec["direction"], status=status, reason=reason, n_total=len(spec["members"]),
-            cores=v.cores or None, progress=v.progress, not_reached_reasons=(),
-            started_at=v.started_at, step_started_at=v.progress_at, finished_at=rec.finished_at)
+            cores=v.cores or None, progress=v.progress,
+            not_reached_reasons=_pairs((v.progress or {}).get("not_reached_reasons")),
+            started_at=v.started_at, step_started_at=v.progress_at, finished_at=rec.finished_at,
+            failed_reasons=_pairs((v.progress or {}).get("failed_reasons")))
 
     def _stage_item(self, rec: _Rec, status: str, reason: str | None, at: float) -> ItemView:
         """The fast pass a deep item did first, once saved: a finished fast result in its own right."""
@@ -907,11 +915,14 @@ class QueueController(QObject):
                                                        else _plural(kept, "sweep", "sweeps"))
         if status in ("held", "failed"):
             return f"{status.capitalize()}: {name}: {reason}"
-        if status == "done_warning":
-            return f"Finished with a warning: {name}: {reason}"
         p = v.progress or {}
-        return (f"Batch finished: {name}: {p.get('done', 0)} refitted, {p.get('failed', 0)} failed, "
+        why = "; ".join(f"{n} {w}" for w, n in _pairs(p.get("failed_reasons")))
+        tail = f" (failed: {why})" if why and p.get("failed") else ""      # shared by both finished lines
+        if status == "done_warning":
+            return f"Finished with a warning: {name}: {reason}{tail}"
+        line = (f"Batch finished: {name}: {p.get('done', 0)} refitted, {p.get('failed', 0)} failed, "
                 f"{p.get('not_reached', 0)} not reached")
+        return line + tail
 
     def _log_settled(self, v: _SchedItem, rec: _Rec) -> None:
         status = self._status(v, rec)

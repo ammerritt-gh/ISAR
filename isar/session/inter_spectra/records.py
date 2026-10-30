@@ -24,11 +24,14 @@ SCHEMA_REFIT = "isar.inter-refit/1"
 SCHEMA_SAVE = "isar.inter-result/1"
 ELIGIBLE = ("accepted", "unchanged")        # statuses that are offered fits; "rejected" and "failed" are logged only
 STATUSES = ("accepted", "unchanged", "rejected", "failed")
-# the plain words of a declined refit, by Accept.reason; "{}" is Accept.detail (the neighbour)
+# the plain words of a declined refit, by Accept.reason; "{}" is Accept.detail (the neighbour). The writer
+# compares the hash stamped at the freeze with one computed from the stored rows at save time, so it cannot know
+# when or why they differ: "do not match", never "changed during the batch".
+INPUTS_TAIL = "do not match the experiment's record"
 REFUSED = {"locked": "locked since the batch started",
            "picked": "you picked a fit for it since the batch started",
-           "inputs_changed": "its inputs changed during the batch",
-           "neighbour_inputs_changed": "the inputs of {} changed during the batch",
+           "inputs_changed": "the inputs it was fitted from " + INPUTS_TAIL,
+           "neighbour_inputs_changed": "the inputs of {}, a neighbour it was conditioned on, " + INPUTS_TAIL,
            "neighbour_fit_changed": "the fit of {} it was conditioned on is no longer the one in use"}
 
 

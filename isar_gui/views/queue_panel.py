@@ -48,6 +48,7 @@ _BATCHES_TIP = ("Inter-spectra batches: a second pass that refits spectra agains
 _BATCH_WAIT_TIP = "Waits for the fast passes of its spectra; it starts when cores free up."
 _BATCH_STOP_TIP = ("Stops this batch now and frees its cores. It asks nothing: the rings or sweeps already saved are "
                    "kept, and spectra not reached keep their current fits.")
+_FAILED_SHOWN = 4          # failure reasons written on the row; the hover lists every one (a display setting)
 _BATCH_COUNTS_TIP = ("done: spectra whose refit was saved in this batch. failed: spectra whose latest attempt failed, "
                      "was rejected or could not be saved. not reached: spectra never attempted. Anchors and locked "
                      "spectra are kept as they are and are not counted. Counts are current: a spectrum that failed "
@@ -135,16 +136,28 @@ def batch_progress_text(batch, now: float) -> tuple[str, str]:
     if batch.progress is None and batch.status not in _BATCH_ENDED:
         return "starting", "ISAR has started this batch and has not reported a step yet."
     p = batch.progress or {}
-    counts = [f"{p.get('done', 0)} of {batch.n_total} done"]
+    total, fixed = (p.get("total", batch.n_total) or 0) if p else 0, p.get("fixed", 0)
+    # the engine's own numbers: the to-do count leaves out what stays as it is (anchors, locks); "prepare" has none yet
+    counts = [f"{p.get('done', 0)} of {total - fixed} done"] if total > 0 else []
     if p.get("failed"):
         counts.append(f"{p['failed']} failed")
     if p.get("not_reached"):
         counts.append(f"{p['not_reached']} not reached")
     tips = [_BATCH_COUNTS_TIP]
+    if fixed > 0:
+        tips.append(f"Counts are out of {total - fixed}: this batch covers {total} spectra, and the {fixed} that stay "
+                    "as they are (anchors and locked spectra) are not counted.")
+    if batch.failed_reasons:
+        tips.append("Failed, by reason: " + "; ".join(f"{n} {why}" for why, n in batch.failed_reasons) + ".")
     if batch.not_reached_reasons:
         tips.append("Not reached, by reason: " + ", ".join(f"{n} {why}" for why, n in batch.not_reached_reasons) + ".")
+    shown = batch.failed_reasons[:_FAILED_SHOWN]
+    failures = [f"{n} failed: {why}" for why, n in shown]
+    if len(batch.failed_reasons) > len(shown):
+        more = len(batch.failed_reasons) - len(shown)
+        failures.append(f"+ {more} more {_plural(more, 'reason', 'reasons')}")
     if batch.status in _BATCH_ENDED:
-        return " · ".join(counts), " ".join(tips)
+        return "\n".join([" · ".join(counts) or "no counts were reported", *failures]), " ".join(tips)
     stage, index, of = p.get("stage"), p.get("index"), p.get("of")
     if stage == "ring":
         where = f"ring {index} of {of}" if of is not None else f"ring {index}"
@@ -159,7 +172,7 @@ def batch_progress_text(batch, now: float) -> tuple[str, str]:
     if batch.status == "running" and step is not None:
         text += f" · {fmt_elapsed(now - step)}"
         tips.append("The time is since ISAR last reported a step.")
-    return text, " ".join(tips)
+    return "\n".join([text, *failures]), " ".join(tips)
 
 
 def rail_status(view) -> tuple[str, str]:

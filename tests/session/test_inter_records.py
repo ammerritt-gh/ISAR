@@ -162,8 +162,8 @@ def test_changed_own_or_neighbour_inputs_decline_the_refit(ws):
                                                  _refit(a, nbr, now[a], cond=[(c, "fast", now[c]),
                                                                               (b, "fast", now[b])])])])
     assert v["accepted"] == {}
-    assert v["refused"] == {b: "its inputs changed during the batch",
-                            a: f"the inputs of {b} changed during the batch"}
+    assert v["refused"] == {b: "the inputs it was fitted from do not match the experiment's record",
+                            a: f"the inputs of {b}, a neighbour it was conditioned on, do not match the experiment's record"}
     assert astuple(_accept(ws, own))[:3] == ("declined", "inputs_changed", None)
     assert astuple(_accept(ws, nbr))[:3] == ("declined", "neighbour_inputs_changed", b)
 
@@ -292,7 +292,7 @@ def test_the_fingerprint_file_fit_stamps_is_the_one_save_inter_recomputes(ws):
     assert _now(ws, [unit])[unit] != stamped
     fit2 = records.new_fit_id()
     (v,) = writer.save_inter(ws, [_stage(batch, [_refit(unit, fit2, stamped)], index=2)])
-    assert v["refused"] == {unit: "its inputs changed during the batch"}
+    assert v["refused"] == {unit: "the inputs it was fitted from do not match the experiment's record"}
     assert astuple(_accept(ws, fit2))[:2] == ("declined", "inputs_changed")
     # (3) outside BL43 (no import rows) nothing is judged: None, and the refit is accepted
     (Path(ws) / intake_scans.INTAKE_SCANS).unlink()
