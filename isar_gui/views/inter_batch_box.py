@@ -65,7 +65,7 @@ class InterBatchBox(QWidget):
         self._anchors = QListWidget(self._body)
         self._anchors.setObjectName("inter_anchors")
         self._anchors.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self._anchors.setMaximumHeight(110)
+        self._anchors.setFixedHeight(54)         # three rows; a longer list scrolls inside itself
         self._anchors.setAccessibleName("Anchors list")
         self._anchors.setToolTip(ANCHORS_TIP)
         self._anchors.itemSelectionChanged.connect(self.refresh)
@@ -109,7 +109,7 @@ class InterBatchBox(QWidget):
 
         body = QVBoxLayout(self._body)
         body.setContentsMargins(12, 0, 0, 0)
-        body.setSpacing(4)
+        body.setSpacing(2)
         body.addWidget(self._anchors_heading)
         body.addWidget(self._anchors)
         buttons = QHBoxLayout()
@@ -118,8 +118,10 @@ class InterBatchBox(QWidget):
         body.addLayout(buttons)
         body.addWidget(self._note)
         body.addWidget(self._anchored_heading)
+        choices = QHBoxLayout()             # one row: the box's height is the queue's room
         for radio in self._radios.values():
-            body.addWidget(radio)
+            choices.addWidget(radio)
+        body.addLayout(choices)
         body.addWidget(self._anchored_line)
         body.addWidget(self._start_anchored)
         body.addWidget(self._anchored_reason)

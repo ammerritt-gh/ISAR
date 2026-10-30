@@ -596,6 +596,9 @@ def _assert_tab_order(w, tag):
     for (name, top, _), (_, below, _) in zip(tops, tops[1:]):
         assert top < below, f"{name} must sit above the next landmark"
     assert all(bottom <= p.height() for _, _, bottom in tops), "the queue is squeezed out of the panel"
+    scroll, finished = p.findChild(QScrollArea, "queue_scroll"), _named(p, "queue_finished_heading")
+    assert finished.mapTo(p, QPoint(0, finished.height())).y() <= scroll.mapTo(p, QPoint(0, scroll.height())).y(), \
+        "Finished is below the queue viewport: the queue must scroll to reach it"
     assert walk_hovers(p) == []
     shots = os.environ.get("ISAR_SCREENSHOT_DIR")
     if shots:
