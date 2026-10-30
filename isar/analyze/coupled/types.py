@@ -94,6 +94,7 @@ class Assignment:                  # the frozen discrete decision of one spectru
     search_limited: bool           # spec 3 assignment_search_limited
     changed: bool                  # count or association differs from snapshot.own AND won by the evidence rule (spec 5)
     reasons: tuple[str, ...]       # missing-evidence and failure reasons of the comparison
+    selected_model: tuple | None = None   # the winner's Priced.mode (elastic, background, qe, delta mask, theta in slot order); None: the incoming fit's
 
 
 @dataclass(frozen=True)

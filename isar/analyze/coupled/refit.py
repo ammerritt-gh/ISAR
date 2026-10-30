@@ -652,13 +652,17 @@ def assign_decide(snapshot: Snapshot, priced: Sequence[Priced]) -> Assignment:
         c["weight"] = d["weights"].get((c["count"], tuple(c["slots"])), 0.0)
     winner = d["winner"] or (spec.n0, spec.incoming)
     k, slots = winner[0], tuple(winner[1])
+    # the winner's own job holds its model in this slot order: the refinement fits that delta mask (a free width is
+    # chosen by evidence, never by the continuous objective)
+    won = next((by_key[j.key] for j in jobs if (j.count, tuple(j.slots)) == (k, slots) and j.key in by_key), None)
     coverage = {**coverage, "decision": {
         "ambiguous": d["ambiguous"], "close_calls": [[c[0], list(c[1])] for c in d["close_calls"]],
         "count_p": {str(c): p for c, p in sorted(d["count_p"].items())}}}
     return Assignment(unit=snapshot.unit, snapshot_id=snapshot.stage_id, count=k, slots=slots,
                       origins=spec.origins(slots), factors=spec.incident(slots), discrete="priced",
                       triggers=spec.triggers, candidates=tuple(cands), coverage=coverage, search_limited=limited,
-                      changed=bool(d["changed"]), reasons=tuple(d["reasons"]))
+                      changed=bool(d["changed"]), reasons=tuple(d["reasons"]),
+                      selected_model=None if won is None else won.mode)
 
 
 def assign(snapshot: Snapshot, *, cached: Mapping[str, Priced] = {}) -> tuple[Assignment, tuple[Priced, ...]]:
@@ -829,14 +833,16 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
     starts = [] if old is None else [old]
     selected = tuple(old[0].delta) if old is not None else ()
     win = cached.get(spec.key(k, slots)) or next((p for p in priced if p.count == k and tuple(p.slots) == slots), None)
-    if win is not None and win.mode is not None:
-        el, bg, qe, delta, theta = win.mode
+    mode = win.mode if win is not None and win.mode is not None else a.selected_model   # the runner passes no prices
+    if mode is not None:
+        el, bg, qe, delta, theta = mode
         variant = eng.variant(k, el, bg, qe)
         model = None if variant is None else eng.model(variant, delta)
         if model is not None:
             selected = tuple(delta)
             starts = [s for s in starts if tuple(s[0].delta) == selected] + [(model, np.array(theta, dtype=float))]
-            priced = priced or (win,)
+            if win is not None:
+                priced = priced or (win,)
     variants = [old[0].variant] if old is not None else list(eng.variants.get(k, ()))
     for _family, modes in _starts(spec, k, slots):
         for v in variants:

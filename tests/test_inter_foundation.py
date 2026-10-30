@@ -79,7 +79,7 @@ CONTRACT = (
       "batch_kind", "fast", "aliases"]),
     ("isar.analyze.coupled.types", "Assignment",
      ["unit", "snapshot_id", "count", "slots", "origins", "factors", "discrete", "triggers", "candidates",
-      "coverage", "search_limited", "changed", "reasons"]),
+      "coverage", "search_limited", "changed", "reasons", "selected_model"]),
     ("isar.analyze.coupled.types", "PricingJob", ["unit", "snapshot_id", "count", "slots", "key"]),
     ("isar.analyze.coupled.types", "Priced", ["key", "count", "slots", "ln_z", "status", "mode", "reason", "starts",
                                               "seconds", "basins"]),

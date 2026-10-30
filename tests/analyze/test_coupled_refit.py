@@ -570,6 +570,22 @@ def test_a_resolution_limited_mode_stays_delta_through_the_continuous_stage(seed
     assert R._selected_model(r.fit)["delta_modes"] == [0] and r.fit["peaks"][0]["delta"]
 
 
+def test_the_evidence_selected_delta_mask_reaches_the_runner_refinement_and_stays():
+    # the split of test 1: pricing selects the two-mode composition with both widths at delta. The runner refines
+    # with the Assignment alone (no prices passed): the mask must come with it, and stay through a later sweep.
+    true = [(8.0, 0.3, 30.0), (10.0, 0.3, 30.0)]
+    snap = t_pair(spectrum(true, scale=0.08, seed=5), [(9.0, 1.0, 4.0)], ["fast:y#0"], true, ["b1", "b2"])
+    a, priced = R.assign(snap)
+    win = next(p for p in priced if (p.count, tuple(p.slots)) == (a.count, a.slots))
+    assert (a.slots, win.mode[3]) == (("b1", "b2"), (0, 1))
+    r = R.refit(snap, stage="continuous", assignment=a)
+    assert r.status == "accepted" and R._selected_model(r.fit)["delta_modes"] == [0, 1]
+    own = R.held_from_fit(r.fit, unit="y", fit=snap.fit_id, inputs=None, context=snap.context, T=200.0)
+    sweep2 = replace(snap, snapshot_id="b1:sweep2", own=own, own_record=r.fit, fit_id="f00000000000c")
+    r2 = R.refit(sweep2, stage="continuous", assignment=a)
+    assert r2.status in ("accepted", "unchanged") and R._selected_model(r2.fit)["delta_modes"] == [0, 1]
+
+
 def test_a_continuing_unmatched_mode_keeps_its_id_across_sweeps():
     snap = _entry_snapshot()
     for sweep in range(3):
