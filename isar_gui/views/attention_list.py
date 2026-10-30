@@ -75,6 +75,12 @@ _TITLE_TIPS = {
                            "slit, so your slit chooses the curves for these scan sets."),
     "gpi_folder_changed": ("The gpi folder was changed; the values from its files stay set aside until the data is "
                            "read again or the analysis starts."),
+    "sidecar": ("The .var file sits beside the analyzer files and is named after the scan set. It supplies the silicon "
+                "order (the incident energy, when the data file gives none), the energy bin size, the number of scans "
+                "merged into the set, the analyzers the set should have, and for each analyzer its efficiency, "
+                "polarisation factor and elastic-peak centroid and area. Without it those values are unknown, and the "
+                "bin size is worked out from the data's own spacing. Put the .var in the same folder as the analyzer "
+                "files, then add the data again."),
 }
 _HEADER_TIP = ("Things missing or unreadable that stop or weaken the analysis. Open a group to see which "
                "scan sets or analyzers, then fix it there.")

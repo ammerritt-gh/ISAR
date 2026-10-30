@@ -278,6 +278,24 @@ def test_scan_set_rows_expand_to_plain_analyzer_lines_and_analyzer_rows_are_tri_
     assert unit.foot.isVisible() and f"{len(ids) - 1} analyzers in 1 scan set" in unit.foot.preview.full_text()
 
 
+def test_the_sidecar_group_hover_says_what_the_var_supplies(qtbot, att_ws):
+    intake, lst = _make(qtbot, att_ws)
+    item = AttentionItem(scan=None, analyzer=None, file=str(att_ws / "intake" / "entries.jsonl"),
+                         reason="no .var beside the analyzer files", fallback=None, running=False,
+                         values_disagree=False, values_changed=())
+    group = AttentionGroup(kind="sidecar", title="Sidecar (.var)", summary="Sidecar (.var): 1 unreadable",
+                           uses=("read",), state="fallback", action="import_again", can_start=None,
+                           fallback_in_use=True, n_scans=0, analyzers=(), items=(item,))
+    att = intake.attention
+    intake._attention = dataclasses.replace(att, groups=att.groups + (group,))
+    intake.worker_changed.emit()
+    g = _open(lst, "sidecar")
+    tip = g.title.toolTip()
+    for word in ("silicon order", "bin size", "efficiency", "polarisation", "elastic"):
+        assert word in tip
+    assert g.title.text() == "Sidecar (.var): 1 unreadable"
+
+
 def test_a_constructed_damaged_lines_group_renders_plain_rows_with_their_reasons(qtbot, att_ws):
     intake, lst = _make(qtbot, att_ws)
     reasons = ["entries.jsonl line 3 skipped: not JSON", "settings.jsonl line 1 skipped: bad record"]
