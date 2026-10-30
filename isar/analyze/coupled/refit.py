@@ -757,20 +757,24 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
     eng = _Labelled(spec.ctx, spec.fs, objs, continuous=True, structures=spec.structures)
     old = _incoming_state(eng, spec) if k == spec.n0 else None
 
-    # starts: the incoming state, the priced posterior mode, the composition's own and neighbour-placed starts
+    # starts: the incoming state, the priced posterior mode, the composition's own and neighbour-placed starts,
+    # all on the selected delta mask (the priced winner's, else the incoming fit's): a delta or a free width is
+    # chosen by the evidence comparison, never by the continuous objective, which a free width always lowers
     starts = [] if old is None else [old]
+    selected = tuple(old[0].delta) if old is not None else ()
     win = cached.get(spec.key(k, slots)) or next((p for p in priced if p.count == k and tuple(p.slots) == slots), None)
     if win is not None and win.mode is not None:
         el, bg, qe, delta, theta = win.mode
         variant = eng.variant(k, el, bg, qe)
         model = None if variant is None else eng.model(variant, delta)
         if model is not None:
-            starts.append((model, np.array(theta, dtype=float)))
+            selected = tuple(delta)
+            starts = [s for s in starts if tuple(s[0].delta) == selected] + [(model, np.array(theta, dtype=float))]
             priced = priced or (win,)
     variants = [old[0].variant] if old is not None else list(eng.variants.get(k, ()))
     for _family, modes in _starts(spec, k, slots):
         for v in variants:
-            model = eng.model(v, ())
+            model = eng.model(v, selected)
             if model is not None:
                 starts.append((model, eng._start(model, modes, None)))
     best = None

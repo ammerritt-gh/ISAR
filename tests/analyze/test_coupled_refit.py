@@ -459,6 +459,21 @@ def test_a_missing_seam_guard_widens_the_tolerance_instead_of_vanishing():
     assert R._ell(R.refit(snap, stage="both")) == pytest.approx(R._Spec(snap).ell)
 
 
+@pytest.mark.parametrize("seed", [1, 2, 3, 4])
+def test_a_resolution_limited_mode_stays_delta_through_the_continuous_stage(seed):
+    # the incoming fit holds its mode at the delta width; with no priced comparison the continuous stage keeps
+    # that mask: a free width could only win on noise, never through the evidence comparison
+    from isar.analyze.phonon import GAMMA_FLOOR
+    true = [(9.0, GAMMA_FLOOR, 40.0)]
+    rec = record(true)
+    rec["models"][0].update(delta_modes=[0], free=[n for n in _names(1) if n != "phonon.Gamma"])
+    snap = t_pair(spectrum(true, seed=seed), true, ["b1"], true, ["b1"], rec=rec)
+    a = R._Spec(snap).skipped()
+    r = R.refit(snap, stage="continuous", assignment=a)
+    assert r.status in ("accepted", "unchanged")
+    assert R._selected_model(r.fit)["delta_modes"] == [0] and r.fit["peaks"][0]["delta"]
+
+
 def test_a_continuing_unmatched_mode_keeps_its_id_across_sweeps():
     snap = _entry_snapshot()
     for sweep in range(3):
