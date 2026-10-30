@@ -634,9 +634,10 @@ class _Run:
         return False
 
     def identity_flags(self, ids, k: str) -> list[dict]:
-        """The identity reasons of one spectrum (ambiguous, loop, unresolved return) as flag reasons."""
+        """The identity reasons of one spectrum (ambiguous, loop, unresolved return) as flag reasons, each with
+        the values recorded for that spectrum only."""
         return [{"code": code, "severity": f.get("severity", "warn"),
-                 "text": "; ".join(str(v) for v in list(f.get("values") or ())[:3])}
+                 "text": "; ".join(str(v) for v in list((f.get("by_unit") or {}).get(k) or ())[:3])}
                 for code, f in (ids.flags or {}).items() if k in f.get("units", ()) and code != "seam_disagreement"]
 
     def stage_timing(self, kind: str, index: int, t0: float, width: int, n: int) -> None:

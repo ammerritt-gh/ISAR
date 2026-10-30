@@ -442,3 +442,16 @@ def test_a_confident_winner_with_a_close_rival_stays_confident():
     assert [r.status[ref] for ref in refs("k", 2)] == ["matched", "matched"]
     assert r.flags == {}
     assert r.alternatives["by_unit"]["k"]["close"]          # kept for review
+
+
+def test_each_spectrum_reads_only_its_own_identity_flag_values():
+    # two ring-mates each with an ambiguous slot: one stage-wide flag, but each spectrum names only its own slot
+    from isar.session.inter_spectra import runner
+    A = held("A", "fA", [("p", 10.0), ("q", 12.0)])
+    tie = lambda s, t: asg(s, "b:ring1", (t,), cands=[((t,), 0.0), (("q" if t == "p" else "p",), 0.0)])
+    r = run(["k1", "k2"], [link("A", "k1"), link("A", "k2")], {"k1": tie("k1", "p"), "k2": tie("k2", "q")},
+            {"A": A}, rings={"k1": 1, "k2": 1})
+    assert set(r.flags["identity_ambiguous"]["units"]) == {"k1", "k2"}
+    (f1,), (f2,) = (runner._Run.identity_flags(None, r, k) for k in ("k1", "k2"))
+    assert "\x27p\x27" in f1["text"] and "\x27q\x27" not in f1["text"]
+    assert "\x27q\x27" in f2["text"] and "\x27p\x27" not in f2["text"]

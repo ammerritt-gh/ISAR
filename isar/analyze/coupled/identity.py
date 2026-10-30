@@ -258,11 +258,14 @@ def _carried_ids(a, own, energy: Sequence[float]) -> dict[int, str]:
 
 
 def _flag(flags: dict, code: str, units, refs=(), **values) -> None:
-    entry = flags.setdefault(code, {"severity": SEVERITY_OF[code], "units": set(), "ids": set(), "values": []})
+    entry = flags.setdefault(code, {"severity": SEVERITY_OF[code], "units": set(), "ids": set(), "values": [],
+                                    "by_unit": {}})
     entry["units"].update(units)
     entry["ids"].update(refs)
     if values:
         entry["values"].append(values)
+        for u in units:                     # what each spectrum is told is its own share of the stage-wide flag
+            entry["by_unit"].setdefault(u, []).append(values)
 
 
 def _close_flags(flags: dict) -> dict:
