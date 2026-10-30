@@ -45,6 +45,7 @@ from isar.analyze.model_manifest import MANIFEST_SCHEMA
 
 if TYPE_CHECKING:
     from isar.analyze.coupled.engine import Factor
+    from isar.analyze.coupled.search import Search
     from isar.session.inter_spectra.graph import Link
 
 # Numerical defaults of the specification (uncalibrated; spec 5): an "unchanged" refit moves the predicted
@@ -881,6 +882,12 @@ def assign(snapshot: Snapshot, *, cached: Mapping[str, Priced] = {}) -> tuple[As
     made = {j.key: price(snapshot, j) for j in todo}
     used = tuple(made[j.key] if j.key in made else cached[j.key] for j in jobs)
     return assign_decide(snapshot, used), used
+
+
+def open_search(snapshot: Snapshot) -> Search:
+    """The core's search entry point: the runner calls it by name, and the import is lazy (search imports types only)."""
+    from isar.analyze.coupled.search import Search as _Search
+    return _Search(snapshot)
 
 
 # ---- stage 2 ---------------------------------------------------------------------------------------------

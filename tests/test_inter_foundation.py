@@ -28,7 +28,7 @@ MODULES = (
     "isar.session.inter_spectra.rings", "isar.session.inter_spectra.schedule", "isar.session.inter_spectra.preview",
     "isar.session.inter_spectra.q_provider", "isar.session.inter_spectra.records",
     "isar.session.inter_spectra.authority", "isar.session.inter_spectra.runner",
-    "isar.analyze.coupled.types", "isar.analyze.coupled.refit",
+    "isar.analyze.coupled.types", "isar.analyze.coupled.refit", "isar.analyze.coupled.search",
     "isar.analyze.coupled.identity", "isar.intake.inter_spectra", "isar.intake.inter_values",
     "isar.workspace_api.inter_spectra",
 )
