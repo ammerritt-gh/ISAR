@@ -768,7 +768,7 @@ def _same_basin(spec: _Spec, x: tuple, y: tuple) -> bool:
     return qh1 is None or qh2 is None or abs(qh1 - qh2) <= s.basin_height_frac * max(qh1, qh2)
 
 
-def _basin_rows(spec: _Spec, jobs, by_key) -> list:
+def _basin_rows(spec: _Spec, jobs, by_key) -> tuple[list, dict]:
     """The evidence rows (count, slots, delta, ln_z), terms and prices that already include the loss price (one
     constant of a slot multiset, so the slot orders of a composition share it): one per priced basin, except that
     the slot orders of one composition (one count, one multiset of slots) are starts of one problem. Each job
