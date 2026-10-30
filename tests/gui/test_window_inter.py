@@ -133,7 +133,8 @@ def test_the_workspace_watch_events_an_overview_depends_on_reload_the_inter_stat
     w = _win(qtbot, bl43_ws)
     reloads = []
     monkeypatch.setattr(w.inter, "reload", lambda: reloads.append(1))
-    for event in ("inter_user", "inter_log", "gpi", "intake_entries", "intake_scans", "card_state"):
+    for event in ("inter_user", "inter_log", "gpi", "intake_entries", "intake_scans", "card_state",
+                  "snapshot", "results", "card"):
         reloads.clear()
         w._on_workspace_changed({event}, refresh_shown=False)
         assert reloads == [1], event
