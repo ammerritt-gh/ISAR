@@ -85,7 +85,7 @@ CONTRACT = (
       "coverage", "search_limited", "changed", "reasons", "selected_model"]),
     ("isar.analyze.coupled.types", "PricingJob", ["unit", "snapshot_id", "count", "slots", "key"]),
     ("isar.analyze.coupled.types", "Priced", ["key", "count", "slots", "ln_z", "status", "mode", "reason", "starts",
-                                              "seconds", "basins"]),
+                                              "seconds", "basins", "loss"]),
     ("isar.analyze.coupled.types", "RefitResult",
      ["unit", "snapshot_id", "status", "reason", "assignment", "fit", "modes", "D", "J", "P", "U", "unary",
       "energies", "R", "R_signed", "F", "delta_fast", "flag", "why_changed", "overlay", "overlay_unavailable",

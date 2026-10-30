@@ -352,10 +352,16 @@ def _split_terms(p):
     return [b[0] for b in p.basins if b[1].endswith("+bg|split")]
 
 
+def _evidence(p):
+    """ln Z of a priced candidate without its loss price (S2U2): the R-table is about the evidence alone."""
+    return p.ln_z + 0.5 * sum(L for _b, _e, L in p.loss)
+
+
 def _d(w):
-    """d(w) = ln Z(2, (b1, b2)) - ln Z(1, (b1,)) of the noise-free case of weight w, plus the two-mode price."""
+    """d(w) = ln Z(2, (b1, b2)) - ln Z(1, (b1,)) of the noise-free case of weight w, plus the two-mode price,
+    both without the loss price the one-mode candidate pays for the lost b2."""
     p2, p1 = _run(w)[0], _price(hidden_snapshot(w, asimov=True), JOB1)
-    return p2, p1, p2.ln_z - p1.ln_z
+    return p2, p1, _evidence(p2) - _evidence(p1)
 
 
 def _say(*a):
@@ -489,7 +495,7 @@ def test_proof_r8_a_vanishing_branch_never_beats_the_real_count_by_evidence_alon
     _say(f"R8: {p2.status} ln_z2={p2.ln_z} ln_z1={p1.ln_z} reason={p2.reason}")
     assert p2.status in ("ok", "ok_boundary", "undetermined")
     if p2.ln_z is not None and math.isfinite(p2.ln_z):
-        assert p2.ln_z - p1.ln_z <= 0.0
+        assert _evidence(p2) - _evidence(p1) <= 0.0          # the evidence alone, without the loss price
 
 
 # ---- R9 cost ------------------------------------------------------------------------------------------------

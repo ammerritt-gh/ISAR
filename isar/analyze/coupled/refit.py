@@ -2,7 +2,8 @@
 
 Stage 1 (``assign_jobs``, ``price``, ``assign_decide``; ``assign`` runs the three inline) compares counts
 and branch associations by evidence under one normalised neighbour density per matched mode (the
-hand-over ``engine``), with the unmatched entry price kept inside the odds. Stage 2 (``refit(stage=
+hand-over ``engine``), with the unmatched entry price kept inside the odds and the loss price of each neighbour branch a candidate
+does not name (the entry price's mirror, charged once per spectrum outside the normalised densities). Stage 2 (``refit(stage=
 "continuous")``) refines the continuous parameters under the one shared objective J with the stage's
 frozen factor definitions, then reports the acceptance status (spec 5), conditional error bars, a
 release fit, the flag score F = R + max U, every flag reason, one sentence why and a drawable overlay.
@@ -22,7 +23,7 @@ import json
 import math
 import time
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict
+from dataclasses import asdict, astuple
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -248,8 +249,43 @@ class _Spec:
         self.returning = frozenset(dormant - pool)
         self.pool = tuple(sorted(pool | dormant))
         self.pred = {b: [self._centre(f) for f in fs_] for b, fs_ in self.factors.items()}
+        self.expected = self._expected()
         self.incoming = tuple(md.branch if md.branch in self.pool else None for md in self.own.modes)
         self.triggers, self.counts, self.missing_history = self._trigger_filter()
+
+    # -- the loss price: the mirror of the entry price (a branch that disappears pays what one that appears pays)
+    def canon(self, b: str) -> str:
+        return self.snap.aliases.get(b, b)
+
+    def _expected(self) -> dict[str, tuple[float, float]]:
+        """canonical branch -> (E_exp, L): every branch a neighbour carries (dormant ones never), with E_exp the
+        mean over the neighbours of their own prediction when it lies in the window (the centres of the factors
+        it belongs to, else its own energy; one vote per neighbour, never per factor) and L the entry price
+        ``b_edge + B(E_exp)`` of the same Entry, so births and deaths mirror. A branch no neighbour predicts
+        inside the window is not eligible. The branches without a coupling term are eligible too: they are not
+        in ``pool``, so today every candidate pays them alike (a constant of the decision, shown in the record)."""
+        votes: dict[str, list[float]] = {}
+        for u, h in self.held_all.items():
+            own: dict[str, list[float]] = {}
+            for m in h.modes:
+                own.setdefault(self.canon(m.branch), []).append(m.omega0)
+            for B, energies in own.items():
+                centres = [self._centre(f) for b_, fs_ in self.factors.items() if self.canon(b_) == B
+                           for f in fs_ if u in f.members]
+                p = float(np.mean(centres if centres else energies))
+                if self.lo <= p <= self.hi:
+                    votes.setdefault(B, []).append(p)
+        out = {}
+        for B, ps in votes.items():
+            e = float(np.mean(ps))
+            out[B] = (e, self.entry.b_edge + self.entry.B(e))
+        return out
+
+    def loss_terms(self, slots) -> tuple[tuple[str, float, float], ...]:
+        """The eligible branches a candidate does not name, ((branch, E_exp, L), ...) sorted by branch; an
+        unmatched slot (None) names nothing. Depends on the snapshot and the slot multiset only."""
+        named = {self.canon(s) for s in slots if s is not None}
+        return tuple((b, e, L) for b, (e, L) in sorted(self.expected.items()) if b not in named)
 
     # -- factors (spec 1)
     def _guard(self, held: Held, branch: str) -> float:
@@ -475,10 +511,12 @@ class _Spec:
             return [h.unit, h.fit, h.inputs, list(h.window), h.T,
                     [[m.branch, m.omega0, m.gamma, m.height, m.guard, m.pinned] for m in h.modes],
                     [[d.branch, d.last_seen_fit, d.last_seen_unit] for d in h.dormant]]
+        # every field of each term (a new Term field is hashed without another edit) and the merged aliases:
+        # the loss price names branches canonically, so a price cached before a merge must not be reused after it
         payload = {"unit": snap.unit, "own": held(snap.own), "count": k, "slots": list(slots),
                    "batch_kind": snap.batch_kind, "settings": snap.settings.to_values(),
-                   "terms": [[ti.term.kind, list(ti.term.members), list(ti.term.spacings), ti.term.t_frac,
-                              [held(h) for h in ti.held]] for ti in snap.terms]}
+                   "aliases": sorted(snap.aliases.items()),
+                   "terms": [[astuple(ti.term), [held(h) for h in ti.held]] for ti in snap.terms]}
         return hashlib.sha256(json.dumps(payload, sort_keys=True, default=repr).encode("utf-8")).hexdigest()
 
     def jobs(self):
@@ -576,17 +614,20 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
     twin resolution and delta alternatives, plus the constructed hidden start of ``seed_hidden``), each distinct
     basin priced by Laplace under the coupled prior, or for a basin with a hidden pair by the integral over the
     split (engine.CoupledEngine.price); ln Z sums the basins' masses with their variant/delta weights, then adds
-    ``ln w0`` and, for a pinned unmatched energy, its entry charge outside the integral (spec 2)."""
+    ``ln w0`` and, for a pinned unmatched energy, its entry charge outside the integral (spec 2). Every basin
+    term also carries the candidate's loss price (``_Spec.loss_terms``), once."""
     t0 = time.perf_counter()
     spec = _Spec(snapshot)
     k, slots = job.count, tuple(job.slots)
     if len(slots) != k:
         raise ValueError(f"job {job.key}: {len(slots)} slots for count {k}")
+    loss = spec.loss_terms(slots)           # recorded on every return, even a failed one
     objs = spec.slot_objects(slots)
     bad = [b for b, o in zip(slots, objs) if isinstance(o, cc.MatchedDensity) and o.status != "ok"]
     if bad:
         return Priced(job.key, k, slots, None, "no_evidence", None,
-                      f"the neighbour density of {bad[0]} has no verified normaliser", 0, time.perf_counter() - t0)
+                      f"the neighbour density of {bad[0]} has no verified normaliser", 0, time.perf_counter() - t0,
+                      loss=loss)
     u = sum(b is None for b in slots)
     eng = _Labelled(spec.ctx, spec.fs, objs, structures=spec.structures)
     starts = _starts(spec, k, slots)
@@ -608,20 +649,24 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
         und = next((b for b in basins if b.status == "undetermined"), None)
         reason = und.reason if und is not None else next((b.reason for b in basins if b.reason), "no start converged")
         status = "degenerate_twin" if twin else "undetermined" if und is not None else "no_evidence"
-        return Priced(job.key, k, slots, None, status, None, reason, eng.n_fits, time.perf_counter() - t0)
+        return Priced(job.key, k, slots, None, status, None, reason, eng.n_fits, time.perf_counter() - t0,
+                      loss=loss)
 
     def charge(b):
         fixed = set(b.model.fixed_pos)
         return sum(rules.pinned_entry_charge(spec.entry, float(b.theta_map[a]))
                    for (a, _g, _c), sl in zip(b.model.modes, slots) if sl is None and a in fixed)
-    terms = [b.ln_model_prior + b.ln_z + charge(b) for b in priced]
+    # the loss price is one constant of the job, inside every basin term: logsumexp carries it exactly once, outside
+    # every normalised density, and before any later comparison of this candidate with another count
+    loss_nats = -0.5 * sum(L for _b, _e, L in loss)
+    terms = [b.ln_model_prior + b.ln_z + charge(b) + loss_nats for b in priced]
     best = priced[int(np.argmax(terms))]
     ln_z = float(logsumexp(terms)) + rules.ln_w0(k, k - u, len(spec.pool), spec.ceiling + 1)
     v = best.model.variant
     mode = (v.elastic, v.background, v.qe, tuple(best.model.delta),
             tuple(float(v) for v in best.theta_map))
     return Priced(job.key, k, slots, ln_z, best.status, mode, None, eng.n_fits, time.perf_counter() - t0,
-                  tuple(_basin_record(b, slots, t) for b, t in zip(priced, terms)))
+                  tuple(_basin_record(b, slots, t) for b, t in zip(priced, terms)), loss)
 
 
 def _basin_record(b, slots, term: float) -> tuple:
@@ -672,7 +717,8 @@ def _same_basin(spec: _Spec, x: tuple, y: tuple) -> bool:
 
 
 def _basin_rows(spec: _Spec, jobs, by_key) -> list:
-    """The evidence rows (count, slots, ln_z): one per job, except that the slot orders of one composition
+    """The evidence rows (count, slots, ln_z), terms and prices that already include the loss price (one constant
+    of a slot multiset, so the slot orders of a composition share it): one per job, except that the slot orders of one composition
     (one count, one multiset of slots) are starts of one problem. Each job optimises the full labelled space, so
     two orders can converge to one physical basin: their basins are pooled, each is filed under the order of its
     own final energies (the mode lowest in energy takes the first slot), and a basin two orders found counts
@@ -714,6 +760,12 @@ def _basin_rows(spec: _Spec, jobs, by_key) -> list:
     return rows, modes
 
 
+def _loss_record(spec: _Spec, slots) -> dict:
+    """What a candidate paid for the branches it does not name (already inside its ln_z)."""
+    loss = spec.loss_terms(slots)
+    return {"loss": [[b, e, L] for b, e, L in loss], "loss_nats": -0.5 * sum(L for _b, _e, L in loss)}
+
+
 def assign_decide(snapshot: Snapshot, priced: Sequence[Priced]) -> Assignment:
     """Marginalise this snapshot's priced compositions (basins summed, composition prior normalised once
     across counts), apply the evidence rule (hysteresis, tie to the incoming) and return the frozen
@@ -735,9 +787,10 @@ def assign_decide(snapshot: Snapshot, priced: Sequence[Priced]) -> Assignment:
     for j in jobs:
         p = by_key.get(j.key)
         cands.append({"count": j.count, "slots": j.slots, "ln_z": lz.pop((j.count, tuple(j.slots)), None),
-                      "status": p.status if p is not None else "unpriced", "key": j.key})
+                      "status": p.status if p is not None else "unpriced", "key": j.key, **_loss_record(spec, j.slots)})
     # a basin filed under an order no job named still counts in the decision
-    cands += [{"count": c, "slots": s_, "ln_z": z, "status": "ok", "key": None} for (c, s_), z in lz.items()]
+    cands += [{"count": c, "slots": s_, "ln_z": z, "status": "ok", "key": None, **_loss_record(spec, s_)}
+              for (c, s_), z in lz.items()]
     d = rules.decide(rows, (spec.n0, spec.incoming), eps=s.evidence_hysteresis_nats, conf=s.confidence,
                      close=s.close_call_nats)
     for c in cands:

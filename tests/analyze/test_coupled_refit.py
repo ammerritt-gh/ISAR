@@ -189,19 +189,21 @@ def test_the_entry_price_stays_in_the_composition_log_mass():
 
 
 # 3 ---------------------------------------------------------------------------------------------------------
-def test_a_lost_branch_is_a_flag_only():
+def test_a_lost_branch_is_a_price_and_a_flag():
     one = [(8.0, 0.4, 40.0)]
     both = one + [(15.0, 0.4, 40.0)]
-    prep = spectrum(one, seed=9)
+    prep = spectrum(one, scale=64.0, seed=9)       # statistics strong enough that a phantom b2 does not pay for itself
     snap = t_pair(prep, one, ["b1"], both, ["b1", "b2"])
     r = R.refit(snap, stage="both")
     assert "a:missing_branch" in r.assignment.triggers
     assert r.assignment.slots == ("b1",) and "branch_lost_mid_window" in codes(r)
-    # the kept composition's log mass differs from the same fit without b2 in the pool only by ln w0 (M = 2 vs 1)
+    # the kept composition's log mass differs from the same fit without b2 in the pool by ln w0 (M = 2 vs 1) and by
+    # the loss price of the b2 it does not name, mid-window: -(birth_edge + birth_mid) / 2 (tests/analyze/test_coupled_loss.py)
     job = PricingJob("y", snap.snapshot_id, 1, ("b1",), "k")
     with_b2 = R.price(snap, job)
     without = R.price(t_pair(prep, one, ["b1"], one, ["b1"]), job)
-    assert with_b2.ln_z - without.ln_z == pytest.approx(rules.ln_w0(1, 1, 2, 3) - rules.ln_w0(1, 1, 1, 3), abs=1e-9)
+    assert with_b2.ln_z - without.ln_z == pytest.approx(
+        rules.ln_w0(1, 1, 2, 3) - rules.ln_w0(1, 1, 1, 3) - (S.birth_edge + S.birth_mid) / 2, abs=1e-9)
 
 
 # 4 ---------------------------------------------------------------------------------------------------------
@@ -436,7 +438,9 @@ def test_a_pinned_unmatched_energy_pays_its_entry_price_once():
         return R.price(snap, PricingJob("y", "s", 1, slots, "k")).ln_z
 
     nb = [(12.0, 0.4, 40.0)]
-    assert ln_z(S, (None,), nb) - ln_z(zero, (None,), nb) == pytest.approx(-(S.birth_edge + S.birth_mid) / 2, abs=1e-9)
+    # the pinned entry charge, once, plus the loss price of the b1 the unmatched candidate does not name (b1 at the
+    # same 12 meV, so the same price): -(birth_edge + birth_mid) / 2 each
+    assert ln_z(S, (None,), nb) - ln_z(zero, (None,), nb) == pytest.approx(-(S.birth_edge + S.birth_mid), abs=1e-9)
     assert ln_z(S, ("b1",), nb) - ln_z(zero, ("b1",), nb) == pytest.approx(0.0, abs=1e-9)
 
 
