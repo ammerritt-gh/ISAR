@@ -323,12 +323,12 @@ class AnalyzerArrayViewModel(ViewModel):
         return self._state
 
     # ---- the state -----------------------------------------------------------------------------
-    def _shown_set(self, snapshot) -> tuple[str | None, int, bool]:
+    def _shown_set(self, rows_by_key: Mapping) -> tuple[str | None, int, bool]:
         """The scan set of the first picked spectrum, how many scans are selected, and whether anything
         selected is only a pooled master."""
         shown, sets, other = None, set(), False
         for key in self.selection.picks:
-            row = snapshot.spectrum(key)
+            row = rows_by_key.get(key)
             if isinstance(row, SpectrumRow):
                 shown = shown or row.set_key
                 sets.add(row.set_key)
@@ -359,7 +359,8 @@ class AnalyzerArrayViewModel(ViewModel):
 
     def _build(self, started: float) -> ArrayState:
         snapshot = self.scan_list.snapshot
-        set_key, n_scans, pooled = self._shown_set(snapshot)
+        rows_by_key = _rows_by_key(snapshot)
+        set_key, n_scans, pooled = self._shown_set(rows_by_key)
         if set_key is None:
             return self._message(POOLED_MESSAGE if pooled else EMPTY_MESSAGE)
         view = array_view(snapshot, set_key, self._ws)
@@ -372,7 +373,7 @@ class AnalyzerArrayViewModel(ViewModel):
                                  **_header_words(head, n_scans))
 
         read_started = perf_counter()
-        keyed = [c for c in view.cells if c.key is not None and snapshot.spectrum(c.key) is not None]
+        keyed = [c for c in view.cells if c.key is not None and rows_by_key.get(c.key) is not None]
         choice = {}
         for c in keyed:
             inter = self.inter.row(c.key) if self.inter is not None else None
@@ -381,7 +382,7 @@ class AnalyzerArrayViewModel(ViewModel):
         # the files are read again on a refresh, or when the snapshot, the shown cells or the fit in use change (a members event keeps them)
         read_key = (tuple(c.key for c in keyed), tuple(sorted(choice.items())))
         if self._read is None or self._read[0] is not snapshot or self._read[1] != read_key:
-            rows = [snapshot.spectrum(k) for k in read_key[0]]
+            rows = [rows_by_key[k] for k in read_key[0]]
             kw = {"fit_choice": choice} if choice else {}
             self._read = (snapshot, read_key, dict(zip(read_key[0], spectrum_bundles(
                 self._ws, rows, cache=self.scan_list.spectra_cache, **kw))))
@@ -523,3 +524,10 @@ def _unit_words(scale: str) -> str:
 
 def _tail(keys) -> list[str]:
     return [k.rsplit(":", 1)[-1] for k in keys]
+
+
+def _rows_by_key(snapshot) -> dict:
+    """``snapshot.spectrum(key)`` for every key at once, one pass per recompute (a set's spectrum wins, as in spectrum())."""
+    rows = {p.key: p for p in snapshot.pooled}
+    rows.update((sp.key, sp) for s in snapshot.sets for sp in s.spectra)
+    return rows
