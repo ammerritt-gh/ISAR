@@ -4,17 +4,22 @@ one label. A BL43LXU context on the committed a06 curve, a short window, mode ce
 """
 import json
 import math
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from scipy.special import logsumexp
 
-from isar.analyze import fast_pass, prior
+from isar.analyze import fast_pass, loop, phonon, prior
 from isar.analyze.components import CentralQE, CompositeModel, ConstantBackground, Elastic, PhononDHO
 from isar.analyze.context import ScanContext
 from isar.session import scan_delivery
 from isar.synth import bl43_curves
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import qe_rail_recipe as recipe  # noqa: E402
 
 CURVE = bl43_curves.curve("a06")
 X = np.arange(-5.0, 10.0, 0.25)
@@ -139,3 +144,64 @@ def test_the_delivery_never_scores_a_superseded_model(no_qe):
     assert not gone & set(sel.evidence.by_label())
     assert not gone & {s.label for s in sel.scores}
     assert sel.best == res.selected.label
+
+
+# ------------------------------------------------------------- change 8: a QE railed at its lower bound
+def _railed_qe_basin(eng):
+    """A basin of the QE-carrying one-mode starting model with its QE width at the lower bound, a positive
+    QE height and (when the model has one) a positive elastic height: the point on the elastic ridge."""
+    v = next(v for v in eng.variants[1] if v.qe and not v.background)
+    model = eng.model(v, ())
+    theta = 0.5 * (model.lo + model.hi)
+    theta[model.qe_w] = model.lo[model.qe_w]
+    theta[model.qe_h] = 0.5 * eng.sp.height_hi
+    if model.el is not None:
+        theta[model.el] = 0.5 * eng.sp.height_hi
+    basin = fast_pass._Basin(model, 0, theta, eng.cost(model, theta), None, 0.0, "test")
+    model.basins.append(basin)
+    eng._resolve(basin, theta)
+    return basin
+
+
+@pytest.mark.parametrize("seed", [1, 3])
+def test_a_qe_railed_on_the_elastic_ridge_is_the_model_without_it(seed):
+    res = fast_pass.run_fast_pass(recipe.widened(seed), settings=recipe.SETTINGS)
+    by_id = {m.model_id: m for m in res.models}
+    railed = [m for m in res.models
+              if m.evidence_status == "degenerate_twin" and m.reason.startswith("qe railed")]
+    assert railed
+    for m in railed:
+        twin = by_id[m.twin_of]
+        assert not twin.qe and twin.n_peaks == m.n_peaks
+    lo, _ = recipe.qe_floor()
+    for m in res.models:
+        if m.qe and m.evidence_status in ("ok", "ok_boundary"):
+            assert m.map_params["qe.width"] > lo + loop.DEGENERATE_LIMIT_TOL * max(abs(lo), 1.0)
+    assert not res.selected.qe and res.preferred_count == 2
+
+
+def test_a_qe_clear_of_its_bound_is_kept():
+    lo, _ = recipe.qe_floor()
+    ctx = recipe.widened(1, wide=1.0, qe_h=80.0, qe_width=2.5 * lo)
+    res = fast_pass.run_fast_pass(ctx, settings=recipe.SETTINGS)
+    sel = res.selected
+    assert res.qe is not None and sel.qe
+    assert sel.map_params["qe.width"] > 1.5 * lo
+    assert not sel.reason.startswith("qe railed")
+
+
+def test_the_rule_needs_an_elastic_line_in_the_model():
+    eng = fast_pass._Engine(recipe.context(), recipe.SETTINGS)
+    assert _railed_qe_basin(eng).reason.startswith("qe railed")          # the elastic line is there
+    x = np.arange(6.0, 30.0, 0.25)                                        # the window excludes it
+    off = recipe.context(x=x)
+    assert not phonon.elastic_admissible(off) and phonon.central_qe_admissible(off)
+    eng = fast_pass._Engine(off, recipe.SETTINGS)
+    assert all(not v.elastic and v.qe for vs in eng.variants.values() for v in vs)
+    assert not _railed_qe_basin(eng).reason.startswith("qe railed")
+    lo = eng.sp.bounds("qe_width")[0]
+    theta = np.array([12.0, 0.8, 40.0, 1.05 * lo, 80.0, 3.0])
+    mean = CompositeModel([PhononDHO(), CentralQE(), ConstantBackground()]).evaluate(x, theta, off)
+    counts = np.random.default_rng(0).poisson(mean).astype(float)
+    res = fast_pass.run_fast_pass(recipe.context(counts, x=x), settings=recipe.SETTINGS)
+    assert not any(m.reason.startswith("qe railed") for m in res.models)

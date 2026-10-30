@@ -1218,7 +1218,8 @@ class _Engine:
     def resolve(self, b, point):
         """Step 5: whether ``b`` at ``point`` (a TRF optimum or a posterior mode) is a degenerate or
         delta-mode twin of a model with fewer free coordinates. The first screen that hits acts:
-        its twin is refitted by TRF from ``point`` and, except for a railed width, must reach
+        its twin is refitted by TRF from ``point`` and, except for a railed width and a QE at its
+        narrowest width, must reach
         ``point``'s cost within ``twin_cost_tolerance``; a twin that fails or does not exist leaves
         ``b`` a model of its own. Recursion runs through the twin's own placement."""
         with self._stage("twins"):
@@ -1272,6 +1273,12 @@ class _Engine:
             twin("zero qe", names[model.qe_h], self.variant(k, v.elastic, v.background, False),
                  modes, lin)
             return
+        if v.elastic and model.qe_w is not None and model.qe_w in free:                                # 3c QE width
+            lo = model.lo[model.qe_w]
+            if point[model.qe_w] <= lo + loop.DEGENERATE_LIMIT_TOL * max(abs(lo), 1.0):
+                twin("qe railed", names[model.qe_w], self.variant(k, v.elastic, v.background, False),
+                     modes, lin, verify=False)
+                return
         if self._coincident(model, modes, lin, twin):                     # 4 coincident
             return
         if DELTA_TWIN_RULE:                                                # 5 width
