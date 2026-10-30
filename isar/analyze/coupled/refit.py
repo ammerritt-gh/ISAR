@@ -7,12 +7,14 @@ does not name (the entry price's mirror, charged once per spectrum outside the n
 "continuous")``) refines the continuous parameters under the one shared objective J with the stage's
 frozen factor definitions, then reports the acceptance status (spec 5), conditional error bars, a
 release fit, the flag score F = R + max U, every flag reason, one sentence why and a drawable overlay.
-The decision rules are ``rules`` (installed verbatim); thresholds always come from ``InterSettings``.
+The decision rules are ``rules`` (installed verbatim); thresholds always come from ``InterSettings``. The
+decision carries the width mask: the (count, labelling) is chosen with the mask summed out, then the winner's
+mask (which widths are held at the floor) is chosen, and a mask change alone is a discrete change.
 
 ``Snapshot.context`` is the spectrum's own prepared fast-pass context: a ``ScanContext``, or an object
 carrying it as ``ctx`` with optional ``settings`` (its ``FastPassSettings``: mode ceiling and prior
-recipe) and ``structures`` (the catalogue whitelist). The fast pass itself is never edited or rerun:
-``engine.CoupledEngine`` subclasses its engine. Counts stay raw Poisson (Baker-Cousins, sigma 0 at zero
+recipe) and ``structures`` (the catalogue whitelist). The fast pass is never rerun here:
+``engine.CoupledEngine`` subclasses its engine and inherits its twin screens. Counts stay raw Poisson (Baker-Cousins, sigma 0 at zero
 counts, no floor) and the anti-Stokes amplitude stays derived by detailed balance: both live in the base
 engine's model, which this module never changes. No I/O, no pool, no Qt.
 """

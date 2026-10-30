@@ -11,7 +11,7 @@ A density's ln is in nats. Every setting value here is UNCALIBRATED (spec-draft 
 Seam: CoupledEngine subclasses fast_pass._Engine and overrides ln_prior, _canonical and _trf, plus the
 hidden-mode pieces (S1U1): a twin-screen guard (_resolve), and a price that integrates over the intensity
 split of an overlapping pair (price, split_evidence) and reports an undetermined fit as such;
-fast_pass.py itself is untouched (check_base_unchanged).
+the module subclasses the engine and inherits its _resolve (twin screens, among them the railed-QE rule).
 """
 from __future__ import annotations
 

@@ -203,6 +203,17 @@ branches the neighbours support are not merged away by the twin screens merely b
 repeated starts reaching one solution are still merged. A fit whose parameters stay undetermined has no
 evidence and says so (`undetermined`), never a made-up finite number.
 
+**A width at the floor.** A mode whose width reaches the fitting floor is resolution limited (narrower than the
+instrument resolves). It is priced as its own model, the delta alternative, with its own weight; a free width
+pegged at the floor is never priced as a model of its own, and an unpriced candidate's reason is the terminal
+failure of its twin chain, not the head. The width mask is chosen after the count and the labelling, on the
+chosen labelling's evidence: another mask replaces the incoming one only when it wins by more than
+`evidence_hysteresis_nats`, or at once when the incoming mask has no priced row. Such a change (same count, same
+labels) is a discrete change: the continuous stage accepts it by the evidence rule, it is no relabelling for the
+identity, and the saved fit keeps the mask through later sweeps. The coupled refit inherits the fast pass's twin
+screens, among them the rule that a central quasi-elastic line whose width reaches its lower bound is the
+elastic line, so its candidate is the model without a quasi-elastic line (`docs/STATS_PRIMER.md` section 2).
+
 **Flags.** A refit is flagged when its score is above `flag_threshold`, or when it carries any reason other than
 the four notes (`neighbour_precision_unavailable`, `incomplete_comparison`, `release_fit_failed`,
 `errors_unavailable`) and a neighbour-supported split, whatever its score. A split is a repair: it is shown
