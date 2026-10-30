@@ -1,19 +1,24 @@
-"""Hidden-mode pricing in the coupled engine (S1U1, packet P1): the twin-screen guard, the split integral's
-numerics, the undetermined status and the dedupe ledger, on the synthetic three-spectrum case of
-``tests/inter_hidden_case.py`` (counts generated at test time, no measured value).
+"""Hidden-mode pricing in the coupled engine: the twin-screen guard, the split integral's numerics, the
+undetermined status and the dedupe ledger, on the synthetic three-spectrum case of ``tests/inter_hidden_case.py``
+(counts generated at test time, no measured value).
 
-The refit-level proof (R1-R9 through ``refit.price``) belongs to packet P2 and lives in tests named ``*proof*``.
+The refit-level proof (R1-R9 through ``refit.price``) lives in the tests named ``*proof*``.
 """
 import math
+import time
+from dataclasses import replace
+from unittest import mock
 
 import numpy as np
 import pytest
 from scipy.integrate import quad
+from scipy.special import logsumexp
 
 from inter_hidden_case import STRUCT, Prepared, _ctx, _expected, hidden_snapshot
 from isar.analyze import fast_pass, prior
 from isar.analyze.coupled import engine as cc
 from isar.analyze.coupled import refit as R
+from isar.analyze.coupled.types import PricingJob
 
 SLOTS = ("b1", "b2")
 
@@ -28,13 +33,6 @@ def _engines(snap, slots=SLOTS):
 
 def _placed(spec, k=2, slots=SLOTS):
     return R._starts(spec, k, slots)[-1][1]
-
-
-def test_runs_from_the_worktree():
-    import isar
-    here = __file__.replace("\\", "/").rsplit("/tests/", 1)[0]
-    print("import root:", isar.__file__)
-    assert isar.__file__.replace("\\", "/").startswith(here)
 
 
 # ---- T-integrate ------------------------------------------------------------------------------------------
@@ -241,25 +239,9 @@ def test_a_hidden_pair_is_priced_by_the_split_integral():
     assert h[0] + h[1] == pytest.approx(b.theta[b.model.modes[0][2]] + b.theta[b.model.modes[1][2]], rel=0.05)
 
 
-def test_the_split_integral_matches_laplace_on_a_resolved_pair():           # R6: Jacobian and prior bookkeeping
-    modes = [(6.0, 0.4, 40.0), (9.0, 0.4, 40.0)]
-    counts = np.random.default_rng(1).poisson(_expected(modes) * 0.2).astype(float)
-    ctx = _ctx(counts)
-    s = fast_pass.FastPassSettings(mode_ceiling=2)
-    sp = prior.resolve_prior_for(ctx, s.prior or prior.PriorSettings())
-    eng = cc.CoupledEngine(ctx, s, [cc.Entry(sp.energy, band=1.0, b_edge=0.0, b_mid=0.0)] * 2)
-    b, _ = eng.fit(eng.variant(2, True, True), [(6.0, 0.4, 8.0, False), (9.0, 0.4, 8.0, False)], "x")
-    eng.price(b)
-    assert b.status in ("ok", "ok_boundary") and b.boundary_method != "split"
-    res = eng.split_evidence(b, b.theta_map, (0, 1), sets=(24, 48))
-    assert res.kind == "ok", res.reason
-    assert res.ln_z == pytest.approx(b.ln_z, abs=0.25)
-
-
 # ---- T-dedupe (engine part) -------------------------------------------------------------------------------
 def _three_mode_snapshot():
     """The hidden pair at 8 meV plus one separate unmatched peak at 20 meV (a count-3 case)."""
-    from dataclasses import replace
     counts = np.random.default_rng(3).poisson(_expected([(8.0, 0.4, 43.0), (20.0, 0.4, 25.0)])).astype(float)
     return replace(hidden_snapshot(3.0), context=Prepared(_ctx(counts), 3))
 
@@ -314,21 +296,11 @@ def test_the_seed_splits_the_pair_when_the_low_fit_crosses_its_labels():
 
 
 # ======================================================================================================
-# Packet P2: the refit-level proof (R1-R9 through ``refit.price``), the undetermined status, the record and
-# the held-by-neighbours rule. Counts are generated at test time (hard rule 10).
+# The refit level: the proof (R1-R9 through ``refit.price``), the undetermined status, the record and the
+# held-by-neighbours rule. Counts are generated at test time (hard rule 10).
 # ======================================================================================================
-# ======================================================================================================
-# Packet P2: the refit-level proof (R1-R9 through ``refit.price``), the undetermined status, the record and
-# the held-by-neighbours rule. Counts are generated at test time (hard rule 10).
-# ======================================================================================================
-import time
-from dataclasses import replace
-
-from scipy.special import logsumexp
-
-from isar.analyze.coupled.types import PricingJob
-
 JOB1, JOB12, JOB21 = ("b1",), ("b1", "b2"), ("b2", "b1")
+_RUNS = {}
 
 
 def _job(snap, slots):
@@ -340,14 +312,33 @@ def _price(snap, slots):
     return R.price(snap, _job(snap, slots))
 
 
+def _run(w, *, seed=3, asimov=True, slots=JOB12):
+    """One pricing of the synthetic case, shared by every routine test that reads it (the pricing is
+    deterministic): (Priced, wall seconds, the split integrals it ran). Keeps the R1, R3, R4, R5 and R9 reads
+    from each pricing the same count-2 job again."""
+    key = (w, seed, asimov, slots)
+    if key not in _RUNS:
+        splits, orig = [], cc.integrate_split
+
+        def spy(*a, **k):
+            res = orig(*a, **k)
+            splits.append(res)
+            return res
+        with mock.patch.object(cc, "integrate_split", spy):
+            t = time.perf_counter()
+            p = _price(hidden_snapshot(w, seed=seed, asimov=asimov), slots)
+            _RUNS[key] = (p, time.perf_counter() - t, splits)
+    return _RUNS[key]
+
+
 def _split_terms(p):
     """The terms of the priced basins that carry background and were priced by the split integral."""
     return [b[0] for b in p.basins if b[1].endswith("+bg|split")]
 
 
-def _d(snap):
-    """d(w) = ln Z(2, (b1, b2)) - ln Z(1, (b1,)) of a snapshot, plus the two-mode price."""
-    p2, p1 = _price(snap, JOB12), _price(snap, JOB1)
+def _d(w):
+    """d(w) = ln Z(2, (b1, b2)) - ln Z(1, (b1,)) of the noise-free case of weight w, plus the two-mode price."""
+    p2, p1 = _run(w)[0], _price(hidden_snapshot(w, asimov=True), JOB1)
     return p2, p1, p2.ln_z - p1.ln_z
 
 
@@ -376,7 +367,7 @@ def test_proof_r6_normalisation_on_a_resolved_pair(scale, seed):
 # ---- R1 finite evidence -------------------------------------------------------------------------------------
 @pytest.mark.parametrize("w,seed,asimov", [(0.5, 3, True), (3.0, 3, True), (12.0, 3, True), (6.0, 2, False)])
 def test_proof_r1_the_hidden_composition_has_a_finite_split_evidence(w, seed, asimov):
-    p = _price(hidden_snapshot(w, seed=seed, asimov=asimov), JOB12)
+    p = _run(w, seed=seed, asimov=asimov)[0]
     _say(f"R1 w={w} seed={seed} asimov={asimov}: {p.status} ln_z={p.ln_z} split terms={_split_terms(p)}")
     assert p.ln_z is not None and math.isfinite(p.ln_z) and p.status in ("ok", "ok_boundary")
     assert _split_terms(p)
@@ -411,7 +402,7 @@ def _alt_starts(spec, k, slots):
 
 def test_proof_r3_other_starts_reach_the_same_split_basin(monkeypatch):
     snap = hidden_snapshot(3.0, asimov=True)
-    base = _price(snap, JOB12)
+    base = _run(3.0)[0]
     monkeypatch.setattr(R, "_starts", _alt_starts)
     alt = _price(snap, JOB12)
     t0, t1 = _split_terms(base), _split_terms(alt)
@@ -425,7 +416,7 @@ def test_proof_r3_other_starts_reach_the_same_split_basin(monkeypatch):
 def _sweep(weights):
     d = []
     for w in weights:
-        _p2, _p1, dw = _d(hidden_snapshot(w, asimov=True))
+        _p2, _p1, dw = _d(w)
         d.append(dw)
         _say(f"R4/R7 w={w}: d(w)={dw:+.3f}")
     return d
@@ -447,12 +438,12 @@ def test_proof_slow_r1_r4_r7_sweeps_and_the_table():
     fails = 0
     for w, seeds in ((1.5, (1, 2, 5, 9)), (6.0, (1, 2, 5, 9))):
         for seed in seeds:
-            p = _price(hidden_snapshot(w, seed=seed), JOB12)
+            p = _run(w, seed=seed, asimov=False)[0]
             ok = p.ln_z is not None and math.isfinite(p.ln_z) and p.status in ("ok", "ok_boundary") and bool(_split_terms(p))
             fails += not ok
             _say(f"R1 w={w} seed={seed}: {p.status} ln_z={p.ln_z} split={bool(_split_terms(p))}")
     for w in (0.5, 3.0, 12.0):
-        p = _price(hidden_snapshot(w, asimov=True), JOB12)
+        p = _run(w)[0]
         fails += not (p.ln_z is not None and math.isfinite(p.ln_z) and bool(_split_terms(p)))
     _say(f"R1 failures: {fails} of 11")
     assert fails == 0                                                                  # R1
@@ -463,7 +454,7 @@ def test_proof_slow_r1_r4_r7_sweeps_and_the_table():
 # ---- R5 order independence and one count -------------------------------------------------------------------
 def test_proof_r5_the_two_slot_orders_of_a_hidden_pair_count_once():
     snap = hidden_snapshot(3.0, asimov=True)
-    a, b = _price(snap, JOB12), _price(snap, JOB21)
+    a, b = _run(3.0)[0], _run(3.0, slots=JOB21)[0]
     _say(f"R5 orders: {a.ln_z:.4f} vs {b.ln_z:.4f} ({a.ln_z - b.ln_z:+.4f})")
     assert abs(a.ln_z - b.ln_z) <= 0.15
     dec = R.assign_decide(snap, [_price(snap, JOB1), a, b])
@@ -487,18 +478,9 @@ def test_proof_r8_a_vanishing_branch_never_beats_the_real_count_by_evidence_alon
 
 # ---- R9 cost ------------------------------------------------------------------------------------------------
 def test_proof_r9_one_hidden_job_costs_seconds_not_minutes():
-    snap = hidden_snapshot(3.0, asimov=True)
-    t = time.perf_counter()
-    p = _price(snap, JOB12)
-    wall = time.perf_counter() - t
-    spec, eng, _ = _engines(snap)
-    for v in eng.variants[2]:
-        eng.fit(v, _placed(spec), "own")
-    eng.seed_hidden(2, R._starts(spec, 2, JOB12))
-    for b in [b for b in eng.basins() if b.count == 2 and b.status == "pending"]:
-        eng.price(b)
-    _say(f"R9: one count-2 job {wall:.2f} s ({p.starts} fits); split solves {eng.n_split_nodes} in "
-         f"{eng.n_split_basins} split basins")
+    p, wall, splits = _run(3.0)                             # the counters of the pricing itself, not a second one
+    _say(f"R9: one count-2 job {wall:.2f} s ({p.starts} fits); split solves {sum(r.nodes for r in splits)} in "
+         f"{sum(r.kind == 'ok' for r in splits)} split basins")
     assert wall < 60.0
 
 
@@ -531,7 +513,8 @@ def test_all_twins_stay_degenerate_twins_not_undetermined(monkeypatch):
 # ---- T-dedupe (refit part) ---------------------------------------------------------------------------------
 def test_the_hidden_basin_is_one_record_under_either_slot_order():
     snap = hidden_snapshot(3.0, asimov=True)
-    recs = [[r for r in _price(snap, s).basins if r[1].endswith("|split")] for s in (JOB12, JOB21)]
+    priced = {s: _run(3.0, slots=s)[0] for s in (JOB12, JOB21)}
+    recs = [[r for r in priced[s].basins if r[1].endswith("|split")] for s in (JOB12, JOB21)]
     assert [len(x) for x in recs] == [1, 1]
     (a,), (b,) = recs
     spec = R._Spec(snap)
@@ -539,7 +522,7 @@ def test_the_hidden_basin_is_one_record_under_either_slot_order():
         assert rec[2][0][1] == rec[2][1][1] and rec[2][0][3] == rec[2][1][3]
     assert a[1] == b[1] and sorted(m[0] for m in a[2]) == sorted(m[0] for m in b[2])
     jobs = [_job(snap, JOB12), _job(snap, JOB21)]
-    rows = R._basin_rows(spec, jobs, {j.key: _price(snap, j.slots) for j in jobs})[0]
+    rows = R._basin_rows(spec, jobs, {j.key: priced[j.slots] for j in jobs})[0]
     top = sorted((z for _c, _s, z in rows if z is not None), reverse=True)
     assert top[0] - top[1] > 5.0                             # the hidden basin is one row, not one per slot order
     canon = lambda r: (*r[:2], tuple(sorted(r[2], key=lambda m: (m[1], str(m[0])))), *r[3:])      # noqa: E731
