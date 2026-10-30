@@ -616,18 +616,20 @@ class ScanListViewModel(ViewModel):
         if key is None and not node_id.startswith(("set:", "ana:")):
             return
         visible = tuple(visible)
+        lead = None
         if shift and self._anchor in visible and node_id in visible:
             first, last = sorted((visible.index(self._anchor), visible.index(node_id)))
             keys = {k for ident in visible[first:last + 1] if (k := self._node_key(ident))}
             if ctrl:
                 keys.update(self.selection.keys)
+            lead = self._node_key(self._anchor)
         else:
             self._anchor = node_id
             keys = {key} if key is not None else set(self.container_keys(node_id))
             if ctrl:
                 selected = set(self.selection.keys)
                 keys = selected - keys if keys <= selected else selected | keys
-        self.selection.set(keys, clicked=key, origin=ORIGIN_LIST)
+        self.selection.set(keys, clicked=key, origin=ORIGIN_LIST, extend=ctrl, first=lead)
 
     def select_all_visible(self, visible) -> None:
         self.selection.set((key for ident in visible if (key := self._node_key(ident))),

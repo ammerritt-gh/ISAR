@@ -77,6 +77,26 @@ def test_mouse_selection_ranges_and_whole_set_toggle(panel_vm):
     assert _selected_rows(panel) == set(A.values())
 
 
+def test_first_picked_follows_mouse_gestures(panel_vm):
+    panel, vm, _ = panel_vm
+    _open(panel, KEY_A, KEY_B)
+    ctrl, shift = Qt.KeyboardModifier.ControlModifier, Qt.KeyboardModifier.ShiftModifier
+    _mouse(panel, f"spec:{A[4]}")
+    _mouse(panel, f"spec:{B[3]}", ctrl)
+    assert vm.selection.picks == (A[4], B[3]) and vm.selection.first_picked == A[4]
+    _mouse(panel, f"spec:{A[4]}", ctrl)                       # Ctrl-click removes the first pick
+    assert vm.selection.picks == (B[3],) and vm.selection.first_picked == B[3]
+    _mouse(panel, f"spec:{A[4]}")                             # a plain click restarts the picks
+    _mouse(panel, f"spec:{B[5]}", shift)                      # a range from the anchor A4
+    assert vm.selection.keys == (B[5], B[6], A[3], A[4])
+    assert vm.selection.picks == (A[4], B[5], B[6], A[3]) and vm.selection.first_picked == A[4]
+    _mouse(panel, f"set:{KEY_A}")                             # a set click: its first listed row
+    assert vm.selection.picks == tuple(A.values()) and vm.selection.first_picked == A[3]
+    _mouse(panel, f"set:{KEY_B}", ctrl)                       # Ctrl keeps the earlier first pick
+    assert vm.selection.first_picked == A[3]
+    assert vm.selection.picks[:4] == tuple(A.values())
+
+
 def test_visible_range_ctrl_range_hidden_anchor_and_select_all(panel_vm):
     panel, vm, _ = panel_vm
     _open(panel, KEY_A, KEY_B)
