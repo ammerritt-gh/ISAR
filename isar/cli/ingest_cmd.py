@@ -72,6 +72,7 @@ def run(args) -> int:
             "last_ingest": report.to_jsonable()["last_ingest"],
             "curves": report.curves,
             "gpi": report.gpi,
+            "companions": report.companions,
             "intake_damaged": damaged,
             "import_record_error": report.import_record_error}))
         return 0

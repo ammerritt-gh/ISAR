@@ -149,3 +149,17 @@ def test_bl43_ingest_says_when_the_import_record_could_not_be_written(tmp_path, 
     code = ingest_cmd.run(argparse.Namespace(data=[str(data)], workspace=str(ws.root), json=True))
     obj = json.loads(capsys.readouterr().out.strip())
     assert code == 0 and "was not written" in obj["import_record_error"]
+
+
+def test_bl43_json_carries_companions_and_a_non_bl43_card_carries_null(tmp_path, capsys):
+    from intake_fixtures import bl43_workspace
+    ws, data = bl43_workspace(tmp_path)
+    code = ingest_cmd.run(argparse.Namespace(data=[str(data)], workspace=str(ws.root), json=True))
+    obj = json.loads(capsys.readouterr().out.strip())
+    assert code == 0 and set(obj["companions"]) == {"sidecar", "gpi", "curves"}
+    assert len(obj["companions"]["sidecar"]["missing"]) == 2      # the fixture writes no .var
+    (tmp_path / "s30").mkdir()
+    s30, s30_ws = _init_ws(tmp_path / "s30")
+    capsys.readouterr()
+    ingest_cmd.run(argparse.Namespace(data=[str(s30)], workspace=str(s30_ws), json=True))
+    assert json.loads(capsys.readouterr().out.strip())["companions"] is None

@@ -8,7 +8,9 @@ scan-number sequence — the file-level gap detection `collate.detect_gaps` (val
 
 A card with a `[files]` table (opt-in) also groups the matching files into `FileSet`s — one scan,
 many per-detector files, keyed by the regex `set` group within one folder — and a plugin with
-`parse_set` parses each set once; everything else is the one-file-one-parse path described above.
+`parse_set` parses each set once; everything else is the one-file-one-parse path described above. A set's
+sidecar (the card's `[files] sidecar` names) is attached from the set's own folder on disk when it was
+not among the files given, so a dropped file set and its dropped folder parse alike.
 """
 from __future__ import annotations
 
@@ -50,7 +52,7 @@ class IngestPlan:
     # Card `[files]` only. Set members are ALSO in `measurement_files` (the manifest and the
     # driver's source map read that list); `parse_all`/`ingest_batch` parse them as sets.
     file_sets: list[FileSet] = field(default_factory=list)
-    sidecar_files: list[Path] = field(default_factory=list)     # named by `[files] sidecar`, never parsed
+    sidecar_files: list[Path] = field(default_factory=list)     # named by `[files] sidecar` (given or on disk beside a set), never parsed
     ignored_files: list[Path] = field(default_factory=list)     # matched `[files] ignore`
 
 
@@ -127,6 +129,19 @@ def discover(data_paths, card: Card) -> IngestPlan:
             plan.measurement_files.append(f)
         else:
             plan.foreign.append(f)
+    # The card's sidecar is also looked up beside each set on disk, so dropping the analyzer files and
+    # dropping their folder import alike. Sidecars only: no measurement file is ever added this way.
+    for fs in plan.file_sets:
+        attached = {p.resolve() for p in fs.sidecars}
+        for template in files_cfg.get("sidecar", []):
+            p = fs.folder / template.replace("{set}", fs.key)
+            if (not p.is_file() or p.resolve() in attached or _skip(p)
+                    or any(fnmatch.fnmatch(p.name, g) for g in ignore_globs)
+                    or any(r.fullmatch(p.name) for r in meas_res)):
+                continue
+            attached.add(p.resolve())
+            fs.sidecars.append(p)
+            plan.sidecar_files.append(p)
     return plan
 
 
@@ -369,6 +384,7 @@ class IngestReport:
     curves: dict | None = None                       # the resolution-curve check (BL43); {"error"} when it failed
     gpi: dict | None = None                          # the gpi check (BL43, isar.intake.gpi); {"error"} when it failed
     import_record_error: str | None = None           # BL43: the import record was not written (GUI file values stale)
+    companions: dict | None = None                   # BL43 with a workspace: what this import found beside the analyzer files
     dirty: bool = False
 
     def to_jsonable(self) -> dict:
@@ -382,7 +398,40 @@ class IngestReport:
                 "last_ingest": dict(self.last_ingest),
                 "curves": None if self.curves is None else dict(self.curves),
                 "gpi": None if self.gpi is None else dict(self.gpi),
-                "import_record_error": self.import_record_error}
+                "import_record_error": self.import_record_error,
+                "companions": None if self.companions is None else dict(self.companions)}
+
+
+def _companions(rows: list[dict], gpi: dict | None, curves: dict | None) -> dict:
+    """What this import found beside the analyzer files, from data in hand: the sidecar state of each
+    set imported in this batch, the gpi check restricted to this batch's scans, and the curve check."""
+    state = {}
+    for r in rows:
+        s = ((r.get("import") or {}).get("sidecar") or {}).get("state")
+        if s in ("read", "missing", "unreadable"):
+            state.setdefault(s, set()).add(r["set"])
+    sidecar = {k: sorted(state.get(k, ())) for k in ("read", "missing", "unreadable")}
+    batch = {r["scan"]: r["set"] for r in rows}
+    g = {"folder": None, "found": [], "missing": [], "not_used": [], "error": None}
+    if gpi is not None and "error" in gpi:
+        g["error"] = gpi["error"]
+    elif gpi is not None:
+        mine = [s for k, s in (gpi.get("scans") or {}).items() if k in batch]
+        found = {s["set"] for s in mine}
+        g.update(folder=gpi.get("folder"), found=sorted(found),
+                 missing=sorted(set(batch.values()) - found),
+                 not_used=sorted({s["set"] for s in mine if not s["accepted"]}))
+    else:   # no gpi record at all: nothing was found for any of this batch's sets
+        g["missing"] = sorted(set(batch.values()))
+    if curves is None:
+        c = None
+    elif "error" in curves:
+        c = {"folder": None, "n_curves": 0, "n_analyzers": 0, "problem": None, "error": curves["error"]}
+    else:
+        c = {"folder": curves.get("folder"), "n_curves": len(curves.get("curves") or []),
+             "n_analyzers": len({x["detector"] for x in curves.get("curves") or []}),
+             "problem": curves.get("problem"), "error": None}
+    return {"sidecar": sidecar, "gpi": g, "curves": c}
 
 
 def import_record_message(name: str, exc: BaseException) -> str:
@@ -651,6 +700,7 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
         except Exception as exc:  # noqa: BLE001 — a failed gpi check is reported, never aborts the batch
             log.exception("ingest: gpi check failed")
             report.gpi = {"error": f"{type(exc).__name__}: {exc}"}
+        report.companions = _companions(intake_rows, report.gpi, report.curves)
 
     # --- file manifest for ALL classified files (merge, never replace) ---
     # For a measurement-class FILE, its scans still split into measurement scans (ledgered, listed
