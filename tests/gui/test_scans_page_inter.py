@@ -17,12 +17,12 @@ from gui.inter_fakes import FakeInterState, make_entry, make_history, make_overv
 from isar.workspace_api import Workspace
 from isar.workspace_api.inter_spectra import SpectrumInter
 from isar_gui.inter_words import CONDITIONAL_ERRORS
-from isar_gui.viewmodels.inter_fits import NOT_ON_PLOT
+from isar_gui.viewmodels.inter_fits import NO_CURVE, NOT_ON_PLOT
 from isar_gui.gui_store import GuiStore
 from isar_gui.viewmodels import scans_page as vm_module
 from isar_gui.viewmodels.scan_list import ScanListViewModel
 from isar_gui.views.scans_page import ScansPage
-from scans_view_fixture import ONE_MODE, TWO_MODE
+from scans_view_fixture import NO_ZERO, ONE_MODE, TWO_MODE
 
 WORKTREE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WRITERS = {"set_anchors", "pick_fit", "set_lock", "save_settings"}
@@ -271,6 +271,18 @@ def test_fit_none_draws_no_fit_curve_and_greys_make_authoritative_and_lock(qtbot
     assert bar.authoritative_off == NOT_ON_PLOT and bar.lock_off == NOT_ON_PLOT
     assert page.inter_bar.authoritative_button.toolTip() == NOT_ON_PLOT
     assert not page.inter_bar.authoritative_button.isEnabled() and not page.inter_bar.lock_button.isEnabled()
+
+
+def test_with_fit_already_fast_and_no_curve_the_greyed_tooltip_does_not_send_the_user_to_fast(setup, reads):
+    page, inter = setup
+    inter.histories[NO_ZERO] = make_history(_refit("r1", "ring 1", authoritative=True))
+    inter.overview = make_overview(by_key={NO_ZERO: _row(NO_ZERO, "r1")})
+    drawn = _select(page, NO_ZERO, active=NO_ZERO)
+    assert page.vm.fit == "fast" and not drawn.curves
+    bar = page._drawn_state.inter
+    assert bar.lock_off == NO_CURVE and page.inter_bar.lock_button.toolTip() == NO_CURVE
+    assert "set Fit to Fast" not in page.inter_bar.lock_button.toolTip()
+    assert not page.inter_bar.lock_button.isEnabled()
 
 
 def test_the_legend_names_the_deep_curve_when_fit_is_deep(setup, reads):

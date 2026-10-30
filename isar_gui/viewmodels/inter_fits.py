@@ -59,13 +59,17 @@ def entry_tip(entry: FitEntry) -> str:
 
 
 VIEWED = "viewed"    # ``drawn`` default: the viewed fit is the one on the plot
-NOT_ON_PLOT = "This fit is not drawn now: set Fit to Fast (Offset layout with several spectra) to act on it."
+# Why the viewed fit is not the curve on show: the page passes the true one as ``not_drawn``.
+NOT_ON_PLOT = "This fit is not drawn now: set Fit to Fast to act on it."
+NOT_ON_PLOT_OVERLAY = "This fit is not drawn now: set the layout to Offset to act on it."
+NO_CURVE = "No fit curve is drawn for this spectrum, so there is nothing to act on."
 
 
 def bar_state(entries: Sequence[FitEntry] | None, viewed: str, *, drawn: str | None = VIEWED,
               locked: bool = False, locked_fit: str | None = None, waterfall_off: str | None = None,
-              waterfall_on: bool = False) -> BarState:
-    """``drawn``: the fit id on the plot for this spectrum, 'deep' for its deep solo curve, None for no curve."""
+              waterfall_on: bool = False, not_drawn: str = NOT_ON_PLOT) -> BarState:
+    """``drawn``: the fit id on the plot for this spectrum, 'deep' for its deep solo curve, None for no curve;
+    ``not_drawn``: the reason a greyed action gives when the viewed fit is not that curve."""
     if drawn == VIEWED:
         drawn = viewed
     if entries is None:
@@ -80,7 +84,7 @@ def bar_state(entries: Sequence[FitEntry] | None, viewed: str, *, drawn: str | N
         info = info_tip = ""
     else:
         on_plot = drawn == entry.fit_id    # the actions act on the viewed fit, so it must be the curve on show
-        lock_off = None if locked or on_plot else NOT_ON_PLOT
+        lock_off = None if locked or on_plot else not_drawn
         if entry.authoritative:
             authoritative_off = "This fit is already the one ISAR uses for this spectrum."
         elif entry.stale:
@@ -88,7 +92,7 @@ def bar_state(entries: Sequence[FitEntry] | None, viewed: str, *, drawn: str | N
         elif locked:
             authoritative_off = f"Locked to {locked_fit}; unlock first."
         else:
-            authoritative_off = None if on_plot else NOT_ON_PLOT
+            authoritative_off = None if on_plot else not_drawn
         info, info_tip = _info(entry, locked, drawn)
     return BarState(tuple(entries), viewed, locked, menu_off, authoritative_off,
                     "Unlock" if locked else "Lock this fit", lock_off, waterfall_off, waterfall_on, info, info_tip)

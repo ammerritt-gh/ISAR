@@ -16,7 +16,7 @@ from isar.workspace_api.scan_list import PooledRow
 from isar_gui.inter_words import CONDITIONAL_ERRORS, ERRORS_UNAVAILABLE
 from isar_gui.selection import identity, unique_labels
 from isar_gui.viewmodels.base import ViewModel
-from isar_gui.viewmodels.inter_fits import BarState, bar_state
+from isar_gui.viewmodels.inter_fits import NO_CURVE, NOT_ON_PLOT, NOT_ON_PLOT_OVERLAY, BarState, bar_state
 
 MAX_PLOTTED = 10
 PASSES = ('none', 'fast', 'deep')
@@ -335,9 +335,11 @@ class ScansPageViewModel(ViewModel):
         from dataclasses import replace
         bar = None
         if inter is not None and self._active is not None and body == PLOT:
+            not_drawn = (NOT_ON_PLOT if not wf and self.fit != 'fast' else
+                         NOT_ON_PLOT_OVERLAY if view == 'overlay' else NO_CURVE)
             bar = bar_state(history, viewed, drawn=self._drawn,
                             locked=bool(row and row.locked), locked_fit=row.locked_fit_id if row else None,
-                            waterfall_off=wf_off, waterfall_on=wf)
+                            waterfall_off=wf_off, waterfall_on=wf, not_drawn=not_drawn)
         state = replace(state, inter=bar, fit_value=self.fit, scale_value=self.scale,
                         timing=RedrawTiming(n, read_s, perf_counter() - build_started,
                                                   0.0, perf_counter() - started))
