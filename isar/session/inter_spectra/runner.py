@@ -301,6 +301,7 @@ class _Run:
         self.failed: dict[str, str] = {}          # unit -> reason of its latest failed attempt
         self.not_reached: dict[str, str] = {}     # unit -> reason it was never attempted
         self.records: dict[str, dict] = {}        # fit id -> record of a refit accepted in this batch
+        self.dormant: dict[str, tuple] = {}       # fit id -> its Dormant records (branches not observed in it)
         self.lines: dict = {}                     # fit id -> RefitLine of the stored log, read when a fit is missing
         self.ctx: dict = {}
         self.stage_name, self.index, self.of, self.round = "prepare", 0, None, None
@@ -495,11 +496,23 @@ class _Run:
         return self.lines.get(fit)
 
     def held_of(self, u: str, fit: str):
-        # a stored refit carries the inputs it was made from (C-save-inter), never today's hash
+        # a stored refit carries the inputs it was made from (C-save-inter), never today's hash, and the branches
+        # not observed in it, so a branch that fades and returns keeps its id across rings, sweeps and batches
         line = None if fit == "fast" or fit in self.records else self.line_of(fit)
         inputs = line.inputs if line is not None and line.inputs is not None else self.inputs.get(u)
+        if fit not in self.dormant and line is not None:
+            from isar.analyze.coupled.types import Dormant
+            stored = ((self.records_mod.read_payload(self.root, line) or {}).get("came_out") or {}).get("dormant") or ()
+            self.dormant[fit] = tuple(Dormant(d["branch"], d["last_seen_fit"], d["last_seen_unit"]) for d in stored)
         return self.core.held_from_fit(self.record_of(u, fit), unit=u, fit=fit, inputs=inputs,
-                                       context=self.ctx[u], T=self.nodes[u].T)
+                                       context=self.ctx[u], T=self.nodes[u].T, dormant=self.dormant.get(fit, ()))
+
+    def note_dormant(self, ids, k: str, fit: str) -> tuple:
+        """The identity's absent records of ``k`` (C-identity) as its new fit's Dormant branches."""
+        from isar.analyze.coupled.types import Dormant
+        self.dormant[fit] = tuple(Dormant(r["branch"], r["last_seen_fit"], r["last_seen_unit"])
+                                  for r in (ids.absent or {}).get(k, ()))
+        return self.dormant[fit]
 
     def snapshot(self, u: str, own, sid: str, terms, stage_id: str | None = None):
         from isar.analyze.coupled.types import Snapshot
@@ -590,6 +603,7 @@ class _Run:
         came_out = _plain(r, skip=("fit", "overlay"))         # both live in the payload's overlay
         if stage1 is not None:
             came_out["stage1"] = stage1                         # E12: the round's stage 1 rides on its first sweep
+        came_out["dormant"] = _plain(self.dormant.get(snap.fit_id, ()))     # branches not observed in this fit
         overlay = _plain(r.overlay) if r.status in _ELIGIBLE and r.overlay is not None else None
         status, reason = r.status, r.reason
         if status in _ELIGIBLE and overlay is None:             # a fit nobody can draw is not offered
@@ -718,13 +732,16 @@ class _Run:
             energies = {k: [m.omega0 for m in R[k].modes] for k in ok if len(R[k].modes) == A[k].count}
             ids_after, _ = self.identity(A, snaps, previous, sid, energies)
             seams = self.ring_seams(plan, r, R, ok, ids_after)
+            for k, s in snaps.items():
+                self.note_dormant(ids_after, k, s.fit_id)
             entries = [self.entry(k, snaps[k], R[k], self.identity_flags(ids, k)) for k in snaps]
             verdict = self.save_stage("ring", r, entries, seams)
             for k, s in snaps.items():
                 if self.judge(k, R[k], verdict, s.fit_id):
                     self.records[s.fit_id] = R[k].fit
                     held[k] = self.core.held_from_fit(R[k].fit, unit=k, fit=s.fit_id, inputs=self.inputs.get(k),
-                                                      context=self.ctx[k], T=self.nodes[k].T)
+                                                      context=self.ctx[k], T=self.nodes[k].T,
+                                                      dormant=self.dormant[s.fit_id])
             self.rings_done = r
             self.stage_timing("ring", r, t_ring, len(snaps), len(snaps))
             self.progress("save")
@@ -868,7 +885,8 @@ class _Run:
                             move = max([move, *(abs(e - old[b]) for b, e in r.energies.items() if b in old)])
                             held[k] = self.core.held_from_fit(r.fit, unit=k, fit=gs[k].fit_id,
                                                               inputs=self.inputs.get(k), context=self.ctx[k],
-                                                              T=self.nodes[k].T)
+                                                              T=self.nodes[k].T,
+                                                              dormant=self.note_dormant(ids, k, gs[k].fit_id))
                             data[k], unary[k] = r.D, r.unary
                         elif isinstance(r, Exception) or r.status == "failed":
                             move = math.inf              # rules.settled: a failed block is never quiet

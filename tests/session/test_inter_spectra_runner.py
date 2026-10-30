@@ -230,6 +230,38 @@ def test_an_anchored_batch_grows_ring_by_ring_on_frozen_state(tmp_path):
     assert (last["done"], last["failed"], last["not_reached"], last["fixed"], last["total"]) == (8, 2, 3, 7, 20)
 
 
+def test_a_branch_missing_in_the_middle_of_an_anchored_chain_is_carried_to_where_it_returns(tmp_path):
+    """The anchor x (100 K) holds branches p and r, y (150 K) only r, z (200 K) two modes again. y's accepted refit
+    records p as not observed here, so z's ring conditions on a neighbour that still names p (its return keeps the
+    id, with no unmatched-mode price), the record is saved with y's refit, and a later batch reloads it."""
+    from isar.analyze.coupled.types import Dormant
+    ws = _workspace(tmp_path, (100, 150, 200), 1)
+    k = _keys(ws)
+    x, y, z = k["a03", 100.0], k["a03", 150.0], k["a03", 200.0]
+    w = Workspace.open(ws)
+    card, session = w.load()
+    for key, peaks in ((x, [(4.0, "p"), (8.0, "r")]), (y, [(8.0, "r")]), (z, [(4.0, "z0"), (8.0, "z1")])):
+        fp = session.scans[key].detectors[key.rsplit(":", 1)[1]]["fast_pass"]
+        fp["peaks"] = [{"index": i, "omega0": e, "Gamma": 0.5, "height": 1.0, "branch": b}
+                       for i, (e, b) in enumerate(peaks)]
+        fp["fake"] = {"toy": "keep", "slots": ["p", "r"]} if key == z else {"toy": "keep"}
+    w.save(card, session)
+    spec = _anchored(ws, [x])
+    Bench(ws).run(spec)
+    lines = {r.unit: (r, p) for r, p in _lines(ws, spec.batch_id)}
+    gone = {"branch": "p", "last_seen_fit": "fast", "last_seen_unit": x}
+    assert lines[y][1]["came_out"]["dormant"] == [gone]                            # saved with y's refit
+    held_y = [h for t in lines[z][1]["came_in"]["terms"] for h in t["held"] if h["unit"] == y]
+    assert held_y and held_y[0]["dormant"] == [gone]                               # carried to z's ring
+    assert lines[z][0].accept.decision == "authoritative"
+    # a later batch reads y's stored refit back with its record
+    again = _anchored(ws, [z])
+    run = runner._Run(Path(ws), runner.BatchItem("q2", f"inter:{again.batch_id}:batch", "inter", 1, again.to_json()),
+                      lambda p: None, lambda r: None, lambda t: {}, fakes, runner.TARGET_S)
+    run.records_mod, run.ctx, run.inputs, run.nodes = records, {y: None}, {}, read_nodes(ws).nodes
+    assert run.held_of(y, lines[y][0].fit).dormant == (Dormant("p", "fast", x),)
+
+
 def test_spread_in_q_with_no_accepted_hkl_leaves_every_other_spectrum_unreached(tmp_path):
     ws = _workspace(tmp_path, (100, 200), 3)
     k = _keys(ws)
