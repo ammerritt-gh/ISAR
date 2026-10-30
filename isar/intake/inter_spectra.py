@@ -2,6 +2,7 @@
 
 Anchors, picks, locks and the inter-spectra settings are user values: ISAR never writes this file (AGENTS.md
 hard rule 1). The checked writers are ``isar.intake.inter_values``; ``fold`` reads their delta lines, latest wins.
+A saved value of a retired setting (``RETIRED_SETTINGS``) is logged and ignored, never reported as damaged.
 """
 from __future__ import annotations
 
@@ -10,7 +11,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
-from isar.analyze.coupled.settings import SETTING_DEFS, InterSettings
+from isar.analyze.coupled.settings import RETIRED_SETTINGS, SETTING_DEFS, InterSettings
 from isar.intake import store
 
 log = logging.getLogger(__name__)
@@ -83,6 +84,8 @@ def _problem(e: dict) -> str | None:
     if not isinstance(changes, dict) or not changes:
         return "settings entry has no changes"
     for name, value in changes.items():
+        if name in RETIRED_SETTINGS:
+            continue
         why = setting_problem(name, value)
         if why is not None:
             return why
@@ -117,7 +120,9 @@ def fold(entries: Sequence[dict], lines: Sequence[int] = ()) -> InterUser:
                 locks[unit] = LockState(e["locked"], e["fit"], seq)
         else:
             for name, value in e["changes"].items():
-                if value is None:
+                if name in RETIRED_SETTINGS:
+                    log.info("%s line %d: ignored retired setting %r (it has no effect)", FILE, line, name)
+                elif value is None:
                     settings.pop(name, None)
                 else:
                     settings[name] = value

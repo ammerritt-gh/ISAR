@@ -4,6 +4,7 @@ Anchors, picks, locks and settings are the user's; ISAR never writes them. Every
 line, and a refused save leaves ``intake/inter_spectra.jsonl`` byte-identical.
 """
 import json
+import logging
 
 import pytest
 
@@ -89,6 +90,33 @@ def test_settings_deltas_fold_and_none_goes_back_to_default(root):
     assert read_user(root).settings == {"flag_threshold": 60.0}
     s = read_inter_settings(root)
     assert (s.flag_threshold, s.sweep_cap) == (60.0, 20)
+
+
+def test_a_retired_setting_is_logged_and_ignored_not_damaged(caplog):
+    entries = [
+        {"kind": "settings", "seq": 1, "targets": ["experiment"],
+         "changes": {"q_tolerance_meV": 3.0, "flag_threshold": 60.0}},
+        {"kind": "settings", "seq": 2, "targets": ["experiment"], "changes": {"q_change_scale_meV": None}},
+    ]
+    caplog.set_level(logging.INFO)
+    u = inter_spectra.fold(entries)
+    assert (u.settings, u.damaged) == ({"flag_threshold": 60.0}, ())
+    assert "q_tolerance_meV" in caplog.text and "q_change_scale_meV" in caplog.text
+
+
+def test_a_saved_retired_setting_reads_as_the_default_and_a_save_of_it_is_refused(root):
+    assert pick_fit(root, A, "fast").ok                    # creates the file; the retired line follows it
+    with open(root / inter_spectra.FILE, "ab") as f:
+        f.write(json.dumps({"kind": "settings", "id": "e1", "seq": 1, "at": "x", "targets": ["experiment"],
+                            "changes": {"q_tolerance_meV": 3.0}}).encode("utf-8") + b"\n")
+    assert read_user(root).damaged == ()
+    assert read_inter_settings(root) == InterSettings()
+    before = _bytes(root)
+    r = save_settings(root, {"q_tolerance_meV": 3.0})
+    assert (r.ok, r.reason) == (False, "unknown inter-spectra setting 'q_tolerance_meV'")
+    assert _bytes(root) == before
+    with pytest.raises(ValueError, match="unknown inter-spectra setting"):
+        InterSettings.from_values({"q_tolerance_meV": 1})
 
 
 @pytest.mark.parametrize("call, reason", [
