@@ -65,6 +65,7 @@ def _import_block(raw: dict) -> dict | None:
     return {"sidecar": {"state": raw["sidecar_state"], "reason": raw.get("sidecar_problem")},
             "left_out": dict(raw.get("left_out") or {}),
             "paths": dict(raw.get("paths") or {}),
+            "members": list(raw.get("members") or []),
             "unrecognised_lines": list(raw.get("unrecognised_lines") or []),
             "unparsed_lines": list(raw.get("unparsed_lines") or [])}
 
@@ -95,6 +96,44 @@ def scan_row(record, data_revision: str) -> dict:
     if (gaps := _import_block(raw)) is not None:
         row["import"] = gaps
     return _finite(json.loads(json.dumps(row)))   # plain JSON types, as a re-read gives them
+
+
+def recorded_files(rows: dict | None, files: dict, key: str) -> list[str]:
+    """The files the user gave for scan ``key`` (``"exp:scan"``, the rows' key), in the order given.
+
+    The one members-first rule: (1) the row's ``import.members``; (2) else its ``import.paths`` values, then each
+    ``import.left_out`` file name joined to the folder of the first path (a row written before ``members``);
+    (3) else every ``files`` path (the ledger's ``session.files``: path -> {format, scan_ids}) of format
+    measurement that lists ``key``. ``[]`` when none."""
+    imp = ((rows or {}).get(key) or {}).get("import") or {}
+    if imp.get("members"):
+        return list(imp["members"])
+    paths = list((imp.get("paths") or {}).values())
+    if paths:
+        folder = Path(paths[0]).parent
+        return paths + [str(folder / v["file"]) for v in (imp.get("left_out") or {}).values() if v.get("file")]
+    return [p for p, row in (files or {}).items()
+            if (row or {}).get("format") == "measurement" and key in ((row or {}).get("scan_ids") or ())]
+
+
+def all_recorded_files(rows: dict | None, files: dict) -> list[str]:
+    """Every file the user gave the experiment, de-duplicated by resolved path, first occurrence kept.
+
+    With rows (an intake card): ``recorded_files`` of each row key in row order, then the manifest's companion
+    files; a manifest measurement path no row lists is not added, so a file withheld at a later import never
+    returns. Without rows: the manifest's measurement and companion files in ledger order."""
+    companions = [p for p, row in (files or {}).items() if (row or {}).get("format") == "companion"]
+    if rows:
+        listed = [p for key in rows for p in recorded_files(rows, files, key)] + companions
+    else:
+        listed = [p for p, row in (files or {}).items() if (row or {}).get("format") in ("measurement", "companion")]
+    seen, out = set(), []
+    for p in listed:
+        r = str(Path(p).resolve())
+        if r not in seen:
+            seen.add(r)
+            out.append(p)
+    return out
 
 
 def _load(path: Path) -> dict:
