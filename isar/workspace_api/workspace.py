@@ -679,6 +679,12 @@ class Workspace:
                     continue
             yield rec
 
+    def recorded_files(self, set_key: str) -> tuple[str, ...]:
+        """The files the user gave for scan ``set_key`` (``"exp:scan"``), in the order given: the import record's
+        members, else its paths, else the ledger's files that list the scan (``isar.intake.scans.recorded_files``,
+        the rule a fit uses). Empty when none is recorded. Read-only."""
+        return tuple(intake_scans.recorded_files(self._intake_rows(), self._session().files or {}, set_key))
+
     # ---- BL43 intake: values, conditions and what each fit used -------------
     def _intake_rows(self) -> dict:
         return self._parse("intake_scans", lambda: intake_scans.read_scans(self.root), {})
