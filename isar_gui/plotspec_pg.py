@@ -53,6 +53,7 @@ _ROLE_COLOR = {
     Role.DATA: _C["C0"], Role.FIT: _C["C1"], Role.COMPONENT: _C["C3"], Role.RESIDUAL: _GREY_04,
     Role.PRIOR: "#8c8c8c", Role.BRANCH: "#595959", Role.SANDBOX: _C["C5"],
 }
+ROLE_COLOR = _ROLE_COLOR     # public for the Analyzer array dock: the same data, fit and component colours
 _TIER_COLOR = {
     Tier.HESSE: _C["C7"], Tier.PROFILE: _C["C8"], Tier.BOOTSTRAP: _C["C9"], Tier.BAYES: _C["C6"],
 }
