@@ -549,7 +549,7 @@ def stage_factors(snapshot: Snapshot) -> dict[str, Factor]:
 def _own_by_slot(spec: _Spec, k: int, slots) -> list:
     """The base modes at count k in slot order. An incoming mode matched to a slot's branch takes that slot
     (base_modes keeps the incoming values as they are); the rest fill the free slots in base order. Pairing by
-    position alone gave a neighbour-added mode the incoming mode's branch whenever the energies tied."""
+    position alone gave the incoming mode's branch to a neighbour-added mode that sorted before it."""
     out, rest = [None] * k, []
     matched = {(m.omega0, m.gamma, m.height): b for m, b in zip(spec.own.modes, spec.incoming) if b is not None}
     for md in spec.base_modes(k):
