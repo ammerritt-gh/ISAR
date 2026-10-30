@@ -7,6 +7,7 @@ from pathlib import Path
 
 import isar
 from isar.session.inter_spectra.layout import BL43_GRID
+from isar.session.inter_spectra.records import Flag
 from proofs import inter_spectra_q_checks as qc
 
 REPO = Path(__file__).resolve().parents[1]
@@ -63,3 +64,21 @@ def test_a_q_linked_spectrum_in_no_term_must_be_named_by_the_plan():
     assert qc.q_linked_spectra_named(named, [k("a04")], []).ok
     assert qc.q_linked_spectra_named({}, [k("a04")], [k("a04")]).ok
     assert not qc.q_linked_spectra_named({}, [k("a04")], []).ok
+
+
+def flag_with(*reasons: tuple[str, str, list[str] | None]) -> Flag:
+    """A flag of (code, severity, branch ids) reasons, as a refit line stores them."""
+    return Flag(None, True, tuple({"code": c, "severity": s, "text": "", "ids": ids} for c, s, ids in reasons))
+
+
+def test_a_flat_mode_flagged_above_info_on_any_spectrum_fails_the_quiet_check():
+    flat = {"A": {"omega0": 10.0, "branch": "b1"}}
+    quiet = {k("a04"): (302, None, flat), k("a05"): (302, flag_with(("x", "info", ["b1"])), flat)}
+    assert qc.flats_quiet_on_every_spectrum(quiet, ("A",)).ok
+    # the flat mode warned on a spectrum the expectation does not name: the proof must see it
+    hit = {**quiet, k("a05"): (302, flag_with(("t_drift_cumulative", "warn", ["b1"])), flat)}
+    verdict = qc.flats_quiet_on_every_spectrum(hit, ("A",))
+    assert not verdict.ok and k("a05") in verdict.why
+    # a reason on another branch is not the flat mode's
+    other = {k("a05"): (302, flag_with(("t_drift_cumulative", "warn", ["b2"])), flat)}
+    assert qc.flats_quiet_on_every_spectrum(other, ("A",)).ok

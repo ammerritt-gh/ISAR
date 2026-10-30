@@ -16,8 +16,8 @@ fixture). Then the batches run through the analysis service as the GUI starts th
 3. Scope qT: one simultaneous batch of all 56 spectra.
 4. Checks: accounting per batch; the fast solo fits and results.csv untouched; the recorded terms of the qT batch
    (curvature lines, one axis per link, parallel groups conflict-free, every q-linked spectrum in a term or named);
-   the moving mode flagged or held, the flat modes quiet, with q-links on; the operator's named kink analyzers
-   flagged; the timing. The q anchored batch runs after every check of the qT batch, so the verdicts judge the qT
+   the moving mode flagged or held, the flat modes quiet on every spectrum, with q-links on; the operator's named
+   kink analyzers flagged; the timing. The q anchored batch runs after every check of the qT batch, so the verdicts judge the qT
    batch's authoritative fits.
 
 The 30-minute figure is a target: timing is printed and written to ``summary.json``, never asserted. Numbers the
@@ -156,6 +156,21 @@ def _timing_view(ws, batch) -> dict:
             "sweeps": batch.end.get("sweeps"), "refit_timings": timings, "timing": batch.end["timing"]}
 
 
+def _judged_spectra(ws, nodes, exp) -> dict:
+    """Every spectrum of the qT batch: key -> (T, its flag as the facade shows it, its modes matched to the paper's
+    phonons at its temperature), read from its authoritative refit (its fast solo fit when none stands)."""
+    log, by_key, fast = records.read_log(ws), inter_overview(ws).by_key, _fits(ws)
+    tol = exp.get("match_tolerance_meV")
+    out = {}
+    for key, n in nodes.nodes.items():
+        T = round(n.T)
+        line = _authoritative_line(log, by_key, key)
+        paper = {name: ref["omega0"] for name, ref in exp["paper"][str(T)].items()}
+        matches = chk.match_modes(_peaks_of(ws, line, fast[(T, n.detector)][1]), paper, tol)
+        out[key] = (T, _as_flag(by_key[key].flag, line) if key in by_key else None, matches)
+    return out
+
+
 # ---------------------------------------------------------------- tests
 def test_precondition_every_spectrum_has_an_accepted_hkl(ws, nodes):
     coords = q_coordinates(ws, list(nodes.nodes))
@@ -260,20 +275,14 @@ def test_authority_follows_the_rules(qt_run, ws, nodes):
     assert not problems, "; ".join(problems[:10])
 
 
-def test_moving_mode_flagged_and_flats_quiet_with_q_links(qt_run, ws, nodes, expectation):
+def test_moving_mode_flagged_and_flats_quiet_on_every_spectrum(qt_run, ws, nodes, expectation):
     exp = expectation
     analyzer, moving, flats = exp["analyzer"], exp["moving_mode"], tuple(exp["flat_modes"])
     tol = exp.get("match_tolerance_meV")
-    log, by_key, fast = records.read_log(ws), inter_overview(ws).by_key, _fits(ws)
-    spectrum_flags, matches = {}, {}
-    for T in TEMPERATURES:
-        key = _key(nodes, T, analyzer)
-        line = _authoritative_line(log, by_key, key)
-        paper = {name: ref["omega0"] for name, ref in exp["paper"][str(T)].items()}
-        matches[T] = chk.match_modes(_peaks_of(ws, line, fast[(T, analyzer)][1]), paper, tol)
-        spectrum_flags[T] = _as_flag(by_key[key].flag, line) if key in by_key else None
-    moving_v = chk.moving_is_flagged(spectrum_flags, matches, tol, moving=moving)
-    flats_v = chk.flats_are_quiet(spectrum_flags, matches, flats=flats)
+    spectra = _judged_spectra(ws, nodes, exp)
+    at = {T: spectra[_key(nodes, T, analyzer)] for T in TEMPERATURES}     # the moving mode's analyzer
+    moving_v = chk.moving_is_flagged({T: at[T][1] for T in at}, {T: at[T][2] for T in at}, tol, moving=moving)
+    flats_v = qc.flats_quiet_on_every_spectrum(spectra, flats)           # every spectrum, not only that analyzer
     print(f"\nmoving: {moving_v.why}\nflats: {flats_v.why}")
     RESULTS["moving"] = {"ok": moving_v.ok, "why": moving_v.why}
     RESULTS["flats"] = {"ok": flats_v.ok, "why": flats_v.why}

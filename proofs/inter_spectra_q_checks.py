@@ -9,7 +9,8 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping, Sequence
 
 from isar.session.inter_spectra.layout import Grid
-from proofs.inter_spectra_checks import Verdict
+from isar.session.inter_spectra.records import Flag
+from proofs.inter_spectra_checks import Verdict, flats_are_quiet
 
 
 def _split(key: str) -> tuple[str, str]:
@@ -74,3 +75,17 @@ def q_linked_spectra_named(not_coupled: Mapping[str, str], q_linked: Collection[
     bad = [k for k in q_linked if k not in in_term and "no curvature term" not in not_coupled.get(k, "")]
     return Verdict(not bad, f"{len(q_linked)} q-linked spectra: each in a term or named as having no curvature term"
                    if not bad else f"{len(bad)} q-linked spectra are in no term and unnamed, first: {bad[0]}")
+
+
+def flats_quiet_on_every_spectrum(spectra: Mapping[str, tuple[float, Flag | None, Mapping]],
+                                  flats: tuple[str, ...]) -> Verdict:
+    """``flats_are_quiet`` on every spectrum of the batch, each with its own flag and its own matched modes, not only
+    the expectation's analyzer. ``spectra``: key -> (T, the spectrum's flag, its modes matched at T)."""
+    bad = []
+    for key in sorted(spectra):
+        T, flag, matches = spectra[key]
+        v = flats_are_quiet({T: flag}, {T: matches}, flats)
+        if not v.ok:
+            bad.append(f"{key}: {v.why}")
+    return Verdict(not bad, f"{len(spectra)} spectra, no reason above info on {', '.join(flats)}" if not bad
+                   else f"{len(bad)} spectra flag a flat mode, first: {bad[0]}")
