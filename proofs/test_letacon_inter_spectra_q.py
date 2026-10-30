@@ -17,8 +17,9 @@ fixture). Then the batches run through the analysis service as the GUI starts th
 4. Checks: accounting per batch; the fast solo fits and results.csv untouched; the recorded terms of the qT batch
    (curvature lines, one axis per link, parallel groups conflict-free, every q-linked spectrum in a term or named);
    the moving mode flagged or held, the flat modes quiet on every spectrum, with q-links on; the operator's named
-   kink analyzers flagged; the timing. The q anchored batch runs after every check of the qT batch, so the verdicts
-   judge the qT batch's authoritative fits.
+   kink analyzers flagged; the timing. Each scope runs on its own fresh copy of the post-fast-pass workspace, so the q
+   batch starts from fast solo fits and the qT verdicts judge only the qT batch's refits; the fast-solo hash check runs
+   after each batch on its own copy.
 
 The 30-minute figure is a target: timing is printed and written to ``summary.json``, never asserted. Numbers the
 operator sets in the expectation file the S1 proof reads (``real_data/leTacon_SP8_CsV3Sb5/`` and its
@@ -29,6 +30,7 @@ Results land in ``out/letacon_inter_spectra_q/<timestamp>/`` (gitignored).
 """
 import json
 import os
+import shutil
 from datetime import datetime
 
 import pytest
@@ -91,58 +93,93 @@ def nodes(ws):
     return read_nodes(ws)
 
 
+def _fresh_copy(ws, out_dir, name):
+    """A copy of the pristine post-fast-pass workspace. ``ws`` itself is never run on, so every copy starts from the
+    fast solo fits and sees no other scope's refits."""
+    root = out_dir / name
+    shutil.copytree(ws, root)
+    return root
+
+
 @pytest.fixture(scope="module")
-def service(ws, out_dir):
-    svc = _Service(ws, out_dir / "service.stderr.log")
+def ws_q(ws, out_dir):                  # the q scope's own workspace
+    return _fresh_copy(ws, out_dir, "ws_q")
+
+
+@pytest.fixture(scope="module")
+def ws_qT(ws, out_dir):                 # the qT scope's own workspace
+    return _fresh_copy(ws, out_dir, "ws_qT")
+
+
+@pytest.fixture(scope="module")
+def snapshot_q(ws_q):
+    """Taken before the scope's batch: the frozen Stage II/III contract the batch must leave alone."""
+    return _snapshot(ws_q)
+
+
+@pytest.fixture(scope="module")
+def snapshot_qT(ws_qT):
+    return _snapshot(ws_qT)
+
+
+@pytest.fixture(scope="module")
+def service_q(ws_q, out_dir):
+    svc = _Service(ws_q, out_dir / "service_q.stderr.log")
     yield svc
     svc.close()
 
 
 @pytest.fixture(scope="module")
-def q_anchor(ws, nodes, expectation):
-    key = _key(nodes, Q_T, expectation["analyzer"])
-    saved = inter_values.set_anchors(ws, [key], anchored=True)
-    assert saved.ok, saved
-    print(f"\nq anchor: the {expectation['analyzer']} spectrum at {Q_T} K, written through the intake anchor writer")
-    return key
+def service_qT(ws_qT, out_dir):
+    svc = _Service(ws_qT, out_dir / "service_qT.stderr.log")
+    yield svc
+    svc.close()
 
 
 @pytest.fixture(scope="module")
-def q_anchored_run(snapshot, service, ws, q_anchor, nodes):
+def q_anchor(nodes, expectation):
+    return _key(nodes, Q_T, expectation["analyzer"])
+
+
+def _set_q_anchor(root, key, expectation):
+    saved = inter_values.set_anchors(root, [key], anchored=True)
+    assert saved.ok, saved
+    print(f"\nq anchor: the {expectation['analyzer']} spectrum at {Q_T} K, written through the intake anchor writer "
+          f"({root.name})")
+
+
+@pytest.fixture(scope="module")
+def q_anchored_run(snapshot_q, service_q, ws_q, q_anchor, nodes, expectation):
+    _set_q_anchor(ws_q, q_anchor, expectation)
     scope, kinds = anchored_scope((q_anchor,), "q", nodes)
-    g = _build(ws, nodes, scope, kinds)
+    g = _build(ws_q, nodes, scope, kinds)
     pv = preview_anchored(g, plan_anchored(g, (q_anchor,), set()), "q")
     print(f"q anchored preview: {pv.text}")
     for note in pv.notes:
         print(f"  note: {note}")
     assert pv.can_start, f"the q anchored batch cannot start: {pv.blocked}"
     spec = runner.BatchSpec(records.new_batch_id(), "anchored", "q", (q_anchor,), tuple(sorted(g.nodes)))
-    return _run_batch(service, "inter-q-anchored", spec, "q anchored")
+    return _run_batch(service_q, "inter-q-anchored", spec, "q anchored")
 
 
 @pytest.fixture(scope="module")
-def qt_run(snapshot, service, ws, nodes, q_anchor):     # the q anchor is set first, so this batch sees it as before
+def qt_run(snapshot_qT, service_qT, ws_qT, nodes, q_anchor, expectation):
+    _set_q_anchor(ws_qT, q_anchor, expectation)         # the q anchor is set as before; no q refit is seen here
     keys = tuple(sorted(nodes.nodes))
     assert len(keys) == len(TEMPERATURES) * N_ANALYZERS, f"the import record holds {len(keys)} spectra"
-    g = _build(ws, nodes, frozenset(keys), frozenset({"q", "T"}))
+    g = _build(ws_qT, nodes, frozenset(keys), frozenset({"q", "T"}))
     pv = preview_simultaneous(g, plan_simultaneous(g, set()))
     print(f"qT simultaneous preview: {pv.text}")
     for note in pv.notes:
         print(f"  note: {note}")
     assert pv.can_start, f"the qT simultaneous batch cannot start: {pv.blocked}"
     spec = runner.BatchSpec(records.new_batch_id(), "simultaneous", None, (), keys)
-    return _run_batch(service, "inter-qT-simultaneous", spec, "qT simultaneous")
-
-
-@pytest.fixture(scope="module")
-def snapshot(ws):
-    """Taken before the first batch: the frozen Stage II/III contract the batches must leave alone."""
-    return _snapshot(ws)
+    return _run_batch(service_qT, "inter-qT-simultaneous", spec, "qT simultaneous")
 
 
 # ---------------------------------------------------------------- helpers
-def _graph_qT(ws, nodes):
-    return _build(ws, nodes, frozenset(nodes.nodes), frozenset({"q", "T"}))
+def _graph_qT(root, nodes):
+    return _build(root, nodes, frozenset(nodes.nodes), frozenset({"q", "T"}))
 
 
 def _timing_view(ws, batch) -> dict:
@@ -220,28 +257,32 @@ def _accounting(ws, b) -> str | None:
     return None if verdict.ok else f"{b.label}: {verdict.why}"
 
 
-def test_qT_batch_accounts_for_every_spectrum(ws, qt_run):
-    problem = _accounting(ws, qt_run)
+def test_qT_batch_accounts_for_every_spectrum(ws_qT, qt_run):
+    problem = _accounting(ws_qT, qt_run)
     assert problem is None, problem
 
 
-def test_fast_solo_and_results_csv_are_untouched(snapshot, qt_run, ws):
-    after = _snapshot(ws)
+def _fast_solo_untouched(snapshot, root, label):
+    after = _snapshot(root)
     changed = sorted(k for k, d in snapshot["fast"].items() if after["fast"].get(k) != d)
-    print(f"\nfast-pass records hashed before: {len(snapshot['fast'])}, changed by the batches: {len(changed)}; "
+    print(f"\n{label}: fast-pass records hashed before: {len(snapshot['fast'])}, changed by the batch: {len(changed)}; "
           f"results.csv {'unchanged' if after['results_csv'] == snapshot['results_csv'] else 'CHANGED'}")
-    assert after["results_csv"] == snapshot["results_csv"], "report/results.csv changed during the batches"
-    assert not changed, f"fast-pass records changed: {changed}"
+    assert after["results_csv"] == snapshot["results_csv"], f"{label}: report/results.csv changed during the batch"
+    assert not changed, f"{label}: fast-pass records changed: {changed}"
 
 
-def test_qT_batch_terms_are_structurally_right(ws, nodes, qt_run):
+def test_qT_fast_solo_and_results_csv_are_untouched(snapshot_qT, qt_run, ws_qT):
+    _fast_solo_untouched(snapshot_qT, ws_qT, "qT")
+
+
+def test_qT_batch_terms_are_structurally_right(ws_qT, nodes, qt_run):
     """The recorded terms of the qT batch, read from its batch record, against the grid and the groups recomputed from
     the same graph. Vacuous on zero curvature terms; the precondition test names that case."""
-    batch = records.read_log(ws).batches[qt_run.spec.batch_id]
+    batch = records.read_log(ws_qT).batches[qt_run.spec.batch_id]
     terms = list(batch.terms)                        # the batch's own terms, from its start line
-    g = _graph_qT(ws, nodes)
+    g = _graph_qT(ws_qT, nodes)
     plan = plan_simultaneous(g, set())              # recomputed: the parallel groups and the q-linked set only
-    grid = grid_for(load_policy(ws / POLICY_NAME).plugin)
+    grid = grid_for(load_policy(ws_qT / POLICY_NAME).plugin)
     q_linked = {k for link in g.links if link.kind == "q" for k in (link.a, link.b)}
     in_term = {m for t in terms for m in t["members"]}
     # the named reasons are the batch's own (its unreached map), not a recomputed plan's
@@ -260,13 +301,13 @@ def test_qT_batch_terms_are_structurally_right(ws, nodes, qt_run):
     assert not bad, f"the qT batch's terms are structurally wrong: {bad}"
 
 
-def test_authority_follows_the_rules(qt_run, ws, nodes):
-    log = records.read_log(ws)
+def test_authority_follows_the_rules(qt_run, ws_qT, nodes):
+    log = records.read_log(ws_qT)
     newest = {}
     for line in log.refits:                          # file order: a later line is a newer refit
         if line.accept is not None and line.accept.decision == "authoritative":
             newest[line.unit] = line.fit
-    by_key = inter_overview(ws).by_key
+    by_key = inter_overview(ws_qT).by_key
     problems = []
     for key in sorted(nodes.nodes):
         got = by_key[key].fit_id if key in by_key else "fast"
@@ -276,11 +317,11 @@ def test_authority_follows_the_rules(qt_run, ws, nodes):
     assert not problems, "; ".join(problems[:10])
 
 
-def test_moving_mode_flagged_and_flats_quiet_on_every_spectrum(qt_run, ws, nodes, expectation):
+def test_moving_mode_flagged_and_flats_quiet_on_every_spectrum(qt_run, ws_qT, nodes, expectation):
     exp = expectation
     analyzer, moving, flats = exp["analyzer"], exp["moving_mode"], tuple(exp["flat_modes"])
     tol = exp.get("match_tolerance_meV")
-    spectra = _judged_spectra(ws, nodes)
+    spectra = _judged_spectra(ws_qT, nodes)
     at = {T: spectra[_key(nodes, T, analyzer)] for T in TEMPERATURES}     # the expectation's analyzer
     paper = {T: {name: ref["omega0"] for name, ref in exp["paper"][str(T)].items()} for T in at}
     matches = {T: chk.match_modes(at[T][2], paper[T], tol) for T in at}  # paper energies: this analyzer only
@@ -296,12 +337,12 @@ def test_moving_mode_flagged_and_flats_quiet_on_every_spectrum(qt_run, ws, nodes
     assert flats_v.ok, f"flat modes with q-links on: {flats_v.why}"
 
 
-def test_named_kink_analyzers_are_flagged(qt_run, ws, nodes, expectation):
+def test_named_kink_analyzers_are_flagged(qt_run, ws_qT, nodes, expectation):
     kinks = expectation.get("q_kink_analyzers")
     if not kinks:
         print("\nq_kink_analyzers: null or empty, so printed only")
         return
-    by_key = inter_overview(ws).by_key
+    by_key = inter_overview(ws_qT).by_key
     unflagged = []
     for det in kinks:
         keys = [k for k, n in nodes.nodes.items() if n.detector == det and k in by_key]
@@ -313,17 +354,16 @@ def test_named_kink_analyzers_are_flagged(qt_run, ws, nodes, expectation):
     assert not unflagged, f"no spectrum of {unflagged} is flagged, though the expectation names them as kinks"
 
 
-def test_q_anchored_batch_accounts_for_every_spectrum(ws, q_anchored_run):
-    # Runs after every check of the qT batch, so those verdicts judge the qT batch's authoritative fits.
-    problem = _accounting(ws, q_anchored_run)
+def test_q_anchored_batch_accounts_for_every_spectrum(ws_q, q_anchored_run):
+    problem = _accounting(ws_q, q_anchored_run)
     assert problem is None, problem
 
 
-def test_timing_is_reported_never_asserted(q_anchored_run, qt_run, ws, out_dir, expectation):
+def test_timing_is_reported_never_asserted(q_anchored_run, qt_run, ws, ws_q, ws_qT, out_dir, expectation):
     fast_round = next((s["seconds"] for s in _timings(ws)["stages"] if s["stage"] == "fit_scans"), None)
     reports = {}
-    for b in (q_anchored_run, qt_run):
-        rep = chk.timing_report(_timing_view(ws, b), fast_round, cores=BATCH_WORKERS, target_s=TARGET_S)
+    for b, root in ((q_anchored_run, ws_q), (qt_run, ws_qT)):
+        rep = chk.timing_report(_timing_view(root, b), fast_round, cores=BATCH_WORKERS, target_s=TARGET_S)
         rep["segments"] = b.segments
         reports[b.label] = rep
         print(f"\n{b.label}: wall {rep['wall_s']:.1f} s, {rep['refits']} refits, rings {rep['rings']}, "
@@ -332,7 +372,8 @@ def test_timing_is_reported_never_asserted(q_anchored_run, qt_run, ws, out_dir, 
         print(f"  per refit: {rep['refit_total_s']}")
         print(f"  projection {rep['projection_s']} s: {rep['verdict']}")
     RESULTS["timing"] = reports
-    summary = {"workspace": str(ws), "settings": inter_overview(ws).settings,
+    summary = {"workspaces": {"fast_pass": str(ws), "q": str(ws_q), "qT": str(ws_qT)},
+               "settings": inter_overview(ws_qT).settings,
                "batches": {b.label: {"batch_id": b.spec.batch_id, "kind": b.spec.kind, "direction": b.spec.direction,
                                      "anchors": list(b.spec.anchors), "members": len(b.spec.members),
                                      "end": b.end, "wall_s": b.wall} for b in (q_anchored_run, qt_run)},
