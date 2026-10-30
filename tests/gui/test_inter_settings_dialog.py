@@ -26,7 +26,7 @@ def _shown_rows(**overrides):
 def test_shown_rows_follow_table_order_and_hide_the_hidden_settings():
     names = [r.setting.name for r in _shown_rows()]
     assert names == SHOWN
-    assert names[:3] == ["q_tolerance_meV", "t_tolerance_meV", "flag_threshold"]
+    assert names[:4] == ["q_slope_meV_per_rlu", "q_slope_meV_per_invA", "t_tolerance_meV", "flag_threshold"]
     assert "reference_T_K" not in names
 
 
@@ -38,7 +38,8 @@ def test_every_shown_setting_has_a_label_and_a_help_sentence():
 
 def test_default_text_names_unit_and_mark():
     by_name = {r.setting.name: r for r in _shown_rows()}
-    assert default_text(by_name["q_tolerance_meV"]) == f"Default: 2 meV · {UNCALIBRATED}"
+    assert default_text(by_name["q_slope_meV_per_rlu"]) == f"Default: 10.6 meV/r.l.u. · {UNCALIBRATED}"
+    assert default_text(by_name["q_slope_meV_per_invA"]) == f"Default: 8 meV/Å⁻¹ · {UNCALIBRATED}"
     assert default_text(by_name["flag_threshold"]) == f"Default: 54 · {CALIBRATED_SYNTHETIC}"
     assert default_text(by_name["shape_family"]) == f"Default: welsch · {UNCALIBRATED}"
 
@@ -47,7 +48,7 @@ def test_calibrated_rows_are_marked_and_the_rest_are_uncalibrated():
     by_name = {r.setting.name: r for r in _shown_rows()}
     assert by_name["flag_threshold"].mark == CALIBRATED_SYNTHETIC
     assert by_name["t_tolerance_meV"].mark == CALIBRATED_SYNTHETIC
-    assert by_name["q_tolerance_meV"].mark == UNCALIBRATED
+    assert by_name["q_slope_meV_per_rlu"].mark == UNCALIBRATED
 
 
 def test_a_save_sends_only_the_value_that_changed():
@@ -57,11 +58,11 @@ def test_a_save_sends_only_the_value_that_changed():
 
 
 def test_typing_the_default_back_sends_none_and_nothing_edited_sends_nothing():
-    shown = _shown_rows(q_tolerance_meV=3.0)
+    shown = _shown_rows(q_slope_meV_per_rlu=3.0)
     edited = {r.setting.name: r.value for r in shown}
     assert changes(shown, edited) == {}
-    edited["q_tolerance_meV"] = 2.0          # the default: back to default, not a stored copy of it
-    assert changes(shown, edited) == {"q_tolerance_meV": None}
+    edited["q_slope_meV_per_rlu"] = 10.6         # the default: back to default, not a stored copy of it
+    assert changes(shown, edited) == {"q_slope_meV_per_rlu": None}
 
 
 # ---- the dialog --------------------------------------------------------------------------------------------
@@ -145,33 +146,33 @@ def test_saving_with_nothing_changed_writes_nothing_and_closes(qtbot):
 
 
 def test_a_stored_value_the_box_cannot_show_is_not_rewritten_by_a_save(qtbot):
-    dlg, inter = _dialog(qtbot, q_tolerance_meV=2.3456)   # finer than the box's three decimals
+    dlg, inter = _dialog(qtbot, q_slope_meV_per_rlu=2.3456)   # finer than the box's three decimals
     _save(dlg)
     assert inter.calls == []
 
 
 def test_use_default_saves_none_for_a_setting_away_from_its_default(qtbot):
-    dlg, inter = _dialog(qtbot, q_tolerance_meV=3.0)
-    assert _editor(dlg, "q_tolerance_meV").value() == 3.0
-    dlg.findChild(QPushButton, "inter_q_tolerance_meV_default").click()
+    dlg, inter = _dialog(qtbot, q_slope_meV_per_rlu=3.0)
+    assert _editor(dlg, "q_slope_meV_per_rlu").value() == 3.0
+    dlg.findChild(QPushButton, "inter_q_slope_meV_per_rlu_default").click()
     _save(dlg)
-    assert inter.calls == [("save_settings", ({"q_tolerance_meV": None},))]
+    assert inter.calls == [("save_settings", ({"q_slope_meV_per_rlu": None},))]
 
 
 def test_use_default_clears_a_saved_value_that_only_looks_like_the_default(qtbot):
-    # 2.00001 is stored; the box shows 2.000, so setting it to the default moves nothing. Use default must still send None.
-    dlg, inter = _dialog(qtbot, q_tolerance_meV=2.00001)
-    dlg.findChild(QPushButton, "inter_q_tolerance_meV_default").click()
+    # 10.60001 is stored; the box shows 10.600, so setting it to the default moves nothing. Use default must still send None.
+    dlg, inter = _dialog(qtbot, q_slope_meV_per_rlu=10.60001)
+    dlg.findChild(QPushButton, "inter_q_slope_meV_per_rlu_default").click()
     _save(dlg)
-    assert inter.calls == [("save_settings", ({"q_tolerance_meV": None},))]
+    assert inter.calls == [("save_settings", ({"q_slope_meV_per_rlu": None},))]
 
 
 def test_an_edit_after_use_default_sends_the_edit(qtbot):
-    dlg, inter = _dialog(qtbot, q_tolerance_meV=3.0)
-    dlg.findChild(QPushButton, "inter_q_tolerance_meV_default").click()
-    _editor(dlg, "q_tolerance_meV").setValue(4.0)
+    dlg, inter = _dialog(qtbot, q_slope_meV_per_rlu=3.0)
+    dlg.findChild(QPushButton, "inter_q_slope_meV_per_rlu_default").click()
+    _editor(dlg, "q_slope_meV_per_rlu").setValue(4.0)
     _save(dlg)
-    assert inter.calls == [("save_settings", ({"q_tolerance_meV": 4.0},))]
+    assert inter.calls == [("save_settings", ({"q_slope_meV_per_rlu": 4.0},))]
 
 
 def test_before_the_first_read_save_is_off_and_the_dialog_says_the_values_are_defaults(qtbot):

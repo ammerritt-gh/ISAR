@@ -15,10 +15,11 @@ from isar_gui.inter_words import CALIBRATED_SYNTHETIC, UNCALIBRATED
 
 # GUI wording per shown setting (hidden settings are never shown, so they have no label).
 LABELS = {
-    "q_tolerance_meV": "q tolerance",
+    "q_slope_meV_per_rlu": "q slope (no lattice loaded)",
+    "q_slope_meV_per_invA": "q slope (lattice loaded)",
     "t_tolerance_meV": "T tolerance",
     "flag_threshold": "Flag threshold",
-    "shape_family": "Penalty shape",
+    "shape_family": "Penalty shape (T and curvature)",
     "step_exponent": "Temperature step exponent",
     "sweep_tol_meV": "Sweep tolerance",
     "sweep_cap": "Sweep cap",
