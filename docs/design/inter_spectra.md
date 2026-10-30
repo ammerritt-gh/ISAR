@@ -259,8 +259,8 @@ A refit line of the index (`kind` `refit`; `payload` is the file, byte offset an
 The other index kinds: `batch_start` carries the batch's number, kind (`batch_kind`), scope, anchors, rings, seams,
 settings, preview, fixed and not-reached counts, terms, metric, core, `intake_seq` and lattice epochs; `stage`
 carries `stage`, `index`, `round`, `progress`, `seams` and `not_reached`; `batch_end` carries how the batch
-finished. Each refit payload holds what the refit came in with (`came_in`) and came out with (`came_out`) and its
-`overlay`, so a history entry can be read in full. The
+finished. Each refit payload holds what the refit came in with (`came_in`) and came out with (`came_out`, with
+the branches not observed in it under `dormant`) and its `overlay`, so a history entry can be read in full. The
 overlay carries the calibration, resolution and temperature the refit was made with (`calib`, `T`), so a locked
 or older refit is drawn and exported in its own context, never in a later fast solo fit's.
 
