@@ -377,7 +377,7 @@ def walk_hovers(widget):
     (qview(service="failed", service_error="x", blocked="a campaign is running in this experiment"), SEL)])
 def test_every_visible_control_word_and_count_has_a_hover(qtbot, view, selection):
     p = panel(qtbot, Stub(view, selection=selection), width=300)
-    assert walk_hovers(p) == []                                        # the add group and the switch too
+    assert walk_hovers(p._queue) == [] and walk_hovers(p.controls) == []
     for state in QUEUE_STATES.values():                                # every word the panel can show
         assert state[2]
 
