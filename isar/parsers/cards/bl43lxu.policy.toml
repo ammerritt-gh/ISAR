@@ -255,3 +255,15 @@ signal_column = "y_i"
 detector_id = "a41"
 value_index = 27
 signal_column = "y_i"
+
+# Where each analyzer sits, seen from the sample looking at the analyzers (isar.schema.analyzer_layout). Rows run from
+# the bottom (row A, the one in the scattering plane) up; within a row, position 1 (the lowest 2theta) comes first and
+# sits at the right of the grid, so a03 is A1 and a09 is A7. Labels only: no data is keyed by a position.
+[[analyzer_layouts]]
+id = "BL43LXU-7x4"
+rows = [
+    ["a03", "a04", "a05", "a06", "a07", "a08", "a09"],
+    ["a14", "a15", "a16", "a17", "a18", "a19", "a20"],
+    ["a25", "a26", "a27", "a28", "a29", "a30", "a31"],
+    ["a35", "a36", "a37", "a38", "a39", "a40", "a41"],
+]

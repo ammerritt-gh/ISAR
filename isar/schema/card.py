@@ -27,6 +27,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from isar.schema import _json
+from isar.schema.analyzer_layout import layout_problems
 from isar.schema.hypotheses import resolve_hypothesis
 from isar.schema.scan import COUNTING_MODES, ENERGY_STATUSES, RAW_ABSCISSA_KINDS
 
@@ -45,7 +46,7 @@ FORMAT_KEYS: frozenset[str] = frozenset({
     "energy_column", "monitor_column", "time_column", "counting_mode", "normalize_by",
     "raw_abscissa_kind", "energy_status", "variance_convention",
     "measurement_pattern", "alignment_pattern",
-    "files", "reader", "calibration", "facts",
+    "files", "reader", "calibration", "facts", "analyzer_layouts",
     "multiword_columns", "miniscans_per_point", "ascan_classification",
 })
 
@@ -117,6 +118,7 @@ class CardPolicy:
     facts: dict = field(default_factory=dict)                # [facts] — card-declared fact values (lowest precedence);
     #                                                          # BL43 reads none: its values are entered in ISAR
     reader: dict = field(default_factory=dict)               # [reader] — plugin options
+    analyzer_layouts: list = field(default_factory=list)     # [[analyzer_layouts]] — where each analyzer sits (analyzer_layout.py)
     # Inline human-authored distinction policies.  Authoring markers are materialized into exact
     # campaign scope fingerprints when an objective is frozen; code never writes this table.
 
@@ -244,6 +246,28 @@ def _files_errors(files) -> list[str]:
     for template in files.get("sidecar", []):
         if "{set}" not in template:
             errs.append(f"files.sidecar {template!r} must contain the {{set}} placeholder")
+    return errs
+
+
+def _layout_errors(layouts, detector_ids) -> list[str]:
+    """Static checks of the `[[analyzer_layouts]]` tables: each has the shape the resolver reads, its analyzers are
+    detectors of this card, and the ids are unique."""
+    if not isinstance(layouts, list):
+        return ["analyzer_layouts must be a list of tables"]
+    errs: list[str] = []
+    seen: set[str] = set()
+    for entry in layouts:
+        lid = entry.get("id") if isinstance(entry, dict) else None
+        errs.extend(f"analyzer_layouts {lid!r}: {p}" for p in layout_problems(entry))
+        if isinstance(lid, str):
+            if lid in seen:
+                errs.append(f"duplicate analyzer_layouts id {lid!r}")
+            seen.add(lid)
+        rows = entry.get("rows") if isinstance(entry, dict) else None
+        for row in rows if isinstance(rows, list) else ():
+            for name in row if isinstance(row, list) else ():
+                if isinstance(name, str) and name not in detector_ids:
+                    errs.append(f"analyzer_layouts {lid!r}: {name!r} is not a detector of this card")
     return errs
 
 
@@ -382,6 +406,8 @@ class Card:
                 errs.append(f"detector {detector_id!r} has a non-string or empty signal_column")
         if pol.files:
             errs.extend(_files_errors(pol.files))
+        errs.extend(_layout_errors(pol.analyzer_layouts,
+                                   {d.detector_id for d in pol.detectors if isinstance(d.detector_id, str)}))
         for table in ("facts", "reader"):
             if not isinstance(getattr(pol, table), dict):
                 errs.append(f"{table} must be a table")

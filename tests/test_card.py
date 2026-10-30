@@ -8,6 +8,8 @@ human-authored → TOML. These tests pin that ownership and the loaders.
 import json
 from pathlib import Path
 
+import pytest
+
 from isar.schema import card
 
 
@@ -136,3 +138,20 @@ def test_validate_flags_duplicate_detector_ids(tmp_path):
     c = card.Card.load(_write_policy(tmp_path, dup))
     errs = c.validate()
     assert any("ana1" in e for e in errs)
+
+
+def _layout_entry(rows=(("a03", "a04"), ("a14", "a15")), id="L"):
+    return {"id": id, "rows": [list(r) for r in rows]}
+
+
+@pytest.mark.parametrize("layouts, needle", [
+    ([_layout_entry(), _layout_entry()], "duplicate analyzer_layouts id"),
+    ([_layout_entry(rows=(("a03", "a03"), ("a14", "a15")))], "is listed twice"),
+    ([_layout_entry(rows=(("a03", "a99"), ("a14", "a15")))], "'a99' is not a detector"),
+    ([_layout_entry(rows=(("a03", "a04"), ("a14",)))], "same number of analyzers"),
+    ([{"id": "L", "rows": []}], "rows must be"),
+])
+def test_validate_flags_a_bad_analyzer_layout(layouts, needle):
+    c = card.Card.load(card.SHIPPED_FORMATS["sp8_bl43"])
+    c.policy.analyzer_layouts = layouts
+    assert any(needle in e for e in c.validate())

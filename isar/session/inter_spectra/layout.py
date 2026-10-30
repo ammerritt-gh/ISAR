@@ -31,6 +31,7 @@ class Grid:
         return tuple((f"row {r + 1}", dets) for r, dets in enumerate(self.rows)) + cols
 
 
+# The tests' constant: tests/workspace_api/test_analyzer_array.py pins it equal to the shipped card's layout.
 BL43_GRID = Grid(rows=(
     ("a03", "a04", "a05", "a06", "a07", "a08", "a09"),
     ("a14", "a15", "a16", "a17", "a18", "a19", "a20"),
@@ -39,6 +40,10 @@ BL43_GRID = Grid(rows=(
 ))
 
 
-def grid_for(plugin: str) -> Grid | None:        # "sp8_bl43" -> BL43_GRID; any other plugin -> None
-    # shortcut: the layout is a code constant, not a card key; move it to the card when a second instrument appears
-    return BL43_GRID if plugin == "sp8_bl43" else None
+def grid_for(plugin: str) -> Grid | None:        # the plugin's shipped card layout as a Grid; no layout -> None
+    # Imports stay in the function: this module is stdlib-only at import.
+    from isar.schema.analyzer_layout import layout_for
+    from isar.schema.card import SHIPPED_FORMATS, load_policy
+    path = SHIPPED_FORMATS.get(plugin)
+    layout = None if path is None else layout_for(load_policy(path)).layout
+    return None if layout is None else Grid(rows=layout.rows)
