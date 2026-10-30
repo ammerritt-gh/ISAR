@@ -15,6 +15,7 @@ ORIGIN_GROUP = "group"
 ORIGIN_STEP = "step"
 ORIGIN_REFRESH = "refresh"
 ORIGIN_OTHER = "other"
+ORIGIN_ARRAY = "array"            # a click in the Analyzer array grid
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class Selection(QObject):
                  order: Callable[[Iterable[str]], Sequence[str]] | None = None) -> None:
         super().__init__(parent)
         self._keys: tuple[str, ...] = ()
+        self._picks: tuple[str, ...] = ()
         self._active: str | None = None
         self._order = order
         self._emitting = False
@@ -44,6 +46,15 @@ class Selection(QObject):
     @property
     def keys(self) -> tuple[str, ...]:
         return self._keys
+
+    @property
+    def picks(self) -> tuple[str, ...]:
+        """The same keys in the order the user picked them."""
+        return self._picks
+
+    @property
+    def first_picked(self) -> str | None:
+        return self._picks[0] if self._picks else None
 
     @property
     def active(self) -> str | None:
@@ -58,8 +69,9 @@ class Selection(QObject):
         self._order = order
 
     def set(self, keys: Iterable[str], *, clicked: str | None = None,
-            origin: str = ORIGIN_OTHER) -> None:
-        self._request("set", tuple(keys), clicked, origin)
+            origin: str = ORIGIN_OTHER, extend: bool = False, first: str | None = None) -> None:
+        """Replace the keys, or with ``extend`` add to and remove from them (Ctrl). ``first`` leads the picks."""
+        self._request("set", tuple(keys), clicked, origin, extend, first)
 
     def clear(self, origin: str = ORIGIN_OTHER) -> None:
         self.set((), origin=origin)
@@ -89,13 +101,27 @@ class Selection(QObject):
         unique = tuple(dict.fromkeys(keys))
         return tuple(self._order(unique)) if self._order is not None else unique
 
+    @staticmethod
+    def _picked(keys: tuple[str, ...], earlier: Iterable[str], lead: str | None) -> tuple[str, ...]:
+        """The earlier picks still in ``keys``, in their order, then the rest in list order; ``lead`` first."""
+        present = set(keys)
+        picks = dict.fromkeys(key for key in earlier if key in present)
+        picks.update(dict.fromkeys(key for key in keys if key not in picks))
+        ordered = list(picks)
+        if lead in present:
+            ordered.remove(lead)
+            ordered.insert(0, lead)
+        return tuple(ordered)
+
     def _apply(self, operation: str, args: tuple) -> None:
-        old_keys, old_active = self._keys, self._active
+        old_keys, old_active, old_picks = self._keys, self._active, self._picks
         origin = ORIGIN_STEP
         if operation == "set":
-            keys, clicked, origin = args
+            keys, clicked, origin, extend, first = args
             self._keys = self._ordered(keys)
             self._active = clicked if clicked in self._keys else (self._keys[0] if self._keys else None)
+            lead = first if first in self._keys else (clicked if not extend and clicked in self._keys else None)
+            self._picks = self._picked(self._keys, self._picks if extend else (), lead)
         elif operation == "active":
             self._active = args[0]
         elif operation == "step":
@@ -106,6 +132,7 @@ class Selection(QObject):
         elif operation == "resync":
             origin = ORIGIN_REFRESH
             self._keys = self._ordered(self._keys)
+            self._picks = self._picked(self._keys, self._picks, None)
             if self._active not in self._keys:
                 self._active = self._keys[0] if self._keys else None
         else:
@@ -113,7 +140,8 @@ class Selection(QObject):
 
         keys_changed = self._keys != old_keys
         active_changed = self._active != old_active
-        if not keys_changed and not active_changed and origin != ORIGIN_GROUP:
+        picks_changed = self._picks != old_picks
+        if not keys_changed and not active_changed and not picks_changed and origin != ORIGIN_GROUP:
             return
 
         change = SelectionChange(self._keys, self._active, origin, keys_changed, active_changed)

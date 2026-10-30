@@ -9,10 +9,66 @@ import pytest
 from isar.workspace_api.scan_list import (Fact, PooledRow, ScanListSnapshot, ScanSetRow,
                                           SpectrumRow, Status)
 from isar.workspace_api import CACHE_SIZE, SpectraCache
-from isar_gui.selection import (ORIGIN_GROUP, ORIGIN_LIST, ORIGIN_REFRESH, ORIGIN_STEP,
-                                Selection, SelectionChange, identity, unique_labels)
+from isar_gui.selection import (ORIGIN_ARRAY, ORIGIN_GROUP, ORIGIN_LIST, ORIGIN_REFRESH,
+                                ORIGIN_STEP, Selection, SelectionChange, identity, unique_labels)
 
 pytestmark = pytest.mark.usefixtures("qapp")
+
+
+def test_first_picked_follows_pick_order_through_plain_extend_range_and_resync():
+    order = list("abcd")
+    selection = Selection(order=lambda keys: [key for key in order if key in keys])
+    selection.set(["b", "a"], clicked="a")
+    assert selection.keys == ("a", "b") and selection.picks == ("a", "b")
+    assert selection.first_picked == "a"
+    selection.set(["a", "b", "d"], clicked="d", extend=True)
+    assert selection.picks == ("a", "b", "d") and selection.first_picked == "a"
+    selection.set(["b", "d"], extend=True)                       # Ctrl-click removes a
+    assert selection.picks == ("b", "d") and selection.first_picked == "b"
+    selection.set(["c"], clicked="c")                            # plain click restarts the picks
+    assert selection.picks == ("c",)
+    selection.set(["b", "c", "d"], clicked="b", first="d")       # a Shift range from d
+    assert selection.picks == ("d", "b", "c") and selection.first_picked == "d"
+    selection.set(["b", "c", "d"])                               # a set click: list order
+    assert selection.picks == ("b", "c", "d")
+    order[:] = list("dcba")
+    selection.resync()
+    assert selection.keys == ("d", "c", "b") and selection.picks == ("b", "c", "d")
+    assert selection.first_picked == "b"
+    selection.clear()
+    assert selection.picks == () and selection.first_picked is None
+
+
+def test_removing_the_first_pick_promotes_the_next_and_appended_keys_go_last():
+    selection = Selection(order=lambda keys: [key for key in "abcd" if key in keys])
+    selection.set(["a", "b"], clicked="a")
+    selection.set(["b", "c"], extend=True)                       # a dropped, c appended
+    assert selection.keys == ("b", "c") and selection.picks == ("b", "c")
+    assert selection.first_picked == "b"
+
+
+def test_picks_alone_changing_emits_quietly_and_identical_call_does_not():
+    selection = Selection(order=lambda keys: [key for key in "ab" if key in keys])
+    changes = []
+    selection.changed.connect(changes.append)
+    selection.set(["a", "b"], clicked="a")
+    changes.clear()
+    selection.set(["a", "b"], first="b", origin=ORIGIN_ARRAY)
+    assert selection.first_picked == "b"
+    assert changes == [SelectionChange(("a", "b"), "a", ORIGIN_ARRAY, False, False)]
+    changes.clear()
+    selection.set(["a", "b"], first="b", origin=ORIGIN_ARRAY)
+    assert changes == []
+
+
+def test_array_origin_is_a_plain_origin_and_selection_change_is_unchanged():
+    selection = Selection()
+    changes = []
+    selection.changed.connect(changes.append)
+    selection.set(["x"], clicked="x", origin=ORIGIN_ARRAY)
+    assert changes == [SelectionChange(("x",), "x", ORIGIN_ARRAY, True, True)]
+    assert set(SelectionChange.__dataclass_fields__) == {
+        "keys", "active", "origin", "keys_changed", "active_changed"}
 
 
 def test_set_emits_state_first_and_tracks_active_position():
