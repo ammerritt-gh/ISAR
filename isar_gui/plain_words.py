@@ -7,6 +7,7 @@ Nothing here decides anything: a text it does not know passes through unchanged.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 # Fallbacks: the backend's id (a fact row) or label (a readiness read) -> what the fit does instead.
 _STAND_IN = {
@@ -145,3 +146,111 @@ def plain_reason(reason: str) -> str:
     if outer:
         text = outer.group(1)
     return text or reason
+
+
+_VAR_LOST = ("Without the .var the per-analyzer efficiency, polarisation and elastic-peak values are unknown, and the "
+             "bin size is worked out from the data's own spacing. Put the .var in the same folder as the analyzer "
+             "files, then add the data again.")
+
+
+def _names(names) -> str:
+    names = list(names)
+    head = ", ".join(names[:3])
+    return head if len(names) <= 3 else f"{head} and {len(names) - 3} more"
+
+
+def _sets(n: int) -> str:
+    return f"{n} scan set" if n == 1 else f"{n} scan sets"
+
+
+def _n_sets(c: dict) -> int:
+    s = c["sidecar"]
+    return len(s["read"]) + len(s["missing"]) + len(s["unreadable"])
+
+
+def _sidecar_line(s: dict, n: int) -> str:
+    if not s["missing"] and not s["unreadable"]:
+        return f".var: found and read for all {_sets(n)}."
+    bits = [f"found and read for {len(s['read'])} of {_sets(n)}"]
+    if s["missing"]:
+        bits.append(f"missing for {_names(s['missing'])}")
+    if s["unreadable"]:
+        bits.append(f"could not be read for {_names(s['unreadable'])}, so treated as missing")
+    return ".var: " + "; ".join(bits) + ". " + _VAR_LOST
+
+
+def _gpi_line(g: dict) -> str:
+    if g["error"]:
+        return f"gpi: the check failed ({g['error']})."
+    if g["folder"] is None:
+        return "gpi: no gpi folder is saved or found beside the data."
+    found, total = len(g["found"]), len(g["found"]) + len(g["missing"])
+    line = f"gpi: found for {found} of {_sets(total)} in {g['folder']}"
+    if g["missing"]:
+        line += f"; missing for {_names(g['missing'])}"
+    if g["not_used"]:
+        line += f"; not used for {_names(g['not_used'])} (see Needs attention)"
+    return line + "."
+
+
+def _curves_line(c: dict) -> str:
+    if c["error"]:
+        return f"Resolution curves (rf): the check failed ({c['error']})."
+    if c["folder"] is None:
+        return f"Resolution curves (rf): {curve_problem(c['problem']) or NO_CURVES}"
+    if c["problem"]:
+        return f"Resolution curves (rf): {curve_problem(c['problem'])}"
+    return f"Resolution curves (rf): {c['n_curves']} curves for {c['n_analyzers']} analyzers in {c['folder']}."
+
+
+def companion_lines(c: dict) -> list[str]:
+    """One log line each for what an import found beside the analyzer files: the .var, the gpi, the curves."""
+    n = _n_sets(c)
+    if not n:
+        return []
+    lines = [_sidecar_line(c["sidecar"], n), _gpi_line(c["gpi"])]
+    if c["curves"] is not None:
+        lines.append(_curves_line(c["curves"]))
+    return lines
+
+
+def _sidecar_clause(s: dict, n: int) -> str:
+    bits = []
+    if s["read"]:
+        bits.append(f"found {len(s['read'])}/{n}")
+    if s["missing"]:
+        bits.append(f"missing {len(s['missing'])}/{n}")
+    if s["unreadable"]:
+        bits.append(f"unreadable {len(s['unreadable'])}/{n}")
+    return ".var " + ", ".join(bits)
+
+
+def _gpi_clause(g: dict) -> str:
+    if g["error"]:
+        return "gpi check failed"
+    if g["folder"] is None:
+        return "no gpi"
+    total = len(g["found"]) + len(g["missing"])
+    return f"gpi {len(g['found'])}/{total}" + (f", {len(g['not_used'])} not used" if g["not_used"] else "")
+
+
+def _curves_clause(c: dict | None) -> str:
+    if c is None:
+        return ""
+    if c["error"]:
+        return "rf check failed"
+    if c["folder"] is None:
+        return "no rf folder"
+    name = Path(c["folder"]).name
+    if c["problem"]:
+        return f"rf folder {name} has a problem"
+    return f"rf folder {name} ({c['n_curves']} curves)"
+
+
+def companion_clause(c: dict) -> str:
+    """The status-bar form, e.g. ".var found 2/2 · gpi 0/2 · rf folder rf (112 curves)"."""
+    n = _n_sets(c)
+    if not n:
+        return ""
+    parts = (_sidecar_clause(c["sidecar"], n), _gpi_clause(c["gpi"]), _curves_clause(c["curves"]))
+    return " · ".join(p for p in parts if p)
