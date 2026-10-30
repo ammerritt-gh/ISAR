@@ -159,6 +159,7 @@ class AnalyzerArrayDock(QDockWidget):
         vm.selection.changed.connect(self.refresh)
         vm.scan_list.snapshot_changed.connect(self.refresh)
         vm.refreshed.connect(self.refresh)
+        vm.marks_moved.connect(self.refresh)
 
     @staticmethod
     def _line(layout, name, parent) -> ElidedLabel:

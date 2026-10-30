@@ -194,9 +194,11 @@ def _auto_range(plot: CellPlot) -> tuple[float, float] | None:
 
 class AnalyzerArrayViewModel(ViewModel):
     state_changed = Signal(object)
+    marks_moved = Signal()                   # a batch's member states moved: the dock redraws the marks, reads nothing
 
     def __init__(self, ws, scan_list_vm, reference_source: Callable, parent=None):
         super().__init__(ws, parent)
+        self.refreshed.connect(self._forget_read)     # connected first, so a refresh forgets the read before the dock redraws
         self.scan_list = scan_list_vm
         self.selection = scan_list_vm.selection
         self.reference_source = reference_source        # the Scan(s) page's reference_for: one reference, shared
@@ -208,6 +210,7 @@ class AnalyzerArrayViewModel(ViewModel):
         self.active = False                              # the dock does nothing while hidden
         self._overlay: BatchOverlay | None = None
         self._queue = None                               # the controller whose member map the marks show
+        self._read = None                                # (snapshot, shown cells and fit choice, bundles) of the last read
         self._scaled: dict = {}
         self._state = ArrayState()
 
@@ -265,7 +268,10 @@ class AnalyzerArrayViewModel(ViewModel):
         self.refreshed.emit()
 
     def _members_moved(self, _item_id: str) -> None:
-        self.refreshed.emit()
+        self.marks_moved.emit()                  # the marks only: the spectra read so far stays (see _build)
+
+    def _forget_read(self) -> None:
+        self._read = None                        # any other refresh may mean the files changed: read them again
 
     def set_batch_overlay(self, overlay: BatchOverlay | None) -> None:
         """The batch marks to draw (memory only; ``None`` clears them). An equal overlay changes nothing.
@@ -367,15 +373,19 @@ class AnalyzerArrayViewModel(ViewModel):
 
         read_started = perf_counter()
         keyed = [c for c in view.cells if c.key is not None and snapshot.spectrum(c.key) is not None]
-        rows = [snapshot.spectrum(c.key) for c in keyed]
         choice = {}
         for c in keyed:
             inter = self.inter.row(c.key) if self.inter is not None else None
             if inter is not None and inter.fit_id not in (None, "fast"):
                 choice[c.key] = inter.fit_id
-        kw = {"fit_choice": choice} if choice else {}
-        bundles = dict(zip((c.key for c in keyed),
-                           spectrum_bundles(self._ws, rows, cache=self.scan_list.spectra_cache, **kw)))
+        # the files are read again on a refresh, or when the snapshot, the shown cells or the fit in use change (a members event keeps them)
+        read_key = (tuple(c.key for c in keyed), tuple(sorted(choice.items())))
+        if self._read is None or self._read[0] is not snapshot or self._read[1] != read_key:
+            rows = [snapshot.spectrum(k) for k in read_key[0]]
+            kw = {"fit_choice": choice} if choice else {}
+            self._read = (snapshot, read_key, dict(zip(read_key[0], spectrum_bundles(
+                self._ws, rows, cache=self.scan_list.spectra_cache, **kw))))
+        bundles = self._read[2]
         reference = None if self.scale == "raw" else self.reference_source(snapshot)
         read_s = perf_counter() - read_started
 

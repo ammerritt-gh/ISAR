@@ -25,6 +25,7 @@ from gui.test_analyzer_array_window import (LAPTOP, LARGE, _check_cells_paint_in
 from gui.window_frame_checks import assert_elided_have_tooltips
 from isar_gui.queue_controller import BatchMembers
 from isar_gui.theme import Tone, dot_icon
+from isar_gui.viewmodels import analyzer_array as mod
 from isar_gui.viewmodels.analyzer_array import BATCH_STATES, BatchMark
 from isar_gui.views.analyzer_cell import BATCH_TONES
 from scans_view_fixture import SPECTRA_A, SPECTRA_B
@@ -94,6 +95,21 @@ def _put(env, m) -> None:
 
 def _dot(cell):
     return cell.state_dot.pixmap().toImage()
+
+
+def test_a_members_event_reads_no_spectrum_again(env, monkeypatch):
+    reads = []
+    real = mod.spectrum_bundles
+    monkeypatch.setattr(mod, "spectrum_bundles", lambda ws, rows, **kw: (reads.append(1), real(ws, rows, **kw))[1])
+    _show(env, A6)
+    n = len(reads)
+    assert n >= 1
+    _put(env, members({**STATES, A6: "waiting"}, reasons=REASONS))
+    assert env.dock.cell_at("a06").state_caption.full_text() == "waiting"
+    _put(env, members(STATES, reasons=REASONS))
+    assert len(reads) == n                       # the marks change; no spectrum or fit file is read again
+    _show(env, B0)                               # another scan's cells are read: the reuse never serves the old scan
+    assert len(reads) > n
 
 
 def test_a_cell_goes_waiting_then_fitting_now_then_done_and_others_end_apart(env):
