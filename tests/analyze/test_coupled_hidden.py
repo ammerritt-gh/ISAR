@@ -47,10 +47,11 @@ def test_a_narrow_peak_in_f_is_not_converged_not_wrong():
     assert res.kind == "not_converged" and res.ln_z is None and len(res.sets) == 2    # bailed before set 3
 
 
-def test_a_node_without_a_positive_definite_hessian_makes_the_integral_undetermined():
-    res = cc.integrate_split(lambda f, near: None if f > 0.9 else 0.0, 0.5)
+@pytest.mark.parametrize("reason", cc.UNDETERMINED_REASONS)
+def test_a_node_whose_parameters_stay_undetermined_makes_the_integral_undetermined(reason):
+    res = cc.integrate_split(lambda f, near: reason if f > 0.9 else 0.0, 0.5)
     assert res.kind == "undetermined" and res.ln_z is None
-    assert res.reason.startswith("Hessian not positive definite") and "f=0.9" in res.reason
+    assert res.reason.startswith(reason) and "f=0.9" in res.reason
 
 
 def test_a_node_failing_for_another_reason_keeps_that_reason_as_no_evidence():
@@ -183,6 +184,21 @@ def test_a_split_node_failure_reads_no_evidence_with_its_reason(monkeypatch):
         None, "no_evidence", "posterior optimiser: ABNORMAL: split node f=0.5000", (), 1))
     eng.price(b)
     assert b.status == "no_evidence" and b.reason.startswith("posterior optimiser: ABNORMAL")
+
+
+def test_a_split_node_with_a_singular_box_covariance_reads_undetermined(monkeypatch):
+    spec, eng, _ = _engines(hidden_snapshot(3.0, asimov=True))
+    model = eng.model(eng.variant(2, True, True), ())
+    theta = eng._start(model, [(8.0, 0.4, 40.0, False), (8.0, 0.4, 3.0, False)], {"elastic": 100.0, "bg": 2.0})
+    b = eng._place(model, theta, eng.cost(model, theta), "x", 0, "")
+    assert eng.hidden_pairs(model, b.theta)                  # the split path, through the real node evidence
+
+    def singular(*a, **k):
+        raise np.linalg.LinAlgError("singular")
+    monkeypatch.setattr(prior, "_ln_box_mass", singular)
+    eng.price(b)
+    assert b.status == "undetermined" and b.ln_z is None
+    assert b.reason.startswith(cc.UNDETERMINED_REASONS[1])
 
 
 def test_a_split_that_does_not_converge_keeps_both_reasons(monkeypatch):
