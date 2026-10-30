@@ -224,7 +224,8 @@ def preview_fit(workspace_root, unit_key: str, *, center_override: float | None 
 
     try:
         from isar.reduce import combine, qc
-        from isar.session import calibrations, driver, ingest, router
+        from isar.intake import scans as intake_scans
+        from isar.session import calibrations, driver, file_fit, ingest, router
         from isar.session import guidelines as guide_mod
         from isar.session.workspace import Workspace
     except Exception as exc:  # noqa: BLE001 — import failure is a shown state
@@ -235,10 +236,15 @@ def preview_fit(workspace_root, unit_key: str, *, center_override: float | None 
         ws = Workspace.open(workspace_root)
         card_real, session = ws.load()
         card = copy.deepcopy(card_real)   # EPHEMERAL: mutate calibration state in memory, never save
-        data_paths = list(getattr(session, "data_paths", None) or [])
-        if not data_paths:
-            return _held(unit_key, "no source data on the workspace to re-parse for a preview")
-        plan = ingest.discover(data_paths, card)
+        try:
+            rows = intake_scans.read_scans(workspace_root)
+        except (ValueError, OSError):
+            log.exception("sandbox preview_fit: the import record of %s is unreadable", workspace_root)
+            rows = None
+        files = file_fit.given_files(session, rows)          # the files the user gave, never the folders
+        if isinstance(files, str):
+            return _held(unit_key, files)
+        plan = ingest.discover(files, card)
         records = ingest.parse_all(plan, card)
         for rec in records:
             combine.reduce_record(rec, card)
