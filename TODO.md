@@ -689,12 +689,18 @@ conditions — these are wants, not commitments.
 - `isar_gui/views/scan_list.py:551` — once the inter-spectra columns appear, the Scan column is squeezed until
   a scan-set label reads "(…d)"; size the four inter columns to their contents so the Scan column keeps the
   rest. Revisit at the first walk-through of the inter-spectra GUI.
+- `isar/sandbox_api.py:239` — the read of the import rows before `given_files` (try, log, `None`) is written
+  out three times (`file_fit.py:97`, `sandbox_api.py:239`, `tools/calibrate_deep_pass.py:1425`); one
+  `file_fit.read_rows(root)` so the three readers degrade the same way. Revisit at the next edit of row reading.
+- `isar/session/file_fit.py:300` — `_gpi_entry` re-reads `intake_scans.json` per unit beside the rows frozen
+  once at `freeze`, so a fit's file list and gpi check can come from two reads; pass `frozen.rows`. Revisit
+  when batch preparation is next profiled or a gpi/row mismatch appears.
 
 ---
 
 ## Notes
 
-routine suite 3.1 min, over its 1-min budget
+routine suite 3.5 min, over its 1-min budget
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test
