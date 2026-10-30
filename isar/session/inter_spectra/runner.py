@@ -205,21 +205,24 @@ class _Pool:
             for name in _THREAD_ENV:          # one BLAS thread per process, as _deep_stage pins it
                 os.environ.setdefault(name, "1")
             self.ex = ProcessPoolExecutor(max_workers=self.workers)
-        pending, flying, blob = deque(calls), {}, None      # blob: the pickle of pending[0], made while workers run
+        pending, flying, blob, sent = deque(calls), {}, None, 0      # blob: the pickle of pending[0], made while workers run
         while pending or flying:
             while pending and len(flying) < self.workers:
                 key, args, kwargs = pending.popleft()
                 blob = blob or self._pickle(args, kwargs)
                 try:
                     flying[self.ex.submit(_work, self.core.__name__, fn, blob)] = key
-                except BrokenProcessPool as exc:          # a dead worker: the unsent jobs fail as the flying ones do
+                except BrokenProcessPool as exc:
+                    if not sent:                          # the pool was dead before this stage sent anything: raise, as before
+                        raise
                     log.error("%s: the worker pool broke (%s); %d jobs not sent", fn, exc, len(pending) + 1)
-                    self.broken = exc
+                    self.broken = exc                     # a dead worker mid-stage: the unsent jobs fail as the flying ones do
                     for k in [key, *(p[0] for p in pending)]:
                         out[k] = exc
                     pending.clear()
                     break
                 blob = None
+                sent += 1
                 self._note(key, True)
                 if pending:
                     blob = self._pickle(pending[0][1], pending[0][2])

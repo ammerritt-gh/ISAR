@@ -267,6 +267,27 @@ def test_a_pool_that_breaks_mid_stage_fails_the_rest_of_that_stage_and_the_next_
         pool.map("neg", [(i, (i,), {}) for i in range(2)])
 
 
+class _DeadWorkers(_DyingPool):
+    """Every job it takes comes back as a dead worker's error; later submits raise, as a broken pool's do."""
+    def submit(self, fn, *args):
+        if self.sent >= self.ALIVE:
+            raise BrokenProcessPool("a worker died")
+        self.sent += 1
+        f = Future()
+        f.set_exception(BrokenProcessPool("a worker died"))
+        return f
+
+
+def test_a_stage_whose_jobs_all_came_back_dead_still_raises_at_the_next_stage(monkeypatch):
+    # the next stage's first submit fails before any of its jobs is sent: it must raise, not save the stage as failed
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", _DeadWorkers)
+    pool = runner._Pool(operator, 2)
+    out = pool.map("neg", [(i, (i,), {}) for i in range(3)])
+    assert all(isinstance(out[i], BrokenProcessPool) for i in range(3))
+    with pytest.raises(BrokenProcessPool):
+        pool.map("neg", [(i, (i,), {}) for i in range(2)])
+
+
 def test_a_map_ends_with_a_forced_publish_and_nothing_in_flight(monkeypatch):
     # a throttled transition must not be the last word: the job that returned has to reach the members map
     monkeypatch.setattr(_DyingPool, "ALIVE", 99)
