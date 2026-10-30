@@ -87,6 +87,25 @@ class _Labelled(cc.CoupledEngine):
             return None
         return self._place(model, theta, cost, family, int(res.nfev), str(res.message)), cost
 
+    def price(self, b):
+        """The coupled price, except that a posterior optimiser that stops ABNORMAL is retried once with a 3-point
+        gradient (the 2-point one cannot finish on some resolution-limited models). The reason is reset first, so a
+        stale 'ABNORMAL' never survives on a priced basin; a basin that still cannot converge stays no_evidence."""
+        super().price(b)
+        if b.status != "no_evidence" or "ABNORMAL" not in b.reason:
+            return
+        b.status, b.reason = "pending", ""
+        orig = fast_pass.minimize
+        # shortcut: a module-level swap of fast_pass.minimize, because fast_pass.py gains no gradient option here;
+        # upgrade by passing the option through _Engine.price if the fast pass ever wants it too (that would change
+        # fast-pass results beyond change 8, so it is not done here). Safe: pool workers are separate processes
+        # and price is single threaded.
+        fast_pass.minimize = lambda *a, **k: orig(*a, jac="3-point", **k)
+        try:
+            super().price(b)
+        finally:
+            fast_pass.minimize = orig
+
     def _ln_exch(self, model) -> float:
         """ln of the k! of each group of exchangeable unmatched modes (spec 3): the base engine's groups
         (equal priors, pinned energies out), split by the delta mask; a matched slot is never one."""

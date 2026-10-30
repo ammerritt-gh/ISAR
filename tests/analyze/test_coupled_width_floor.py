@@ -99,7 +99,7 @@ F1_TRUTH = [(5.0, GAMMA_FLOOR, 60.0), (11.0, 0.8, 40.0)]
 F1_CASES = [(3, 1.2), (2, 1.15)]      # (seed, elastic widening): the optimiser class (W1F), no QE ridge (QE height zero)
 
 
-@pytest.mark.parametrize("seed, wide", F1_CASES[:1])     # seed 2 fails in the optimiser first: W1F's, not this test's
+@pytest.mark.parametrize("seed, wide", F1_CASES[:1])     # seed 2 fails in the optimiser first (W1F): its basin is priced only with decision 5
 def test_a_free_width_pegged_at_the_floor_is_never_priced(seed, wide, monkeypatch):
     # the delta twin cannot be fitted: the railed free-width basin must not stand in for it
     orig = R._Labelled.fit
@@ -182,3 +182,22 @@ def test_an_incoming_resolution_limited_mode_keeps_its_mask_without_a_start_of_i
     assert "incomplete_comparison" not in a.reasons and not any(x.startswith("mask_unpriced") for x in a.reasons)
     r = R.refit(snap, stage="both")
     assert r.status in ("accepted", "unchanged") and R._selected_model(r.fit)["delta_modes"] == [0]
+
+
+# W1F (F1's class; removed with decision 5) -------------------------------------------------------------------
+@pytest.mark.parametrize("seed, wide, slots", [(3, 1.2, ("b1", "b2")), (3, 1.2, (None, None)), (2, 1.15, ("b1", "b2"))])
+def test_an_abnormal_posterior_optimiser_is_retried_with_a_three_point_gradient(seed, wide, slots):
+    # a true resolution-limited model with no QE ridge (QE height zero): change 8 does nothing here, the failure is
+    # the optimiser stopping ABNORMAL on the two-point gradient
+    snap = snapshot(recipe.widened(seed, wide=wide, gamma1=GAMMA_FLOOR, bg=0.0), F1_TRUTH)
+    p = R.price(snap, job(snap, slots))
+    assert p.status in ("ok", "ok_boundary") and p.ln_z is not None, (p.status, p.reason)
+    assert p.mode[3] == (0,)
+    assert not any(free_at_floor(rec) for rec in p.basins)
+
+
+def test_the_retry_gives_the_optimiser_back_its_two_point_gradient():
+    orig = fast_pass.minimize
+    snap = snapshot(recipe.widened(3, wide=1.2, gamma1=GAMMA_FLOOR, bg=0.0), F1_TRUTH)
+    R.price(snap, job(snap, ("b1", "b2")))
+    assert fast_pass.minimize is orig
