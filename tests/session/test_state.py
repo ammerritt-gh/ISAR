@@ -4,7 +4,7 @@ compatible, the new TOML sections survive the dataclass round-trip, and the U7 w
 import json
 
 from isar.schema import card
-from isar.session.state import SCHEMA_VERSION, ScanEntry, SessionState, canonical_hash
+from isar.session.state import SCHEMA_VERSION, ScanEntry, SessionState, canonical_hash, load_shared
 
 
 # --------------------------------------------------------------------------- schema: backward compat
@@ -180,3 +180,30 @@ def test_canonical_hash_stable_and_order_independent():
     assert a == b
     c = canonical_hash({"x": 1, "y": [1, 2, 4]})
     assert a != c
+
+
+# --------------------------------------------------------------------------- load_shared: one parse per change of the file
+def _one(scan_id):
+    st = SessionState()
+    st.put(ScanEntry(scan_id=scan_id, scan_number=1, scan_type="x", status="fitted"))
+    return st
+
+
+def test_load_shared_parses_once_per_change_of_the_file(tmp_path):
+    p = tmp_path / "session.json"
+    _one("s1").save(p)
+    size = p.stat().st_size
+    first = load_shared(p)
+    assert load_shared(p) is first and "s1" in first.scans
+    # An atomic rewrite of the SAME size still replaces the file: a size-only key would serve the stale parse.
+    _one("s2").save(p)
+    assert p.stat().st_size == size
+    again = load_shared(p)
+    assert again is not first and "s2" in again.scans and "s1" not in again.scans
+
+
+def test_load_shared_of_a_missing_file_is_the_empty_state_and_is_not_cached(tmp_path):
+    p = tmp_path / "session.json"
+    assert load_shared(p).scans == {}
+    _one("s1").save(p)
+    assert "s1" in load_shared(p).scans

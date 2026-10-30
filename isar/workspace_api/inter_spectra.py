@@ -26,7 +26,7 @@ from isar.session.inter_spectra.q_provider import INVALID_CELL, NO_HKL, q_coordi
 from isar.session.inter_spectra.records import ELIGIBLE
 from isar.session.inter_spectra.rings import plan_anchored
 from isar.session.inter_spectra.schedule import plan_simultaneous
-from isar.session.state import SessionState
+from isar.session.state import load_shared
 from isar.session.workspace import POLICY_NAME, SESSION_NAME, STATE_NAME
 
 from .views import FitView
@@ -145,7 +145,7 @@ def _inputs_now(root: Path, units) -> dict[str, str | None]:
 
 def _solo_keys(root: Path) -> frozenset[str]:
     try:
-        session = SessionState.load(root / SESSION_NAME)
+        session = load_shared(root / SESSION_NAME)
     except FileNotFoundError:
         return frozenset()
     return frozenset(k for k, e in session.scans.items() if authority.has_fast_solo(e, k))
@@ -158,7 +158,8 @@ def _load(root, only: str | None = None) -> _Ctx:
     refits = [r for r in log.refits if r.status in ELIGIBLE and (only is None or r.unit == only)]
     needed = {r.unit for r in refits} | {c.unit for r in refits for c in r.conditioned_on}
     now = _inputs_now(root, needed)
-    solo = _solo_keys(root) if (refits or user.picks or user.locks or only) else frozenset()
+    keys = _solo_keys(root)             # also warms the shared ledger for the preview and history reads that follow
+    solo = keys if (refits or user.picks or user.locks or only) else frozenset()
     if only is None:
         res = authority.resolve_all(log, user, now, solo)
     else:

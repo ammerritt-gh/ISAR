@@ -93,6 +93,10 @@ Each line names the failure it prevents.
 - **One resolver decides the fit in use.** `isar/session/inter_spectra/authority.py` (`resolve`, `effective`)
   serves the export, the run report and the read facade, so the views cannot disagree. A user pick and a
   machine acceptance are ordered by the intake `seq`, never by wall-clock time.
+- **The ledger is parsed once per change of the file.** The facade, the node and q readers and the anchor save read
+  `session.json` through `isar.session.state.load_shared`, a one-slot parse keyed on the file's mtime, size and inode
+  (every write is an `os.replace`), so an anchor click and the reads it triggers parse it zero times on a warm cache.
+  The shared object is read-only; code that saves the ledger keeps `SessionState.load`.
 - **A stale fit is never authoritative.** A stale locked fit stays locked, is flagged stale, and never
   conditions a new fit.
 - **A locked spectrum is never refitted.** A refused or failed refit never becomes authoritative; the

@@ -151,3 +151,14 @@ def test_damaged_lines_are_skipped_and_listed_and_the_rest_still_counts(root):
     assert u.max_seq == 4                                    # the torn line has no seq and does not count
     assert [d.line for d in u.damaged] == [2, 3, 4, 5]
     assert all(d.file == inter_spectra.FILE for d in u.damaged)
+
+
+def test_anchor_add_remove_add_parses_the_ledger_at_most_once(root, monkeypatch):
+    """The ledger is parsed once per change of the file, not once per click (the GUI thread writes anchors)."""
+    loads = []
+    load = SessionState.load.__func__
+    monkeypatch.setattr(SessionState, "load", classmethod(lambda cls, path: loads.append(path) or load(cls, path)))
+    assert set_anchors(root, [A], anchored=True).ok
+    assert set_anchors(root, [A], anchored=False).ok
+    assert set_anchors(root, [A], anchored=True).ok
+    assert len(loads) <= 1

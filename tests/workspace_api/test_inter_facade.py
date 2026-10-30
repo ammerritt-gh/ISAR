@@ -19,6 +19,7 @@ from isar.analyze.coupled.settings import SETTING_DEFS
 from isar.intake import inputs, inter_values, scans as intake_scans, store
 from isar.schema.card import load_state
 from isar.session import writer
+from isar.session.state import SessionState
 from isar.session.inter_spectra import records
 from isar.workspace_api import inter_spectra as facade
 from isar.workspace_api import SpectraCache
@@ -536,3 +537,15 @@ def test_the_review_flag_is_the_stored_decision_or_a_facade_added_reason_never_s
     assert by[k2].flag.flagged and is_flagged(by[k2].flag)               # the stored decision stands
     save(root, B2, [_refit(k3, F3, h[k3], flag=note)], stage="sweep", index=3, end="did_not_settle")
     assert inter_overview(root).by_key[k3].flag.flagged                  # did not settle: flagged whatever the score
+
+
+def test_overview_preview_and_history_parse_the_ledger_once(root, monkeypatch):
+    """One change of session.json costs one parse, however many facade reads follow it."""
+    keys = spectrum_keys(root)
+    loads = []
+    load = SessionState.load.__func__
+    monkeypatch.setattr(SessionState, "load", classmethod(lambda cls, path: loads.append(path) or load(cls, path)))
+    inter_overview(root)
+    facade.batch_preview(root, BatchRequest("simultaneous", None, (), tuple(keys[:2])))
+    inter_history(root, keys[0])
+    assert len(loads) == 1

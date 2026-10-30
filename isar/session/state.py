@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -108,6 +109,25 @@ class SessionState:
 
     def put(self, entry: ScanEntry) -> None:
         self.scans[entry.scan_id] = entry
+
+
+_SHARED: dict = {}                      # the latest path: {"key": (path, mtime_ns, size, ino), "state": SessionState}
+_SHARED_LOCK = threading.Lock()
+
+
+def load_shared(path) -> SessionState:
+    """The ledger parsed once per change of the file; the object is shared, so callers never mutate it."""
+    p = Path(path)
+    try:
+        st = p.stat()
+    except FileNotFoundError:
+        return SessionState.load(p)
+    # session.json is written by os.replace, so inode and mtime change on every write
+    key = (str(p), st.st_mtime_ns, st.st_size, st.st_ino)
+    with _SHARED_LOCK:
+        if _SHARED.get("key") != key:
+            _SHARED.update(key=key, state=SessionState.load(p))
+        return _SHARED["state"]
 
 
 def _scan_entry_from_dict(row: dict) -> ScanEntry:

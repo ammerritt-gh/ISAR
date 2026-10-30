@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from isar.schema.card import Card
-from isar.session.state import SessionState
+from isar.session.state import SessionState, load_shared
 
 POLICY_NAME = "card.policy.toml"
 STATE_NAME = "card.state.json"
@@ -56,13 +56,18 @@ class Workspace:
 
     # ---- load / save -------------------------------------------------------
     def load(self) -> tuple[Card, SessionState]:
+        return self._card(), SessionState.load(self.session_path)
+
+    def load_read_only(self) -> tuple[Card, SessionState]:
+        """`load` with the shared ledger parse (`state.load_shared`): the session is read-only, never mutate or save it."""
+        return self._card(), load_shared(self.session_path)
+
+    def _card(self) -> Card:
         if not self.policy_path.exists():
             raise FileNotFoundError(
                 f"no {POLICY_NAME} in workspace {self.root} — run `isar init` first"
             )
-        card = Card.load(self.policy_path, self.state_path)
-        session = SessionState.load(self.session_path)
-        return card, session
+        return Card.load(self.policy_path, self.state_path)
 
     def save(self, card: Card, session: SessionState) -> None:
         """Persist the two machine-owned files. Never touches card.policy.toml (D8)."""
