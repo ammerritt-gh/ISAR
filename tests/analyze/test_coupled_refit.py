@@ -494,7 +494,7 @@ def test_identity_confidence_reads_the_deduplicated_masses_the_decision_used():
 
     def priced(j):
         if j.count == 2 and set(j.slots) == {"b1", "b2"}:
-            rec = (0.0, "m", tuple((b, *basin[b]) for b in j.slots), (None, None))
+            rec = (0.0, "m", tuple((b, *basin[b]) for b in j.slots), (None, None), None)
             return R.Priced(j.key, 2, j.slots, 0.0, "ok", None, None, 1, 0.0, (rec,))
         return R.Priced(j.key, j.count, j.slots, -50.0, "ok", None, None, 1, 0.0)
     a = R.assign_decide(snap, [priced(j) for j in jobs])
@@ -507,6 +507,44 @@ def test_identity_confidence_reads_the_deduplicated_masses_the_decision_used():
     rival = replace(a, candidates=tuple({**c, "ln_z": win - 0.2} if tuple(c["slots"]) == ("b2", "b1") else c
                                         for c in a.candidates))
     assert identity._slot_support(rival, 0, S)[0] is False
+
+
+def test_the_refinement_fits_the_mask_of_the_basin_the_decision_selected_from_another_order():
+    # both slot orders converge to one basin, but only the swapped job (b2, b1) holds its best price, with a delta
+    # mask: the decision files that mass under (b1, b2), so the refinement must start from that basin's own model,
+    # permuted into (b1, b2)'s order, not from the (b1, b2) job's lesser basin
+    true = [(8.0, 0.3, 30.0), (9.0, 0.3, 30.0)]
+    snap = t_pair(spectrum(true, scale=0.3, seed=3), true, ["fast:y#0", "fast:y#1"],
+                  [(8.45, 0.3, 30.0), (8.55, 0.3, 30.0)], ["b1", "b2"], kind="simultaneous", guard=0.5)
+    jobs = R._Spec(snap).jobs()[0]
+    basin = {"b1": (8.45, 0.3, 30.0, False), "b2": (8.55, 0.3, 30.0, False)}
+    own, swapped = ("own", "mode"), ("swapped", "mode")      # stand-ins for Priced.mode, in energy order
+
+    def priced(j):
+        if j.count == 2 and set(j.slots) == {"b1", "b2"}:
+            first = j.slots == ("b1", "b2")
+            rec = (0.0 if first else 3.0, "m", tuple((b, *basin[b]) for b in j.slots), (None, None),
+                   own if first else swapped)
+            return R.Priced(j.key, 2, j.slots, rec[0], "ok", own if first else swapped, None, 1, 0.0, (rec,))
+        return R.Priced(j.key, j.count, j.slots, -50.0, "ok", None, None, 1, 0.0)
+    a = R.assign_decide(snap, [priced(j) for j in jobs])
+    assert (a.count, a.slots) == (2, ("b1", "b2"))
+    assert a.selected_model == swapped
+
+
+def test_a_swapped_order_basin_records_its_mode_in_energy_order():
+    true = [(8.0, 0.3, 30.0), (9.0, 0.3, 30.0)]
+    snap = t_pair(spectrum(true, scale=0.3, seed=3), true, ["fast:y#0", "fast:y#1"],
+                  [(8.45, 0.3, 30.0), (8.55, 0.3, 30.0)], ["b1", "b2"], kind="simultaneous", guard=0.5)
+    job = next(j for j in R._Spec(snap).jobs()[0] if j.slots == ("b2", "b1"))
+    # a basin the swapped job found with its modes crossed (b2 above b1) and exactly one of them at delta width
+    crossed = [r for r in R.price(snap, job).basins if r[2][0][1] > r[2][1][1] and r[2][0][4] != r[2][1][4]]
+    assert crossed
+    rec = max(crossed, key=lambda r: r[0])
+    lo, hi = sorted(m[1] for m in rec[2])
+    _el, _bg, _qe, delta, theta = rec[4]
+    assert delta == tuple(i for i, m in enumerate(sorted(rec[2], key=lambda m: m[1])) if m[4])   # mask in energy order
+    assert theta[0] == pytest.approx(lo, abs=1e-6) and theta[3] == pytest.approx(hi, abs=1e-6)   # omega0 of mode 1, 2
 
 
 def test_a_poorly_pinned_unmatched_mode_is_not_held_by_neighbours():

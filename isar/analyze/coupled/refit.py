@@ -565,13 +565,24 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
 
 
 def _basin_record(b, slots, term: float) -> tuple:
-    """(term, model label, ((slot, omega0, Gamma, h, delta) per mode in slot order), (QE height, width)) of one
-    priced basin at its posterior mode: what ``_basin_rows`` compares across the slot orders of a composition."""
+    """(term, model label, ((slot, omega0, Gamma, h, delta) per mode in slot order), (QE height, width), mode)
+    of one priced basin at its posterior mode (``mode`` as ``Priced.mode``, in energy order):
+    what ``_basin_rows`` compares across the slot orders of a composition."""
     m, th = b.model, b.theta_map
     modes = tuple((sl, float(th[a]), float(th[g]), float(th[c]), i in m.delta)
                   for i, ((a, g, c), sl) in enumerate(zip(m.modes, slots)))
     qe = tuple(None if i is None else float(th[i]) for i in (m.qe_h, m.qe_w))
-    return float(term), m.variant.label, modes, qe
+    # the basin's model and parameters in energy order (the order _basin_rows files it under): a delta mask and
+    # each mode's values follow their mode when a swapped slot order is rewritten to the sorted one
+    perm = sorted(range(len(modes)), key=lambda i: modes[i][1])
+    theta = th.copy()
+    for j, i in enumerate(perm):
+        for new, old in zip(m.modes[j], m.modes[i]):
+            theta[new] = th[old]
+    v = m.variant
+    mode = (v.elastic, v.background, v.qe, tuple(j for j, i in enumerate(perm) if i in m.delta),
+            tuple(float(x) for x in theta))
+    return float(term), m.variant.label, modes, qe, mode
 
 
 def _same_basin(spec: _Spec, x: tuple, y: tuple) -> bool:
@@ -594,32 +605,42 @@ def _basin_rows(spec: _Spec, jobs, by_key) -> list:
     (one count, one multiset of slots) are starts of one problem. Each job optimises the full labelled space, so
     two orders can converge to one physical basin: their basins are pooled, each is filed under the order of its
     own final energies (the mode lowest in energy takes the first slot), and a basin two orders found counts
-    once (the larger of its two prices). Pricing stays exact; nothing is reused across snapshots."""
-    rows, groups = [], {}
+    once (the larger of its two prices). Pricing stays exact; nothing is reused across snapshots.
+    Returns (rows, modes): modes maps (count, slots) to the ``Priced.mode`` of the best basin filed under it,
+    in that slot order, whichever job found it."""
+    rows, groups, modes, best = [], {}, {}, {}
     for j in jobs:
         p = by_key.get(j.key)
         if p is None or p.ln_z is None or not p.basins:
             rows.append((j.count, j.slots, None if p is None else p.ln_z))
+            if p is not None and p.mode is not None:
+                modes[(j.count, tuple(j.slots))] = p.mode
         else:
             groups.setdefault((j.count, tuple(sorted(map(str, j.slots)))), []).append((j, p))
     for members in groups.values():
         if len(members) == 1:
             j, p = members[0]
             rows.append((j.count, j.slots, p.ln_z))
+            modes[(j.count, tuple(j.slots))] = p.mode
             continue
         k, u = members[0][0].count, sum(b is None for b in members[0][0].slots)
         w0 = rules.ln_w0(k, k - u, len(spec.pool), spec.ceiling + 1)
         unique: list[tuple] = []
         for _j, p in members:
-            for term, model, modes, qe in p.basins:
-                rec = (term, model, tuple(sorted(modes, key=lambda m: m[1])), qe)
+            for term, model, bmodes, qe, mode in p.basins:
+                rec = (term, model, tuple(sorted(bmodes, key=lambda m: m[1])), qe, mode)
                 i = next((i for i, u_ in enumerate(unique) if _same_basin(spec, u_, rec)), None)
                 if i is None:
                     unique.append(rec)
                 elif term > unique[i][0]:
                     unique[i] = rec
-        rows += [(k, tuple(m[0] for m in rec[2]), rec[0] + w0) for rec in unique]
-    return rows
+        for rec in unique:
+            key = (k, tuple(m[0] for m in rec[2]))
+            rows.append((*key, rec[0] + w0))
+            if key not in best or rec[0] > best[key][0]:
+                best[key] = (rec[0], rec[4])
+    modes.update({key: v[1] for key, v in best.items()})
+    return rows, modes
 
 
 def assign_decide(snapshot: Snapshot, priced: Sequence[Priced]) -> Assignment:
@@ -632,7 +653,7 @@ def assign_decide(snapshot: Snapshot, priced: Sequence[Priced]) -> Assignment:
     s = snapshot.settings
     jobs, coverage, limited = spec.jobs()
     by_key = {p.key: p for p in priced}
-    rows, cands = _basin_rows(spec, jobs, by_key), []
+    (rows, modes), cands = _basin_rows(spec, jobs, by_key), []
     # each candidate carries the deduplicated mass of its own (count, slots), the one the decision weighs, so
     # the identity reads the same evidence (a basin two orders found is not a rival of itself)
     mass: dict[tuple, list[float]] = {}
@@ -652,9 +673,8 @@ def assign_decide(snapshot: Snapshot, priced: Sequence[Priced]) -> Assignment:
         c["weight"] = d["weights"].get((c["count"], tuple(c["slots"])), 0.0)
     winner = d["winner"] or (spec.n0, spec.incoming)
     k, slots = winner[0], tuple(winner[1])
-    # the winner's own job holds its model in this slot order: the refinement fits that delta mask (a free width is
+    # the refinement fits the evidence-selected basin's delta mask, whichever order's job found it (a free width is
     # chosen by evidence, never by the continuous objective)
-    won = next((by_key[j.key] for j in jobs if (j.count, tuple(j.slots)) == (k, slots) and j.key in by_key), None)
     coverage = {**coverage, "decision": {
         "ambiguous": d["ambiguous"], "close_calls": [[c[0], list(c[1])] for c in d["close_calls"]],
         "count_p": {str(c): p for c, p in sorted(d["count_p"].items())}}}
@@ -662,7 +682,7 @@ def assign_decide(snapshot: Snapshot, priced: Sequence[Priced]) -> Assignment:
                       origins=spec.origins(slots), factors=spec.incident(slots), discrete="priced",
                       triggers=spec.triggers, candidates=tuple(cands), coverage=coverage, search_limited=limited,
                       changed=bool(d["changed"]), reasons=tuple(d["reasons"]),
-                      selected_model=None if won is None else won.mode)
+                      selected_model=modes.get((k, slots)))
 
 
 def assign(snapshot: Snapshot, *, cached: Mapping[str, Priced] = {}) -> tuple[Assignment, tuple[Priced, ...]]:
