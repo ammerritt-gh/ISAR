@@ -17,7 +17,7 @@ ISAR = analysis authority). Forward workstreams live in their own plans:
 [SPEEDUP](docs/plans/speedup.md), [STEERING roadmap §10](docs/design/steering.md),
 [BACKGROUND](docs/plans/background.md), [EIG](docs/design/eig.md).
 
-Last updated: 2026-10-29.
+Last updated: 2026-10-30.
 
 ---
 
@@ -247,6 +247,14 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       untouched, affected fits marked out of date.
 - [ ] **GUI-10 — Rename an experiment that holds its own source files** (operator pin, 2026-10-27).
       Refused today. **Acceptance:** the rename succeeds and every recorded source path still resolves.
+- [ ] **GUI-11 — Analyzer array batch marks read unexpectedly** (operator pin, 2026-10-30). In an
+      anchored batch the cells light up one or two at a time in key order, and every curve updates
+      only when the ring is saved. Diagnosed from the 2026-10-30 run (job j2f3d690745dd's dock):
+      the work is parallel, but a ring's pricing jobs are queued spectrum by spectrum, so all workers
+      sit on one spectrum's jobs; a spectrum whose jobs are finished reads "waiting" until the ring
+      saves, against the design's meaning of waiting. Candidate fixes, not ruled: interleave pricing
+      jobs across the ring's spectra; a "fitted, saved with the ring" state. To be refined later.
+      **Acceptance:** the operator agrees the marks match how a ring actually runs.
 
 ---
 
