@@ -348,4 +348,6 @@ review item.
 - 2026-10-27 · role: operator wants the planning coordinator's context gauge at 300k or more; at 200k it handed back mid-integration of a 14-unit plan (job ja0cd202ecb67).
 - 2026-10-27 · GUI threshold (operator): a physicist new to the GUI, at 3 AM, nobody to ask; labels name their object, every control has a tooltip. Plain offscreen Qt has no fonts; render with QT_QPA_FONTDIR=C:\Windows\Fonts.
 - 2026-10-27 · pytest-qt closes leftover windows after per-test monkeypatches are undone; never let a GUI path read the profile lazily. The root conftest now walls the session off from %APPDATA%.
+- 2026-10-29 · floor: operator: never budget build scope or trim a design to fit a deadline yourself; agents routinely underestimate how much gets done.
+- 2026-10-30 · floor: operator: land and let him see results; never hold a landing for agent-run diagnostics he did not ask to judge.
 - 2026-10-27 · floor: an acs-job --test-command with single quotes reaches pytest literally on Windows (every xdist worker exits 4, "no active workers"); use double quotes, passed via python.
