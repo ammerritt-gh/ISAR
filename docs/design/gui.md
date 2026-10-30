@@ -292,6 +292,9 @@ empty/ready layout pair, and amends G19 as stated below.
   - *Readiness line* (`views/readiness_line.py`) in Processing: counts of spectra ready, ready with a
     fallback, waiting for resolution curves, needing their counts accepted, running and so on, each
     count opening the list behind it with the backend's reason and the button that resolves it.
+  - *Import companions.* After a BL43 import the status bar, the Processing line (*Last import: …*, until the
+    workspace changes) and the Log say what was found beside the analyzer files: the `.var`, the gpi folder and the
+    resolution curves (`plain_words.companion_clause`, from the `companions` record of `isar ingest --json`).
   - *Writes and reads.* The GUI writes user values, conditions and settings only through the intake
     backend's writers, in process, and never edits a value a file supplies (operator ruling,
     2026-10-27: user values are only ever added; a later value supersedes an earlier one and both stay

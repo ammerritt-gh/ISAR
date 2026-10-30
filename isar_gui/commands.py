@@ -313,6 +313,7 @@ class GuiIngestReport:
     gaps: tuple = ()
     last_ingest: dict | None = None
     import_record_error: str | None = None      # BL43: the import record was not written
+    companions: dict | None = None              # BL43: what the import found beside the analyzer files (engine's shape)
 
 
 def parse_ingest_json(text) -> "GuiIngestReport | None":
@@ -341,6 +342,7 @@ def parse_ingest_json(text) -> "GuiIngestReport | None":
                 last_ingest=(dict(obj["last_ingest"])
                              if isinstance(obj.get("last_ingest"), dict) else None),
                 import_record_error=obj.get("import_record_error") or None,
+                companions=(dict(obj["companions"]) if isinstance(obj.get("companions"), dict) else None),
             )
     return None
 

@@ -263,6 +263,21 @@ def test_ingest_report_warns_in_the_log_only_when_the_import_record_failed(qtbot
         assert "import record" not in w.statusBar().currentMessage()
 
 
+def test_ingest_report_says_what_the_companion_files_were_and_keeps_the_clause_on_the_activity_line(qtbot, make_ws):
+    w = MainWindow(Workspace.open(make_ws(rows=[])), session=Session(), watch=False)
+    qtbot.addWidget(w)
+    sets = ["CsV3Sb5_302K_0p5_0p5_3_sum"]
+    companions = {"sidecar": {"read": [], "missing": sets, "unreadable": []},
+                  "gpi": {"folder": None, "found": [], "missing": sets, "not_used": [], "error": None},
+                  "curves": {"folder": None, "n_curves": 0, "n_analyzers": 0, "error": None,
+                             "problem": "no resolution folder is saved, and no rf/ folder holding curves was found beside C:/data"}}
+    w._on_ingest_report(GuiIngestReport(files=({"path": "a03.dat", "scan_ids": []},), companions=companions))
+    clause = ".var missing 1/1 · no gpi · no rf folder"
+    assert clause in w.statusBar().currentMessage()
+    assert w.processing_panel._activity.text() == "Last import: " + clause
+    assert f".var: found and read for 0 of 1 scan set; missing for {sets[0]}." in w.log_dock._view.toPlainText()
+
+
 def _legacy_unit(exp, scan, det):
     return SimpleNamespace(key=f"{exp}:{scan}:{det}", scan_number=scan, det=det)
 

@@ -137,6 +137,16 @@ def test_parse_ingest_json_carries_the_import_record_error():
     assert commands.parse_ingest_json(json.dumps(obj)).import_record_error == "disk full"
 
 
+def test_parse_ingest_json_carries_the_companions_and_none_when_absent():
+    import json
+    obj = json.loads(_ingest_success_line())
+    assert commands.parse_ingest_json(json.dumps(obj)).companions is None
+    obj["companions"] = {"sidecar": {"read": ["s"], "missing": [], "unreadable": []},
+                         "gpi": {"folder": None, "found": [], "missing": ["s"], "not_used": [], "error": None},
+                         "curves": None}
+    assert commands.parse_ingest_json(json.dumps(obj)).companions == obj["companions"]
+
+
 def test_parse_ingest_json_accepts_line_iterable():
     rep = commands.parse_ingest_json(["noise", _ingest_success_line()])
     assert rep is not None and rep.added == ("exp:1", "exp:2")

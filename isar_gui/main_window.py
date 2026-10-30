@@ -49,7 +49,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from isar_gui import collector_guard, file_dialogs
+from isar_gui import collector_guard, file_dialogs, plain_words
 from isar_gui.active_unit import ActiveUnitController
 from isar_gui.export_action import ExportController
 from isar_gui.credentials import (
@@ -365,6 +365,7 @@ class MainWindow(QMainWindow):
         self._warn_generation = 0     # per-bridge-tick counter passed to LogDock.sync_warnings
         self._help_window = None      # the one Help window, made on first use
         self._empty = False           # True while showing the empty-start (no workspace) state
+        self._import_note = ""        # "Last import: ..." for the Processing line; cleared when the workspace binds
         self.scans_page = None        # the Scan(s) page is rebuilt for each workspace binding
         self._center_host: CenterHost | None = None   # hosts the four display surfaces once bound
         self.setAcceptDrops(True)      # drop a data folder/numor onto the window -> ingest (D2/D5)
@@ -503,6 +504,7 @@ class MainWindow(QMainWindow):
         ``None``. The arrangement of the window is the same in both.
         """
         self._empty = ws is None
+        self._import_note = ""
         self._ws = _EmptyWorkspace() if self._empty else ws
         ws = self._ws
         self._warn_generation = 0  # a fresh bind starts a new warnings-generation sequence
@@ -1738,6 +1740,16 @@ class MainWindow(QMainWindow):
             note += " — import record not written (see Log)"
             self.log(f"WARNING: the import record could not be written; file values in the scan "
                      f"list may be stale: {record_error}")
+        companions = report.companions      # None unless BL43 with a workspace
+        clause = ""
+        if companions is not None:
+            clause = plain_words.companion_clause(companions)
+            for line in plain_words.companion_lines(companions):
+                self.log(line)
+        if clause:
+            note += f"; {clause}"
+        self._import_note = f"Last import: {clause}" if clause else ""
+        self._push_processing_state()
         summary = getattr(report, "last_ingest", None) or {}
         logical_count = summary.get("logical_scan_count")
         unit_count = summary.get("analyzer_unit_count")
@@ -1971,8 +1983,9 @@ class MainWindow(QMainWindow):
         self._push_processing_state()
 
     def _push_processing_state(self) -> None:
-        """The Processing panel's activity line (an ingest, export or campaign) and the entry point's controls."""
-        self.processing_panel.set_activity(self._operation_status.text())
+        """The Processing panel's activity line (an ingest, export or campaign, else the last import) and the entry
+        point's controls."""
+        self.processing_panel.set_activity(self._operation_status.text() or self._import_note)
         self._push_run_row()
 
     def _push_run_row(self) -> None:
