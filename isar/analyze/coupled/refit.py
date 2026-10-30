@@ -1008,9 +1008,12 @@ def _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, 
                 reasons.append(_reason("unmatched_branch_mid_window",
                                        f"a mode at {e:.2f} meV matches no neighbour branch, away from the window edges",
                                        [ids[m]], omega0=e, edge_band=spec.band))
+    # one branch under two merged ids (an alias) is seen when either names a final slot
+    canon = snapshot.aliases
+    seen = {canon.get(b, b) for b in final if b is not None}
     for b in spec.pool:
         cs = [c for c in spec.pred.get(b, ()) if spec.lo <= c <= spec.hi and spec.d_edge(c) >= spec.band]
-        if cs and b not in final:
+        if cs and canon.get(b, b) not in seen:
             reasons.append(_reason("branch_lost_mid_window",
                                    f"neighbour branch {b} is predicted at {cs[0]:.2f} meV but not seen here",
                                    [b], predicted=cs))

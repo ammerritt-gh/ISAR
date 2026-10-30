@@ -7,7 +7,7 @@ the core that produces and reads them.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from isar.analyze.coupled.settings import InterSettings
@@ -77,6 +77,7 @@ class Snapshot:
     settings: InterSettings
     batch_kind: str                # "anchored" | "simultaneous"
     fast: Held | None = None       # the fast solo fit, what delta_fast and the width/regime flags compare with (default: own)
+    aliases: Mapping[str, str] = field(default_factory=dict)   # the batch's merged ids so far, alias -> canonical name (identity.merged_aliases)
 
 
 @dataclass(frozen=True)

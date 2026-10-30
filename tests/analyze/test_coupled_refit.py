@@ -126,7 +126,7 @@ def test_a_split_is_a_repair_not_a_review_flag_but_a_neighbour_count_change_is()
     # one rule (design, Flags): a neighbour-supported split reads "repaired" and stays off the review list;
     # a count the neighbours changed otherwise is a warn and is flagged
     spec = SimpleNamespace(n0=1, incoming=(None,), pool=(), pred={}, band=1.0, d_edge=lambda e: 0.0)
-    snap, a = SimpleNamespace(settings=S, unit="y"), SimpleNamespace(changed=True, reasons=())
+    snap, a = SimpleNamespace(settings=S, unit="y", aliases={}), SimpleNamespace(changed=True, reasons=())
 
     def flag(slots, energies):
         model = SimpleNamespace(modes=[(m,) for m in range(len(slots))])
@@ -135,6 +135,24 @@ def test_a_split_is_a_repair_not_a_review_flag_but_a_neighbour_count_change_is()
     split, merge = flag(("b1", "b2"), [8.0, 10.0]), flag((), [])
     assert [r["code"] for r in split["reasons"]] == ["neighbour_supported_split"] and not split["flagged"]
     assert [r["code"] for r in merge["reasons"]] == ["count_changed_by_neighbours"] and merge["flagged"]
+
+
+def test_a_branch_under_two_merged_ids_is_not_lost_but_another_branch_is():
+    # two neighbours name one flat branch 100K#3 and 180K#3, merged earlier in the batch; the slot names one of
+    # them, so neither is lost. A third, unrelated id predicted mid-window and named by no slot still is.
+    spec = SimpleNamespace(n0=1, incoming=("100K#3",), pool=("100K#3", "180K#3", "other"), band=1.0,
+                           pred={"100K#3": [13.4], "180K#3": [13.4], "other": [6.0]}, lo=0.0, hi=24.0,
+                           d_edge=lambda e: min(e, 24.0 - e))
+    a = SimpleNamespace(changed=False, reasons=())
+    model = SimpleNamespace(modes=[(0,)])
+
+    def lost(aliases):
+        snap = SimpleNamespace(settings=S, unit="y", aliases=aliases)
+        f = R._flags(snap, spec, a, "unchanged", ("100K#3",), ["100K#3"], model, np.array([13.4]), [], {}, 0.0,
+                     0.0, object(), [], [])
+        return sorted(r["ids"][0] for r in f["reasons"] if r["code"] == "branch_lost_mid_window")
+    assert lost({"180K#3": "100K#3"}) == ["other"]
+    assert lost({}) == ["180K#3", "other"]                 # without the merge they are two branches
 
 
 # 2 ---------------------------------------------------------------------------------------------------------

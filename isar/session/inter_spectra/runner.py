@@ -239,10 +239,11 @@ def _renamed(h, rename: Mapping[str, str]):
 
 
 def _renamed_snapshot(s, rename: Mapping[str, str]):
-    """A snapshot with its own and held fits under the stage's reconciled branch ids."""
+    """A snapshot with its own and held fits under the stage's reconciled branch ids, the rename in its aliases."""
     if not rename:
         return s
-    return replace(s, own=_renamed(s.own, rename),
+    from isar.analyze.coupled.identity import merged_aliases
+    return replace(s, own=_renamed(s.own, rename), aliases=merged_aliases(s.aliases, rename),
                    terms=tuple(replace(t, held=tuple(_renamed(h, rename) for h in t.held)) for t in s.terms))
 
 
@@ -302,6 +303,7 @@ class _Run:
         self.not_reached: dict[str, str] = {}     # unit -> reason it was never attempted
         self.records: dict[str, dict] = {}        # fit id -> record of a refit accepted in this batch
         self.dormant: dict[str, tuple] = {}       # fit id -> its Dormant records (branches not observed in it)
+        self.aliases: dict[str, str] = {}         # every id merged in this batch so far: alias -> canonical name
         self.lines: dict = {}                     # fit id -> RefitLine of the stored log, read when a fit is missing
         self.ctx: dict = {}
         self.stage_name, self.index, self.of, self.round = "prepare", 0, None, None
@@ -507,6 +509,10 @@ class _Run:
         return self.core.held_from_fit(self.record_of(u, fit), unit=u, fit=fit, inputs=inputs,
                                        context=self.ctx[u], T=self.nodes[u].T, dormant=self.dormant.get(fit, ()))
 
+    def merge_aliases(self, rename: Mapping[str, str]) -> None:
+        from isar.analyze.coupled.identity import merged_aliases
+        self.aliases = merged_aliases(self.aliases, rename)
+
     def note_dormant(self, ids, k: str, fit: str) -> tuple:
         """The identity's absent records of ``k`` (C-identity) as its new fit's Dormant branches."""
         from isar.analyze.coupled.types import Dormant
@@ -518,7 +524,8 @@ class _Run:
         from isar.analyze.coupled.types import Snapshot
         return Snapshot(snapshot_id=sid, stage_id=stage_id or sid, unit=u, fit_id=self.records_mod.new_fit_id(),
                         context=self.ctx[u], own=own, own_record=self.record_of(u, own.fit), terms=tuple(terms),
-                        settings=self.settings, batch_kind=self.kind, fast=self.fast.get(u))
+                        settings=self.settings, batch_kind=self.kind, fast=self.fast.get(u),
+                        aliases=dict(self.aliases))
 
     def start(self, *, anchors, rings, seams, preview, terms) -> None:
         body = {"batch_kind": self.kind, "scope": {"direction": self.spec.direction, "members": list(self.members)},
@@ -727,6 +734,7 @@ class _Run:
             previous = {**held_frozen, **{k: s.own for k, s in snaps.items()}}    # amendment 11: own Held too
             ids, refs = self.identity(A, snaps, previous, sid)
             A, rename = canonical_factors(A, ids, refs, held_frozen)
+            self.merge_aliases(rename)
             snaps = {k: _renamed_snapshot(s, rename) for k, s in snaps.items()}
             self.progress("refine")
             R = self.refits(snaps, A)
@@ -845,6 +853,7 @@ class _Run:
             A = self.assign(snaps, cache)                # one frozen state for the whole round
             ids, refs = self.identity(A, snaps, dict(held), sid)
             A, rename = canonical_factors(A, ids, refs, {u: h for u, h in held.items() if u not in A})
+            self.merge_aliases(rename)
             A = rebuilt_factors(self.core, A, snaps, rename)     # one definition per link, both guards in it
             held = {u: _renamed(h, rename) for u, h in held.items()}
             self.stage_timing("round", self.rounds, t_round, len(snaps), 0)

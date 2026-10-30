@@ -192,6 +192,19 @@ def match_link(local: Sequence[ModeObs], branches: Sequence[str], proposal_costs
             "weight_unavailable": True, "incoming_invalid": incoming_invalid}
 
 
+def merged_aliases(old, new):
+    """The alias map (alias -> canonical name) after a stage's renames ``new`` follow the earlier ``old``: chains
+    resolved to their last name, no id its own alias. The one map every reader of merged ids goes through."""
+    out = {a: new.get(n, n) for a, n in old.items()}
+    out.update(new)
+    for a in list(out):
+        seen = {a}
+        while out.get(out[a]) is not None and out[a] not in seen:     # a renamed name: follow it, never loop
+            seen.add(out[a])
+            out[a] = out[out[a]]
+    return {a: n for a, n in out.items() if a != n}
+
+
 # ---- propagate_ids ------------------------------------------------------------------------------
 class _UnionFind:
     def __init__(self):
