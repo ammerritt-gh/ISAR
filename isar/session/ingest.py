@@ -127,6 +127,19 @@ def discover(data_paths, card: Card) -> IngestPlan:
             plan.measurement_files.append(f)
         else:
             plan.foreign.append(f)
+    # The card's sidecar is also looked up beside each set on disk, so dropping the analyzer files and
+    # dropping their folder import alike. Sidecars only: no measurement file is ever added this way.
+    for fs in plan.file_sets:
+        attached = {p.resolve() for p in fs.sidecars}
+        for template in files_cfg.get("sidecar", []):
+            p = fs.folder / template.replace("{set}", fs.key)
+            if (not p.is_file() or p.resolve() in attached or _skip(p)
+                    or any(fnmatch.fnmatch(p.name, g) for g in ignore_globs)
+                    or any(r.fullmatch(p.name) for r in meas_res)):
+                continue
+            attached.add(p.resolve())
+            fs.sidecars.append(p)
+            plan.sidecar_files.append(p)
     return plan
 
 

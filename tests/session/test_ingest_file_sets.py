@@ -360,3 +360,46 @@ def test_bad_files_table_is_a_validation_error(files, needle):
     res = _validate(f"\n[files]\n{files}\n")
     assert not res.is_valid
     assert any(needle in e for e in res.errors), res.errors
+
+
+# --- the sidecar is looked up on disk beside the set (dropped files import like a folder) ------
+def test_files_given_without_the_var_still_attach_it_once(tmp_path, plugin):
+    members = _members(tmp_path, "s10_x", ("a03", "a04"))
+    var = _write(tmp_path, "s10_x.var")
+    plan = ingest.discover(members, _card())
+    assert plan.file_sets[0].sidecars == [var] and plan.sidecar_files == [var]
+    assert plan.measurement_files == members          # the lookup adds no measurement file
+
+
+def test_files_plus_the_var_given_attach_it_once(tmp_path, plugin):
+    members = _members(tmp_path, "s10_x", ("a03", "a04"))
+    var = _write(tmp_path, "s10_x.var")
+    plan = ingest.discover([*members, var], _card())
+    assert plan.file_sets[0].sidecars == [var] and plan.sidecar_files == [var]
+
+
+def test_set_with_no_given_member_does_not_take_its_var(tmp_path, plugin):
+    _members(tmp_path, "s10_x", ("a03",))
+    _write(tmp_path, "s11_y.var")
+    plan = ingest.discover([tmp_path / "s10_x_a03"], _card())
+    assert plan.file_sets[0].sidecars == [] and plan.sidecar_files == []
+
+
+def test_ignore_matched_sidecar_is_not_attached(tmp_path, plugin):
+    card = _card()
+    card.policy.files["sidecar"] = ["{set}.keep"]      # the ignore glob '*.keep' wins
+    members = _members(tmp_path, "s10_x", ("a03",))
+    _write(tmp_path, "s10_x.keep")
+    plan = ingest.discover(members, card)
+    assert plan.file_sets[0].sidecars == [] and plan.sidecar_files == []
+
+
+def test_each_folders_set_takes_only_its_own_var(tmp_path, plugin):
+    one, two = tmp_path / "one", tmp_path / "two"
+    given = []
+    for folder in (one, two):
+        folder.mkdir()
+        given += _members(folder, "s10_x", ("a03",))
+    _write(two, "s10_x.var")                           # only folder two has one
+    plan = ingest.discover(given, _card())
+    assert [fs.sidecars for fs in plan.file_sets] == [[], [two / "s10_x.var"]]
