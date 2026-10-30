@@ -8,20 +8,36 @@ Conventions: energies in meV, absolute from zero energy transfer (the fast pass'
 Penalties P and entry prices B are in deviance units (2 x nats), like D = Baker-Cousins cost.
 A density's ln is in nats. Every setting value here is UNCALIBRATED (spec-draft section 6 table).
 
-Seam: CoupledEngine subclasses fast_pass._Engine and overrides only ln_prior, _canonical and _trf;
+Seam: CoupledEngine subclasses fast_pass._Engine and overrides ln_prior, _canonical and _trf, plus the
+hidden-mode pieces (S1U1): a twin-screen guard (_resolve), and a price that integrates over the intensity
+split of an overlapping pair (price, split_evidence) and reports an undetermined fit as such;
 fast_pass.py itself is untouched (check_base_unchanged).
 """
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from functools import cached_property
 
 import numpy as np
 from scipy.integrate import quad
+from scipy.optimize import minimize
+from scipy.special import logsumexp
 
 from isar.analyze import fast_pass, prior
 
 EPS_KNEE = 0.05          # meV, smooth zero-zone knee (uncalibrated numerical setting)
+
+# The split integral of a mode hidden under another (S1U1); algorithm settings, not operator settings.
+SPLIT_NODE_SETS = (6, 12, 24, 48)   # Gauss-Legendre node counts over the split f, tried in order
+SPLIT_TOL_NATS = 0.1                # required agreement between two successive node sets
+SPLIT_BAIL_NATS = 1.0               # sets further apart than this: the grid cannot resolve the integrand
+SPLIT_RIDGE = 0.1                   # nats of curvature on the pair's free widths (a flat width is singular)
+SPLIT_FD_REL = 1e-2                 # rel_step of the conditional Hessian (the default 1e-4 is below FD noise)
+SPLIT_OUTSIDE = 1e7                 # finite stand-in for +inf inside L-BFGS-B only
+SPLIT_ESCAPES = 4                   # saddle-escape tries per node
+# prior.laplace_log_evidence's reasons for a fit whose parameters stay undetermined (pinned by a test)
+UNDETERMINED_REASONS = ("Hessian not positive definite", "box covariance numerically singular")
 
 
 # ---- one physical factor ------------------------------------------------------------------------
@@ -126,6 +142,12 @@ class MatchedDensity:
             return -math.inf
         return self._ln_unnorm(e) - self.ln_z
 
+    @cached_property
+    def centre(self) -> float:
+        """Where the density peaks (argmax on a 401-point grid): the energy of a mode too weak to have one."""
+        grid = np.linspace(float(self.ep.lo), float(self.ep.hi), 401)
+        return float(grid[int(np.argmax([self.ln_pdf(float(e)) for e in grid]))])
+
 
 @dataclass(frozen=True)
 class Entry:
@@ -153,7 +175,64 @@ class Entry:
         return lp - 0.5 * (self.b_edge + self.B(e)) if math.isfinite(lp) else -math.inf
 
 
-# ---- the engine seam ----------------------------------------------------------------------------
+# ---- the split integral -------------------------------------------------------------------------------
+@dataclass(frozen=True)
+class SplitResult:
+    ln_z: float | None
+    kind: str          # "ok" | "undetermined" | "not_converged"
+    reason: str
+    sets: tuple        # ((n, ln I), ...) the node sets used
+    nodes: int         # conditional solves done
+    theta: object = None   # kind == "ok" only: the representative point, full model coordinates
+
+
+def integrate_split(node, f_joint, *, sets=SPLIT_NODE_SETS, tol=SPLIT_TOL_NATS, bail=SPLIT_BAIL_NATS) -> SplitResult:
+    """ln of the integral over f in (0, 1) of exp(node(f, near)); node returns ln Z_f, or None when f has no
+    positive-definite conditional Hessian (the whole integral is then undetermined: never interpolated across).
+    Gauss-Legendre node sets are tried in order; two successive sets within ``tol`` agree. Sets further apart
+    than ``bail`` cannot resolve the integrand (a narrow peak in f: the data pin the split): not converged,
+    without trying the larger set. Nodes are solved outward from ``f_joint``, ``near`` the previous node."""
+    done, nodes, d = [], 0, math.nan
+    for n in sets:
+        x, w = np.polynomial.legendre.leggauss(n)
+        f, w = (x + 1.0) / 2.0, w / 2.0                         # on (0, 1); the weights sum to 1
+        order = np.argsort(f)
+        lz = np.empty(n)
+        for chain in ([i for i in order if f[i] >= f_joint], [i for i in order[::-1] if f[i] < f_joint]):
+            near = None
+            for i in chain:
+                v = node(float(f[i]), near)
+                nodes += 1
+                if v is None:
+                    return SplitResult(None, "undetermined",
+                                       f"Hessian not positive definite: split node f={f[i]:.4f}", tuple(done), nodes)
+                lz[i], near = v, float(f[i])
+        done.append((n, float(logsumexp(lz + np.log(w)))))
+        if len(done) >= 2:
+            d = abs(done[-1][1] - done[-2][1])
+            if d <= tol:
+                return SplitResult(done[-1][1], "ok", "", tuple(done), nodes)
+            if d > bail:
+                return SplitResult(None, "not_converged", f"node sets differ by {d:.2f} nats", tuple(done), nodes)
+    return SplitResult(None, "not_converged", f"{done[-1][0]} nodes still differ by {d:.3f} nats",
+                       tuple(done), nodes)
+
+
+def _polish(g, lo, hi, x):
+    """Two L-BFGS-B passes of g (one fails at the first tie), scaled by max(|x|, 1); +inf is replaced by a
+    finite stand-in because the first projected step can land on the box corner, where scipy then reports
+    convergence at the start. Returns (g(x), x)."""
+    x = np.clip(x, lo, hi)
+    for _ in range(2):
+        sc = np.maximum(np.abs(x), 1.0)
+        r = minimize(lambda u: (lambda v: v if math.isfinite(v) else SPLIT_OUTSIDE)(g(u * sc)), x / sc,
+                     method="L-BFGS-B", bounds=list(zip(lo / sc, hi / sc)),
+                     options={"maxiter": 500, "ftol": 1e-12, "gtol": 1e-6})
+        x = np.clip(r.x * sc, lo, hi)
+    return g(x), x
+
+
+# ---- the engine seam ----------------------------------------------------------------------------------
 class CoupledEngine(fast_pass._Engine):
     """One spectrum's coupled refit inside a FIXED composition (labelled coordinates, spec 3).
 
@@ -169,11 +248,224 @@ class CoupledEngine(fast_pass._Engine):
 
     def __init__(self, ctx, settings, slots, *, n_exchangeable=(), continuous=False, **kw):
         super().__init__(ctx, settings, **kw)
+        self._s0 = self.s                      # the guard swaps self.s temporarily; the pair rule reads the original
+        self._split_done = {}                  # model -> [pair-canonical points of its split basins] (a ledger)
+        self.n_split_nodes = self.n_split_basins = 0
         self.slots = list(slots)
         self.ln_exch = sum(math.lgamma(n + 1) for n in n_exchangeable)
         self.continuous = continuous
         if self.seed_qe:                       # the central QE's start width (BL43LXU), as the fast pass's seed picks it
             self._choose_qe_start()
+
+    # ---- a mode hidden under another (S1U1) ---------------------------------------------------------------
+    def hidden_pairs(self, model, point) -> list:
+        """Pairs (i, j) of modes within ``twin_coincide_fwhm x fwhm`` of each other with at least one slot
+        matched and both heights free with equal bounds: the pairs the twin screens must not merge and the
+        split integral prices. A matched mode too weak to have an energy sits at its density's centre."""
+        if len(model.modes) != len(self.slots):
+            return []
+        s0, free = self._s0, set(int(x) for x in model.free)
+        thr, dist = s0.twin_height_frac * self.sp.height_hi, s0.twin_coincide_fwhm * self.fwhm
+        pos = [sl.centre if isinstance(sl, MatchedDensity) and c in free and point[c] <= thr else point[a]
+               for (a, _g, c), sl in zip(model.modes, self.slots)]
+        return [(i, j) for i in range(len(pos)) for j in range(i + 1, len(pos))
+                if abs(pos[i] - pos[j]) < dist
+                and (isinstance(self.slots[i], MatchedDensity) or isinstance(self.slots[j], MatchedDensity))
+                and model.modes[i][2] in free and model.modes[j][2] in free
+                and model.hi[model.modes[i][2]] == model.hi[model.modes[j][2]]]
+
+    def _resolve(self, b, point):
+        """The twin screens, except that a matched slot is never merged away for being close to another mode
+        (screen 4) or for having no height (screen 1): its neighbours support it. Repeated starts reaching one
+        solution still merge (``_place``'s own basin test). fast_pass.py stays untouched: the screens are
+        switched off through the settings, restored in ``finally``."""
+        model = b.model
+        if len(model.modes) != len(self.slots):
+            return super()._resolve(b, point)
+        free, thr = set(int(x) for x in model.free), self._s0.twin_height_frac * self.sp.height_hi
+        zero = any(isinstance(sl, MatchedDensity) and c in free and point[c] <= thr
+                   for (_a, _g, c), sl in zip(model.modes, self.slots))
+        coin = bool(self.hidden_pairs(model, point))
+        if not (zero or coin):
+            return super()._resolve(b, point)
+        keep = self.s
+        # shortcut: the screens are off for every mode of this basin (screen 1 takes the zero-height screens of
+        #   the elastic, QE and background with it), upgrade if a basin shows both a hidden pair and one of them
+        self.s = replace(keep, twin_height_frac=-1.0 if zero else keep.twin_height_frac,
+                         twin_coincide_fwhm=0.0 if coin else keep.twin_coincide_fwhm)
+        try:
+            super()._resolve(b, point)
+        finally:
+            self.s = keep
+
+    def price(self, b):
+        """The base price, except that a basin with one hidden pair is priced by the split integral
+        (a coupled posterior optimiser stops ABNORMAL on the flat valley), and a fit whose parameters stay
+        undetermined is ``undetermined``, never given a made-up finite evidence."""
+        model = b.model
+        pairs = self.hidden_pairs(model, b.theta)
+        if not pairs:
+            super().price(b)
+            self._relabel(b)
+            return
+        if len(pairs) > 1:
+            # shortcut: one overlapping pair per basin, upgrade if a real spectrum shows a stack of three
+            b.status, b.reason = "undetermined", "more than one overlapping pair: the split integral covers one"
+            return
+        pair = pairs[0]
+        merged = ("merged_hidden", "the same physical solution as an earlier split basin of this model")
+        key = self._pair_point(model, b.theta, pair)
+        if self._seen_split(model, key):
+            b.status, b.reason = merged
+            return
+        res = self.split_evidence(b, self._anchor(model, b.theta), pair)
+        if res.kind == "not_converged":          # the data pin the split: what Laplace is good at
+            super().price(b)
+            self._relabel(b)
+            b.reason = b.reason or res.reason
+            return
+        if res.kind == "undetermined":
+            b.status, b.reason = "undetermined", res.reason
+            return
+        rep = res.theta
+        rkey = self._pair_point(model, rep, pair)
+        if self._seen_split(model, rkey):
+            b.status, b.reason = merged
+            return
+        b.status, b.ln_z, b.theta_map = "ok", res.ln_z, rep
+        b.ln_prior = float(self.ln_prior(model, rep))
+        b.cov_free, b.boundary_method, b.objective, b.pinned = None, "split", None, ()
+        b.hidden_pair = pair                     # read by refit._basin_record
+        self._split_done.setdefault(model, []).extend((key, rkey))
+        self.n_split_basins += 1
+
+    def _relabel(self, b):
+        if b.status == "no_evidence" and b.reason.startswith(UNDETERMINED_REASONS):
+            b.status = "undetermined"
+
+    def _anchor(self, model, theta):
+        """theta with each vanished matched mode's energy at its density's centre (its own is arbitrary)."""
+        t, free = np.array(theta, dtype=float), set(int(x) for x in model.free)
+        thr = self._s0.twin_height_frac * self.sp.height_hi
+        for (a, _g, c), sl in zip(model.modes, self.slots):
+            if isinstance(sl, MatchedDensity) and c in free and t[c] <= thr:
+                t[a] = sl.centre
+        return t
+
+    def _pair_point(self, model, theta, pair):
+        """The pair's identity without its split: both modes at the height-weighted mean energy and width and
+        H/2 each, every other mode, the QE and the elastic as they are."""
+        (ai, gi, ci), (aj, gj, cj) = model.modes[pair[0]], model.modes[pair[1]]
+        hi_, hj_ = theta[ci], theta[cj]
+        H = hi_ + hj_
+        wi, wj = (hi_ / H, hj_ / H) if H > 1e-12 else (0.5, 0.5)
+        t = np.array(theta, dtype=float)
+        t[ai] = t[aj] = wi * theta[ai] + wj * theta[aj]
+        t[gi] = t[gj] = wi * theta[gi] + wj * theta[gj]
+        t[ci] = t[cj] = H / 2.0
+        return t
+
+    def _seen_split(self, model, point) -> bool:
+        """Whether a split basin of this model already holds this physical solution. ``same_basin`` ignores
+        the elastic and background amplitudes, so they are compared here by the same relative tolerance."""
+        frac = self.s.basin_height_frac
+        amps = [i for i in (model.el, model.bg) if i is not None]
+        return any(self.same_basin(model, q, point)
+                   and all(abs(q[i] - point[i]) <= frac * max(q[i], point[i]) for i in amps)
+                   for q in self._split_done.get(model, ()))
+
+    def split_evidence(self, b, theta, pair, *, sets=SPLIT_NODE_SETS) -> SplitResult:
+        """ln of the integral of exp(-g) over the basin, integrating the intensity split f of ``pair``
+        (h_i = f H, h_j = (1 - f) H, Jacobian H; the height prior as it is) with every other coordinate at its
+        conditional Laplace at each f, Gauss-Legendre in f. g = cost/2 - sat - ln_prior - Jacobians, in nats,
+        the normalisation of ``prior.laplace_log_evidence`` so split and Laplace basins sum in one logsumexp.
+        The pair's free widths enter as u = ln(Gamma + knee) when their prior is 1/(Gamma + knee) (flat in u,
+        Jacobian +u), with a small ridge so a likelihood-blind width is not numerically singular."""
+        model = b.model
+        (ai, gi, ci), (aj, gj, cj) = model.modes[pair[0]], model.modes[pair[1]]
+        free = [int(x) for x in model.free]
+        coords = [x for x in free if x != cj]                    # ci carries H = h_i + h_j
+        pos = {x: n for n, x in enumerate(coords)}
+        st = self.sp.settings
+        softlog = st.width_kind == "softlog" and not st.legacy_v4
+        knee = st.width_knee
+        widths = [g for g in (gi, gj) if g in free]
+        lo, hi = model.lo[coords].astype(float), model.hi[coords].astype(float)
+        if softlog:
+            for g in widths:
+                lo[pos[g]], hi[pos[g]] = math.log(model.lo[g] + knee), math.log(model.hi[g] + knee)
+        mid, span = 0.5 * (lo + hi), np.maximum(hi - lo, 1e-9)
+        hp, h_hi = pos[ci], float(model.hi[ci])
+        wn = [pos[g] for g in widths]
+
+        def theta_of(xi, f):
+            t = np.array(theta, dtype=float)
+            for x, n in pos.items():
+                t[x] = xi[n]
+            t[ci], t[cj] = f * xi[hp], (1.0 - f) * xi[hp]
+            if softlog:
+                for g in widths:
+                    t[g] = max(math.exp(xi[pos[g]]) - knee, float(model.lo[g]))
+            return t
+
+        def objective(f):
+            h2 = hi.copy()
+            h2[hp] = h_hi / max(f, 1.0 - f)                      # both heights stay inside the height prior
+
+            def g(xi):
+                xi = np.asarray(xi, dtype=float)
+                if np.any(xi < lo - 1e-10) or np.any(xi > h2 + 1e-10):
+                    return math.inf
+                xi = np.clip(xi, lo, h2)
+                t = theta_of(xi, f)
+                lp = self.ln_prior(model, t)
+                if not math.isfinite(lp):
+                    return math.inf
+                ridge = sum(0.5 * SPLIT_RIDGE * ((xi[n] - mid[n]) / span[n]) ** 2 for n in wn)
+                jac = math.log(max(xi[hp], 1e-300)) + (sum(xi[n] for n in wn) if softlog else 0.0)
+                return 0.5 * self.cost(model, t) - self.sat - lp - jac + ridge
+            return g, h2
+
+        t0 = np.array(theta, dtype=float)
+        xi_joint = np.clip(np.array([t0[ci] + t0[cj] if x == ci
+                                     else math.log(max(t0[x], 0.0) + knee) if softlog and x in widths else t0[x]
+                                     for x in coords]), lo, hi)
+        f_joint = t0[ci] / (t0[ci] + t0[cj]) if t0[ci] + t0[cj] > 1e-12 else 0.5
+        solved, lnz_at = {}, {}                                  # f -> its solution; f -> its conditional ln Z
+
+        def node(f, near):
+            g, h2 = objective(f)
+            # continuation from the previous node (a chain start: the nearest node solved so far), else the joint start
+            key = near if near is not None else min(solved, key=lambda k: abs(k - f), default=None)
+            for start in ([solved[key]] if key is not None else []) + [xi_joint]:
+                v, x = _polish(g, lo, h2, start)
+                for _ in range(SPLIT_ESCAPES):
+                    if not math.isfinite(v):
+                        break
+                    lap = prior.laplace_log_evidence(g, x, lo, h2, rel_step=SPLIT_FD_REL)
+                    if lap.status != "no_evidence":
+                        solved[f], lnz_at[f] = x, float(lap.ln_z)
+                        return float(lap.ln_z)
+                    # a saddle escape: follow the negative direction of the Hessian both ways (needed at weak/strong ties)
+                    steps = np.minimum(SPLIT_FD_REL * np.maximum(np.abs(x), 1e-2 * (h2 - lo)), (h2 - lo) / 4.0)
+                    ev, vec = np.linalg.eigh(prior.hessian_fd(g, np.clip(x, lo + 2 * steps, h2 - 2 * steps), steps))
+                    if not (np.all(np.isfinite(ev)) and ev[0] < 0):
+                        break
+                    n = int(np.argmax(np.abs(vec[:, 0])))
+                    d = 0.1 * (h2[n] - lo[n]) / abs(vec[n, 0])
+                    v, x = min((_polish(g, lo, h2, x + s * d * vec[:, 0]) for s in (1.0, -1.0)),
+                               key=lambda c: c[0])
+            return None
+
+        def counted(f, near):
+            self.n_split_nodes += 1
+            return node(f, near)
+
+        res = integrate_split(counted, f_joint, sets=sets)
+        if res.kind != "ok":
+            return res
+        f_star = max(lnz_at, key=lnz_at.get)                     # a solved node, not the TRF start (a representative)
+        return replace(res, theta=theta_of(solved[f_star], f_star))
 
     def ln_prior(self, model, theta) -> float:
         sp, omit = self.sp, model.omit
