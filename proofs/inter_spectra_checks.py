@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import re
 import statistics
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -40,14 +41,28 @@ def match_modes(modes: list[dict], paper: Mapping[str, float], tol: float | None
     return out
 
 
+DRIFT_CODE = "t_drift_cumulative"
+_DRIFT_BRANCH = re.compile(r"(?:^|; )branch (.+?): [+-]\d")     # the facade's drift detail: "branch <id>: +0.10 meV ..."
+
+
+def _reason_branches(r: Mapping) -> list[str] | None:
+    """The branches a reason names: its ``ids``, or for a facade drift reason (``ids`` None) the branches its detail
+    names. None when it names none (a seam or stale lock: those stay conservative, counted against every mode)."""
+    if r["ids"] is not None:
+        return list(r["ids"])
+    if r["code"] == DRIFT_CODE:
+        return _DRIFT_BRANCH.findall(r.get("text", "")) or None
+    return None
+
+
 def flags_on(flag: Flag | None, mode: Mapping | None, *, min_severity: str) -> list[dict]:
-    """The reasons of a flag attributed to ``mode``'s branch (a reason names its branches in ``ids``), at or above
-    ``min_severity``. A score reason names the spectrum, not a branch, so it is never attributed. A reason with
-    ``ids`` None names no branch (the facade adds seam and drift reasons so), so it counts against every mode."""
+    """The reasons of a flag attributed to ``mode``'s branch (see ``_reason_branches``), at or above
+    ``min_severity``. A score reason names the spectrum, not a branch, so it is never attributed. A reason that
+    names no branch (a seam or stale lock the facade adds) counts against every mode."""
     if flag is None or mode is None:
         return []
     floor = SEVERITIES.index(min_severity)
-    return [r for r in flag.reasons if (r["ids"] is None or mode["branch"] in r["ids"])
+    return [r for r in flag.reasons if ((b := _reason_branches(r)) is None or mode["branch"] in b)
             and SEVERITIES.index(r["severity"]) >= floor]
 
 

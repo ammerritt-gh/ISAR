@@ -123,6 +123,16 @@ def test_a_reason_the_facade_adds_with_no_branch_counts_against_every_flat_mode(
     assert chk.flats_are_quiet(info, matches(FITTED)).ok
 
 
+def test_a_facade_drift_reason_is_attributed_to_the_branch_it_names():
+    drift = reason("t_drift_cumulative", "warn", None)
+    drift["text"] = "branch b1: +0.40 meV over 205 K (U 0.2)"
+    assert chk.flats_are_quiet({302.0: flag(drift), 97.0: None}, matches(FITTED)).ok      # b1 is B, not a flat mode
+    drift["text"] = "branch b2: +0.40 meV over 205 K (U 0.2); branch b1: -0.10 meV over 50 K (U 0.1)"
+    assert not chk.flats_are_quiet({302.0: flag(drift), 97.0: None}, matches(FITTED)).ok  # b2 is C
+    drift["text"] = "something unparsable"                          # no branch named: conservative
+    assert not chk.flats_are_quiet({302.0: flag(drift), 97.0: None}, matches(FITTED)).ok
+
+
 def test_accounting_is_an_identity_that_an_off_by_one_breaks():
     balanced = {"done": 3, "failed": 0, "not_reached": 1, "fixed": 0, "total": 4}
     assert chk.accounting_ok(balanced).ok
