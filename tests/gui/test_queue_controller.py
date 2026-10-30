@@ -879,6 +879,22 @@ def test_the_finished_line_of_a_batch_names_why_spectra_failed(rig, monkeypatch)
     assert r.lines[-1].endswith("1 refitted, 2 failed, 0 not reached (failed: 2 fitted but not saved (x))")
 
 
+def test_the_finished_line_of_a_batch_with_a_warning_names_why_spectra_failed(rig, monkeypatch):
+    r = rig(cores=2)
+    _start_batch(r, monkeypatch)
+    (start,) = r.wait_commands("start", 1)
+    iid, key = start["item_id"], start["unit_key"]
+    r.emit({"ev": "progress", "item_id": iid, "t": 1.0, "pass": "inter", "kind": "anchored", "stage": "ring",
+            "index": 1, "of": 1, "round": None, "phase": "save", "done": 1, "failed": 2, "not_reached": 0,
+            "fixed": 0, "total": 3, "failed_reasons": [["fitted but not saved (x)", 2]], "not_reached_reasons": []})
+    r.emit(_result(iid, key, "inter", "done_warning", "2 failed", event="end"), _batch_saved(iid, key, ()))
+    r.emit(_finished(iid))
+    r.wait(lambda: r.ctrl.view().batches[0].status == "done_warning")
+    label = r.ctrl.view().batches[0].label
+    assert r.lines[-1] == (f"Finished with a warning: {label} (anchored): 2 failed "
+                           "(failed: 2 fitted but not saved (x))")
+
+
 def test_a_batch_whose_process_ends_without_an_end_record_settles_failed_though_its_rings_were_saved(rig, monkeypatch):
     r = rig(cores=2)
     _start_batch(r, monkeypatch)

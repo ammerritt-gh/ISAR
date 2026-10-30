@@ -915,13 +915,14 @@ class QueueController(QObject):
                                                        else _plural(kept, "sweep", "sweeps"))
         if status in ("held", "failed"):
             return f"{status.capitalize()}: {name}: {reason}"
-        if status == "done_warning":
-            return f"Finished with a warning: {name}: {reason}"
         p = v.progress or {}
+        why = "; ".join(f"{n} {w}" for w, n in _pairs(p.get("failed_reasons")))
+        tail = f" (failed: {why})" if why and p.get("failed") else ""      # shared by both finished lines
+        if status == "done_warning":
+            return f"Finished with a warning: {name}: {reason}{tail}"
         line = (f"Batch finished: {name}: {p.get('done', 0)} refitted, {p.get('failed', 0)} failed, "
                 f"{p.get('not_reached', 0)} not reached")
-        why = "; ".join(f"{n} {w}" for w, n in _pairs(p.get("failed_reasons")))
-        return f"{line} (failed: {why})" if why and p.get("failed") else line
+        return line + tail
 
     def _log_settled(self, v: _SchedItem, rec: _Rec) -> None:
         status = self._status(v, rec)
