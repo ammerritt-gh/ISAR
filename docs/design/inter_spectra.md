@@ -132,7 +132,8 @@ start. The anchors a batch used are recorded with it, so later edits to the anch
 **Simultaneous batch.** Every selected spectrum pays the penalties on its links and curvature terms in one
 shared objective: its own Baker–Cousins cost plus each term it appears in. The objective is solved in rounds.
 Each round has two stages. Stage 1 compares mode counts and branch assignments against one frozen snapshot of
-the neighbours. Stage 2 refines the continuous parameters, with counts and assignments held fixed, in sweeps of
+the neighbours; two slot orders of one assignment that reach the same fit count its evidence once, under the
+order of its fitted energies. Stage 2 refines the continuous parameters, with counts and assignments held fixed, in sweeps of
 per-spectrum refits over conflict-free parallel groups; each refit includes every term the spectrum is in.
 Counts and assignments are reopened in later rounds. Iterated refits are not guaranteed to reach the same
 answer from every start. A batch settles when counts and assignments stop changing and sweeps are quiet: no

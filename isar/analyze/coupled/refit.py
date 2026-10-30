@@ -560,7 +560,66 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
     v = best.model.variant
     mode = (v.elastic, v.background, v.qe, tuple(best.model.delta),
             tuple(float(v) for v in best.theta_map))
-    return Priced(job.key, k, slots, ln_z, best.status, mode, None, eng.n_fits, time.perf_counter() - t0)
+    return Priced(job.key, k, slots, ln_z, best.status, mode, None, eng.n_fits, time.perf_counter() - t0,
+                  tuple(_basin_record(b, slots, t) for b, t in zip(priced, terms)))
+
+
+def _basin_record(b, slots, term: float) -> tuple:
+    """(term, model label, ((slot, omega0, Gamma, h, delta) per mode in slot order), (QE height, width)) of one
+    priced basin at its posterior mode: what ``_basin_rows`` compares across the slot orders of a composition."""
+    m, th = b.model, b.theta_map
+    modes = tuple((sl, float(th[a]), float(th[g]), float(th[c]), i in m.delta)
+                  for i, ((a, g, c), sl) in enumerate(zip(m.modes, slots)))
+    qe = tuple(None if i is None else float(th[i]) for i in (m.qe_h, m.qe_w))
+    return float(term), m.variant.label, modes, qe
+
+
+def _same_basin(spec: _Spec, x: tuple, y: tuple) -> bool:
+    """Two basin records (canonical order) are one physical basin by the base engine's own closeness rule."""
+    s, w = spec.fs, spec.fwhm
+    if x[1] != y[1] or [m[0] for m in x[2]] != [m[0] for m in y[2]]:
+        return False
+    for (_b, e1, g1, h1, d1), (_c, e2, g2, h2, d2) in zip(x[2], y[2]):
+        if d1 != d2 or abs(e1 - e2) >= s.basin_merge_fwhm * w or abs(g1 - g2) > s.basin_gamma_frac * max(w, g1, g2) \
+                or abs(h1 - h2) > s.basin_height_frac * max(h1, h2):
+            return False
+    (qh1, qw1), (qh2, qw2) = x[3], y[3]
+    if qw1 is not None and qw2 is not None and abs(qw1 - qw2) > s.basin_gamma_frac * max(w, qw1, qw2):
+        return False
+    return qh1 is None or qh2 is None or abs(qh1 - qh2) <= s.basin_height_frac * max(qh1, qh2)
+
+
+def _basin_rows(spec: _Spec, jobs, by_key) -> list:
+    """The evidence rows (count, slots, ln_z): one per job, except that the slot orders of one composition
+    (one count, one multiset of slots) are starts of one problem. Each job optimises the full labelled space, so
+    two orders can converge to one physical basin: their basins are pooled, each is filed under the order of its
+    own final energies (the mode lowest in energy takes the first slot), and a basin two orders found counts
+    once (the larger of its two prices). Pricing stays exact; nothing is reused across snapshots."""
+    rows, groups = [], {}
+    for j in jobs:
+        p = by_key.get(j.key)
+        if p is None or p.ln_z is None or not p.basins:
+            rows.append((j.count, j.slots, None if p is None else p.ln_z))
+        else:
+            groups.setdefault((j.count, tuple(sorted(map(str, j.slots)))), []).append((j, p))
+    for members in groups.values():
+        if len(members) == 1:
+            j, p = members[0]
+            rows.append((j.count, j.slots, p.ln_z))
+            continue
+        k, u = members[0][0].count, sum(b is None for b in members[0][0].slots)
+        w0 = rules.ln_w0(k, k - u, len(spec.pool), spec.ceiling + 1)
+        unique: list[tuple] = []
+        for _j, p in members:
+            for term, model, modes, qe in p.basins:
+                rec = (term, model, tuple(sorted(modes, key=lambda m: m[1])), qe)
+                i = next((i for i, u_ in enumerate(unique) if _same_basin(spec, u_, rec)), None)
+                if i is None:
+                    unique.append(rec)
+                elif term > unique[i][0]:
+                    unique[i] = rec
+        rows += [(k, tuple(m[0] for m in rec[2]), rec[0] + w0) for rec in unique]
+    return rows
 
 
 def assign_decide(snapshot: Snapshot, priced: Sequence[Priced]) -> Assignment:
@@ -573,11 +632,10 @@ def assign_decide(snapshot: Snapshot, priced: Sequence[Priced]) -> Assignment:
     s = snapshot.settings
     jobs, coverage, limited = spec.jobs()
     by_key = {p.key: p for p in priced}
-    rows, cands = [], []
+    rows, cands = _basin_rows(spec, jobs, by_key), []
     for j in jobs:
         p = by_key.get(j.key)
         lz = p.ln_z if p is not None else None
-        rows.append((j.count, j.slots, lz))
         cands.append({"count": j.count, "slots": j.slots, "ln_z": lz,
                       "status": p.status if p is not None else "unpriced", "key": j.key})
     d = rules.decide(rows, (spec.n0, spec.incoming), eps=s.evidence_hysteresis_nats, conf=s.confidence,
