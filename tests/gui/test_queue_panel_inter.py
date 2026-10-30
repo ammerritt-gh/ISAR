@@ -38,14 +38,15 @@ def no_dialog(monkeypatch):
 
 
 def batch(n, *, status="running", kind="anchored", progress=None, reason=None, not_reached=(), started=NOW - 70,
-          step=NOW - 5):
+          step=NOW - 5, failed_reasons=()):
     live = status in ("running", "saving")
     return BatchView(
         item_id=f"q0-b{n}-inter", batch_id=f"b{n:012x}", label="Inter-spectra batch, started 14:32", kind=kind,
         direction="q" if kind == "anchored" else None, status=status, reason=reason, n_total=56,
         cores=2 if status == "running" else None, progress=progress, not_reached_reasons=tuple(not_reached),
         started_at=None if status == "waiting" else started, step_started_at=step if live else None,
-        finished_at=None if status in ("waiting", "running", "saving") else NOW)
+        finished_at=None if status in ("waiting", "running", "saving") else NOW,
+        failed_reasons=tuple(failed_reasons))
 
 
 def bview(*batches, **kw):
@@ -62,13 +63,15 @@ def batch_rows(p, *batches):
 
 # ---- the words: one line per batch, and its hover says each count -----------------------------------------
 @pytest.mark.parametrize("b, expect", [
-    (batch(1, progress=RING), "ring 2 of 6 · 31 of 56 done · 1 failed · 4 not reached · 0:05"),
+    (batch(1, progress=RING), "ring 2 of 6 · 31 of 54 done · 1 failed · 4 not reached · 0:05"),
     (batch(2, kind="simultaneous", progress=SWEEP), "sweep 3 (up to 20) · 40 of 56 done · 0:05"),
-    (batch(3, progress={"stage": "prepare", "done": 0}, step=None), "preparing · 0 of 56 done"),
+    (batch(3, progress={"stage": "prepare", "done": 0, "failed": 0, "not_reached": 0, "fixed": 0, "total": 0},
+           step=None), "preparing"),            # the engine has no count before its freeze
     (batch(4, progress=None, step=None), "starting"),
     (batch(5, status="done_warning", progress={"stage": "sweep", "index": 9, "of": 20, "done": 54, "failed": 2,
                                                "not_reached": 0}), "54 of 56 done · 2 failed"),
-    (batch(6, status="stopped", progress=RING), "31 of 56 done · 1 failed · 4 not reached"),
+    (batch(8, status="done", progress=None), "no counts were reported"),
+    (batch(6, status="stopped", progress=RING), "31 of 54 done · 1 failed · 4 not reached"),
 ])
 def test_a_batch_line_says_its_stage_and_counts(b, expect):
     text, tip = batch_progress_text(b, NOW)
@@ -84,6 +87,43 @@ def test_each_count_and_its_reasons_are_said_in_the_hover():
     for word in ("done:", "failed:", "not reached:", "Anchors and locked spectra", "no accepted hkl"):
         assert word in tip
     assert "sweep" not in text and "ring" not in text          # a finished batch says its outcome, not its stage
+
+
+INPUTS = ("fitted but not saved (the inputs it was fitted from do not match the experiment's record); start the "
+          "batch again, and if it fails the same way, add the data again (the same files or their folder) so ISAR "
+          "reads them afresh")
+
+
+def test_the_counts_are_out_of_the_spectra_that_will_be_fit_and_the_hover_says_so():
+    """28 members, one anchor: '0 of 27 done', never '0 of 28' (operator ruling 2026-10-30)."""
+    p = {"stage": "ring", "index": 1, "of": 7, "done": 0, "failed": 4, "not_reached": 23, "fixed": 1, "total": 28}
+    text, tip = batch_progress_text(batch(1, progress=p, failed_reasons=((INPUTS, 4),)), NOW)
+    assert text.split("\n")[0] == "ring 1 of 7 · 0 of 27 done · 4 failed · 23 not reached · 0:05"
+    assert "Counts are out of 27: this batch covers 28 spectra, and the 1 that stay as they are" in tip
+    text, tip = batch_progress_text(batch(2, progress=dict(p, fixed=0, total=27)), NOW)
+    assert "Counts are out of" not in tip
+
+
+def test_a_failed_spectrum_is_shown_with_its_reason_grouped_and_capped():
+    p = {"stage": "ring", "index": 1, "of": 7, "done": 0, "failed": 4, "not_reached": 23, "fixed": 1, "total": 28}
+    text, tip = batch_progress_text(batch(1, progress=p, failed_reasons=((INPUTS, 4),)), NOW)
+    assert text.split("\n")[1:] == [f"4 failed: {INPUTS}"]
+    assert f"Failed, by reason: 4 {INPUTS}." in tip
+    many = tuple((f"reason {i}", 1) for i in range(6))
+    ended, tip = batch_progress_text(batch(2, status="done_warning", progress=dict(p, failed=6), failed_reasons=many), NOW)
+    lines = ended.split("\n")
+    assert lines[1:] == [f"1 failed: reason {i}" for i in range(4)] + ["+ 2 more reasons"]
+    assert all(f"1 reason {i}" in tip for i in range(6))                 # the hover lists every reason
+    assert "failed:" not in batch_progress_text(batch(3, progress=RING), NOW)[0].split("\n", 1)[-1]
+
+
+def test_the_failure_lines_reach_the_row_and_tick_with_it(qtbot, monkeypatch):
+    stub = Stub(bview(batch(2, progress=RING, failed_reasons=(("boom", 1),))))
+    p = panel(qtbot, stub)
+    assert texts(p, "queue_batch_progress") == ["ring 2 of 6 · 31 of 54 done · 1 failed · 4 not reached · 0:05\n1 failed: boom"]
+    monkeypatch.setattr(qp, "_now", lambda: NOW + 65)
+    p._queue._tick_labels()
+    assert texts(p, "queue_batch_progress")[0].endswith("· 1:10\n1 failed: boom")
 
 
 # ---- the panel --------------------------------------------------------------------------------------------
@@ -109,11 +149,11 @@ def test_every_batch_state_is_one_row_with_its_word_its_line_and_its_reason(qtbo
                                             ("waiting", "running", "saving", "done_warning", "failed", "stopped")]
     assert texts(p, "queue_batch_progress") == [
         "waits for fast passes of its spectra",
-        "ring 2 of 6 · 31 of 56 done · 1 failed · 4 not reached · 0:05",
+        "ring 2 of 6 · 31 of 54 done · 1 failed · 4 not reached · 0:05",
         "sweep 3 (up to 20) · 40 of 56 done",
         "40 of 56 done",
-        "31 of 56 done · 1 failed · 4 not reached",
-        "31 of 56 done · 1 failed · 4 not reached"]
+        "31 of 54 done · 1 failed · 4 not reached",
+        "31 of 54 done · 1 failed · 4 not reached"]
     assert texts(p, "queue_batch_reason") == ["a neighbour did not settle in time",
                                               "the result could not be saved: disk full",
                                               "stopped by you; completed rings are kept"]
@@ -153,10 +193,10 @@ def test_the_counts_name_batches_in_the_footer_and_the_rail(qtbot):
 def test_the_batch_line_and_its_hover_tick_while_it_runs(qtbot, monkeypatch):
     b = batch(2, progress=RING)
     p = panel(qtbot, Stub(bview(b)))
-    assert "ring 2 of 6 · 31 of 56 done · 1 failed · 4 not reached · 0:05" in texts(p, "queue_batch_progress")
+    assert "ring 2 of 6 · 31 of 54 done · 1 failed · 4 not reached · 0:05" in texts(p, "queue_batch_progress")
     monkeypatch.setattr(qp, "_now", lambda: NOW + 65)
     p._queue._tick_labels()
-    assert "ring 2 of 6 · 31 of 56 done · 1 failed · 4 not reached · 1:10" in texts(p, "queue_batch_progress")
+    assert "ring 2 of 6 · 31 of 54 done · 1 failed · 4 not reached · 1:10" in texts(p, "queue_batch_progress")
     assert "2:15" in {w.text() for w in p.findChildren(QLabel)}          # the batch's total time, from its start
 
 
@@ -167,7 +207,7 @@ def test_a_progress_only_change_keeps_the_batch_row_and_updates_its_line(qtbot):
     stub.set(bview(batch(2, progress=dict(RING, index=3, done=44, failed=0, not_reached=0))))
     p._queue.refresh()
     assert batch_rows(p, batch(2))[0] is row
-    assert texts(p, "queue_batch_progress") == ["ring 3 of 6 · 44 of 56 done · 0:05"]
+    assert texts(p, "queue_batch_progress") == ["ring 3 of 6 · 44 of 54 done · 0:05"]
 
 
 def test_the_whole_batch_panel_has_a_hover_on_every_visible_control_and_word(qtbot, no_dialog):
