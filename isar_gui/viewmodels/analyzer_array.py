@@ -173,8 +173,9 @@ def _step_label(head: str, per: str, steps: StepSummary) -> tuple[str, str]:
     if steps.mean is None:
         return f"{head}   no hkl to compute the step", "No pair of neighbouring analyzers has an hkl, so no step is shown."
     note = f" (from {steps.used} of {steps.possible} pairs)" if steps.used < steps.possible else ""
+    # 12 figures: every digit an hkl carries, none of a difference's float noise
     tip = "Step in hkl (r.l.u.) between each pair of neighbours:\n" + "\n".join(
-        f"{p.a} → {p.b}  (" + ", ".join(f"{v:.12g}" for v in p.delta) + ")" for p in steps.pairs)     # 12 figures: every digit an hkl carries, none of a difference's float noise
+        f"{p.a} → {p.b}  (" + ", ".join(f"{v:.12g}" for v in p.delta) + ")" for p in steps.pairs)
     return f"{head}   Δhkl ≈ {_three(steps.mean)} per {per}{note}", tip
 
 
@@ -379,7 +380,8 @@ class AnalyzerArrayViewModel(ViewModel):
             inter = self.inter.row(c.key) if self.inter is not None else None
             if inter is not None and inter.fit_id not in (None, "fast"):
                 choice[c.key] = inter.fit_id
-        # the files are read again on a refresh, or when the snapshot, the shown cells or the fit in use change (a members event keeps them)
+        # read the files again on a refresh, or when the snapshot, the shown cells or the fit in use change;
+        # a members event keeps them
         read_key = (tuple(c.key for c in keyed), tuple(sorted(choice.items())))
         if self._read is None or self._read[0] is not snapshot or self._read[1] != read_key:
             rows = [rows_by_key[k] for k in read_key[0]]
