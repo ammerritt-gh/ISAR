@@ -92,3 +92,23 @@ def test_a_qe_clear_of_its_bound_keeps_its_width_through_price():
     p = R.price(snap, job(snap, ("b1", "b2")))
     assert p.status in ("ok", "ok_boundary") and p.ln_z is not None, (p.status, p.reason)
     assert any(rec[3][1] is not None and rec[3][1] > 1.5 * lo for rec in p.basins)
+
+
+# W4 --------------------------------------------------------------------------------------------------------
+F1_TRUTH = [(5.0, GAMMA_FLOOR, 60.0), (11.0, 0.8, 40.0)]
+F1_CASES = [(3, 1.2), (2, 1.15)]      # (seed, elastic widening): the optimiser class (W1F), no QE ridge (QE height zero)
+
+
+@pytest.mark.parametrize("seed, wide", F1_CASES[:1])     # seed 2 fails in the optimiser first: W1F's, not this test's
+def test_a_free_width_pegged_at_the_floor_is_never_priced(seed, wide, monkeypatch):
+    # the delta twin cannot be fitted: the railed free-width basin must not stand in for it
+    orig = R._Labelled.fit
+
+    def fit(self, variant, modes, family, linear=None):
+        return None if any(m[3] for m in modes) else orig(self, variant, modes, family, linear)
+    monkeypatch.setattr(R._Labelled, "fit", fit)
+    snap = snapshot(recipe.widened(seed, wide=wide, gamma1=GAMMA_FLOOR, bg=0.0), F1_TRUTH)
+    p = R.price(snap, job(snap, ("b1", "b2")))
+    assert not any(free_at_floor(rec) for rec in p.basins)
+    assert p.status == "no_evidence" and p.ln_z is None
+    assert "free width at the floor" in p.reason, p.reason

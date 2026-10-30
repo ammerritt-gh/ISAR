@@ -609,6 +609,27 @@ def _starts(spec: _Spec, k: int, slots) -> list:
     return [("own", own)] + ([("neighbour", placed)] if placed != own else [])
 
 
+def _free_width_at_floor(b) -> bool:
+    """A free width pegged at the floor is a resolution-limited mode, priced as its own delta model with its own
+    weight, never as a free width (a split basin's weak-mode width is likelihood-blind: not read)."""
+    if getattr(b, "boundary_method", "") == "split":
+        return False
+    free = {int(i) for i in b.model.free}
+    return any(g in free and b.theta_map[g] <= fast_pass.GAMMA_FLOOR
+               + loop.DEGENERATE_LIMIT_TOL * max(fast_pass.GAMMA_FLOOR, 1.0) for _a, g, _c in b.model.modes)
+
+
+def _failure_reason(basins, *, floored: bool) -> str:
+    """Why no basin of a candidate is priced: the terminal failure of the twin chain, not its head."""
+    for b in basins:
+        t = b.terminal()
+        if t.status == "no_evidence":
+            return f"{t.model_id}: {t.reason}"
+    if floored:
+        return "free width at the floor and its delta alternative did not fit"
+    return next((b.reason for b in basins if b.reason), "no start converged")
+
+
 def price(snapshot: Snapshot, job: PricingJob) -> Priced:
     """One composition at one count: every start in every admissible variant (the base engine's TRF,
     twin resolution and delta alternatives, plus the constructed hidden start of ``seed_hidden``), each distinct
@@ -643,11 +664,12 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
             if b.status == "pending":
                 eng.price(b)
     basins = [b for b in eng.basins() if b.count == k]
-    priced = [b for b in basins if b.status in _PRICED and b.ln_z is not None]
+    scored = [b for b in basins if b.status in _PRICED and b.ln_z is not None]
+    priced = [b for b in scored if not _free_width_at_floor(b)]
     if not priced:
         twin = bool(basins) and all(b.status == "degenerate_twin" for b in basins)
         und = next((b for b in basins if b.status == "undetermined"), None)
-        reason = und.reason if und is not None else next((b.reason for b in basins if b.reason), "no start converged")
+        reason = und.reason if und is not None else _failure_reason(basins, floored=bool(scored))
         status = "degenerate_twin" if twin else "undetermined" if und is not None else "no_evidence"
         return Priced(job.key, k, slots, None, status, None, reason, eng.n_fits, time.perf_counter() - t0,
                       loss=loss)
