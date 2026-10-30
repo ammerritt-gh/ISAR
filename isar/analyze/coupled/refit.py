@@ -559,9 +559,10 @@ def _starts(spec: _Spec, k: int, slots) -> list:
 
 def price(snapshot: Snapshot, job: PricingJob) -> Priced:
     """One composition at one count: every start in every admissible variant (the base engine's TRF,
-    twin resolution and delta alternatives), each distinct basin priced by Laplace under the coupled
-    prior; ln Z sums the basins' masses with their variant/delta weights, then adds ``ln w0`` and, for a
-    pinned unmatched energy, its entry charge outside the integral (spec 2)."""
+    twin resolution and delta alternatives, plus the constructed hidden start of ``seed_hidden``), each distinct
+    basin priced by Laplace under the coupled prior, or for a basin with a hidden pair by the integral over the
+    split (engine.CoupledEngine.price); ln Z sums the basins' masses with their variant/delta weights, then adds
+    ``ln w0`` and, for a pinned unmatched energy, its entry charge outside the integral (spec 2)."""
     t0 = time.perf_counter()
     spec = _Spec(snapshot)
     k, slots = job.count, tuple(job.slots)
