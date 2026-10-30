@@ -128,3 +128,14 @@ def test_companion_lists_name_three_sets_and_count_the_rest():
 def test_an_import_with_no_scan_sets_says_nothing_about_companions():
     c = _companions(curves=_NO_FOLDER_CURVES)
     assert pw.companion_lines(c) == [] and pw.companion_clause(c) == ""
+
+
+def test_an_import_that_expects_no_var_still_says_what_gpi_and_curves_found():
+    gpi = {"folder": None, "found": [], "missing": [_SET], "not_used": [], "error": None}
+    c = {"sidecar": {"read": [], "missing": [], "unreadable": []}, "gpi": gpi, "curves": _NO_FOLDER_CURVES}
+    assert pw.companion_lines(c) == ["gpi: no gpi folder is saved or found beside the data.",
+                                     "Resolution curves (rf): " + pw.NO_CURVES]
+    assert pw.companion_clause(c) == "no gpi · no rf folder"
+    c["gpi"] = {"folder": "C:/g", "found": [_SET], "missing": ["S_b"], "not_used": [], "error": None}
+    assert pw.companion_lines(c)[0] == "gpi: found for 1 of 2 scan sets in C:/g; missing for S_b."
+    assert pw.companion_clause(c) == "gpi 1/2 · no rf folder"

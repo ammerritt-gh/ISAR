@@ -163,9 +163,13 @@ def _sets(n: int) -> str:
     return f"{n} scan set" if n == 1 else f"{n} scan sets"
 
 
-def _n_sets(c: dict) -> int:
-    s = c["sidecar"]
+def _sidecar_total(s: dict) -> int:
     return len(s["read"]) + len(s["missing"]) + len(s["unreadable"])
+
+
+def _n_sets(c: dict) -> int:
+    # an import whose sets expect no .var has empty .var lists: its sets are the gpi lists
+    return _sidecar_total(c["sidecar"]) or len(c["gpi"]["found"]) + len(c["gpi"]["missing"])
 
 
 def _sidecar_line(s: dict, n: int) -> str:
@@ -208,7 +212,8 @@ def companion_lines(c: dict) -> list[str]:
     n = _n_sets(c)
     if not n:
         return []
-    lines = [_sidecar_line(c["sidecar"], n), _gpi_line(c["gpi"])]
+    lines = [_sidecar_line(c["sidecar"], n)] if _sidecar_total(c["sidecar"]) else []
+    lines.append(_gpi_line(c["gpi"]))
     if c["curves"] is not None:
         lines.append(_curves_line(c["curves"]))
     return lines
@@ -252,5 +257,6 @@ def companion_clause(c: dict) -> str:
     n = _n_sets(c)
     if not n:
         return ""
-    parts = (_sidecar_clause(c["sidecar"], n), _gpi_clause(c["gpi"]), _curves_clause(c["curves"]))
+    s = c["sidecar"]
+    parts = (_sidecar_clause(s, n) if _sidecar_total(s) else "", _gpi_clause(c["gpi"]), _curves_clause(c["curves"]))
     return " · ".join(p for p in parts if p)
