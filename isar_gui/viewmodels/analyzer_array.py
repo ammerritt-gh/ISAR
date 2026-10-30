@@ -491,14 +491,18 @@ class AnalyzerArrayViewModel(ViewModel):
 def _header_words(head: ArrayHeader, n_scans: int) -> dict:
     """The header's title and selection note, for the grid and for the no-layout message alike."""
     parts = [head.experiment_id if head.experiment_id and head.experiment_id != head.scan_label else None,
-             f"scan {head.scan_label}", _fact_words(head.sample, "sample missing"),
+             f"scan {head.scan_label}", _fact_words(head.sample, "sample not named"),
              _fact_words(head.temperature, "T missing"),
              ("hkl " + hkl_cell(head.hkl_nominal).text) if head.hkl_nominal.value is not None
              else "nominal hkl missing"]
+    gaps = [f"{name}: {fact.reason}" for name, fact in (("sample", head.sample), ("T", head.temperature),
+                                                         ("nominal hkl", head.hkl_nominal))
+            if fact.value is None and fact.reason]          # a missing word says why on hover
     return dict(
         title=" · ".join(p for p in parts if p),
         title_tip=f"Scan {head.scan_label} of {head.experiment_id or 'this experiment'}: "
-                  f"{head.n_spectra} spectra. The hkl is the scan's nominal position.",
+                  f"{head.n_spectra} spectra. The hkl is the scan's nominal position."
+                  + "".join(f"\n{gap}" for gap in gaps),
         selection_note=(f"Showing scan {head.scan_label} — {n_scans} scans selected, only one is shown"
                         if n_scans > 1 else ""))
 

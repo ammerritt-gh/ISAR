@@ -19,6 +19,7 @@ import isar
 from bl43_fixture import KEY_A, KEY_B, KEY_SINGLE, pooled_workspace
 from gui.array_helpers import ROWS, inter_row, make_array_view, make_env, rlu
 from gui.inter_fakes import FakeInterState, make_overview
+from isar.workspace_api.scan_list import Fact
 from isar.workspace_api.spectra import ZERO_NONE
 from isar_gui.selection import ORIGIN_ARRAY
 from isar_gui.viewmodels import analyzer_array as mod
@@ -90,6 +91,17 @@ def test_positions_header_and_labels(env, monkeypatch):
     assert state.selection_note == ""
     assert state.caption.startswith("x: energy transfer (meV), the same in every cell · y: ")
     assert state.caption.endswith(", linear")
+
+
+def test_a_missing_header_fact_says_why_on_hover(env, monkeypatch):
+    view = make_array_view(KEY_A)
+    no_sample = Fact(None, None, "missing", "missing", "no sample name in the card")
+    monkeypatch.setattr(mod, "array_view", lambda snapshot, key, ws: replace(
+        view, header=replace(view.header, sample=no_sample)))
+    env.selection.set((A6,))
+    state = env.vm.recompute()
+    assert "sample not named" in state.title and "sample missing" not in state.title
+    assert "sample: no sample name in the card" in state.title_tip
 
 
 def test_delta_hkl_words_full_partial_and_none(env, monkeypatch):
