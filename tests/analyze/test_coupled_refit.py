@@ -203,7 +203,7 @@ def test_a_lost_branch_is_a_price_and_a_flag():
     with_b2 = R.price(snap, job)
     without = R.price(t_pair(prep, one, ["b1"], one, ["b1"]), job)
     assert with_b2.ln_z - without.ln_z == pytest.approx(
-        rules.ln_w0(1, 1, 2, 3) - rules.ln_w0(1, 1, 1, 3) - (S.birth_edge + S.birth_mid) / 2, abs=1e-9)
+        rules.ln_w0(1, 1, 2) - rules.ln_w0(1, 1, 1) - (S.birth_edge + S.birth_mid) / 2, abs=1e-9)
 
 
 # 4 ---------------------------------------------------------------------------------------------------------
@@ -499,7 +499,7 @@ def test_two_slot_orders_that_converge_to_one_basin_count_its_evidence_once():
             terms.append(rec)
         elif rec[0] > terms[dup][0]:
             terms[dup] = rec
-    w0 = rules.ln_w0(2, 2, len(spec.pool), spec.ceiling + 1)
+    w0 = rules.ln_w0(2, 2, len(spec.pool))
     a = R.assign_decide(snap, list(priced.values()))
     w = {tuple(c["slots"]): c["weight"] for c in a.candidates}
     assert math.log(w[("b1", "b2")] + w[("b2", "b1")]) - math.log(w[(None, None)]) == pytest.approx(

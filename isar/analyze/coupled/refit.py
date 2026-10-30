@@ -713,7 +713,7 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
     loss_nats = -0.5 * sum(L for _b, _e, L in loss)
     terms = [b.ln_model_prior + b.ln_z + charge(b) + loss_nats for b in priced]
     best = priced[int(np.argmax(terms))]
-    ln_z = float(logsumexp(terms)) + rules.ln_w0(k, k - u, len(spec.pool), spec.ceiling + 1)
+    ln_z = float(logsumexp(terms)) + rules.ln_w0(k, k - u, len(spec.pool))
     v = best.model.variant
     mode = (v.elastic, v.background, v.qe, tuple(best.model.delta),
             tuple(float(v) for v in best.theta_map))
@@ -793,7 +793,7 @@ def _basin_rows(spec: _Spec, jobs, by_key) -> tuple[list, dict]:
             groups.setdefault((j.count, tuple(sorted(map(str, j.slots)))), []).append((j, p))
     for members in groups.values():
         k, u = members[0][0].count, sum(b is None for b in members[0][0].slots)
-        w0 = rules.ln_w0(k, k - u, len(spec.pool), spec.ceiling + 1)
+        w0 = rules.ln_w0(k, k - u, len(spec.pool))
         if len(members) == 1:
             j, p = members[0]
             for rec in p.basins:
