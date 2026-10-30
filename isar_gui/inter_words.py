@@ -46,3 +46,56 @@ def reason_sentence(code: str, detail: str = "") -> str:
     if sentence is None:
         return f"{code}: {detail}"
     return f"{sentence} ({detail})" if detail else sentence
+
+
+# ---- the batch marks on the Analyzer array dock -------------------------------------------------------------
+BATCH_WORDS = {"waiting": "waiting", "fitting": "fitting now", "done": "done", "refused": "refused",
+               "failed": "failed", "not_reached": "not reached"}
+BATCH_TIPS = {
+    "waiting": "Queued for this ring or sweep; a worker does not have it yet.",
+    "fitting": "A worker has this spectrum now and has not returned it.",
+    "done": "Refitted; the new fit is saved and drawn.",
+}
+KIND_WORDS = {"anchored": "Anchored batch", "simultaneous": "Simultaneous batch"}
+DIRECTION_WORDS = {"q": "spread in q", "T": "spread in T", "qT": "spread in q and T"}
+ENDED_WORDS = {"completed": "finished", "stopped": "stopped", "failed": "failed"}
+
+
+def batch_line(kind: str, direction: str | None, stage: str | None, index: int | None, done: int, total: int,
+               ended: str | None, elsewhere: int = 0) -> str:
+    """The dock header's sentence about the batch: kind, stage, done of total, members in other scans, how it ended.
+
+    ``stage`` None is the controller's placeholder before the batch's first members event: no stage and no counts
+    are read then. The runner reports stage "sweep" with index 0 while a simultaneous batch assigns its first
+    sweep, and a ring or sweep never has a number 0 for a person, so it reads as the start of number 1."""
+    head = KIND_WORDS.get(kind, kind)
+    if kind == "anchored" and direction:
+        head += f", {DIRECTION_WORDS.get(direction, direction)}"
+    parts = [head]
+    if stage is None:
+        if ended is None:
+            parts.append("starting")
+    else:
+        if stage in ("ring", "sweep"):
+            parts.append(f"{stage} {index}" if index else f"{stage} 1 starting")
+        else:
+            parts.append("planning" if stage == "plan" else stage)
+        parts.append(f"{done} of {total} done")
+    if elsewhere:
+        parts.append(f"{elsewhere} in other scans")
+    if ended is not None:
+        parts.append(ENDED_WORDS.get(ended, ended))
+    return " · ".join(parts)
+
+
+def batch_tip(states, ended_reason: str | None = None) -> str:
+    """The counts per state for the header's hover; ``states`` maps spectrum key to the runner's state word
+    (``held`` is an anchor or a lock the batch never refits)."""
+    counts: dict[str, int] = {}
+    for state in states.values():
+        counts[state] = counts.get(state, 0) + 1
+    words = [f"{BATCH_WORDS[s]} {counts[s]}" for s in BATCH_WORDS if counts.get(s)]
+    if counts.get("held"):
+        words.append(f"{counts['held']} anchors and locks not refitted")
+    text = " · ".join(words) or "no members yet"
+    return f"{text}\n{ended_reason}" if ended_reason else text
