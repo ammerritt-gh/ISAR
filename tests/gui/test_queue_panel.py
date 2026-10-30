@@ -271,10 +271,10 @@ def test_a_deep_item_still_in_its_fast_stage_does_not_promise_a_fast_result(qtbo
 def test_the_buttons_and_the_switch_send_the_users_actions_down(qtbot):
     stub = Stub(qview(fast=[group([item(3, status="running", started=NOW)])]), auto=False)
     p = panel(qtbot, stub)
-    assert not p._queue._auto.isChecked()                              # shows the experiment's setting
+    assert not p.controls._auto.isChecked()                            # shows the experiment's setting
     button(p, "queue_add_fast").click()
     button(p, "queue_add_deep").click()
-    p._queue._auto.click()
+    p.controls._auto.click()
     button(p, "queue_pause").click()
     assert stub.calls == [("add_selection", "fast"), ("add_selection", "deep"), ("set_auto_fast", True), ("pause",)]
     stub.set(qview(paused=True))
@@ -377,7 +377,7 @@ def walk_hovers(widget):
     (qview(service="failed", service_error="x", blocked="a campaign is running in this experiment"), SEL)])
 def test_every_visible_control_word_and_count_has_a_hover(qtbot, view, selection):
     p = panel(qtbot, Stub(view, selection=selection), width=300)
-    assert walk_hovers(p._queue) == []
+    assert walk_hovers(p) == []                                        # the add group and the switch too
     for state in QUEUE_STATES.values():                                # every word the panel can show
         assert state[2]
 
@@ -398,9 +398,9 @@ def test_wrapped_lines_get_their_full_height_at_the_narrowest_panel(qtbot):
 def test_clicking_the_switch_words_toggles_the_switch(qtbot):
     stub = Stub(qview())
     p = panel(qtbot, stub)
-    qtbot.mouseClick(p._queue._auto_text, Qt.MouseButton.LeftButton)
-    assert stub.calls == [("set_auto_fast", False)] and not p._queue._auto.isChecked()
-    assert p._queue._auto.accessibleName() == "Fast-pass new scans as they arrive"
+    qtbot.mouseClick(p.controls._auto_text, Qt.MouseButton.LeftButton)
+    assert stub.calls == [("set_auto_fast", False)] and not p.controls._auto.isChecked()
+    assert p.controls._auto.accessibleName() == "Fast-pass new scans as they arrive"
 
 
 def test_the_rail_says_what_is_happening_and_what_needs_a_look(qtbot):
@@ -550,6 +550,9 @@ def test_the_laptop_window_keeps_its_frame_with_the_queue_on_the_rail_and_in_the
     assert not w._right_panel_collapsed() and q.isVisible() and w.processing_rail.text() == "›"
     assert_frame_geometry(w, size)
     top = q.mapTo(w.processing_panel, q._pause.rect().topLeft())
-    assert q._fast.isVisible() and q._deep.isVisible() and q._pause.isVisible()
-    assert q.rect().contains(q._fast.geometry()) and 0 <= top.y() < w.processing_panel.height()
+    controls = w.processing_panel.controls
+    assert controls._fast.isVisible() and controls._deep.isVisible() and q._pause.isVisible()
+    fast_corner = controls._fast.mapTo(w.processing_panel, controls._fast.rect().bottomRight())
+    assert w.processing_panel.rect().contains(fast_corner) and 0 <= top.y() < w.processing_panel.height()
     assert walk_hovers(q) == []
+

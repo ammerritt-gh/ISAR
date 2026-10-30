@@ -1,11 +1,11 @@
 """QueuePanel -- the analysis queue as the Processing panel shows it, and the words the rail uses.
 
 The panel shows what the :class:`~isar_gui.queue_controller.QueueController` reports and sends the user's
-actions back to it; it computes and fits nothing. From the top: the switch that fast-passes new scans as they
-arrive, the selection with the two add buttons, a banner when the queue is paused or cannot start, the fast and
-the deep queue (each under its scan-set headings), the inter-spectra batches (one row each, named by its start
-time), the Finished list, and a footer with Pause or Resume. Only
-the queue part scrolls; the switch, the selection and the add buttons stay in view.
+actions back to it; it computes and fits nothing. From the top: a banner when the queue is paused or cannot
+start, the fast and the deep queue (each under its scan-set headings), the inter-spectra batches (one row each,
+named by its start time), the Finished list, and a footer with Pause or Resume. The controls that add work (the
+selection, the two add buttons and the fast-pass switch) are :class:`QueueControls`, which the Processing panel
+places above this one. Only the queue part scrolls.
 
 The threshold for every line here is a reader who knows inelastic scattering and the beamtime but has never
 used this window, at 3 AM, with only the screen: every control, word, count and mark has a hover in plain words,
@@ -253,6 +253,121 @@ class _SwitchLabel(QLabel):
         super().mouseReleaseEvent(event)
 
 
+class QueueControls(QWidget):
+    """The Processing tab's add-to-queue group: the selection line, *Fast pass* and *Deep pass*, and the switch that
+    fast-passes new scans as they arrive. It shows the controller's state and sends the user's actions back to it."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("queue_controls")
+        self._controller = None
+        self._soon = QTimer(self)                 # coalesces a burst of `changed` into one redraw
+        self._soon.setSingleShot(True)
+        self._soon.setInterval(0)
+        self._soon.timeout.connect(self.refresh)
+
+        self._auto = QCheckBox()
+        self._auto.setObjectName("queue_auto")
+        self._auto.setAccessibleName("Fast-pass new scans as they arrive")
+        self._auto.clicked.connect(self._on_auto)
+        self._auto_text = _SwitchLabel("Fast-pass new scans as they arrive", self._auto)
+        self._auto_text.setObjectName("queue_auto_text")
+        self._auto_note = _label("", "", name="queue_auto_note")
+        self._selection = _label("", "", name="queue_selection")
+        self._add_caption = _label("Add to queue:", "The two buttons add the analyzers selected in the scan list "
+                                   "to the fast or the deep queue. Selecting alone never queues anything.")
+        self._fast = _button("Fast pass", "", "queue_add_fast")
+        self._deep = _button("Deep pass", "", "queue_add_deep")
+        self._fast.clicked.connect(lambda: self._add("fast"))
+        self._deep.clicked.connect(lambda: self._add("deep"))
+        self._add_reason = _label("", "Why the Fast pass and Deep pass buttons cannot be used now.",
+                                  name="queue_add_reason")
+
+        switch = QHBoxLayout()
+        switch.addWidget(self._auto, 0, Qt.AlignmentFlag.AlignTop)
+        switch.addWidget(self._auto_text, 1)
+        add_row = QHBoxLayout()
+        add_row.addWidget(self._fast, 1)
+        add_row.addWidget(self._deep, 1)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(self._selection)
+        layout.addWidget(self._add_caption)
+        layout.addLayout(add_row)
+        layout.addWidget(self._add_reason)
+        layout.addLayout(switch)
+        layout.addWidget(self._auto_note)
+        self.refresh()
+
+    def set_controller(self, controller) -> None:
+        """The controller to show and drive (``None``: none)."""
+        if self._controller is not None:
+            self._controller.changed.disconnect(self._schedule)
+        self._controller = controller
+        if controller is not None:
+            controller.changed.connect(self._schedule)
+        self.refresh()
+
+    def _schedule(self) -> None:
+        if not self._soon.isActive():
+            self._soon.start()
+
+    def _on_auto(self, on: bool) -> None:
+        if self._controller is not None:
+            self._controller.set_auto_fast(bool(on))
+
+    def _add(self, pass_kind: str) -> None:
+        if self._controller is not None:
+            self._controller.add_selection(pass_kind)
+
+    def refresh(self) -> None:
+        """Redraw from the controller now (a change normally gets here through ``_schedule``)."""
+        self._soon.stop()
+        c = self._controller
+        view = c.view() if c is not None else None
+        self._head(c, c.selection() if c is not None else None, view is not None and view.bound)
+
+    def _head(self, c, sel, bound: bool) -> None:
+        self._auto.setEnabled(bound)
+        self._auto_text.setEnabled(bound)
+        tip = (
+            "When on, every analyzer file ISAR reads in from now on (from the watched folder or a drop) is added to "
+            "the fast queue and marked auto. It starts on for a new experiment and belongs to this experiment. It "
+            "never adds deep passes, never touches what you added yourself, and never sweeps back over older files."
+            if bound else "Open or create an experiment first.")
+        self._auto.setToolTip(tip)
+        self._auto_text.setToolTip(tip)
+        if c is not None:
+            self._auto.setChecked(c.auto_fast())
+        self._auto_note.setText("For this experiment. Deep passes are only ever added by you." if bound
+                                else "No experiment is open.")
+        self._auto_note.setToolTip("The switch above belongs to the open experiment. Deep passes are slow, so only "
+                                   "you ever queue one.")
+        shown = sel.text if sel is not None and sel.keys else "No analyzers selected"
+        if sel is not None and sel.n_pooled:
+            shown += f" ({sel.n_pooled} pooled {_plural(sel.n_pooled, 'master', 'masters')} not queued)"
+        self._selection.setText(shown)
+        self._selection.setToolTip("The analyzer files highlighted in the scan list. Pooled masters are not "
+                                   "analyzer files and cannot be queued.")
+        can_add = bound and sel is not None and bool(sel.keys)
+        reason = ""
+        if not bound:
+            reason = "Open or create an experiment to queue analysis."
+        elif not can_add:
+            reason = ("Pooled masters cannot be queued: select analyzer files in the scan list."
+                      if sel is not None and sel.n_pooled else
+                      "Select analyzer files in the scan list, then press Fast pass or Deep pass.")
+        for button, pass_name, what in ((self._fast, "fast", "a fast pass"), (self._deep, "deep", "a deep pass")):
+            button.setEnabled(can_add)
+            button.setToolTip(reason or (
+                f"Adds {what} for each selected analyzer file. Files that already have a current {pass_name} pass, "
+                f"or are already waiting or running for it, are left out, and the Log says which."
+                + (" Use it for a spectrum whose fast pass is not settled; it is slower." if pass_name == "deep" else "")))
+        self._add_reason.setText(reason)
+        self._add_reason.setVisible(bool(reason))
+
+
 class QueuePanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -275,22 +390,6 @@ class QueuePanel(QWidget):
         self._restore.setInterval(0)
         self._restore.timeout.connect(lambda: self._scroll.verticalScrollBar().setValue(self._keep))
 
-        self._auto = QCheckBox()
-        self._auto.setObjectName("queue_auto")
-        self._auto.setAccessibleName("Fast-pass new scans as they arrive")
-        self._auto.clicked.connect(self._on_auto)
-        self._auto_text = _SwitchLabel("Fast-pass new scans as they arrive", self._auto)
-        self._auto_text.setObjectName("queue_auto_text")
-        self._auto_note = _label("", "", name="queue_auto_note")
-        self._selection = _label("", "", name="queue_selection")
-        self._add_caption = _label("Add to queue:", "The two buttons add the analyzers selected in the scan list "
-                                   "to the fast or the deep queue. Selecting alone never queues anything.")
-        self._fast = _button("Fast pass", "", "queue_add_fast")
-        self._deep = _button("Deep pass", "", "queue_add_deep")
-        self._fast.clicked.connect(lambda: self._add("fast"))
-        self._deep.clicked.connect(lambda: self._add("deep"))
-        self._add_reason = _label("", "Why the Fast pass and Deep pass buttons cannot be used now.",
-                                  name="queue_add_reason")
         self._banner = QWidget()
         self._banner.setObjectName("queue_banner")
         self._banner_text = _label("", "Why nothing new is starting.", name="queue_banner_text")
@@ -317,23 +416,12 @@ class QueuePanel(QWidget):
         self._pause = _button("Pause", "", "queue_pause")
         self._pause.clicked.connect(self._pause_or_resume)
 
-        switch = QHBoxLayout()
-        switch.addWidget(self._auto, 0, Qt.AlignmentFlag.AlignTop)
-        switch.addWidget(self._auto_text, 1)
-        add_row = QHBoxLayout()
-        add_row.addWidget(self._fast, 1)
-        add_row.addWidget(self._deep, 1)
         foot = QHBoxLayout()
         foot.addWidget(self._footer_text, 1)
         foot.addWidget(self._pause, 0)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        layout.addLayout(switch)
-        for part in (self._auto_note, self._selection, self._add_caption):
-            layout.addWidget(part)
-        layout.addLayout(add_row)
-        layout.addWidget(self._add_reason)
         layout.addWidget(self._banner)
         layout.addWidget(self._scroll, 1)
         layout.addLayout(foot)
@@ -356,14 +444,6 @@ class QueuePanel(QWidget):
             self._soon.start()
 
     # ---- actions ---------------------------------------------------------------------------------------
-    def _on_auto(self, on: bool) -> None:
-        if self._controller is not None:
-            self._controller.set_auto_fast(bool(on))
-
-    def _add(self, pass_kind: str) -> None:
-        if self._controller is not None:
-            self._controller.add_selection(pass_kind)
-
     def _pause_or_resume(self) -> None:
         c = self._controller
         if c is not None:
@@ -409,51 +489,10 @@ class QueuePanel(QWidget):
         self._soon.stop()
         c = self._controller
         view = c.view() if c is not None else None
-        sel = c.selection() if c is not None else None
         bound = view is not None and view.bound
-        self._head(c, view, sel, bound)
         self._banner_for(view)
         self._queues(view)
         self._foot(view, bound)
-
-    def _head(self, c, view, sel, bound: bool) -> None:
-        self._auto.setEnabled(bound)
-        self._auto_text.setEnabled(bound)
-        tip = (
-            "When on, every analyzer file ISAR reads in from now on (from the watched folder or a drop) is added to "
-            "the fast queue and marked auto. It starts on for a new experiment and belongs to this experiment. It "
-            "never adds deep passes, never touches what you added yourself, and never sweeps back over older files."
-            if bound else "Open or create an experiment first.")
-        self._auto.setToolTip(tip)
-        self._auto_text.setToolTip(tip)
-        if c is not None:
-            self._auto.setChecked(c.auto_fast())
-        self._auto_note.setText("For this experiment. Deep passes are only ever added by you." if bound
-                                else "No experiment is open.")
-        self._auto_note.setToolTip("The switch above belongs to the open experiment. Deep passes are slow, so only "
-                                   "you ever queue one.")
-        shown = sel.text if sel is not None and sel.keys else "No analyzers selected"
-        if sel is not None and sel.n_pooled:
-            shown += f" ({sel.n_pooled} pooled {_plural(sel.n_pooled, 'master', 'masters')} not queued)"
-        self._selection.setText(shown)
-        self._selection.setToolTip("The analyzer files highlighted in the scan list. Pooled masters are not "
-                                   "analyzer files and cannot be queued.")
-        can_add = bound and sel is not None and bool(sel.keys)
-        reason = ""
-        if not bound:
-            reason = "Open or create an experiment to queue analysis."
-        elif not can_add:
-            reason = ("Pooled masters cannot be queued: select analyzer files in the scan list."
-                      if sel is not None and sel.n_pooled else
-                      "Select analyzer files in the scan list, then press Fast pass or Deep pass.")
-        for button, pass_name, what in ((self._fast, "fast", "a fast pass"), (self._deep, "deep", "a deep pass")):
-            button.setEnabled(can_add)
-            button.setToolTip(reason or (
-                f"Adds {what} for each selected analyzer file. Files that already have a current {pass_name} pass, "
-                f"or are already waiting or running for it, are left out, and the Log says which."
-                + (" Use it for a spectrum whose fast pass is not settled; it is slower." if pass_name == "deep" else "")))
-        self._add_reason.setText(reason)
-        self._add_reason.setVisible(bool(reason))
 
     def _banner_for(self, view) -> None:
         lines = []
