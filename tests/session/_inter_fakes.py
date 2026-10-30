@@ -2,6 +2,7 @@
 
 Module-level functions with the core's signatures (``isar.analyze.coupled.refit``): ``held_from_fit``,
 ``assign_jobs``, ``price``, ``assign_decide``, ``refit``, ``stage_factors``, plus the real ``total_objective`` and ``seam_report``.
+``open_search`` is the C-search core's entry point: a ``_FakeSearch`` per spectrum, driven by the knobs above.
 They are picklable by name, so the runner's pool workers import this module the way they import the real core
 (``tests/session`` must be on the path: the tests put it there, and spawned workers inherit it). Pass the module
 itself as ``run_batch(..., core=_inter_fakes)``; ``run_batch`` below is that call, for ``--inter-target``.
@@ -31,7 +32,7 @@ from pathlib import Path
 
 from isar.analyze.coupled.engine import Factor
 from isar.analyze.coupled.refit import seam_report, total_objective  # noqa: F401  (the core's own, re-exported)
-from isar.analyze.coupled.types import Assignment, Held, HeldMode, Priced, PricingJob, RefitResult
+from isar.analyze.coupled.types import Assignment, Held, HeldMode, Priced, PricingJob, RefitResult, Start
 from isar.session.inter_spectra.runner import BatchItem  # noqa: F401  (the service builds the item from the target's module)
 
 WINDOW = (0.0, 20.0)
@@ -95,12 +96,16 @@ def _triggered(snapshot) -> bool:
     return bool(cfg.get("triggered")) or _number(snapshot.stage_id, "round") in cfg.get("change_rounds", ())
 
 
+def _key(snapshot, slots) -> str:
+    held = [(h.unit, h.fit, [m.omega0 for m in h.modes]) for ti in snapshot.terms for h in ti.held]
+    return hashlib.sha256(repr((snapshot.unit, snapshot.own.fit, slots, held)).encode()).hexdigest()
+
+
 def assign_jobs(snapshot, *, cached={}):
     slots = _slots(snapshot)
     if not _triggered(snapshot):
         return _assignment(snapshot, slots, discrete="skipped", changed=False), ()
-    held = [(h.unit, h.fit, [m.omega0 for m in h.modes]) for ti in snapshot.terms for h in ti.held]
-    key = hashlib.sha256(repr((snapshot.unit, snapshot.own.fit, slots, held)).encode()).hexdigest()
+    key = _key(snapshot, slots)
     job = PricingJob(snapshot.unit, snapshot.snapshot_id, len(slots), slots, key)
     return None, (() if key in cached else (job,))
 
@@ -109,9 +114,51 @@ def price(snapshot, job) -> Priced:
     return Priced(job.key, job.count, tuple(job.slots), 0.0, "ok", None, None, 1, 0.001)
 
 
+def _changed(snapshot) -> bool:
+    return _number(snapshot.stage_id, "round") in _cfg(snapshot).get("change_rounds", ())
+
+
 def assign_decide(snapshot, priced) -> Assignment:
-    changed = _number(snapshot.stage_id, "round") in _cfg(snapshot).get("change_rounds", ())
-    return _assignment(snapshot, _slots(snapshot), discrete="priced", changed=changed)
+    return _assignment(snapshot, _slots(snapshot), discrete="priced", changed=_changed(snapshot))
+
+
+class _FakeSearch:
+    """The fake core's Search: a triggered spectrum asks one job and is done once it is fed; any other is done at once."""
+
+    def __init__(self, snapshot) -> None:
+        self._snapshot = snapshot
+        self._slots = _slots(snapshot)
+        self._jobs: tuple = ()
+        self._result: Assignment | None = None
+        if not _triggered(snapshot):
+            self._result = _assignment(snapshot, self._slots, discrete="skipped", changed=False)
+            return
+        own = snapshot.own.modes
+        start = Start("own", tuple((m.omega0, m.gamma, m.height) for m in
+                                   (own[min(i, len(own) - 1)] for i in range(len(self._slots)))))
+        self._jobs = (PricingJob(snapshot.unit, snapshot.snapshot_id, len(self._slots), self._slots,
+                                 _key(snapshot, self._slots), starts=(start,)),)
+
+    def next_jobs(self) -> tuple:
+        return () if self.done else self._jobs
+
+    def feed(self, priced) -> None:
+        if self.done or len(priced) != len(self._jobs) or any(p.key != j.key for p, j in zip(priced, self._jobs)):
+            raise ValueError("feed takes one Priced per job of the last next_jobs(), in that order")
+        self._result = _assignment(self._snapshot, self._slots, discrete="priced", changed=_changed(self._snapshot))
+
+    @property
+    def done(self) -> bool:
+        return self._result is not None
+
+    def result(self) -> Assignment:
+        if self._result is None:
+            raise RuntimeError("result() before the search is done")
+        return self._result
+
+
+def open_search(snapshot) -> _FakeSearch:
+    return _FakeSearch(snapshot)
 
 
 def refit(snapshot, *, stage, assignment=None, cached={}, workers: int = 1) -> RefitResult:
