@@ -140,6 +140,9 @@ Each round has two stages. Stage 1 compares mode counts and branch assignments a
 the neighbours; two slot orders of one assignment that reach the same fit count its evidence once, under the
 order of its fitted energies. Stage 2 refines the continuous parameters, with counts and assignments held fixed, in sweeps of
 per-spectrum refits over conflict-free parallel groups; each refit includes every term the spectrum is in.
+A term shared by several spectra has one definition, held by every member's refit once the neighbour on the
+other end carries its branch; a branch that neighbour gains in this very stage enters from the next sweep, and
+until then the refit is flagged `incomplete_comparison`.
 Counts and assignments are reopened in later rounds. Iterated refits are not guaranteed to reach the same
 answer from every start. A batch settles when counts and assignments stop changing and sweeps are quiet: no
 mode energy moves by more than `sweep_tol_meV`, two quiet sweeps in a row, and the total cost no longer improves
