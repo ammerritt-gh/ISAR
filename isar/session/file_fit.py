@@ -84,23 +84,30 @@ class Frozen:
     card: object
     session: object
     inputs_at: int           # the freeze's time: orders saves by how new their inputs are (C-save)
+    rows: dict | None = None # the import record's rows (isar.intake.scans.read_scans); None: unreadable
 
 
 def freeze(root: Path) -> Frozen:
-    """The experiment as it is now, read once: its card and ledger, and the time the inputs were read at."""
+    """The experiment as it is now, read once: its card, ledger and import record, and the time the inputs
+    were read at."""
     # The freeze's time orders saves by how new their inputs are (C-save). shortcut: wall clock across item
     # processes, a clock stepped back misorders two starts; take a sequence from the service if that bites.
     inputs_at = time.time_ns()
     card, session = Workspace.open(root).load()               # the freeze (design step 9)
-    return Frozen(root, card, session, inputs_at)
+    try:
+        rows = intake_scans.read_scans(root)
+    except (ValueError, OSError):
+        log.exception("freeze: the import record of %s is unreadable; fits take the ledger's files", root)
+        rows = None
+    return Frozen(root, card, session, inputs_at, rows)
 
 
-def prepare_scan(frozen: Frozen, exp: str, scan: int, prev: ScanEntry):
-    """``(record, source_by_name)`` of the scan as ``isar run`` parses, reduces and QCs it; None when its data
-    is no longer there."""
-    parsed = _parse_unit_record(frozen.card, frozen.session, prev, exp, scan)
-    if parsed is None:
-        return None
+def prepare_scan(frozen: Frozen, exp: str, scan: int, prev: ScanEntry) -> tuple | str:
+    """``(record, source_by_name)`` of the scan as ``isar run`` parses, reduces and QCs it, from the files the
+    user gave for it; the reason (a str) when it cannot be prepared. Never None."""
+    parsed = _parse_unit_record(frozen.card, frozen.session, frozen.rows, prev, exp, scan)
+    if isinstance(parsed, str):
+        return parsed
     rec, source_by_name = parsed
     combine.reduce_record(rec, frozen.card)
     qc.qc_record(rec, frozen.card)
@@ -211,9 +218,8 @@ def _fit(root: Path, item: FileItem, progress, emit) -> None:
     if prev is None:
         return result(item.pass_kind, "failed", f"{item.unit_key}: not read in yet")
     scan_prep = prepare_scan(frozen, exp, scan, prev)
-    if scan_prep is None:
-        where = (prev.provenance or {}).get("source_file")
-        return result(item.pass_kind, "failed", f"the data file for this analyzer is no longer at {where}")
+    if isinstance(scan_prep, str):
+        return result(item.pass_kind, "failed", scan_prep)
     prep = prepare_unit(frozen, scan_prep, item.unit_key, ("fast",) if item.pass_kind == "fast" else ("fast", "deep"))
     if prep.reason is not None:
         return result(item.pass_kind, "failed", prep.reason)
@@ -314,36 +320,74 @@ def _fast_status(entry: ScanEntry, det: str, tabulated: bool) -> tuple[str, str 
     return "failed", reason
 
 
-def _parse_unit_record(card, session, prev: ScanEntry, exp: str, scan: int):
-    """``(record, source_by_name)`` of the unit's scan, parsed from its file (or its file set) as the run
-    parses it; None when the data is no longer there. The file is the ingest-stamped ``source_file``, else
-    a manifest file of the scan (``isar run`` stamps a file set's stem there, not a path)."""
+def _given_files(rows, session, key: str, file_set: str) -> list[Path] | str:
+    """The files the user gave for scan ``key`` (``"exp:scan"``), in the order given, or the reason there is
+    no record of them or one is gone. Never a folder: ISAR uses what the user gave (operator, 2026-10-30)."""
+    listed = intake_scans.recorded_files(rows, session.files, key)
+    if not listed:
+        return (f"no record of which files were imported for scan set {file_set}: neither the import record "
+                "nor the ledger lists them; add the data again (the same files or their folder)")
+    gone = next((p for p in listed if not Path(p).is_file()), None)
+    if gone is not None:
+        return f"the data file {Path(gone).name} recorded at import is no longer at {gone}"
+    return [Path(p) for p in listed]
+
+
+def given_files(session, rows, unit_key: str) -> list[Path] | str:
+    """Every file the user gave the experiment that is still there, for readers of the whole experiment (the
+    fit preview, the deep-pass tool) with the unit ``unit_key`` in view: that unit's own set is checked by the
+    fit's rule first, so the reason the fit gives is the reason here. Never a folder walk."""
+    prev = session.scans.get(unit_key)
+    file_set = (prev.provenance or {}).get("file_set") if prev is not None else None
+    if file_set:
+        own = _given_files(rows, session, unit_key.rsplit(":", 1)[0], file_set)
+        if isinstance(own, str):
+            return own
+    listed = intake_scans.all_recorded_files(rows, session.files)
+    out = []
+    for p in listed:
+        if Path(p).is_file():
+            out.append(Path(p))
+        else:
+            log.warning("given_files: the recorded file %s is no longer there", p)
+    if out:
+        return out
+    return ("no record of which files were imported into this experiment; add the data again" if not listed
+            else "none of the files recorded at import is still there; add the data again")
+
+
+def _parse_unit_record(card, session, rows, prev: ScanEntry, exp: str, scan: int):
+    """``(record, source_by_name)`` of the unit's scan, parsed as the run parses it from the files the user gave
+    for it (the import record's members, else its paths, else the ledger's files; a file set never from its
+    folder; the card's sidecars beside them are added); the reason (a str) when the data is no longer there.
+    A single-file scan is read from the ingest-stamped ``source_file``, else a manifest file of the scan."""
     prov = prev.provenance or {}
-    src = Path(prov.get("source_file") or "")
-    if not (src.is_absolute() and src.is_file()):
-        src = next((p for p, row in session.files.items() if row.get("format") == "measurement"
-                    and f"{exp}:{scan}" in (row.get("scan_ids") or ()) and Path(p).is_file()), None)
-        if src is None:
-            return None
-        src = Path(src)
-    folder = src.parent
     if prov.get("file_set"):
-        found = ingest.discover([folder], card)
-        fs = next((f for f in found.file_sets if f.key == prov["file_set"]
-                   and Path(f.folder).resolve() == folder.resolve()), None)
+        given = _given_files(rows, session, f"{exp}:{scan}", prov["file_set"])
+        if isinstance(given, str):
+            return given
+        found = ingest.discover(given, card)
+        fs = next((f for f in found.file_sets if f.key == prov["file_set"]), None)
         if fs is None:
-            return None
+            return f"the files recorded for scan set {prov['file_set']} no longer form that set under the card's file rules"
         sub = ingest.IngestPlan(measurement_files=[p for p, _g in fs.measurements], file_sets=[fs],
                                 sidecar_files=list(fs.sidecars))
         # the set's record names the set; its stamp keeps the path ingest gives it (the set's first file)
         source_by_name = {fs.key: str(Path(fs.measurements[0][0]).resolve())}
     else:
+        src = Path(prov.get("source_file") or "")
+        if not (src.is_absolute() and src.is_file()):
+            src = next((p for p, row in session.files.items() if row.get("format") == "measurement"
+                        and f"{exp}:{scan}" in (row.get("scan_ids") or ()) and Path(p).is_file()), None)
+            if src is None:
+                return f"the data file for this analyzer is no longer at {prov.get('source_file')}"
+            src = Path(src)
         sub = ingest.IngestPlan(measurement_files=[src])
         source_by_name = {}
     rec = next((r for r in ingest.parse_all(sub, card, session=session)
                 if (str(r.experiment_id), r.scan_number) == (exp, scan) and r.scan_type == "measurement"), None)
     if rec is None:
-        return None
+        return f"the recorded data no longer yields scan {exp}:{scan}"
     return rec, {**{Path(f).name: str(Path(f).resolve()) for f in sub.measurement_files}, **source_by_name}
 
 

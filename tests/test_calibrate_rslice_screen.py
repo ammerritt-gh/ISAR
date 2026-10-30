@@ -247,6 +247,7 @@ def test_workspace_refresh_is_explicit_and_only_changes_card_copy(harness, monke
                               scans={"synthetic:1:a01": SimpleNamespace(detectors={"a01": stored})})
     monkeypatch.setattr(Workspace, "open", lambda path: SimpleNamespace(load=lambda: (card, session)))
     monkeypatch.setattr(outcome, "fast_pass_of", lambda value: value)
+    monkeypatch.setattr("isar.session.file_fit.given_files", lambda *args: [tmp_path / "synthetic-source"])  # which files is not under test here
     monkeypatch.setattr(ingest, "discover", lambda *args: SimpleNamespace(companion_files=[]))
     monkeypatch.setattr(ingest, "parse_all", lambda *args: [rec])
     monkeypatch.setattr(combine, "reduce_record", lambda *args: None)
@@ -320,6 +321,7 @@ def test_refresh_uses_saved_inputs_and_refuses_saved_conditions(harness, monkeyp
                               SimpleNamespace(detectors={"a01": {"arena_fingerprint": "old"}})})
     monkeypatch.setattr(Workspace, "open", lambda path: SimpleNamespace(load=lambda: (card, session)))
     monkeypatch.setattr(outcome, "fast_pass_of", lambda value: value)
+    monkeypatch.setattr("isar.session.file_fit.given_files", lambda *args: [tmp_path / "synthetic-source"])  # which files is not under test here
     monkeypatch.setattr(ingest, "discover", lambda *args: SimpleNamespace(companion_files=[]))
     monkeypatch.setattr(ingest, "parse_all", lambda *args: [rec])
     monkeypatch.setattr(combine, "reduce_record", lambda *args: None)

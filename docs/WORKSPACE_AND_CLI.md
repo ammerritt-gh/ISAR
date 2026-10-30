@@ -206,6 +206,14 @@ whose fit inputs (data revision, user values, conditions, calibration) changed.
 
 Files are the truth, so a crash before the end-of-run save is a clean no-op.
 
+### Which files a fit reads
+
+Operator ruling, 2026-10-30: "ISAR does not go hunting for other data. It doesn't grab things the user didn't tell it to. ... Not only can other scans be unused, they can be *wrong* or *bad* and withheld for a reason." and "We only use what the user gives us."
+
+After an import, no reader walks a folder for measurement files. A queued fast or deep fit, a deep pass, and an inter-spectra batch re-parse a BL43 file set from the files the user gave for that scan, in this order: the import record's `import.members` (every file given, in the order given, left-out and duplicate files included); else, for a row written before `members`, its `import.paths` and left-out names; else the ledger's `session.files` rows that list the scan. The one accepted exception is the card's companion files beside the data (the `.var` sidecar, the gpi and rf folders): they are looked up on disk, as a "fishy but acceptable limit" (operator). `isar run` writes manifest rows without `scan_ids`, so for its workspaces the import row's `paths` is the only record. A scan with no record of its files, or whose recorded file is gone, fails with a reason that says so; it never falls back to the folder.
+
+The fit preview (`isar.sandbox_api.preview_fit`) and `tools/calibrate_deep_pass.py` read the files the ledger records for the experiment (`isar.session.file_fit.given_files`), never the folders remembered in `session.data_paths`. "Read source file again" on one analyzer sends the whole set's recorded files (`Workspace.recorded_files`, the same members-first rule), because a set is one record: a re-read of one member would make the import row claim the user gave one file. A file withheld at a later import of the same set stays withheld, though the ledger still lists it. Drops, the watched folder, `isar ingest` and `isar run` read exactly the paths the user passes them, and the campaign diagnostic reads `<workspace>/data`, the scans ISAR acquired itself.
+
 ## Commands
 
 <!-- isar-commands: exhaustive -->

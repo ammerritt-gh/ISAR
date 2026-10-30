@@ -509,6 +509,9 @@ def parse_set(file_set, card: Card) -> list[scan.ScanRecord]:
                     # (not part of the data revision: `state.content_hash` leaves it out)
                     "paths": {d: str(Path(p).resolve()) for p, g in file_set.measurements
                               for d in [detector_id(g["analyzer"])] if d in spectra},
+                    # every member file given, duplicates and left-out files included, in the order given: what a
+                    # re-parse needs to reproduce the data revision (also left out of `state.content_hash`)
+                    "members": [str(Path(p).resolve()) for p, _g in file_set.measurements],
                     # what was left out, structurally (the flags above say the same in words)
                     "sidecar_state": sidecar_state, "sidecar_problem": sidecar_problem,
                     "left_out": {d: {"file": file_of.get(d), "cause": c} for d, c in sorted(gone.items())},

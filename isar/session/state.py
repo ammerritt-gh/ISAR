@@ -158,14 +158,14 @@ def canonical_hash(obj) -> str:
 def content_hash(record) -> str:
     """Hash a parsed ScanRecord's content (U4). Two resends of the same scan hash equal.
 
-    ``raw_header["paths"]`` (a BL43 record's resolved file locations) is left out: where the files sit is
-    not their content, so a moved or renamed data folder re-imports with every scan unchanged. The paths
-    stay in the record and the import row. A record without the key hashes exactly as ``canonical_hash``."""
+    ``raw_header["paths"]`` and ``["members"]`` (a BL43 record's resolved file locations) are left out: where
+    the files sit is not their content, so a moved or renamed data folder re-imports with every scan unchanged.
+    They stay in the record and the import row. A record without the keys hashes exactly as ``canonical_hash``."""
     raw = getattr(record, "raw_header", None)
-    if not (isinstance(raw, dict) and "paths" in raw):
+    if not (isinstance(raw, dict) and ("paths" in raw or "members" in raw)):
         return canonical_hash(record)
     jsonable = _json.to_jsonable(record)
-    jsonable["raw_header"] = {k: v for k, v in jsonable["raw_header"].items() if k != "paths"}
+    jsonable["raw_header"] = {k: v for k, v in jsonable["raw_header"].items() if k not in ("paths", "members")}
     return canonical_hash(jsonable)
 
 

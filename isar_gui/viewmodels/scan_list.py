@@ -498,11 +498,15 @@ class ScanListViewModel(ViewModel):
         return tuple(key for key in self.selection.keys if isinstance(self._snapshot.spectrum(key), SpectrumRow))
 
     def source_paths(self, key: str) -> tuple[str, ...]:
-        """The data file(s) a spectrum was read from: its analyzer's own file, as the File column shows it, else
-        every file that produced its scan set. Empty when none is recorded."""
+        """The data file(s) a spectrum's scan set was read from, as the workspace records them (the files the user
+        gave, by the rule a fit uses): a set is read as one, never one analyzer alone. Else the analyzer's own
+        file, else every file that produced its scan set. Empty when none is recorded."""
         row = self._snapshot.spectrum(key)
         if not isinstance(row, SpectrumRow):
             return ()
+        recorded = getattr(self._ws, "recorded_files", None)
+        if recorded is not None and (given := recorded(row.set_key)):
+            return tuple(given)
         if row.file_path:
             return (row.file_path,)
         return tuple(f.path for f in getattr(self._ws, "files", ())

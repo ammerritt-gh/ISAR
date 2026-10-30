@@ -1405,9 +1405,9 @@ def load_workspace(workspace, spectrum, detector=None, *, refresh_fast_pass=Fals
     front-end calls ``sandbox_api.preview_fit`` makes (nothing is written, the card is a copy).
     Explicit ``refresh_fast_pass`` recalibrates that copy and regenerates the record in memory."""
     import copy
-    from isar.intake import inputs, store
+    from isar.intake import inputs, scans as intake_scans, store
     from isar.reduce import combine, qc
-    from isar.session import calibrations, ingest, outcome, router, scan_delivery, unit_data
+    from isar.session import calibrations, file_fit, ingest, outcome, router, scan_delivery, unit_data
     from isar.session import guidelines as guide_mod
     from isar.session.workspace import Workspace
     from isar.workspace_api.scan_keys import split_key
@@ -1422,9 +1422,16 @@ def load_workspace(workspace, spectrum, detector=None, *, refresh_fast_pass=Fals
     if not record:
         raise ValueError(f"no fast-pass record for {spectrum!r} detector {det!r} in {workspace}")
     card = copy.deepcopy(card_real)
-    if not session.data_paths:
-        raise ValueError("the workspace has no source data paths to re-parse")
-    plan = ingest.discover(list(session.data_paths), card)
+    try:
+        rows = intake_scans.read_scans(workspace)
+    except (ValueError, OSError):
+        logging.getLogger(__name__).exception("the import record of %s is unreadable", workspace)
+        rows = None
+    # the files the user gave, never the folders; this scan's own set is checked first, as the preview does
+    files = file_fit.given_files(session, rows, f"{experiment}:{scan_number}:{det}")
+    if isinstance(files, str):
+        raise ValueError(files)
+    plan = ingest.discover(files, card)
     records = ingest.parse_all(plan, card)
     for rec in records:
         combine.reduce_record(rec, card)

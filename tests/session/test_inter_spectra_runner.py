@@ -377,6 +377,30 @@ def test_the_fingerprint_the_runner_stamps_is_the_one_the_writer_checks(tmp_path
     assert {"unit": moved, "reason": why} in failed_units and len(failed_units) == last["failed"]
 
 
+def test_a_scan_with_no_record_of_its_files_fails_its_members_with_that_reason_and_never_reads_the_folder(tmp_path):
+    """S1U6: neither the import row nor the ledger lists the scan's files; the batch says so, it does not walk
+    the folder."""
+    ws = _workspace(tmp_path, (100, 150, 200, 250), 2)
+    k = _keys(ws)
+    moved = k["a03", 150.0]
+    scan = moved.rsplit(":", 1)[0]
+    path = Path(ws) / intake_scans.INTAKE_SCANS
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["scans"][scan].pop("import")
+    path.write_text(json.dumps(doc), encoding="utf-8", newline="\n")
+    w = Workspace.open(ws)
+    card, session = w.load()
+    for row in session.files.values():
+        if scan in (row.get("scan_ids") or ()):
+            row["scan_ids"] = [s for s in row["scan_ids"] if s != scan]
+    w.save(card, session)
+    spec = _anchored(ws, [k["a03", 100.0], k["a04", 250.0]])
+    bench = Bench(ws)
+    bench.run(spec)
+    failed = {f["unit"]: f["reason"] for f in bench.end().payload["end"]["failed_units"]}
+    assert "no record of which files" in failed[moved] and "no record of which files" in failed[k["a04", 150.0]]
+
+
 # ---------------------------------------------------------------------------
 # check 2: simultaneous
 # ---------------------------------------------------------------------------

@@ -527,7 +527,10 @@ def test_content_hash_ignores_only_the_location_of_a_bl43_record(tmp_path):
     assert content_hash(rec) == content_hash(other) != canonical_hash(rec)
     other.spectra["a03"].intensity[0] += 1.0                     # a data difference still counts
     assert content_hash(other) != content_hash(rec)
-    del rec.raw_header["paths"]                                # no paths key: byte-identical to today
+    other.raw_header["members"] = ["elsewhere/" + v for v in other.raw_header["members"]]      # nor does the member list
+    other.spectra["a03"].intensity[0] -= 1.0
+    assert content_hash(rec) == content_hash(other)
+    del rec.raw_header["paths"], rec.raw_header["members"]    # neither key: byte-identical to today
     assert content_hash(rec) == canonical_hash(rec)
 
 
