@@ -254,3 +254,279 @@ def test_the_ledger_tells_solutions_apart_by_every_other_coordinate():
     other = base.copy()
     other[model.bg] = 4.0
     assert not eng._seen_split(model, key(other))
+
+
+# ======================================================================================================
+# Packet P2: the refit-level proof (R1-R9 through ``refit.price``), the undetermined status, the record and
+# the held-by-neighbours rule. Counts are generated at test time (hard rule 10).
+# ======================================================================================================
+import time
+from dataclasses import replace
+
+from scipy.special import logsumexp
+
+from isar.analyze.coupled.types import PricingJob
+
+JOB1, JOB12, JOB21 = ("b1",), ("b1", "b2"), ("b2", "b1")
+
+
+def _job(snap, slots):
+    spec = R._Spec(snap)
+    return PricingJob(snap.unit, snap.snapshot_id, len(slots), slots, spec.key(len(slots), slots))
+
+
+def _price(snap, slots):
+    return R.price(snap, _job(snap, slots))
+
+
+def _split_terms(p):
+    """The terms of the priced basins that carry background and were priced by the split integral."""
+    return [b[0] for b in p.basins if b[1].endswith("+bg|split")]
+
+
+def _d(snap):
+    """d(w) = ln Z(2, (b1, b2)) - ln Z(1, (b1,)) of a snapshot, plus the two-mode price."""
+    p2, p1 = _price(snap, JOB12), _price(snap, JOB1)
+    return p2, p1, p2.ln_z - p1.ln_z
+
+
+def _say(*a):
+    print("[proof]", *a)
+
+
+# ---- R6 first: a wrong normalisation would pollute every other number -------------------------------------
+@pytest.mark.parametrize("scale,seed", [(0.2, 1), (0.1, 2)])      # seed 1 at 0.1 rails a width: a twin, not a pair
+def test_proof_r6_normalisation_on_a_resolved_pair(scale, seed):
+    modes = [(6.0, 0.4, 40.0), (9.0, 0.4, 40.0)]
+    counts = np.random.default_rng(seed).poisson(_expected(modes) * scale).astype(float)
+    ctx = _ctx(counts)
+    s = fast_pass.FastPassSettings(mode_ceiling=2)
+    sp = prior.resolve_prior_for(ctx, s.prior or prior.PriorSettings())
+    eng = cc.CoupledEngine(ctx, s, [cc.Entry(sp.energy, band=1.0, b_edge=0.0, b_mid=0.0)] * 2)
+    b, _ = eng.fit(eng.variant(2, True, True), [(6.0, 0.4, 8.0, False), (9.0, 0.4, 8.0, False)], "x")
+    eng.price(b)
+    assert b.status in ("ok", "ok_boundary"), b.reason
+    res = eng.split_evidence(b, b.theta_map, (0, 1), sets=(24, 48))
+    _say(f"R6 scale {scale}: split {res.ln_z:.3f}, Laplace {b.ln_z:.3f}, diff {res.ln_z - b.ln_z:+.3f}")
+    assert res.kind == "ok" and b.boundary_method != "split"
+    assert abs(res.ln_z - b.ln_z) <= 0.25
+
+
+# ---- R1 finite evidence -------------------------------------------------------------------------------------
+@pytest.mark.parametrize("w,seed,asimov", [(0.5, 3, True), (3.0, 3, True), (12.0, 3, True), (6.0, 2, False)])
+def test_proof_r1_the_hidden_composition_has_a_finite_split_evidence(w, seed, asimov):
+    p = _price(hidden_snapshot(w, seed=seed, asimov=asimov), JOB12)
+    _say(f"R1 w={w} seed={seed} asimov={asimov}: {p.status} ln_z={p.ln_z} split terms={_split_terms(p)}")
+    assert p.ln_z is not None and math.isfinite(p.ln_z) and p.status in ("ok", "ok_boundary")
+    assert _split_terms(p)
+
+
+# ---- R2 grid agreement --------------------------------------------------------------------------------------
+def test_proof_r2_the_node_sets_agree_and_an_independent_set_lands_on_them():
+    spec, eng, _ = _engines(hidden_snapshot(3.0, asimov=True))
+    start = _placed(spec)
+    for v in eng.variants[2]:
+        eng.fit(v, start, "own")
+    for b in [b for b in eng.basins() if b.count == 2 and b.status == "pending"]:
+        eng.price(b)
+    split = [b for b in eng.basins() if b.boundary_method == "split"]
+    assert split
+    for b in split:
+        a = eng._anchor(b.model, b.theta)
+        res = eng.split_evidence(b, a, b.hidden_pair)
+        alt = eng.split_evidence(b, a, b.hidden_pair, sets=(7, 14))
+        (n1, z1), (n2, z2) = res.sets[-2:]
+        _say(f"R2 {b.model.variant.label}: sets {res.sets}, last two differ {abs(z1 - z2):.4f}, "
+             f"independent (7, 14) {alt.ln_z:.4f} vs {res.ln_z:.4f} ({alt.ln_z - res.ln_z:+.4f})")
+        assert res.kind == "ok" and abs(z1 - z2) <= 0.1
+        assert alt.kind == "ok" and abs(alt.ln_z - res.ln_z) <= 0.15
+
+
+# ---- R3 start independence ----------------------------------------------------------------------------------
+def _alt_starts(spec, k, slots):
+    return [("own", [(7.6, 0.9, 12.0, False), (8.4, 0.9, 30.0, False)]),
+            ("neighbour", [(8.3, 0.2, 30.0, False), (7.9, 0.2, 12.0, False)])]
+
+
+def test_proof_r3_other_starts_reach_the_same_split_basin(monkeypatch):
+    snap = hidden_snapshot(3.0, asimov=True)
+    base = _price(snap, JOB12)
+    monkeypatch.setattr(R, "_starts", _alt_starts)
+    alt = _price(snap, JOB12)
+    t0, t1 = _split_terms(base), _split_terms(alt)
+    _say(f"R3 model level: {t0} vs {t1}; composition {base.ln_z:.3f} vs {alt.ln_z:.3f} "
+         f"({alt.ln_z - base.ln_z:+.3f})")
+    assert len(t0) == len(t1) == 1 and abs(t0[0] - t1[0]) <= 0.1
+    assert abs(alt.ln_z - base.ln_z) <= 1.5          # mask-discovery spread (inherited screen 5), reported not hidden
+
+
+# ---- R4 smoothness and R7 magnitude (the wide sweep is slow; three weights are routine) ---------------------
+def _sweep(weights):
+    d = []
+    for w in weights:
+        _p2, _p1, dw = _d(hidden_snapshot(w, asimov=True))
+        d.append(dw)
+        _say(f"R4/R7 w={w}: d(w)={dw:+.3f}")
+    return d
+
+
+def test_proof_r4_r7_three_weights():
+    d = _sweep([0.5, 3.0, 12.0])
+    assert all(-5.0 <= x <= 1.0 for x in d)                                            # R7
+    assert max(d) - min(d) <= 0.5                                                      # R4 (range)
+
+
+@pytest.mark.slow       # wide synthetic sweep (about 25 pricing jobs, 90 s); the routine subset covers three weights
+def test_proof_slow_r1_r4_r7_sweeps_and_the_table():
+    weights = [0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 9.0, 12.0]
+    d = _sweep(weights)
+    steps = [abs(b - a) for a, b in zip(d, d[1:])]
+    _say(f"R4 consecutive differences {[round(x, 3) for x in steps]}, range {max(d) - min(d):.3f}")
+    _say(f"R7 d(w) range [{min(d):+.3f}, {max(d):+.3f}]")
+    fails = 0
+    for w, seeds in ((1.5, (1, 2, 5, 9)), (6.0, (1, 2, 5, 9))):
+        for seed in seeds:
+            p = _price(hidden_snapshot(w, seed=seed), JOB12)
+            ok = p.ln_z is not None and math.isfinite(p.ln_z) and p.status in ("ok", "ok_boundary") and bool(_split_terms(p))
+            fails += not ok
+            _say(f"R1 w={w} seed={seed}: {p.status} ln_z={p.ln_z} split={bool(_split_terms(p))}")
+    for w in (0.5, 3.0, 12.0):
+        p = _price(hidden_snapshot(w, asimov=True), JOB12)
+        fails += not (p.ln_z is not None and math.isfinite(p.ln_z) and bool(_split_terms(p)))
+    _say(f"R1 failures: {fails} of 11")
+    assert fails == 0                                                                  # R1
+    assert max(steps) <= 0.1 and max(d) - min(d) <= 0.5                                # R4
+    assert all(-5.0 <= x <= 1.0 for x in d)                                            # R7
+
+
+# ---- R5 order independence and one count -------------------------------------------------------------------
+def test_proof_r5_the_two_slot_orders_of_a_hidden_pair_count_once():
+    snap = hidden_snapshot(3.0, asimov=True)
+    a, b = _price(snap, JOB12), _price(snap, JOB21)
+    _say(f"R5 orders: {a.ln_z:.4f} vs {b.ln_z:.4f} ({a.ln_z - b.ln_z:+.4f})")
+    assert abs(a.ln_z - b.ln_z) <= 0.15
+    dec = R.assign_decide(snap, [_price(snap, JOB1), a, b])
+    lz = {tuple(c["slots"]): c["ln_z"] for c in dec.candidates if tuple(c["slots"]) in (JOB12, JOB21)}
+    assert set(lz) == {JOB12, JOB21}, lz
+    both = float(logsumexp([v for v in lz.values() if v is not None]))
+    one = max(v for v in lz.values() if v is not None)
+    _say(f"R5 decision: candidates {lz}, lse(both) - one = {both - one:.4f}")
+    assert both - one <= 0.05
+
+
+# ---- R8 the opposite case -----------------------------------------------------------------------------------
+def test_proof_r8_a_vanishing_branch_never_beats_the_real_count_by_evidence_alone():
+    snap = hidden_snapshot(6.0, b2_at=14.0)
+    p2, p1 = _price(snap, JOB12), _price(snap, JOB1)
+    _say(f"R8: {p2.status} ln_z2={p2.ln_z} ln_z1={p1.ln_z} reason={p2.reason}")
+    assert p2.status in ("ok", "ok_boundary", "undetermined")
+    if p2.ln_z is not None and math.isfinite(p2.ln_z):
+        assert p2.ln_z - p1.ln_z <= 0.0
+
+
+# ---- R9 cost ------------------------------------------------------------------------------------------------
+def test_proof_r9_one_hidden_job_costs_seconds_not_minutes():
+    snap = hidden_snapshot(3.0, asimov=True)
+    t = time.perf_counter()
+    p = _price(snap, JOB12)
+    wall = time.perf_counter() - t
+    spec, eng, _ = _engines(snap)
+    for v in eng.variants[2]:
+        eng.fit(v, _placed(spec), "own")
+    eng.seed_hidden(2, R._starts(spec, 2, JOB12))
+    for b in [b for b in eng.basins() if b.count == 2 and b.status == "pending"]:
+        eng.price(b)
+    _say(f"R9: one count-2 job {wall:.2f} s ({p.starts} fits); split solves {eng.n_split_nodes} in "
+         f"{eng.n_split_basins} split basins")
+    assert wall < 60.0
+
+
+# ---- T-undetermined (refit part) ---------------------------------------------------------------------------
+def test_a_job_whose_only_basins_are_undetermined_says_so(monkeypatch):
+    snap = hidden_snapshot(3.0, asimov=True)
+
+    def fake(self, basin):
+        basin.status, basin.reason = "undetermined", "Hessian not positive definite (made up)"
+    monkeypatch.setattr(cc.CoupledEngine, "price", fake)
+    p = _price(snap, JOB1)
+    assert (p.status, p.ln_z, p.mode) == ("undetermined", None, None)
+    assert p.reason.startswith("Hessian not positive definite")
+    spec = R._Spec(snap)
+    jobs, _cov, _lim = spec.jobs()
+    dec = R.assign_decide(snap, [R.price(snap, j) for j in jobs])
+    assert dec.candidates and all(c["ln_z"] is None and c["status"] == "undetermined" for c in dec.candidates)
+    assert (dec.count, dec.slots) == (spec.n0, spec.incoming) and not dec.changed        # nothing priced: incoming stays
+
+
+def test_all_twins_stay_degenerate_twins_not_undetermined(monkeypatch):
+    snap = hidden_snapshot(3.0, asimov=True)
+
+    def fake(self, basin):
+        basin.status, basin.reason = "degenerate_twin", "made up"
+    monkeypatch.setattr(cc.CoupledEngine, "price", fake)
+    assert _price(snap, JOB1).status == "degenerate_twin"
+
+
+# ---- T-dedupe (refit part) ---------------------------------------------------------------------------------
+def test_the_hidden_basin_is_one_record_under_either_slot_order():
+    snap = hidden_snapshot(3.0, asimov=True)
+    recs = [[r for r in _price(snap, s).basins if r[1].endswith("|split")] for s in (JOB12, JOB21)]
+    assert [len(x) for x in recs] == [1, 1]
+    (a,), (b,) = recs
+    spec = R._Spec(snap)
+    for rec in (a, b):                                       # the pair at its mean energy, H/2 each
+        assert rec[2][0][1] == rec[2][1][1] and rec[2][0][3] == rec[2][1][3]
+    assert a[1] == b[1] and sorted(m[0] for m in a[2]) == sorted(m[0] for m in b[2])
+    jobs = [_job(snap, JOB12), _job(snap, JOB21)]
+    rows = R._basin_rows(spec, jobs, {j.key: _price(snap, j.slots) for j in jobs})[0]
+    top = sorted((z for _c, _s, z in rows if z is not None), reverse=True)
+    assert top[0] - top[1] > 5.0                             # the hidden basin is one row, not one per slot order
+    canon = lambda r: (*r[:2], tuple(sorted(r[2], key=lambda m: (m[1], str(m[0])))), *r[3:])      # noqa: E731
+    assert R._same_basin(spec, canon(a), canon(b))           # the base rule's closeness: the same physical basin
+
+
+# ---- T-representative (record part) ------------------------------------------------------------------------
+def _record_of_displaced_start(energies):
+    spec, eng, _ = _engines(hidden_snapshot(3.0, asimov=True))
+    model = eng.model(eng.variant(2, True, True), ())
+    theta = eng._start(model, [(energies[0], 0.4, 40.0, False), (energies[1], 0.4, 3.0, False)],
+                       {"elastic": 100.0, "bg": 2.0})
+    b = eng._place(model, theta, eng.cost(model, theta), "x", 0, "")
+    assert b.status == "pending"
+    eng.price(b)
+    return eng, b, R._basin_record(b, SLOTS, b.ln_z)
+
+
+def test_the_record_carries_the_solved_pair_not_the_start():
+    eng, b, rec = _record_of_displaced_start((8.0, 7.7))
+    assert b.boundary_method == "split" and not np.array_equal(b.theta_map, b.theta)
+    assert math.isfinite(eng.cost(b.model, b.theta_map))
+    (ai, gi, ci), (aj, gj, cj) = b.model.modes
+    assert b.theta_map[ci] + b.theta_map[cj] == pytest.approx(b.theta[ci] + b.theta[cj], rel=0.05)
+    term, label, modes, qe, mode = rec
+    assert label.endswith("|split") and [m[0] for m in modes] == ["b1", "b2"]
+    assert modes[0][1] == modes[1][1] == pytest.approx((b.theta_map[ai] + b.theta_map[aj]) / 2)
+    assert modes[0][3] == modes[1][3] == pytest.approx((b.theta_map[ci] + b.theta_map[cj]) / 2)
+
+
+def test_other_starts_record_the_pair_in_the_same_order():
+    _e, _b, r1 = _record_of_displaced_start((8.3, 7.9))
+    _e, _b, r2 = _record_of_displaced_start((7.9, 8.3))
+    assert [m[0] for m in r1[2]] == [m[0] for m in r2[2]] == ["b1", "b2"]
+    assert r1[2][0][1] == pytest.approx(r2[2][0][1], abs=0.2)
+
+
+# ---- T-continuous ------------------------------------------------------------------------------------------
+def test_the_weaker_of_two_overlapped_modes_is_held_by_neighbours():
+    snap = hidden_snapshot(6.0, asimov=True)
+    a, _ = R.assign(snap)
+    spec = R._Spec(snap)
+    forced = replace(a, count=2, slots=JOB12, factors=spec.incident(JOB12), changed=True, selected_model=None)
+    res = R.refit(snap, stage="continuous", assignment=forced)
+    assert len(res.modes) == 2
+    e = [m.omega0 for m in res.modes]
+    assert abs(e[0] - e[1]) < spec.fs.twin_coincide_fwhm * spec.fwhm            # the premise: the pair overlaps
+    status = [m.status for m in res.modes]
+    weak = min(range(2), key=lambda i: res.modes[i].height)
+    assert status[weak] == "held_by_neighbours"
+    assert status[1 - weak] != "held_by_neighbours"

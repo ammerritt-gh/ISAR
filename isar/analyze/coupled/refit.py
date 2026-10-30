@@ -97,6 +97,46 @@ class _Labelled(cc.CoupledEngine):
     def ln_prior(self, model, theta) -> float:
         return super().ln_prior(model, theta) + self._ln_exch(model)
 
+    def seed_hidden(self, k, starts):
+        """A constructed hidden-mode start (D6): the overlapping pair of the neighbour-placed start replaced by
+        one merged mode, fitted at count k-1 in each variant, then expanded back into the pair at an even-ish
+        split. The TRF drifts a very weak mode away in about one draw in twelve, so the hidden candidate would
+        otherwise depend on luck; one cheap TRF per variant covers it. The seed is placed, not fitted: the split
+        integral prices it."""
+        placed = starts[-1][1]
+        matched = [isinstance(sl, cc.MatchedDensity) for sl in self.slots]
+        pos = [sl.centre if m else placed[n][0] for n, (sl, m) in enumerate(zip(self.slots, matched))]
+        reach = self._s0.twin_coincide_fwhm * self.fwhm
+        pairs = [(i, j) for i in range(k) for j in range(i + 1, k)
+                 if abs(pos[i] - pos[j]) < reach and (matched[i] or matched[j])]
+        if not pairs:
+            return
+        i, j = min(pairs, key=lambda p: abs(pos[p[0]] - pos[p[1]]))
+        for v in self.variants.get(k, ()):
+            low = self.variant(k - 1, v.elastic, v.background, v.qe)
+            if low is None:
+                continue
+            h = placed[i][2] + placed[j][2]
+            big = i if placed[i][2] >= placed[j][2] else j
+            rest = [m for n, m in enumerate(placed) if n not in (i, j)]
+            got = self.fit(low, rest + [(placed[big][0], placed[big][1], h, False)], "hidden_low")
+            if got is None:
+                continue
+            lb = got[0]
+            lmodes, lin = self.modes_of(lb.model, lb.theta), self.linear_of(lb.model, lb.theta)
+            e, g, hm, _d = lmodes[-1]
+            f0 = min(0.8, max(0.2, placed[i][2] / h)) if h > 0 else 0.5
+            others = iter(lmodes[:-1])
+            out = [(e, g, f0 * hm, False) if n == i else (e, g, (1.0 - f0) * hm, False) if n == j
+                   else next(others) for n in range(k)]
+            model = self.model(v, ())
+            if model is None:
+                continue
+            theta = self._start(model, out, lin)
+            cost = self.cost(model, theta)
+            if math.isfinite(cost):
+                self._place(model, theta, cost, "hidden", 0, "seed")
+
 
 def _parts(context):
     """(ScanContext, FastPassSettings, structure whitelist) of a ``Snapshot.context``."""
@@ -532,9 +572,11 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
                       f"the neighbour density of {bad[0]} has no verified normaliser", 0, time.perf_counter() - t0)
     u = sum(b is None for b in slots)
     eng = _Labelled(spec.ctx, spec.fs, objs, structures=spec.structures)
+    starts = _starts(spec, k, slots)
     for v in eng.variants.get(k, ()):
-        for family, modes in _starts(spec, k, slots):
+        for family, modes in starts:
             eng.fit(v, modes, family)
+    eng.seed_hidden(k, starts)
     while True:
         pending = [b for b in eng.basins() if b.count == k and b.status == "pending"]
         if not pending:
@@ -546,9 +588,10 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
     priced = [b for b in basins if b.status in _PRICED and b.ln_z is not None]
     if not priced:
         twin = bool(basins) and all(b.status == "degenerate_twin" for b in basins)
-        reason = next((b.reason for b in basins if b.reason), "no start converged")
-        return Priced(job.key, k, slots, None, "degenerate_twin" if twin else "no_evidence", None, reason,
-                      eng.n_fits, time.perf_counter() - t0)
+        und = next((b for b in basins if b.status == "undetermined"), None)
+        reason = und.reason if und is not None else next((b.reason for b in basins if b.reason), "no start converged")
+        status = "degenerate_twin" if twin else "undetermined" if und is not None else "no_evidence"
+        return Priced(job.key, k, slots, None, status, None, reason, eng.n_fits, time.perf_counter() - t0)
 
     def charge(b):
         fixed = set(b.model.fixed_pos)
@@ -567,14 +610,25 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
 def _basin_record(b, slots, term: float) -> tuple:
     """(term, model label, ((slot, omega0, Gamma, h, delta) per mode in slot order), (QE height, width), mode)
     of one priced basin at its posterior mode (``mode`` as ``Priced.mode``, in energy order):
-    what ``_basin_rows`` compares across the slot orders of a composition."""
+    what ``_basin_rows`` compares across the slot orders of a composition. A split basin (a mode hidden under
+    another, priced by the integral over the intensity split) is labelled ``|split`` and records its pair at the
+    pair's mean energy and width with H/2 each: the split is integrated, not fitted, so the two slot orders of
+    one hidden basin are one record. (The representative's weak-mode width is likelihood-blind: not read.)"""
     m, th = b.model, b.theta_map
-    modes = tuple((sl, float(th[a]), float(th[g]), float(th[c]), i in m.delta)
-                  for i, ((a, g, c), sl) in enumerate(zip(m.modes, slots)))
+    modes = [(sl, float(th[a]), float(th[g]), float(th[c]), i in m.delta)
+             for i, ((a, g, c), sl) in enumerate(zip(m.modes, slots))]
+    split = getattr(b, "boundary_method", "") == "split"
+    if split:
+        i, j = b.hidden_pair
+        e, g = (modes[i][1] + modes[j][1]) / 2.0, (modes[i][2] + modes[j][2]) / 2.0
+        h = (modes[i][3] + modes[j][3]) / 2.0
+        for n in (i, j):
+            modes[n] = (modes[n][0], e, g, h, modes[n][4])
+    modes = tuple(modes)
     qe = tuple(None if i is None else float(th[i]) for i in (m.qe_h, m.qe_w))
     # the basin's model and parameters in energy order (the order _basin_rows files it under): a delta mask and
     # each mode's values follow their mode when a swapped slot order is rewritten to the sorted one
-    perm = sorted(range(len(modes)), key=lambda i: modes[i][1])
+    perm = sorted(range(len(modes)), key=lambda i: (modes[i][1], str(modes[i][0])))
     theta = th.copy()
     for j, i in enumerate(perm):
         for new, old in zip(m.modes[j], m.modes[i]):
@@ -582,7 +636,7 @@ def _basin_record(b, slots, term: float) -> tuple:
     v = m.variant
     mode = (v.elastic, v.background, v.qe, tuple(j for j, i in enumerate(perm) if i in m.delta),
             tuple(float(x) for x in theta))
-    return float(term), m.variant.label, modes, qe, mode
+    return float(term), m.variant.label + ("|split" if split else ""), modes, qe, mode
 
 
 def _same_basin(spec: _Spec, x: tuple, y: tuple) -> bool:
@@ -628,7 +682,7 @@ def _basin_rows(spec: _Spec, jobs, by_key) -> list:
         unique: list[tuple] = []
         for _j, p in members:
             for term, model, bmodes, qe, mode in p.basins:
-                rec = (term, model, tuple(sorted(bmodes, key=lambda m: m[1])), qe, mode)
+                rec = (term, model, tuple(sorted(bmodes, key=lambda m: (m[1], str(m[0])))), qe, mode)
                 i = next((i for i, u_ in enumerate(unique) if _same_basin(spec, u_, rec)), None)
                 if i is None:
                     unique.append(rec)
@@ -952,6 +1006,14 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
     carried = _carried_ids(a, spec.own, [float(theta[ai]) for ai, _g, _c in model.modes])
     ids = [b if b is not None else carried.get(m) or new_branch_id(snapshot.fit_id, m) for m, b in enumerate(slots)]
     modes, energies = [], {}
+    # of two modes closer than the twin distance the weaker one (a tie: the later slot) is sized by the
+    # neighbours, not by this spectrum: a hidden mode reads held by neighbours whatever the release fit says
+    near = spec.fs.twin_coincide_fwhm * spec.fwhm
+    weaker = set()
+    for i in range(k):
+        for j in range(i + 1, k):
+            if abs(theta[model.modes[i][0]] - theta[model.modes[j][0]]) < near:
+                weaker.add(i if theta[model.modes[i][2]] < theta[model.modes[j][2]] else j)
     for m, (ai, gi, ci) in enumerate(model.modes):
         e, g, h = float(theta[ai]), float(theta[gi]), float(theta[ci])
         cond, relsig = sd.get(ai), rel_sd.get(ai)
@@ -964,7 +1026,8 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
         release_ok = (relsig is not None and relsig < spec.ell / math.sqrt(12.0)
                       and ai not in rel_railed)
         # only a slot with a neighbour factor can be held by neighbours; an unmatched one is just poorly pinned
-        mstatus = ("poorly_determined" if cond is None else "determined_by_own_data" if release_ok
+        mstatus = ("held_by_neighbours" if m in weaker and by_branch.get(slots[m])
+                   else "poorly_determined" if cond is None else "determined_by_own_data" if release_ok
                    else "held_by_neighbours" if by_branch.get(slots[m]) else "poorly_determined")
         modes.append(HeldMode(branch=ids[m], omega0=e, gamma=g, height=h, guard=max(found) if found else None,
                               guard_source=source, status=mstatus,

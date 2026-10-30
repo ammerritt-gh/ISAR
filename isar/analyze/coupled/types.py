@@ -106,10 +106,10 @@ class PricingJob:                  # one composition at one count, with all its 
 class Priced:
     key: str; count: int; slots: tuple[str | None, ...]
     ln_z: float | None             # Laplace log evidence incl. the composition log weight and variant weight; None = no_evidence
-    status: str                    # base engine status words ("ok", "ok_boundary", "no_evidence", "degenerate_twin", ...)
+    status: str                    # base engine status words ("ok", "ok_boundary", "no_evidence", "degenerate_twin", ...); "undetermined": no valid price because the parameters stay undetermined (ln_z None, reason names the cause)
     mode: tuple | None             # posterior-mode parameters, labelled
     reason: str | None; starts: int; seconds: float
-    basins: tuple = ()             # (term, model, modes, qe) per priced basin (refit._basin_record): slot orders deduplicated
+    basins: tuple = ()             # (term, model, modes, qe, mode) per priced basin (refit._basin_record): slot orders deduplicated; a basin priced by the split integral has the model label suffix "|split" and records its pair at the mean energy and width with H/2 each
 
 
 @dataclass(frozen=True)
