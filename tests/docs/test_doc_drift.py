@@ -66,6 +66,11 @@ LINK_EXEMPT_PREFIXES = (
 # indeed required, to keep the wording that was accurate on its date.
 STALE_PHRASES = (
     (
+        "inputs changed during the batch",
+        "REFUSED says the inputs do not match the experiment's record; it cannot know they changed "
+        "during the batch",
+    ),
+    (
         "keeps drawing the fast-pass fit",
         "G27 makes Scan(s) default to Fit: None and draw only the stored pass chosen by the user",
     ),

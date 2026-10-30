@@ -142,10 +142,14 @@ by `cost_rel_tol`. A batch that reaches `sweep_cap` first keeps its results and 
 
 **Acceptance.** A completed refit becomes authoritative only if, at save time, none of these holds: its
 spectrum is locked (`locked`); the user picked a fit for it since the batch started (`picked`; the batch then
-refits it no more, and only a pick older than the batch start is one the batch replaces); its own inputs
-changed during the batch (`inputs_changed`); an input of a
-neighbour it was conditioned on changed (`neighbour_inputs_changed`); or a neighbour's fit it used is no longer
-the one in use (`neighbour_fit_changed`). A refused refit stays in the history with its reason. Refit outcomes
+refits it no more, and only a pick older than the batch start is one the batch replaces); the inputs it was
+fitted from do not match the experiment's record at save time (`inputs_changed`); the inputs of a neighbour it was
+conditioned on do not match (`neighbour_inputs_changed`); or a neighbour's fit it used is no longer
+the one in use (`neighbour_fit_changed`). The writer compares the hash stamped at the freeze with one computed from
+the stored rows, so it can say that they differ, never when or why. A refused refit stays in the history with its
+reason, and the batch row shows it as "fitted but not saved". A locked spectrum whose locked fit is out of date is
+neither refitted nor used, so it counts with the fixed spectra, not as not reached, and the end record lists it
+under `stale_locks`. Refit outcomes
 are `accepted`, `unchanged`, `rejected` or `failed`; only `accepted` and `unchanged` are offered as fits. A
 batch's newest accepted refit of a spectrum becomes its authoritative fit unless the spectrum is locked. A
 batch the user starts replaces an unlocked spectrum's authoritative fit; ISAR never changes a pick or a lock.

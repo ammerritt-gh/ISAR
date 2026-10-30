@@ -638,6 +638,12 @@ batch**. It grows outward from the anchors, ring by ring. A **simultaneous** bat
 the scan list together, until the fits settle: press **Start simultaneous batch on the selection**. Nothing starts by
 itself, and each batch is one row in the analysis queue.
 
+A batch row counts the spectra it will fit: "0 of 27 done" for 28 spectra with one anchor, because the anchor, and
+any locked spectrum, stays as it is and is not counted. A spectrum that "failed" with "fitted but not saved" was
+fitted, but ISAR could not confirm the data it was fitted from matches the experiment's record; its fit is kept in
+the log and is not used. Start the batch again, and if it fails the same way, add the data again (the same files or
+their folder).
+
 Two spectra are q-neighbours when they are adjacent analyzers of one scan, and both need an accepted hkl for that
 link. They are T-neighbours when they are the same analyzer at adjacent temperatures. An analyzer without an accepted
 hkl gets its T-links only.
