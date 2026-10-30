@@ -26,7 +26,7 @@ def test_config_actions_redraw_and_save_scan_appearance(qtbot, scans_view_ws_rea
     assert actions['zero_lines'].isChecked() and actions['peak_lines'].isChecked()
     assert not actions['filled_symbols'].isChecked()
     spec = page._drawn_state.main_spec
-    guides = [s for s in spec.series if s.label is None]
+    guides = [s for s in spec.series if s.legend_group is None]
     zeros = [s for s in guides if s.style == 'dotted']
     assert [s.y.tolist() for s in zeros] == [[100, 100], [0, 0]]
     peaks = [s for s in guides if s.style != 'dotted']
@@ -48,7 +48,10 @@ def test_config_actions_redraw_and_save_scan_appearance(qtbot, scans_view_ws_rea
         action.trigger()
     page.flush_redraw()
     assert page.drawn().view_range == before
-    assert all(s.label is not None for s in page._drawn_state.main_spec.series)
+    assert not any(s.legend_group is None for s in page._drawn_state.main_spec.series)
+    backgrounds = [s for s in page._drawn_state.main_spec.series
+                   if s.label is None and s.color == CURVE_COLORS['background']]
+    assert len(backgrounds) == 2 and all(s.style == 'dotted' for s in backgrounds)
     points = [i for i in page._main_plot.listDataItems() if i.opts['symbol'] is not None]
     assert all(pg.mkBrush(i.opts['symbolBrush']).style() == Qt.BrushStyle.SolidPattern for i in points)
     for old, new in zip(data, [s for s in page._drawn_state.main_spec.series if s.role is Role.DATA]):
