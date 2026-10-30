@@ -622,7 +622,8 @@ class ScanListViewModel(ViewModel):
             keys = {k for ident in visible[first:last + 1] if (k := self._node_key(ident))}
             if ctrl:
                 keys.update(self.selection.keys)
-            lead = self._node_key(self._anchor)
+            if not (ctrl and self.selection.picks):      # Ctrl+Shift extends the picks, so the first pick stays
+                lead = self._node_key(self._anchor)
         else:
             self._anchor = node_id
             keys = {key} if key is not None else set(self.container_keys(node_id))

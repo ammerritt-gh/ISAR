@@ -97,6 +97,21 @@ def test_first_picked_follows_mouse_gestures(panel_vm):
     assert vm.selection.picks[:4] == tuple(A.values())
 
 
+def test_ctrl_shift_range_keeps_the_earlier_first_pick(panel_vm):
+    panel, vm, _ = panel_vm
+    _open(panel, KEY_A, KEY_B)
+    ctrl, shift = Qt.KeyboardModifier.ControlModifier, Qt.KeyboardModifier.ShiftModifier
+    _mouse(panel, f"spec:{A[4]}")
+    _mouse(panel, f"spec:{B[3]}", ctrl)                       # the anchor moves to B3; A4 stays the first pick
+    _mouse(panel, f"spec:{B[4]}", ctrl | shift)               # a Ctrl+Shift range extends the picks, as Ctrl does
+    assert vm.selection.keys == (B[3], B[4], A[4])
+    assert vm.selection.picks == (A[4], B[3], B[4]) and vm.selection.first_picked == A[4]
+    _mouse(panel, f"spec:{B[5]}")                             # no earlier picks: the anchor B5 leads a Ctrl+Shift range
+    vm.selection.clear()
+    _mouse(panel, f"spec:{B[3]}", ctrl | shift)
+    assert vm.selection.first_picked == B[5]
+
+
 def test_visible_range_ctrl_range_hidden_anchor_and_select_all(panel_vm):
     panel, vm, _ = panel_vm
     _open(panel, KEY_A, KEY_B)
