@@ -597,7 +597,7 @@ def ordered_energy_transform(u, ep: EnergyPrior) -> np.ndarray:
 # inverse are closed form (Gaussian piece: erf / erfinv), so the Laplace density (QEWidthPrior.log_pdf)
 # and the nested-sampling transform (QEWidthPrior.ppf) are one implementation.
 # Bump CENTRAL_QE_RECIPE_VERSION when the QE's model or the BL43LXU fast pass changes BL43LXU numbers.
-CENTRAL_QE_RECIPE_VERSION = "isar.central-qe-recipe/1"
+CENTRAL_QE_RECIPE_VERSION = "isar.central-qe-recipe/2"
 
 
 @dataclass(frozen=True)

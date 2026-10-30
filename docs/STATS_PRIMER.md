@@ -395,7 +395,7 @@ Widths and energies stay declared.
 | flat background (counts per point) | flat on `[0, max count]` | the spectrum's highest count |
 | quasi-elastic area (IN8's fixed-width component, `QuasiElastic`) | flat on `(0, scale x exposure x resolution FWHM)` (the v4 rule; out of this recipe's scope) | the exposure, the resolution width |
 | central QE height `qe.h` (BL43LXU) | the height prior, unchanged: flat on `[0, 1.2 x max count]` | the spectrum's highest count |
-| central QE width `qe.width` (BL43LXU, fitted; none when the card pins `quasielastic_fwhm`) | zero below w; flat from w to 2w; above 2w the log density falls 1 nat per w, linearly, with no cap in the ruling; renormalised on `[w, 2w + 40 w]`, the knee rounded over ±0.05 w; its own recipe id `isar.central-qe-recipe/1` | the resolution FWHM w |
+| central QE width `qe.width` (BL43LXU, fitted; none when the card pins `quasielastic_fwhm`) | zero below w; flat from w to 2w; above 2w the log density falls 1 nat per w, linearly, with no cap in the ruling; renormalised on `[w, 2w + 40 w]`, the knee rounded over ±0.05 w; its own recipe id `isar.central-qe-recipe/2` | the resolution FWHM w |
 
 **The height coordinate.** A peak's amplitude coordinate is its convolved height h (glossary): the
 maximum of its continuous convolved Stokes-side profile, in counts per point at the spectrum's
