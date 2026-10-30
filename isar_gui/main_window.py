@@ -262,7 +262,7 @@ _LEAVE_WORDS = {"close": ("Close ISAR?", "Keep ISAR open", "Stop and close", "be
 
 def _are(n: int, noun: str = "") -> str:
     """``"1 analyzer is"`` / ``"5 analyzers are"``; without a noun ``"1 is"`` / ``"5 are"``."""
-    noun = f" {noun}{'' if n == 1 else 's'}" if noun else ""
+    noun = f" {noun}{'' if n == 1 else 'es' if noun.endswith('ch') else 's'}" if noun else ""
     return f"{n}{noun} {'is' if n == 1 else 'are'}"
 
 
@@ -298,9 +298,10 @@ def _leave_text(s, when: str) -> str:
         text += " Leaving " + (", and ".join(lost) if len(lost) > 1 else lost[0]) + "."
     batch_lost = []
     if s.n_batches:
-        batch_lost.append("stops the running batch after its current ring or sweep, keeping what it saved"
+        # the batch's process is killed at once (E13): only the rings or sweeps already saved survive
+        batch_lost.append("stops the running batch at once, keeping what it has already saved"
                           if s.n_batches == 1 else
-                          "stops the running batches after their current rings or sweeps, keeping what they saved")
+                          "stops the running batches at once, keeping what they have already saved")
     if s.n_batches_waiting:
         batch_lost.append("forgets the waiting batch" if s.n_batches_waiting == 1 else "forgets the waiting batches")
     if batch_lost:

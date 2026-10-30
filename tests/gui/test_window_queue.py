@@ -269,16 +269,19 @@ def test_the_leave_question_names_what_is_lost():
         "discarding its work. Every finished result is saved before ISAR closes.")
     assert mw_mod._leave_text(LeaveSummary(0, 0, None, 1, 0), "before ISAR closes") == (
         "1 analyzer is waiting. Leaving forgets the waiting ones.")
-    # A batch is named as a batch, never as an analyzer: it stops after its current ring or sweep.
+    # A batch is named as a batch, never as an analyzer: it stops at once, keeping the rings or sweeps it saved.
     assert mw_mod._leave_text(LeaveSummary(1, 0, None, 0, 0, 1, 0), "before ISAR closes") == (
-        "1 inter-spectra batch is running. Leaving stops the running batch after its current ring or sweep, keeping "
-        "what it saved.")
+        "1 inter-spectra batch is running. Leaving stops the running batch at once, keeping what it has already "
+        "saved.")
+    assert mw_mod._leave_text(LeaveSummary(2, 0, None, 0, 0, 2, 0), "before ISAR closes") == (
+        "2 inter-spectra batches are running. Leaving stops the running batches at once, keeping what they have "
+        "already saved.")
     assert mw_mod._leave_text(LeaveSummary(0, 0, None, 1, 0, 0, 1), "before ISAR closes") == (
         "1 inter-spectra batch is waiting. Leaving forgets the waiting batch.")
     assert mw_mod._leave_text(LeaveSummary(3, 0, None, 4, 0, 1, 1), "before ISAR closes") == (
         "2 analyzers are running, 1 inter-spectra batch is running, 3 analyzers are waiting and 1 inter-spectra batch "
         "is waiting. Leaving stops the running analyzers, discarding their work, and forgets the waiting ones. Leaving "
-        "stops the running batch after its current ring or sweep, keeping what it saved, and forgets the waiting batch.")
+        "stops the running batch at once, keeping what it has already saved, and forgets the waiting batch.")
 
 
 @pytest.mark.parametrize("verb", ["close", "open", "new"])
