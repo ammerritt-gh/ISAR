@@ -140,7 +140,9 @@ mode energy moves by more than `sweep_tol_meV`, two quiet sweeps in a row, and t
 by `cost_rel_tol`. A batch that reaches `sweep_cap` first keeps its results and is flagged `did_not_settle`.
 
 **Acceptance.** A completed refit becomes authoritative only if, at save time, none of these holds: its
-spectrum is locked (`locked`); its own inputs changed during the batch (`inputs_changed`); an input of a
+spectrum is locked (`locked`); the user picked a fit for it since the batch started (`picked`; the batch then
+refits it no more, and only a pick older than the batch start is one the batch replaces); its own inputs
+changed during the batch (`inputs_changed`); an input of a
 neighbour it was conditioned on changed (`neighbour_inputs_changed`); or a neighbour's fit it used is no longer
 the one in use (`neighbour_fit_changed`). A refused refit stays in the history with its reason. Refit outcomes
 are `accepted`, `unchanged`, `rejected` or `failed`; only `accepted` and `unchanged` are offered as fits. A

@@ -872,8 +872,9 @@ class _Run:
                                 now.pop(k, None)
                         move = math.inf
                         if verdict["refused"][k] in (self.records_mod.REFUSED["locked"],
+                                                     self.records_mod.REFUSED["picked"],
                                                      self.records_mod.REFUSED["inputs_changed"]):
-                            active.discard(k)
+                            active.discard(k)        # the writer refuses every later refit of it too
                 cut |= self.refused_neighbours(verdict, snaps2)
                 total = self.total(A, held, data, unary)     # the stopping cost of the state the writer accepted
                 self.stage_timing("sweep", n, t_sweep, width, len(snaps2))
@@ -899,7 +900,8 @@ class _Run:
         changed, or one whose fit the user picked since the start (the writer refuses every other fit of it for
         the rest of the batch). A neighbour whose own refit went back, or a new lock (a fixed neighbour from the
         next sweep), stays."""
-        plain = (self.records_mod.REFUSED["locked"], self.records_mod.REFUSED["inputs_changed"])
+        plain = (self.records_mod.REFUSED["locked"], self.records_mod.REFUSED["picked"],
+                 self.records_mod.REFUSED["inputs_changed"])
         fits = {s.fit_id for k, s in snaps.items() if k in verdict["refused"] and verdict["refused"][k] not in plain}
         if not fits:
             return set()

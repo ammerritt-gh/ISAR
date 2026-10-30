@@ -381,6 +381,9 @@ def _decide(r: dict, user, now: dict, start_seq: int, declined: set) -> records.
     lock = user.locks.get(r["unit"])
     if lock is not None and lock.locked:
         return no("locked", lock.fit)
+    pick = user.picks.get(r["unit"])
+    if pick is not None and pick.seq > start_seq:      # the user's own pick since the start binds, as a lock does
+        return no("picked", pick.fit)
     own = now.get(r["unit"])
     if own is not None and own != r.get("inputs"):
         return no("inputs_changed")

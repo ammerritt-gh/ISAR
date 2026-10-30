@@ -350,11 +350,10 @@ def test_a_count_change_in_a_later_round_reopens_the_sweeps(tmp_path):
 
 
 def test_refused_members_of_one_group_go_back_and_the_sweep_is_not_quiet(tmp_path):
-    """The user picks a fit for y during sweep 1: x and z (one group, both conditioned on y's batch refit) are
-    refused at save. Both held values go back (y's sweep 2 is conditioned on their incoming fits), and that
-    sweep is not quiet. The writer would refuse any other fit of y for the rest of the batch, so nothing
-    conditions on y again: x and z (y their only neighbour) leave, not refused sweep after sweep to the cap,
-    and the batch settles on y."""
+    """The user picks y's fast solo during sweep 1: y's own refit is refused (``picked``) and y is refitted no
+    more; x and z (one group, both conditioned on y's batch refit) are refused at save too. Their held values go
+    back and that sweep is not quiet; from sweep 2 they are conditioned on y's pick, which the writer accepts,
+    and the batch settles instead of refusing them sweep after sweep to the cap."""
     ws, x, y, z = _chain(tmp_path, ({"toy": "keep"}, {"toy": "keep"}, {"toy": "keep"}))
     assert inter_values.save_settings(ws, {"sweep_cap": 6}).ok
     bench = Bench(ws, _when("sweep", 1, "refine", lambda: inter_values.pick_fit(ws, y, "fast")))
@@ -362,10 +361,11 @@ def test_refused_members_of_one_group_go_back_and_the_sweep_is_not_quiet(tmp_pat
     log = bench.run(spec)
     lines = _lines(ws, spec.batch_id)
     refused = {r.unit for r, _ in lines if r.accept.decision == "declined"}
-    assert refused == {x, z}
-    assert {r.unit for r, _ in lines if r.index > 1} == {y}
-    (y2,) = [r for r, _ in lines if r.index == 2]
-    assert {(c.unit, c.fit) for c in y2.conditioned_on} == {(x, "fast"), (z, "fast")}
+    assert refused == {x, y, z}
+    assert {r.unit for r, _ in lines if r.index > 1} == {x, z}
+    second = [r for r, _ in lines if r.index == 2]
+    assert {(c.unit, c.fit) for r in second for c in r.conditioned_on} == {(y, "fast")}
+    assert all(r.accept.decision == "authoritative" for r in second)
     end = log.batches[spec.batch_id].end
     assert end["state"] == "settled" and end["sweeps"] < 6
 
@@ -386,8 +386,8 @@ def test_a_neighbour_whose_inputs_changed_conditions_no_later_sweep(tmp_path):
 
 
 def test_the_stopping_cost_is_summed_on_the_state_the_writer_accepted(tmp_path):
-    """x and z are refused in sweep 1 (as above): the shared objective of that sweep carries only y's refit, not
-    the refused ones' data deviance beside their reverted energies."""
+    """x's fast solo is picked during sweep 1, so x's refit is refused: the shared objective of that sweep carries
+    only the accepted refits of y and z, not x's data deviance beside its reverted energies."""
     import types
     seen = []
     spy = types.ModuleType("spy_core")
@@ -399,9 +399,26 @@ def test_the_stopping_cost_is_summed_on_the_state_the_writer_accepted(tmp_path):
     spy.total_objective = total_objective
     ws, x, y, z = _chain(tmp_path, ({"toy": "keep"}, {"toy": "keep"}, {"toy": "keep"}))
     assert inter_values.save_settings(ws, {"sweep_cap": 2}).ok
-    bench = Bench(ws, _when("sweep", 1, "refine", lambda: inter_values.pick_fit(ws, y, "fast")))
+    bench = Bench(ws, _when("sweep", 1, "refine", lambda: inter_values.pick_fit(ws, x, "fast")))
     bench.run(_simultaneous(ws, (x, y, z)), core=spy)
-    assert seen[0] == [y]
+    assert seen[0] == sorted([y, z])
+
+
+def test_a_pick_made_during_the_batch_survives_and_its_member_is_refitted_no_more(tmp_path):
+    """The user picks x's fast solo during sweep 1: x's refit of that sweep is declined (``picked``, kept in the
+    history), x is not refitted again, the pick stays in use, and the batch still settles. (A pick older than the
+    batch start is the one the batch replaces: test_inter_authority, a batch that saw the pick replaces it.)"""
+    from isar.intake.inter_spectra import read_user
+    from isar.session.inter_spectra import authority
+    ws, x, y, z = _chain(tmp_path, ({"toy": "average"}, {"toy": "keep"}, {"toy": "average"}))
+    bench = Bench(ws, _when("sweep", 1, "refine", lambda: inter_values.pick_fit(ws, x, "fast")))
+    spec = _simultaneous(ws, (x, y, z))
+    log = bench.run(spec)
+    xs = [r for r, _ in _lines(ws, spec.batch_id) if r.unit == x]
+    assert [(r.index, r.accept.decision, r.accept.reason) for r in xs] == [(1, "declined", "picked")]
+    assert log.batches[spec.batch_id].end["state"] == "settled"
+    got = authority.resolve_all(log, read_user(ws), _now(ws, (x, y, z)), {x, y, z})
+    assert (got[x].fit, got[x].source) == ("fast", "pick")
 
 
 def test_a_lock_mid_sweep_is_refused_and_the_member_leaves_the_sweeps(tmp_path):

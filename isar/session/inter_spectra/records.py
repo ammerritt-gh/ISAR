@@ -26,6 +26,7 @@ ELIGIBLE = ("accepted", "unchanged")        # statuses that are offered fits; "r
 STATUSES = ("accepted", "unchanged", "rejected", "failed")
 # the plain words of a declined refit, by Accept.reason; "{}" is Accept.detail (the neighbour)
 REFUSED = {"locked": "locked since the batch started",
+           "picked": "you picked a fit for it since the batch started",
            "inputs_changed": "its inputs changed during the batch",
            "neighbour_inputs_changed": "the inputs of {} changed during the batch",
            "neighbour_fit_changed": "the fit of {} it was conditioned on is no longer the one in use"}
@@ -47,7 +48,7 @@ class Cond:
 @dataclass(frozen=True)
 class Accept:
     decision: str; reason: str | None; detail: str | None; intake_seq: int
-    # decision "authoritative" | "declined"; reason None | "locked" | "inputs_changed" | "neighbour_inputs_changed" | "neighbour_fit_changed"
+    # decision "authoritative" | "declined"; reason None | "locked" | "picked" | "inputs_changed" | "neighbour_inputs_changed" | "neighbour_fit_changed"
     # detail: the locked fit id, or the neighbour unit; intake_seq: highest seq of intake/inter_spectra.jsonl the check saw
 
 
