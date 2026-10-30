@@ -527,6 +527,14 @@ class _Spec:
         """Everything a price depends on (remedy 1): the spectrum, its fit and inputs, the count and slots,
         every held fit, mode value and guard of its terms, and the full settings. Never the snapshot id, so
         an identical snapshot in a later round reuses the price; any moved value re-prices."""
+        payload = {**self._payload(), "count": k, "slots": list(slots)}
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, default=repr).encode("utf-8")).hexdigest()
+
+    def content_key(self) -> str:
+        """``key`` without the count and slots: everything a price depends on apart from the job (D21)."""
+        return hashlib.sha256(json.dumps(self._payload(), sort_keys=True, default=repr).encode("utf-8")).hexdigest()
+
+    def _payload(self) -> dict:
         snap = self.snap
 
         def held(h):
@@ -535,11 +543,9 @@ class _Spec:
                     [[d.branch, d.last_seen_fit, d.last_seen_unit] for d in h.dormant]]
         # every field of each term (a new Term field is hashed without another edit) and the merged aliases:
         # the loss price names branches canonically, so a price cached before a merge must not be reused after it
-        payload = {"unit": snap.unit, "own": held(snap.own), "count": k, "slots": list(slots),
-                   "batch_kind": snap.batch_kind, "settings": snap.settings.to_values(),
-                   "aliases": sorted(snap.aliases.items()),
-                   "terms": [[astuple(ti.term), [held(h) for h in ti.held]] for ti in snap.terms]}
-        return hashlib.sha256(json.dumps(payload, sort_keys=True, default=repr).encode("utf-8")).hexdigest()
+        return {"unit": snap.unit, "own": held(snap.own), "batch_kind": snap.batch_kind,
+                "settings": snap.settings.to_values(), "aliases": sorted(snap.aliases.items()),
+                "terms": [[astuple(ti.term), [held(h) for h in ti.held]] for ti in snap.terms]}
 
     def jobs(self):
         comps, coverage, limited = self.compositions()
@@ -559,6 +565,15 @@ class _Spec:
         selected model has another count. Pricing does not depend on it, so ``key`` does not hash it."""
         sel = _selected_model(self.snap.own_record)
         return () if sel is None or sel.get("n_peaks") != self.n0 else tuple(sorted(sel.get("delta_modes") or ()))
+
+    @property
+    def inc_variant(self) -> tuple | None:
+        """The incoming fit's (elastic, background, qe) as bools (D16); None when its selected model has another
+        count, so the variant is not decided."""
+        sel = _selected_model(self.snap.own_record)
+        if sel is None or sel.get("n_peaks") != self.n0:
+            return None
+        return bool(sel.get("elastic")), bool(sel.get("background")), bool(sel.get("qe", False))
 
     def skipped(self) -> Assignment:
         return Assignment(
