@@ -187,7 +187,7 @@ class _Pool:
         """``{key: result or the exception it raised}`` of ``core.<fn>(*args, **kwargs)`` per ``(key, args, kwargs)``."""
         out: dict = {}
         if self.workers <= 1 or len(calls) <= 1:
-            for key, args, kwargs in calls:
+            for i, (key, args, kwargs) in enumerate(calls):
                 self._note(key, True)
                 self._tick(True)                  # this job may run for minutes: show it now
                 try:
@@ -197,7 +197,7 @@ class _Pool:
                     out[key] = exc
                 finally:
                     self._note(key, False)
-                    self._tick(True)              # the job is back: publish it before the save waits on the ack
+                    self._tick(i == len(calls) - 1)   # the last job is back: publish it before the save waits on the ack
             return out
         if self.broken is not None:
             raise self.broken

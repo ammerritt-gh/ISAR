@@ -288,6 +288,31 @@ def test_a_stage_whose_jobs_all_came_back_dead_still_raises_at_the_next_stage(mo
         pool.map("neg", [(i, (i,), {}) for i in range(2)])
 
 
+def test_inline_jobs_publish_one_event_per_job_and_force_only_the_last_completion(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(runner.time, "perf_counter", lambda: clock[0])
+    members = tuple(f"u{i}" for i in range(10))
+    run = runner._Run.__new__(runner._Run)
+    run.members, run.fixed, run.stale_locks = members, {}, set()
+    run.latest, run.failed, run.not_reached, run.fitting, run.refused = {}, {}, {}, {}, set()
+    run.batch, run.kind, run.stage_name, run.index, run.of, run.round, run.final = "b", "simultaneous", "sweep", 1, 20, 1, False
+    run._members_last, run._members_at = None, float("-inf")
+    sent = []
+    run._members_cb = lambda ev: sent.append((clock[0], ev))
+
+    class _Quick:                                    # each job takes 10 ms of the fake clock
+        def job(self, i):
+            clock[0] += 0.01
+            return i
+
+    pool = runner._Pool(_Quick(), 1, watch=run.fly, tick=run.publish)
+    assert pool.map("job", [(u, (i,), {}) for i, u in enumerate(members)]) == {u: i for i, u in enumerate(members)}
+    # starts stay forced (a long inline job must show at once); completions are throttled except the last,
+    # so ten quick jobs give ten start events and one forced final one, not two per job
+    assert len(sent) <= len(members) + 1, [t for t, _ in sent]
+    assert sent[-1][1]["states"] == {u: "waiting" for u in members}
+
+
 def test_a_map_ends_with_a_forced_publish_and_nothing_in_flight(monkeypatch):
     # a throttled transition must not be the last word: the job that returned has to reach the members map
     monkeypatch.setattr(_DyingPool, "ALIVE", 99)
