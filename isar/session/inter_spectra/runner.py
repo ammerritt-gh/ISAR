@@ -482,8 +482,8 @@ class _Run:
             if f"{exp}:{scan}" not in scans:
                 scans[f"{exp}:{scan}"] = file_fit.prepare_scan(frozen, exp, int(scan), entry)
             sp = scans[f"{exp}:{scan}"]
-            if sp is None:
-                self.ctx[u] = ("failed", "the data file for this analyzer is no longer there")
+            if isinstance(sp, str):
+                self.ctx[u] = ("failed", sp)
                 continue
             prep = file_fit.prepare_unit(frozen, sp, u, ("fast",))
             if prep.reason is not None:
