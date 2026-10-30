@@ -21,6 +21,9 @@ _log = logging.getLogger(__name__)
 
 # The stored overlay's keys, redrawn in place of the solo fit's (C-authority, N3)
 OVERLAY_KEYS = ("fast_pass", "modes", "model_manifest", "omega0", "best_label", "n_modes", "interval")
+# The reconstruction context a refit was made with (calibration, resolution, temperature), saved in its overlay:
+# a locked or older refit is drawn in its own context, never in a later solo fit's.
+CONTEXT_KEYS = ("calib", "T")
 # FitOutcome fields that state the solo fit's verdict or interval. Blanked in an overlaid outcome, because
 # FitView._pick and _fast_pass_columns would present the solo verdict next to a refit's numbers.
 SOLO_VERDICT_KEYS = ("verdict", "disposition", "confidence", "omega0_err", "omega0_profile", "hesse_interval",
@@ -140,6 +143,9 @@ def overlay_outcome(oc: dict, overlay: dict) -> dict:
         out[k] = None
     for k in OVERLAY_KEYS:
         out[k] = overlay.get(k)
+    for k in CONTEXT_KEYS:
+        if k in overlay:
+            out[k] = overlay[k]
     return out
 
 

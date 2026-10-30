@@ -262,6 +262,34 @@ def test_a_branch_missing_in_the_middle_of_an_anchored_chain_is_carried_to_where
     assert run.held_of(y, lines[y][0].fit).dormant == (Dormant("p", "fast", x),)
 
 
+def test_a_locked_refit_is_drawn_with_the_calibration_resolution_and_temperature_it_was_made_with(tmp_path):
+    """Through the real writer and facade: y's refit is locked, then y's calibration, resolution and temperature
+    change and its fast solo is rerun. The locked refit stays in use (stale) and is still drawn in its own context,
+    never rebuilt with the new solo's."""
+    from isar.workspace_api import Workspace as Facade
+    from isar.workspace_api.inter_spectra import fit_view_and_label
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"},) * 3)
+
+    def solo(change):
+        w = Workspace.open(ws)
+        card, session = w.load()
+        change(session.scans[y].detectors[y.rsplit(":", 1)[1]])
+        w.save(card, session)
+    solo(lambda out: out.update(calib={"center": 0.0, "gauss_fwhm": 1.0, "lorentz_fwhm": 0.0}, T=100.0))
+    spec = _simultaneous(ws, (x, y, z))
+    Bench(ws).run(spec)
+    fit = [r for r, _ in _lines(ws, spec.batch_id) if r.unit == y and r.accept.decision == "authoritative"][-1].fit
+    assert inter_values.set_lock(ws, y, locked=True, fit_id=fit).ok
+
+    def drawn():
+        view, label = fit_view_and_label(Facade.open(ws), y, "authoritative")
+        assert label.startswith("Batch 1")
+        return view.resolution_context()
+    before = drawn()
+    assert before == {"center": 0.0, "gauss_fwhm": 1.0, "lorentz_fwhm": 0.0, "T": 100.0}
+    solo(lambda out: out.update(calib={"center": 2.5, "gauss_fwhm": 3.0, "lorentz_fwhm": 0.0}, T=333.0))
+    assert drawn() == before
+
 def test_spread_in_q_with_no_accepted_hkl_leaves_every_other_spectrum_unreached(tmp_path):
     ws = _workspace(tmp_path, (100, 200), 3)
     k = _keys(ws)

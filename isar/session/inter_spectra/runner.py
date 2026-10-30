@@ -605,6 +605,9 @@ class _Run:
             came_out["stage1"] = stage1                         # E12: the round's stage 1 rides on its first sweep
         came_out["dormant"] = _plain(self.dormant.get(snap.fit_id, ()))     # branches not observed in this fit
         overlay = _plain(r.overlay) if r.status in _ELIGIBLE and r.overlay is not None else None
+        if overlay is not None:                                 # the context it is drawn in, now and later
+            solo = self.frozen.session.get(k).detectors[k.rsplit(":", 1)[1]]
+            overlay.update({name: _plain(solo.get(name)) for name in ("calib", "T")})
         status, reason = r.status, r.reason
         if status in _ELIGIBLE and overlay is None:             # a fit nobody can draw is not offered
             status, reason = "failed", r.overlay_unavailable or "no drawable fit"
