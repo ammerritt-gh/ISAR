@@ -15,9 +15,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import Enum
+from typing import Literal
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter, QPalette, QPen, QPixmap
 
 # The GUI may import only isar.workspace_api (G16): the two writer words come via the scan-list read.
 from isar.workspace_api.scan_list import (HELD, NOT_FITTED, NOT_READ, NOT_RECORDED, NOT_RUN,
@@ -76,6 +77,7 @@ QUEUE_STATES: Mapping[str, tuple[str, Tone, str]] = {
 
 _ICONS: dict[Tone, QIcon] = {}
 _STATE_ICONS: dict[bool, QIcon] = {}
+_MARKER_ICONS: dict[str, QIcon] = {}
 
 
 def status_tone(column: str, word: str) -> Tone:
@@ -136,4 +138,28 @@ def state_icon(good: bool) -> QIcon:
             painter.drawLine(QPointF(9.5, 2.5), QPointF(2.5, 9.5))
         painter.end()
         icon = _STATE_ICONS[good] = QIcon(pix)
+    return icon
+
+
+def marker_icon(kind: Literal["anchor", "lock"]) -> QIcon:
+    """An anchor or a padlock on a 12 px pixmap in the palette's text colour, cached per kind. The shape
+    carries the meaning; the colour is the text colour so it reads on either theme."""
+    icon = _MARKER_ICONS.get(kind)
+    if icon is None:
+        pix = QPixmap(12, 12)
+        pix.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pix)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QGuiApplication.palette().color(QPalette.ColorRole.WindowText), 1.6)
+        painter.setPen(pen)
+        if kind == "anchor":
+            painter.drawEllipse(QPointF(6.0, 2.8), 1.4, 1.4)
+            painter.drawLine(QPointF(6.0, 4.2), QPointF(6.0, 10.5))
+            painter.drawLine(QPointF(3.5, 6.0), QPointF(8.5, 6.0))
+            painter.drawArc(QRectF(2.0, 5.0, 8.0, 6.0), 180 * 16, 180 * 16)
+        else:
+            painter.drawRect(QRectF(2.5, 5.5, 7.0, 5.5))
+            painter.drawArc(QRectF(3.5, 1.5, 5.0, 8.0), 0, 180 * 16)
+        painter.end()
+        icon = _MARKER_ICONS[kind] = QIcon(pix)
     return icon
