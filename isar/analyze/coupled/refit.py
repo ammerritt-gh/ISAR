@@ -124,9 +124,11 @@ class _Labelled(cc.CoupledEngine):
                 continue
             lb = got[0]
             lmodes, lin = self.modes_of(lb.model, lb.theta), self.linear_of(lb.model, lb.theta)
-            e, g, hm, _d = lmodes[-1]
+            # the merged mode is the fitted mode nearest its start: the TRF can swap the labels, so not the last one
+            m = min(range(len(lmodes)), key=lambda n: abs(lmodes[n][0] - placed[big][0]))
+            e, g, hm, _d = lmodes[m]
             f0 = min(0.8, max(0.2, placed[i][2] / h)) if h > 0 else 0.5
-            others = iter(lmodes[:-1])
+            others = iter(lmodes[:m] + lmodes[m + 1:])
             out = [(e, g, f0 * hm, False) if n == i else (e, g, (1.0 - f0) * hm, False) if n == j
                    else next(others) for n in range(k)]
             model = self.model(v, ())

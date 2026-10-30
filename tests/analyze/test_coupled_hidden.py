@@ -256,6 +256,24 @@ def test_the_ledger_tells_solutions_apart_by_every_other_coordinate():
     assert not eng._seen_split(model, key(other))
 
 
+# ---- D6 the constructed seed --------------------------------------------------------------------------------
+def test_the_seed_splits_the_pair_when_the_low_fit_crosses_its_labels():
+    """A third start off its branch (2 meV): the low fit's labels cross, so its last mode is not the merged one.
+    Every seed must still carry the pair at 8 meV and the third mode at its branch, 20 meV."""
+    spec, eng, _ = _engines(_three_mode_snapshot(), ("b1", "b2", None))
+    start = [(8.0, 0.4, 40.0, False), (8.0, 0.4, 3.0, False), (2.0, 0.4, 25.0, False)]
+    eng.seed_hidden(3, [("neighbour", start)])
+    seeds = [b for b in eng.basins() if b.family == "hidden"]
+    assert seeds
+    for b in seeds:
+        e = [m[0] for m in eng.modes_of(b.model, b.theta)]
+        assert abs(e[0] - 8.0) < 1.0 and abs(e[1] - 8.0) < 1.0 and abs(e[2] - 20.0) < 1.0, e
+
+
+# ======================================================================================================
+# Packet P2: the refit-level proof (R1-R9 through ``refit.price``), the undetermined status, the record and
+# the held-by-neighbours rule. Counts are generated at test time (hard rule 10).
+# ======================================================================================================
 # ======================================================================================================
 # Packet P2: the refit-level proof (R1-R9 through ``refit.price``), the undetermined status, the record and
 # the held-by-neighbours rule. Counts are generated at test time (hard rule 10).
