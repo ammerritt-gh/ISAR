@@ -6,6 +6,8 @@ queues it (AGENTS.md hard rule 7: nothing is computed here).
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
                                QPushButton, QRadioButton, QToolButton, QVBoxLayout, QWidget)
@@ -49,7 +51,6 @@ class InterBatchBox(QWidget):
         self._controller = None             # the queue controller: bound and blocked (set_controller)
         self._direction = DIRECTIONS[0]
         self._expanded = False
-        self._decided = False               # the user, or a restored arrangement, chose the expansion
         self._rows: list[tuple[str, str]] = []   # (key, text) as the anchors list shows them
 
         self._toggle = QToolButton(self)
@@ -62,10 +63,11 @@ class InterBatchBox(QWidget):
         self._body = QWidget(self)
         self._body.setObjectName("inter_box_body")
         self._anchors_heading = QLabel("Anchors", self._body)
+        self._anchors_heading.setToolTip(ANCHORS_TIP)
         self._anchors = QListWidget(self._body)
         self._anchors.setObjectName("inter_anchors")
         self._anchors.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self._anchors.setMaximumHeight(110)
+        self._anchors.setFixedHeight(54)         # three rows; a longer list scrolls inside itself
         self._anchors.setAccessibleName("Anchors list")
         self._anchors.setToolTip(ANCHORS_TIP)
         self._anchors.itemSelectionChanged.connect(self.refresh)
@@ -77,9 +79,11 @@ class InterBatchBox(QWidget):
         self._remove.clicked.connect(self._remove_anchors)
         self._note = QLabel("", self._body)
         self._note.setObjectName("inter_note")
+        self._note.setToolTip("A problem the inter-spectra fitting reported; the words say what.")
         self._note.setWordWrap(True)
 
         self._anchored_heading = QLabel("Anchored batch: grows outward from the anchors, ring by ring", self._body)
+        self._anchored_heading.setToolTip(ANCHORED_TIP)
         self._radios: dict[str, QRadioButton] = {}
         group = QButtonGroup(self)
         for key, text, tip in DIRECTION_CHOICES:
@@ -89,22 +93,25 @@ class InterBatchBox(QWidget):
             radio.toggled.connect(lambda checked, k=key: self._on_direction(k) if checked else None)
             group.addButton(radio)
             self._radios[key] = radio
-        self._anchored_line = self._line("inter_anchored_line")
+        self._anchored_line = self._line("inter_anchored_line",
+                                         "What the anchored batch would refit, and in how many rings.")
         self._start_anchored = QPushButton("Start anchored batch", self._body)
         self._start_anchored.setObjectName("inter_start_anchored")
         self._start_anchored.clicked.connect(self._start_anchored_batch)
-        self._anchored_reason = self._line("inter_anchored_reason")
+        self._anchored_reason = self._line("inter_anchored_reason", "Why Start anchored batch is greyed.")
 
         self._simultaneous_heading = QLabel("Simultaneous batch: the spectra selected in the scan list", self._body)
-        self._simultaneous_line = self._line("inter_simultaneous_line")
+        self._simultaneous_heading.setToolTip(SIMULTANEOUS_TIP)
+        self._simultaneous_line = self._line("inter_simultaneous_line",
+                                             "What the simultaneous batch would refit together.")
         self._start_simultaneous = QPushButton("Start simultaneous batch on the selection", self._body)
         self._start_simultaneous.setObjectName("inter_start_simultaneous")
         self._start_simultaneous.clicked.connect(self._start_simultaneous_batch)
-        self._simultaneous_reason = self._line("inter_simultaneous_reason")
+        self._simultaneous_reason = self._line("inter_simultaneous_reason", "Why Start simultaneous batch is greyed.")
 
         body = QVBoxLayout(self._body)
         body.setContentsMargins(12, 0, 0, 0)
-        body.setSpacing(4)
+        body.setSpacing(2)
         body.addWidget(self._anchors_heading)
         body.addWidget(self._anchors)
         buttons = QHBoxLayout()
@@ -113,8 +120,10 @@ class InterBatchBox(QWidget):
         body.addLayout(buttons)
         body.addWidget(self._note)
         body.addWidget(self._anchored_heading)
+        choices = QHBoxLayout()             # one row: the box's height is the queue's room
         for radio in self._radios.values():
-            body.addWidget(radio)
+            choices.addWidget(radio)
+        body.addLayout(choices)
         body.addWidget(self._anchored_line)
         body.addWidget(self._start_anchored)
         body.addWidget(self._anchored_reason)
@@ -129,11 +138,12 @@ class InterBatchBox(QWidget):
         outer.addWidget(self._toggle)
         outer.addWidget(self._body)
         self._radios[self._direction].setChecked(True)
-        self._set_expanded(False)
+        self._set_expanded(True)            # open until the user folds it; anchors do not change that
 
-    def _line(self, name: str) -> QLabel:
+    def _line(self, name: str, tip: str) -> QLabel:
         label = QLabel("", self._body)
         label.setObjectName(name)
+        label.setToolTip(tip)
         label.setWordWrap(True)
         label.hide()
         return label
@@ -157,17 +167,24 @@ class InterBatchBox(QWidget):
             controller.changed.connect(lambda *_: self.refresh())
         self.refresh()
 
-    def save_view_state(self, session) -> None:
-        session.view_state["inter_box"] = {"expanded": self._expanded, "direction": self._direction}
-
-    def load_view_state(self, session) -> None:
-        saved = (getattr(session, "view_state", None) or {}).get("inter_box")
-        if not isinstance(saved, dict):
+    def save_view_state(self, session, root) -> None:
+        """Remember this box's fold and direction for the experiment at ``root`` (None: nothing to remember)."""
+        if root is None:
             return
-        self._decided = True
+        boxes = session.view_state.get("inter_box")
+        if not isinstance(boxes, dict) or "folded" in boxes:      # an unkeyed value from before: replaced
+            boxes = session.view_state["inter_box"] = {}
+        # shortcut: one small entry per experiment ever opened, prune if session view_state grows
+        boxes[str(Path(root).resolve())] = {"folded": not self._expanded, "direction": self._direction}
+
+    def load_view_state(self, session, root) -> None:
+        """Apply the fold and direction remembered for the experiment at ``root``; none: expanded, the default."""
+        boxes = (getattr(session, "view_state", None) or {}).get("inter_box")
+        saved = boxes.get(str(Path(root).resolve())) if root is not None and isinstance(boxes, dict) else None
+        saved = saved if isinstance(saved, dict) else {}
         self._direction = saved.get("direction") if saved.get("direction") in DIRECTIONS else DIRECTIONS[0]
         self._radios[self._direction].setChecked(True)
-        self._set_expanded(bool(saved.get("expanded", False)))
+        self._set_expanded(saved.get("folded") is not True)
 
     # ---- what the box shows ---------------------------------------------------------------------
     def refresh(self) -> None:
@@ -188,8 +205,6 @@ class InterBatchBox(QWidget):
                           simultaneous=previews.get("simultaneous"), note=inter.error,
                           anchored_error=errors.get("anchored"), simultaneous_error=errors.get("simultaneous"))
         self._apply(state)
-        if inter.anchors and not self._decided:
-            self._set_expanded(True)            # collapsed until there are anchors; the user's choice wins after
         missing = [req for req in wanted if previews.get(req.kind) is None and errors.get(req.kind) is None]
         if missing:
             inter.request_preview(missing[0])   # one at a time: InterState keeps only the newest request
@@ -230,7 +245,6 @@ class InterBatchBox(QWidget):
 
     # ---- the user's actions ---------------------------------------------------------------------
     def _on_toggle(self) -> None:
-        self._decided = True
         self._set_expanded(not self._expanded)
 
     def _set_expanded(self, expanded: bool) -> None:

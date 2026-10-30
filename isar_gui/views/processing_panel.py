@@ -1,10 +1,11 @@
 """The right panel's Processing tab and the slim rail that opens and closes it.
 
 :class:`ProcessingPanel` holds the readiness line, the *Fast-pass all ready (N)* button (the window's one
-analysis entry point), the line for an ingest, export or campaign running in the window, and below them the
-inter-spectra box (:class:`~isar_gui.views.inter_batch_box.InterBatchBox`, collapsed until there are anchors) and
-then the analysis queue (:class:`~isar_gui.views.queue_panel.QueuePanel`), shown once the window hands the panel its
-controller. It only displays what it is handed and emits its request signals; the window decides what it does.
+analysis entry point), the line for an ingest, export or campaign running in the window, the add-to-queue group
+(:class:`~isar_gui.views.queue_panel.QueueControls`), the inter-spectra box
+(:class:`~isar_gui.views.inter_batch_box.InterBatchBox`, shown expanded), and then the analysis queue
+(:class:`~isar_gui.views.queue_panel.QueuePanel`), shown once the window hands the panel its controller. It only
+displays what it is handed and emits its request signals; the window decides what it does.
 
 :class:`ProcessingRail` is the strip at the display's right edge. While the right panel is collapsed it reads
 "Processing ‹" and, when the queue has work, what is happening and what needs a look ("Processing ‹ · 5 running
@@ -19,7 +20,7 @@ from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
 from isar_gui.theme import TONE_COLOR, Tone
 from isar_gui.views.elided_label import ElidedButton
 from isar_gui.views.inter_batch_box import InterBatchBox
-from isar_gui.views.queue_panel import QueuePanel, rail_status
+from isar_gui.views.queue_panel import QueueControls, QueuePanel, rail_status
 from isar_gui.views.setup_section import RUN_TEXT, RUN_TIP
 
 RAIL_WIDTH = 24
@@ -39,11 +40,14 @@ class ProcessingPanel(QWidget):
         self._run.clicked.connect(self.run_requested)
         self._reason = QLabel("", self)
         self._reason.setObjectName("processing_reason")
+        self._reason.setToolTip("Why Fast-pass all ready is greyed: what has to change before it can run.")
         self._reason.setWordWrap(True)
         self._activity = QLabel("", self)
         self._activity.setObjectName("processing_activity")
         self._activity.setToolTip("What ISAR is doing in this experiment besides the analysis queue below.")
         self._activity.setWordWrap(True)
+        self.controls = QueueControls(self)
+        self.controls.hide()                # shown with the queue, once the window hands the panel a controller
         self.inter_box = InterBatchBox(self)
         self.inter_box.batch_requested.connect(self.batch_requested)
         self._queue = QueuePanel(self)
@@ -55,6 +59,7 @@ class ProcessingPanel(QWidget):
         layout.addWidget(self._run)
         layout.addWidget(self._reason)
         layout.addWidget(self._activity)
+        layout.addWidget(self.controls)
         layout.addWidget(self.inter_box)
         layout.addWidget(self._queue)
         layout.addStretch(1)
@@ -68,8 +73,10 @@ class ProcessingPanel(QWidget):
     def set_controller(self, controller) -> None:
         """The queue controller the panel shows and drives (``None``: none). The queue takes the room below the
         run controls while it is shown; without one the spacer does."""
+        self.controls.set_controller(controller)
         self._queue.set_controller(controller)
         self.inter_box.set_controller(controller)
+        self.controls.setVisible(controller is not None)
         self._queue.setVisible(controller is not None)
         self._layout.setStretch(self._layout.indexOf(self._queue), 1 if controller is not None else 0)
         self._layout.setStretch(self._layout.count() - 1, 0 if controller is not None else 1)

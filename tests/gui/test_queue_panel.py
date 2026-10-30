@@ -6,16 +6,18 @@ visible button, switch and label has a hover. No dialog is left unmocked.
 """
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QObject, QRegularExpression, Qt, Signal
+from PySide6.QtCore import QObject, QPoint, QRegularExpression, Qt, Signal
 from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QScrollArea, QWidget
 
 import isar_gui.status_words as sw
+from inter_fixtures import build_inter_workspace, spectrum_keys
 from isar.workspace_api import scan_list as facade
 from isar_gui.main_window import MainWindow
 from isar_gui.queue_controller import FinishedGroup, ItemView, QueueGroup, QueueView, Selection
@@ -271,10 +273,10 @@ def test_a_deep_item_still_in_its_fast_stage_does_not_promise_a_fast_result(qtbo
 def test_the_buttons_and_the_switch_send_the_users_actions_down(qtbot):
     stub = Stub(qview(fast=[group([item(3, status="running", started=NOW)])]), auto=False)
     p = panel(qtbot, stub)
-    assert not p._queue._auto.isChecked()                              # shows the experiment's setting
+    assert not p.controls._auto.isChecked()                            # shows the experiment's setting
     button(p, "queue_add_fast").click()
     button(p, "queue_add_deep").click()
-    p._queue._auto.click()
+    p.controls._auto.click()
     button(p, "queue_pause").click()
     assert stub.calls == [("add_selection", "fast"), ("add_selection", "deep"), ("set_auto_fast", True), ("pause",)]
     stub.set(qview(paused=True))
@@ -377,7 +379,7 @@ def walk_hovers(widget):
     (qview(service="failed", service_error="x", blocked="a campaign is running in this experiment"), SEL)])
 def test_every_visible_control_word_and_count_has_a_hover(qtbot, view, selection):
     p = panel(qtbot, Stub(view, selection=selection), width=300)
-    assert walk_hovers(p._queue) == []
+    assert walk_hovers(p._queue) == [] and walk_hovers(p.controls) == []
     for state in QUEUE_STATES.values():                                # every word the panel can show
         assert state[2]
 
@@ -398,9 +400,9 @@ def test_wrapped_lines_get_their_full_height_at_the_narrowest_panel(qtbot):
 def test_clicking_the_switch_words_toggles_the_switch(qtbot):
     stub = Stub(qview())
     p = panel(qtbot, stub)
-    qtbot.mouseClick(p._queue._auto_text, Qt.MouseButton.LeftButton)
-    assert stub.calls == [("set_auto_fast", False)] and not p._queue._auto.isChecked()
-    assert p._queue._auto.accessibleName() == "Fast-pass new scans as they arrive"
+    qtbot.mouseClick(p.controls._auto_text, Qt.MouseButton.LeftButton)
+    assert stub.calls == [("set_auto_fast", False)] and not p.controls._auto.isChecked()
+    assert p.controls._auto.accessibleName() == "Fast-pass new scans as they arrive"
 
 
 def test_the_rail_says_what_is_happening_and_what_needs_a_look(qtbot):
@@ -550,6 +552,71 @@ def test_the_laptop_window_keeps_its_frame_with_the_queue_on_the_rail_and_in_the
     assert not w._right_panel_collapsed() and q.isVisible() and w.processing_rail.text() == "›"
     assert_frame_geometry(w, size)
     top = q.mapTo(w.processing_panel, q._pause.rect().topLeft())
-    assert q._fast.isVisible() and q._deep.isVisible() and q._pause.isVisible()
-    assert q.rect().contains(q._fast.geometry()) and 0 <= top.y() < w.processing_panel.height()
+    controls = w.processing_panel.controls
+    assert controls._fast.isVisible() and controls._deep.isVisible() and q._pause.isVisible()
+    fast_corner = controls._fast.mapTo(w.processing_panel, controls._fast.rect().bottomRight())
+    assert w.processing_panel.rect().contains(fast_corner) and 0 <= top.y() < w.processing_panel.height()
     assert walk_hovers(q) == []
+
+
+def _named(panel, name):
+    found = panel.findChild(QWidget, name)
+    assert found is not None and found.isVisible(), name
+    return found
+
+
+def _processing_window(qtbot, monkeypatch, root, size=(1108, 851)):
+    """The window at a laptop size, the experiment ``root`` open and the Processing panel shown."""
+    monkeypatch.setattr(MainWindow, "_available_size", lambda self: size)
+    w = MainWindow(None, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    w.resize(*size)
+    w.show()
+    qtbot.waitExposed(w)
+    with qtbot.waitSignal(w.intake.worker_changed, timeout=15000):
+        assert w.load_workspace(str(root))
+    if w._right_panel_collapsed():
+        w.processing_rail.toggled.emit()
+    qtbot.waitUntil(lambda: w.readiness_line.isVisible(), timeout=15000)
+    return w
+
+
+def _assert_tab_order(w, tag):
+    """The Processing tab top to bottom, every landmark inside the panel, no hover missing; saves the two
+    renders as PNG when ``ISAR_SCREENSHOT_DIR`` is set."""
+    p = w.processing_panel
+    order = [("readiness line", w.readiness_line), ("Fast-pass all ready", _named(p, "processing_run")),
+             ("selection line", _named(p, "queue_selection")), ("Fast pass", _named(p, "queue_add_fast")),
+             ("fast-pass switch", _named(p, "queue_auto")), ("Inter-spectra fitting", _named(p, "inter_box_toggle")),
+             ("Add selected scans as anchors", _named(p, "inter_add_anchors")),
+             ("Fast queue", _named(p, "queue_fast_heading")), ("Deep queue", _named(p, "queue_deep_heading")),
+             ("queue footer", _named(p, "queue_footer_text"))]
+    tops = [(name, widget.mapTo(p, QPoint(0, 0)).y(), widget.mapTo(p, QPoint(0, 0)).y() + widget.height())
+            for name, widget in order]
+    for (name, top, _), (_, below, _) in zip(tops, tops[1:]):
+        assert top < below, f"{name} must sit above the next landmark"
+    assert all(bottom <= p.height() for _, _, bottom in tops), "the queue is squeezed out of the panel"
+    scroll, finished = p.findChild(QScrollArea, "queue_scroll"), _named(p, "queue_finished_heading")
+    assert finished.mapTo(p, QPoint(0, finished.height())).y() <= scroll.mapTo(p, QPoint(0, scroll.height())).y(), \
+        "Finished is below the queue viewport: the queue must scroll to reach it"
+    assert walk_hovers(p) == []
+    shots = os.environ.get("ISAR_SCREENSHOT_DIR")
+    if shots:
+        w.grab().save(os.path.join(shots, f"window_{tag}.png"))
+        p.grab().save(os.path.join(shots, f"processing_{tag}.png"))
+
+
+def test_the_processing_tab_reads_top_to_bottom_fast_and_deep_then_the_inter_box_then_the_queues(
+        qtbot, monkeypatch, bl43_ws):
+    _assert_tab_order(_processing_window(qtbot, monkeypatch, bl43_ws), "no_anchors")
+
+
+def test_the_processing_tab_keeps_its_order_with_an_anchor(qtbot, monkeypatch, tmp_path):
+    root = build_inter_workspace(tmp_path / "inter", temperatures=(100,), setups=("0p5_0p5_3",), n_analyzers=4)
+    w = _processing_window(qtbot, monkeypatch, root)
+    w.scan_list_vm.select(spectrum_keys(root)[0])            # a spectrum with a stored fast fit
+    box = w.processing_panel.inter_box
+    qtbot.waitUntil(lambda: box._add.isEnabled(), timeout=15000)
+    box._add.click()
+    qtbot.waitUntil(lambda: len(w.inter.anchors) == 1, timeout=15000)
+    _assert_tab_order(w, "one_anchor")

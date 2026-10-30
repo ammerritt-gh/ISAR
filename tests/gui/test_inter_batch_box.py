@@ -3,6 +3,7 @@ the adds and removes as deltas, the direction's preview, the greyed Start button
 InterState and the queue controller are fakes; the scan list is the real view model over the BL43 sample."""
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -207,27 +208,44 @@ def test_a_simultaneous_batch_needs_two_selected_spectra_and_sends_the_selection
     assert sent == [req] and sent[0].selection == vm.selected_spectra()
 
 
-def test_the_box_opens_once_when_anchors_appear_and_then_keeps_the_users_choice(made):
+def test_the_box_is_open_by_default_and_a_fold_holds_when_anchors_appear(made, qtbot):
     box, _, inter, _ = made
-    box._set_expanded(False)
-    _publish(inter, revision="2", anchors=(A[3],))
-    assert box._expanded
-    box._toggle.click()                       # the user collapses it
-    _publish(inter, revision="3", anchors=(A[3], A[4]))
+    fresh = InterBatchBox()
+    qtbot.addWidget(fresh)
+    assert fresh._expanded                                    # open with no anchors, before any window state
+    box._toggle.click()                                       # the user folds it
     assert not box._expanded
+    _publish(inter, revision="2", anchors=(A[3],))
+    assert not box._expanded                                  # publishing anchors does not reopen it
+    box._toggle.click()
+    assert box._expanded
 
 
-def test_the_direction_and_the_expansion_are_restored_from_the_view_state(made, qtbot):
+def test_the_direction_and_the_fold_are_restored_for_each_experiment(made, qtbot, tmp_path):
     box, vm, inter, _ = made
+    a, b = tmp_path / "a", tmp_path / "b"
     box._radios["qT"].setChecked(True)
+    box._toggle.click()                                       # folded in experiment a
     session = SimpleNamespace(view_state={})
-    box.save_view_state(session)
-    assert session.view_state["inter_box"] == {"expanded": True, "direction": "qT"}
+    box.save_view_state(session, a)
+    assert session.view_state["inter_box"] == {str(a.resolve()): {"folded": True, "direction": "qT"}}
     again = InterBatchBox()
     qtbot.addWidget(again)
     again.set_inter(inter, vm)
-    again.load_view_state(session)
-    assert again._radios["qT"].isChecked() and again._expanded
+    again.load_view_state(session, b)                         # experiment b has no entry: expanded, the default
+    assert again._radios["q"].isChecked() and again._expanded
+    again.load_view_state(session, a)
+    assert again._radios["qT"].isChecked() and not again._expanded
+
+
+def test_an_unkeyed_fold_from_before_the_per_experiment_key_is_ignored(made, qtbot, tmp_path):
+    box, vm, inter, _ = made
+    old = SimpleNamespace(view_state={"inter_box": {"folded": True, "direction": "T"}})   # written before the key
+    again = InterBatchBox()
+    qtbot.addWidget(again)
+    again.set_inter(inter, vm)
+    again.load_view_state(old, tmp_path / "a")
+    assert again._expanded and again._radios["q"].isChecked()
 
 
 def test_every_control_in_the_box_is_described(made):

@@ -50,6 +50,7 @@ def _win(qtbot, root=None, session=None):
 def test_the_window_builds_one_controller_and_hands_it_to_the_panel_the_rail_and_the_scan_list(qtbot):
     w = _win(qtbot)
     assert w.processing_panel._queue._controller is w._queue
+    assert w.processing_panel.controls._controller is w._queue
     assert w.processing_rail._controller is w._queue
     assert w.scan_list_vm._queue is w._queue
     assert w.processing_panel._queue.isVisibleTo(w.processing_panel)       # the queue is shown, no spacer in its place
@@ -206,7 +207,7 @@ def test_the_panels_add_buttons_ask_about_an_unsaved_card_draft_and_arrivals_do_
     monkeypatch.setattr(qc.QueueController, "add_selection", lambda self, pass_kind: adds.append(pass_kind))
     monkeypatch.setattr(qc.QueueController, "_request_add", lambda self, keys, pass_kind, automatic: None)
     w.scan_list_vm.select(w.scan_list_vm.snapshot.sets[0].spectra[0].key)
-    deep = w.processing_panel._queue._deep
+    deep = w.processing_panel.controls._deep
     qtbot.waitUntil(deep.isEnabled, timeout=WAIT_MS)
     deep.click()                                                           # the panel's own Deep pass button
     assert asked == ["add a deep pass"] and adds == ["deep"] * added
