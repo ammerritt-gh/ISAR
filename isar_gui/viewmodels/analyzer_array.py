@@ -379,7 +379,7 @@ class AnalyzerArrayViewModel(ViewModel):
         reference = None if self.scale == "raw" else self.reference_source(snapshot)
         read_s = perf_counter() - read_started
 
-        drawn = {c.key: self._draw(bundles[c.key], reference) for c in keyed}
+        drawn = {c.key: self._draw(bundles[c.key], reference, choice.get(c.key)) for c in keyed}
         unit = next((d.unit for d in drawn.values() if d.unit), None)
         autos = {k: r for k, d in drawn.items() if d.plot is not None and (r := _auto_range(d.plot)) is not None}
         limit = self.limits[self.scale]
@@ -446,8 +446,9 @@ class AnalyzerArrayViewModel(ViewModel):
             scaled = self._scaled[token] = bundle.scaled(self.scale, reference)
         return scaled
 
-    def _draw(self, bundle, reference) -> Drawn:
-        """What one spectrum's cell shows: the plot, or the word that stands in for it."""
+    def _draw(self, bundle, reference, chosen: str | None = None) -> Drawn:
+        """What one spectrum's cell shows: the plot, or the word that stands in for it. ``chosen`` is the refit in use
+        (None: the fast solo); a bundle that came back as another fit draws its data with "no curve", never that fit."""
         nd = bundle.not_drawn
         if nd is not None:
             code = {NO_ENERGY_ZERO: "not_zeroed", NOT_PARSED: "not_read"}.get(nd.code, "other")
@@ -462,7 +463,9 @@ class AnalyzerArrayViewModel(ViewModel):
         fast = scaled.passes.get("fast")
         fitted = None if fast is None or isinstance(fast, NotDrawn) else fast
         absence = tip = None
-        if fitted is None:
+        if chosen is not None and bundle.fit_id != chosen:       # the read fell back to the solo: no other fit stands in
+            fitted, absence = None, "no_curve"
+        elif fitted is None:
             code = fast.code if fast is not None else NO_PASS
             absence = "no_fit" if code == NO_PASS else "no_curve" if code == CURVE_UNAVAILABLE else "other"
             tip = fast.text if absence != "no_fit" else None

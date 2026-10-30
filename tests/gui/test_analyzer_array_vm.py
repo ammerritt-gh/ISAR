@@ -203,6 +203,20 @@ def test_the_fit_drawn_is_the_authoritative_one_not_the_menu_pick(scans_view_ws_
     assert env.vm.recompute() == state and calls[-1] == {A6: "b1:fit"}
 
 
+def test_a_chosen_fit_that_cannot_be_drawn_says_no_curve_never_the_solo(scans_view_ws_readonly, monkeypatch):
+    # the read layer falls back to the fast solo for a fit it cannot draw: the cell must not draw that solo instead
+    real = mod.spectrum_bundles
+    monkeypatch.setattr(mod, "spectrum_bundles", lambda ws, rows, *, cache=None, fit_choice=None:
+                        real(ws, rows, cache=cache))
+    inter = FakeInterState()
+    inter.overview = make_overview(by_key={A6: inter_row(A6, "b1:fit")})
+    env = make_env(scans_view_ws_readonly, inter=inter)
+    env.selection.set((A6,))
+    cell = next(c for c in env.vm.recompute().cells if c.key == A6)
+    assert cell.absence == "no curve" and cell.plot is not None and cell.plot.total is None
+    assert cell.fit_label is None
+
+
 def test_absences_are_words_never_zero(scans_view_ws_readonly, monkeypatch):
     real = mod.spectrum_bundles
 
