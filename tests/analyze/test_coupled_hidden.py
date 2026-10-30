@@ -110,6 +110,15 @@ def test_a_vanished_matched_mode_with_a_far_partner_is_kept_but_an_unmatched_one
         assert b.status == expect and (expect != "degenerate_twin" or b.limit.startswith("phonon2.h"))
 
 
+def test_a_vanished_matched_mode_beside_another_is_not_merged_by_the_coincident_screen():
+    spec, eng, _ = _engines(hidden_snapshot(6.0, b2_at=14.0))
+    model = eng.model(eng.variant(2, True, True), ())
+    theta = eng._start(model, [(8.0, 0.4, 46.0, False), (8.1, 0.4, 0.0, False)], {"elastic": 100.0, "bg": 2.0})
+    assert theta[model.modes[1][2]] <= eng.s.twin_height_frac * eng.sp.height_hi      # the premise: it has vanished
+    b = eng._place(model, theta, eng.cost(model, theta), "hand", 0, "")               # its centre is 14 meV: far
+    assert b.status == "pending" and b.twin is None
+
+
 def test_repeated_starts_reaching_one_solution_leave_one_basin():
     spec, eng, _ = _engines(hidden_snapshot(3.0))
     v, start = eng.variant(2, True, True), _placed(spec)

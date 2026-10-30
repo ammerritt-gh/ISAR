@@ -292,10 +292,10 @@ class CoupledEngine(fast_pass._Engine):
         if not (zero or coin):
             return super()._resolve(b, point)
         keep = self.s
-        # shortcut: the screens are off for every mode of this basin (screen 1 takes the zero-height screens of
-        #   the elastic, QE and background with it), upgrade if a basin shows both a hidden pair and one of them
+        # shortcut: the screens are off for every mode of this basin, upgrade if a basin shows both a hidden pair and
+        #   a vanished mode; the zero swap also disables screens 3, 3b and 6 (zero elastic, QE, background) for it
         self.s = replace(keep, twin_height_frac=-1.0 if zero else keep.twin_height_frac,
-                         twin_coincide_fwhm=0.0 if coin else keep.twin_coincide_fwhm)
+                         twin_coincide_fwhm=0.0 if zero or coin else keep.twin_coincide_fwhm)
         try:
             super()._resolve(b, point)
         finally:
