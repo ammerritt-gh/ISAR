@@ -89,7 +89,7 @@ class Assignment:                  # the frozen discrete decision of one spectru
     factors: tuple[Factor, ...]    # frozen definitions of every factor incident on unit (engine.Factor); the runner replaces them with the stage's canonical set before the continuous stage (S1U6 E18)
     discrete: str                  # "priced" | "skipped"
     triggers: tuple[str, ...]      # trigger codes that fired, e.g. "a:missing_branch", empty when skipped
-    candidates: tuple[dict, ...]   # evaluated {count, slots, ln_z, status, weight}: ln_z the deduplicated mass the decision weighed, weights conditional on the evaluated set
+    candidates: tuple[dict, ...]   # evaluated {count, slots, ln_z, status, weight, loss, loss_nats} (loss: [[branch, expected_meV, deviance], ...], loss_nats = -sum(deviance)/2, 0.0 if none): ln_z the deduplicated mass the decision weighed, weights conditional on the evaluated set
     coverage: dict                 # {"counts_tried","counts_untried","enumeration_truncated","missing_candidate_history","full_search"}
     search_limited: bool           # spec 3 assignment_search_limited
     changed: bool                  # count or association differs from snapshot.own AND won by the evidence rule (spec 5)
@@ -105,11 +105,12 @@ class PricingJob:                  # one composition at one count, with all its 
 @dataclass(frozen=True)
 class Priced:
     key: str; count: int; slots: tuple[str | None, ...]
-    ln_z: float | None             # Laplace log evidence incl. the composition log weight and variant weight; None = no_evidence
+    ln_z: float | None             # Laplace log evidence incl. the composition log weight, the variant weight and the loss price of the branches the candidate does not name; None = no_evidence
     status: str                    # base engine status words ("ok", "ok_boundary", "no_evidence", "degenerate_twin", ...); "undetermined": no valid price because the parameters stay undetermined (ln_z None, reason names the cause)
     mode: tuple | None             # posterior-mode parameters, labelled
     reason: str | None; starts: int; seconds: float
     basins: tuple = ()             # (term, model, modes, qe, mode) per priced basin (refit._basin_record): slot orders deduplicated; a basin priced by the split integral has the model label suffix "|split" and records its pair at the mean energy and width with H/2 each
+    loss: tuple = ()               # ((branch, expected_meV, deviance), ...) sorted by branch: every eligible in-window neighbour branch the candidate does not name, its expected energy and its price L (-L/2 nats, already inside ln_z and every basin term); () = none missing. A function of the snapshot and the slot multiset only; set even when the candidate is unpriced
 
 
 @dataclass(frozen=True)
