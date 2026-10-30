@@ -252,13 +252,17 @@ class CoupledEngine(fast_pass._Engine):
     def __init__(self, ctx, settings, slots, *, n_exchangeable=(), continuous=False, **kw):
         super().__init__(ctx, settings, **kw)
         self._s0 = self.s                      # the guard swaps self.s temporarily; the pair rule reads the original
-        self._split_done = {}                  # model -> [pair-canonical points of its split basins] (a ledger)
-        self.n_split_nodes = self.n_split_basins = 0
+        self._split_done = {}                  # model -> {basin index: [pair-canonical points of its split solutions]}
+        self.n_split_nodes = 0
         self.slots = list(slots)
         self.ln_exch = sum(math.lgamma(n + 1) for n in n_exchangeable)
         self.continuous = continuous
         if self.seed_qe:                       # the central QE's start width (BL43LXU), as the fast pass's seed picks it
             self._choose_qe_start()
+
+    @property
+    def n_split_basins(self) -> int:                # one ledger entry per split basin: each counted once
+        return sum(len(d) for d in self._split_done.values())
 
     # ---- a mode hidden under another (S1U1) ---------------------------------------------------------------
     def hidden_pairs(self, model, point) -> list:
@@ -306,6 +310,7 @@ class CoupledEngine(fast_pass._Engine):
         (a coupled posterior optimiser stops ABNORMAL on the flat valley), and a fit whose parameters stay
         undetermined is ``undetermined``, never given a made-up finite evidence."""
         model = b.model
+        self._split_done.get(model, {}).pop(b.index, None)   # a reprice (an improving refit) must not meet its own solution
         pairs = self.hidden_pairs(model, b.theta)
         if not pairs:
             super().price(b)
@@ -339,8 +344,7 @@ class CoupledEngine(fast_pass._Engine):
         b.ln_prior = float(self.ln_prior(model, rep))
         b.cov_free, b.boundary_method, b.objective, b.pinned = None, "split", None, ()
         b.hidden_pair = pair                     # read by refit._basin_record
-        self._split_done.setdefault(model, []).extend((key, rkey))
-        self.n_split_basins += 1
+        self._split_done.setdefault(model, {})[b.index] = [key, rkey]
 
     def _relabel(self, b):
         if b.status == "no_evidence" and b.reason.startswith(UNDETERMINED_REASONS):
@@ -375,7 +379,7 @@ class CoupledEngine(fast_pass._Engine):
         amps = [i for i in (model.el, model.bg) if i is not None]
         return any(self.same_basin(model, q, point)
                    and all(abs(q[i] - point[i]) <= frac * max(q[i], point[i]) for i in amps)
-                   for q in self._split_done.get(model, ()))
+                   for pts in self._split_done.get(model, {}).values() for q in pts)
 
     def split_evidence(self, b, theta, pair, *, sets=SPLIT_NODE_SETS) -> SplitResult:
         """ln of the integral of exp(-g) over the basin, integrating the intensity split f of ``pair``

@@ -287,7 +287,7 @@ def test_the_ledger_tells_solutions_apart_by_every_other_coordinate():
     model = eng.model(eng.variant(3, True, True), ())
     key = lambda t: eng._pair_point(model, t, (0, 1))                      # noqa: E731
     base = _placed3(eng, model, 20.0, (40.0, 3.0))
-    eng._split_done[model] = [key(base)]
+    eng._split_done[model] = {0: [key(base)]}
     assert eng._seen_split(model, key(_placed3(eng, model, 20.1, (30.0, 13.0))))   # another split, one solution
     assert eng._seen_split(model, key(_placed3(eng, model, 20.0, (3.0, 40.0))))    # the other slot order
     assert not eng._seen_split(model, key(_placed3(eng, model, 13.0, (40.0, 3.0))))    # a third mode elsewhere
@@ -568,6 +568,15 @@ def test_the_record_carries_the_solved_pair_not_the_start():
     assert label.endswith("|split") and [m[0] for m in modes] == ["b1", "b2"]
     assert modes[0][1] == modes[1][1] == pytest.approx((b.theta_map[ai] + b.theta_map[aj]) / 2)
     assert modes[0][3] == modes[1][3] == pytest.approx((b.theta_map[ci] + b.theta_map[cj]) / 2)
+
+
+def test_a_repriced_split_basin_is_not_a_duplicate_of_itself():
+    eng, b, _ = _record_of_displaced_start((8.0, 7.7))
+    assert b.status == "ok" and b.boundary_method == "split" and eng.n_split_basins == 1
+    b.status, b.ln_z, b.boundary_method = "pending", None, ""     # what _place does when an improving refit moves it
+    eng.price(b)
+    assert b.status == "ok" and b.boundary_method == "split"
+    assert eng.n_split_basins == 1
 
 
 def test_other_starts_record_the_pair_in_the_same_order():
