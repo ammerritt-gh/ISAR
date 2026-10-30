@@ -894,3 +894,26 @@ def test_the_real_core_runs_both_batch_kinds_end_to_end(tmp_path):
             cold, hot = came_out[k[det, 100.0]], came_out[k[det, 200.0]]
             assert cold["assignment"]["slots"] == hot["assignment"]["slots"]
             assert cold["assignment"]["factors"] and hot["assignment"]["factors"]
+
+
+def test_the_chosen_width_mask_survives_the_stage_factor_rewrites(monkeypatch):
+    """N1: ``canonical_factors`` and ``rebuilt_factors`` rewrite factors and slot ids, never the decision: the chosen
+    basin, the change and the mask-only mark come out as they went in (the mask positions are slot positions)."""
+    from types import SimpleNamespace
+
+    from isar.analyze.coupled.engine import Factor
+    from isar.analyze.coupled.types import Assignment
+    f = Factor("T-change:x|y:q", "q", ("x", "y"), (1.0, -1.0), 2.0, 12.0, "dT")
+    chosen = (True, True, False, (1,), (5.0, 0.4, 20.0, 11.0, 0.001, 20.0, 100.0, 2.0))
+    a = Assignment(unit="y", snapshot_id="b:ring1", count=2, slots=("q", "r"), origins=("matched", "matched"),
+                   factors=(f,), discrete="priced", triggers=(), candidates=(), coverage={}, search_limited=False,
+                   changed=True, reasons=(), selected_model=chosen, mask_only=True)
+    ids = SimpleNamespace(alternatives={"aliases": {"p": ["q"]}}, ids={("y", "f_y", 0): "p", ("y", "f_y", 1): "r"})
+    out, rename = runner.canonical_factors({"y": a}, ids, {"y": (("y", "f_y", 0), ("y", "f_y", 1))},
+                                           {"x": SimpleNamespace(modes=(SimpleNamespace(branch="q"),))})
+    assert rename == {"q": "p"} and out["y"].slots == ("p", "r")
+    monkeypatch.setattr(runner, "_renamed_snapshot", lambda snap, rn: snap)
+    core = SimpleNamespace(stage_factors=lambda snap: {})
+    built = runner.rebuilt_factors(core, out, {"y": object()}, rename)
+    for got in (out["y"], built["y"]):
+        assert (got.selected_model, got.changed, got.mask_only) == (chosen, True, True)
