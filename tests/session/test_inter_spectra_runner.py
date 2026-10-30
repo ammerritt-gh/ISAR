@@ -481,6 +481,23 @@ def test_a_pick_made_during_the_batch_survives_and_its_member_is_refitted_no_mor
     assert (got[x].fit, got[x].source) == ("fast", "pick")
 
 
+def test_a_pick_in_a_later_sweep_is_what_the_neighbours_condition_on(tmp_path):
+    """y's refit of sweep 1 is accepted; the user picks y's fast solo during sweep 2. y's sweep-2 refit is refused
+    (``picked``) and y's held value becomes the pick, not the sweep-1 refit: x and z, refused for conditioning on
+    y's old refit, are accepted from sweep 3 conditioned on (y, fast), and the batch settles before the cap."""
+    ws, x, y, z = _chain(tmp_path, ({"toy": "average"}, {"toy": "average"}, {"toy": "average"}))
+    assert inter_values.save_settings(ws, {"sweep_cap": 8}).ok
+    bench = Bench(ws, _when("sweep", 2, "refine", lambda: inter_values.pick_fit(ws, y, "fast")))
+    spec = _simultaneous(ws, (x, y, z))
+    log = bench.run(spec)
+    lines = _lines(ws, spec.batch_id)
+    later = [r for r, _ in lines if r.index > 2 and r.unit in (x, z)]
+    assert later and all(r.accept.decision == "authoritative" for r in later)
+    assert {(c.unit, c.fit) for r in later for c in r.conditioned_on if c.unit == y} == {(y, "fast")}
+    end = log.batches[spec.batch_id].end
+    assert end["state"] == "settled" and end["sweeps"] < 8
+
+
 def test_a_lock_mid_sweep_is_refused_and_the_member_leaves_the_sweeps(tmp_path):
     ws, x, y, z = _chain(tmp_path, ({"toy": "average"}, {"toy": "keep"}, {"toy": "average"}))
     bench = Bench(ws, _when("sweep", 1, "refine", lambda: inter_values.set_lock(ws, x, locked=True, fit_id="fast")))

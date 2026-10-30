@@ -914,6 +914,8 @@ class _Run:
                                                      self.records_mod.REFUSED["picked"],
                                                      self.records_mod.REFUSED["inputs_changed"]):
                             active.discard(k)        # the writer refuses every later refit of it too
+                        if verdict["refused"][k] == self.records_mod.REFUSED["picked"]:
+                            self.hold_pick(k, held)
                 cut |= self.refused_neighbours(verdict, snaps2)
                 total = self.total(A, held, data, unary)     # the stopping cost of the state the writer accepted
                 self.stage_timing("sweep", n, t_sweep, width, len(snaps2))
@@ -933,6 +935,23 @@ class _Run:
             self.end(outcome, NOTHING_LEFT)
         else:
             self.end(outcome)
+
+    def hold_pick(self, k: str, held: dict) -> None:
+        """A member refused as ``picked`` is fixed at the fit the user picked, read as a lock's fit is, so its
+        neighbours condition on what is in use; a pick that cannot be read drops its terms instead."""
+        pick = self.read_user(self.root).picks.get(k)
+        try:
+            if pick is None:
+                raise ValueError("no pick")
+            if pick.fit != "fast" and pick.fit not in self.records:
+                line = self.line_of(pick.fit)
+                from isar.session.inter_spectra import authority
+                if line is None or authority.stale_of(line, self.now) is not None:
+                    raise ValueError(f"the pick {pick.fit} is missing or stale")
+            held[k] = self.held_of(k, pick.fit)
+        except Exception as e:
+            log.warning("inter-spectra: %s: the picked fit cannot condition its neighbours (%s)", k, e)
+            held.pop(k, None)
 
     def refused_neighbours(self, verdict: dict, snaps: dict) -> set:
         """E9/E11: the neighbours a sweep's refusals name that no later sweep can condition on: one whose inputs
