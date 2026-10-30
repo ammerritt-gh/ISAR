@@ -6,16 +6,18 @@ visible button, switch and label has a hover. No dialog is left unmocked.
 """
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QObject, QRegularExpression, Qt, Signal
+from PySide6.QtCore import QObject, QPoint, QRegularExpression, Qt, Signal
 from PySide6.QtWidgets import QAbstractButton, QApplication, QLabel, QScrollArea, QWidget
 
 import isar_gui.status_words as sw
+from inter_fixtures import build_inter_workspace, spectrum_keys
 from isar.workspace_api import scan_list as facade
 from isar_gui.main_window import MainWindow
 from isar_gui.queue_controller import FinishedGroup, ItemView, QueueGroup, QueueView, Selection
@@ -556,3 +558,62 @@ def test_the_laptop_window_keeps_its_frame_with_the_queue_on_the_rail_and_in_the
     assert w.processing_panel.rect().contains(fast_corner) and 0 <= top.y() < w.processing_panel.height()
     assert walk_hovers(q) == []
 
+
+def _named(panel, name):
+    found = panel.findChild(QWidget, name)
+    assert found is not None and found.isVisible(), name
+    return found
+
+
+def _processing_window(qtbot, monkeypatch, root, size=(1108, 851)):
+    """The window at a laptop size, the experiment ``root`` open and the Processing panel shown."""
+    monkeypatch.setattr(MainWindow, "_available_size", lambda self: size)
+    w = MainWindow(None, session=Session(), watch=False)
+    qtbot.addWidget(w)
+    w.resize(*size)
+    w.show()
+    qtbot.waitExposed(w)
+    with qtbot.waitSignal(w.intake.worker_changed, timeout=15000):
+        assert w.load_workspace(str(root))
+    if w._right_panel_collapsed():
+        w.processing_rail.toggled.emit()
+    qtbot.waitUntil(lambda: w.readiness_line.isVisible(), timeout=15000)
+    return w
+
+
+def _assert_tab_order(w, tag):
+    """The Processing tab top to bottom, every landmark inside the panel, no hover missing; saves the two
+    renders as PNG when ``ISAR_SCREENSHOT_DIR`` is set."""
+    p = w.processing_panel
+    order = [("readiness line", w.readiness_line), ("Fast-pass all ready", _named(p, "processing_run")),
+             ("selection line", _named(p, "queue_selection")), ("Fast pass", _named(p, "queue_add_fast")),
+             ("fast-pass switch", _named(p, "queue_auto")), ("Inter-spectra fitting", _named(p, "inter_box_toggle")),
+             ("Add selected scans as anchors", _named(p, "inter_add_anchors")),
+             ("Fast queue", _named(p, "queue_fast_heading")), ("Deep queue", _named(p, "queue_deep_heading")),
+             ("queue footer", _named(p, "queue_footer_text"))]
+    tops = [(name, widget.mapTo(p, QPoint(0, 0)).y(), widget.mapTo(p, QPoint(0, 0)).y() + widget.height())
+            for name, widget in order]
+    for (name, top, _), (_, below, _) in zip(tops, tops[1:]):
+        assert top < below, f"{name} must sit above the next landmark"
+    assert all(bottom <= p.height() for _, _, bottom in tops), "the queue is squeezed out of the panel"
+    assert walk_hovers(p) == []
+    shots = os.environ.get("ISAR_SCREENSHOT_DIR")
+    if shots:
+        w.grab().save(os.path.join(shots, f"window_{tag}.png"))
+        p.grab().save(os.path.join(shots, f"processing_{tag}.png"))
+
+
+def test_the_processing_tab_reads_top_to_bottom_fast_and_deep_then_the_inter_box_then_the_queues(
+        qtbot, monkeypatch, bl43_ws):
+    _assert_tab_order(_processing_window(qtbot, monkeypatch, bl43_ws), "no_anchors")
+
+
+def test_the_processing_tab_keeps_its_order_with_an_anchor(qtbot, monkeypatch, tmp_path):
+    root = build_inter_workspace(tmp_path / "inter", temperatures=(100,), setups=("0p5_0p5_3",), n_analyzers=4)
+    w = _processing_window(qtbot, monkeypatch, root)
+    w.scan_list_vm.select(spectrum_keys(root)[0])            # a spectrum with a stored fast fit
+    box = w.processing_panel.inter_box
+    qtbot.waitUntil(lambda: box._add.isEnabled(), timeout=15000)
+    box._add.click()
+    qtbot.waitUntil(lambda: len(w.inter.anchors) == 1, timeout=15000)
+    _assert_tab_order(w, "one_anchor")
