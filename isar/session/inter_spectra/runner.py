@@ -318,11 +318,22 @@ def rebuilt_factors(core, A: Mapping, snaps: Mapping, rename: Mapping[str, str])
     """Each kept factor's definition built once more from its spectrum's stage snapshot under the reconciled ids
     (``core.stage_factors``): before the ids met, an endpoint did not carry the other's branch and left its own
     guard out of the scale, so the two endpoints of one link held two definitions. A factor the rebuilt snapshot
-    does not form keeps the one it has."""
+    does not form keeps the one it has, and a factor another member holds, whose term includes this one, is given
+    to it (every block of a shared term minimises the same definition, PR #70 ad145c659301b-1)."""
     out = {}
     for k, a in A.items():
         defs = core.stage_factors(_renamed_snapshot(snaps[k], rename)) if a.factors else {}
         out[k] = replace(a, factors=tuple(defs.get(f.factor_id, f) for f in a.factors))
+    owners: dict[str, set] = {}
+    for a in out.values():
+        for f in a.factors:
+            owners.setdefault(f.factor_id, set()).add(f)
+    for k, a in out.items():
+        have = {f.factor_id for f in a.factors}
+        extra = tuple(next(iter(fs)) for fid, fs in owners.items()
+                      if fid not in have and len(fs) == 1 and k in next(iter(fs)).members)
+        if extra:
+            out[k] = replace(a, factors=a.factors + extra)
     return out
 
 
