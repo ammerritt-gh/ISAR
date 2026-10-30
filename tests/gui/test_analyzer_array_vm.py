@@ -110,6 +110,13 @@ def test_delta_hkl_words_full_partial_and_none(env, monkeypatch):
     assert state.y_label == "Out of plane ↑   no hkl to compute the step"
 
 
+def test_the_axis_hover_gives_the_exact_step_not_six_figures(env, monkeypatch):
+    _grid(monkeypatch, env, hkl=lambda r, p: (0.123456789 * p, 0.5, 3.0))    # made up, nine significant figures
+    env.selection.set((A6,))
+    state = env.vm.recompute()
+    assert state.x_tip.splitlines()[1] == "A1 → A2  (0.123456789, 0, 0)"
+
+
 def test_first_picked_wins_and_is_said(env):
     env.selection.set((A6, SPECTRA_B[0], A4), clicked=SPECTRA_B[0], first=SPECTRA_B[0])
     assert env.selection.first_picked == SPECTRA_B[0]

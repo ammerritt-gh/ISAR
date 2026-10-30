@@ -174,7 +174,7 @@ def _step_label(head: str, per: str, steps: StepSummary) -> tuple[str, str]:
         return f"{head}   no hkl to compute the step", "No pair of neighbouring analyzers has an hkl, so no step is shown."
     note = f" (from {steps.used} of {steps.possible} pairs)" if steps.used < steps.possible else ""
     tip = "Step in hkl (r.l.u.) between each pair of neighbours:\n" + "\n".join(
-        f"{p.a} → {p.b}  (" + ", ".join(f"{v:g}" for v in p.delta) + ")" for p in steps.pairs)
+        f"{p.a} → {p.b}  (" + ", ".join(f"{v:.12g}" for v in p.delta) + ")" for p in steps.pairs)     # 12 figures: every digit an hkl carries, none of a difference's float noise
     return f"{head}   Δhkl ≈ {_three(steps.mean)} per {per}{note}", tip
 
 
