@@ -8,10 +8,10 @@ Conventions: energies in meV, absolute from zero energy transfer (the fast pass'
 Penalties P and entry prices B are in deviance units (2 x nats), like D = Baker-Cousins cost.
 A density's ln is in nats. Every setting value here is UNCALIBRATED (spec-draft section 6 table).
 
-Seam: CoupledEngine subclasses fast_pass._Engine and overrides ln_prior, _canonical and _trf, plus the
-hidden-mode pieces (S1U1): a twin-screen guard (_resolve), and a price that integrates over the intensity
-split of an overlapping pair (price, split_evidence) and reports an undetermined fit as such;
-the module subclasses the engine and inherits its _resolve (twin screens, among them the railed-QE rule).
+Seam: CoupledEngine subclasses fast_pass._Engine and overrides ln_prior, _canonical, _trf and _resolve, plus the
+hidden-mode pieces (S1U1): a twin-screen guard (_resolve, which keeps a matched slot from being merged away and
+otherwise runs the fast pass's screens, the railed-QE rule among them), and a price that integrates over the
+intensity split of an overlapping pair (price, split_evidence) and reports an undetermined fit as such.
 """
 from __future__ import annotations
 
