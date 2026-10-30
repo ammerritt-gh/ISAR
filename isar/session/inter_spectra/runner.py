@@ -315,6 +315,7 @@ class _Run:
         self.records: dict[str, dict] = {}        # fit id -> record of a refit accepted in this batch
         self.dormant: dict[str, tuple] = {}       # fit id -> its Dormant records (branches not observed in it)
         self.aliases: dict[str, str] = {}         # every id merged in this batch so far: alias -> canonical name
+        self.stored_merges: dict[str, str] | None = None   # ids merged in earlier batches, read once (stored_aliases)
         self.lines: dict = {}                     # fit id -> RefitLine of the stored log, read when a fit is missing
         self.ctx: dict = {}
         self.stage_name, self.index, self.of, self.round = "prepare", 0, None, None
@@ -517,8 +518,25 @@ class _Run:
             from isar.analyze.coupled.types import Dormant
             stored = ((self.records_mod.read_payload(self.root, line) or {}).get("came_out") or {}).get("dormant") or ()
             self.dormant[fit] = tuple(Dormant(d["branch"], d["last_seen_fit"], d["last_seen_unit"]) for d in stored)
-        return self.core.held_from_fit(self.record_of(u, fit), unit=u, fit=fit, inputs=inputs,
+        held = self.core.held_from_fit(self.record_of(u, fit), unit=u, fit=fit, inputs=inputs,
                                        context=self.ctx[u], T=self.nodes[u].T, dormant=self.dormant.get(fit, ()))
+        # a stored refit's ids were canonical when it was saved; a batch that merged them since renames them here
+        return _renamed(held, self.stored_aliases()) if line is not None else held
+
+    def stored_aliases(self) -> dict[str, str]:
+        """The ids merged in earlier batches of this workspace (alias -> canonical name), read once per batch. A
+        batch's aliases are cumulative within it (``self.aliases``), so its last saved refit's snapshot carries them."""
+        if self.stored_merges is None:
+            from isar.analyze.coupled.identity import merged_aliases
+            last = {}
+            for line in self.records_mod.read_log(self.root).refits:
+                last[line.batch] = line
+            merged: dict[str, str] = {}
+            for line in last.values():
+                came_in = (self.records_mod.read_payload(self.root, line) or {}).get("came_in") or {}
+                merged = merged_aliases(merged, came_in.get("aliases") or {})
+            self.stored_merges = merged
+        return self.stored_merges
 
     def merge_aliases(self, rename: Mapping[str, str]) -> None:
         from isar.analyze.coupled.identity import merged_aliases

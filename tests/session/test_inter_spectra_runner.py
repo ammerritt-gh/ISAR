@@ -262,6 +262,44 @@ def test_a_branch_missing_in_the_middle_of_an_anchored_chain_is_carried_to_where
     assert run.held_of(y, lines[y][0].fit).dormant == (Dormant("p", "fast", x),)
 
 
+def _merging(orig, extra):
+    """``canonical_factors`` that also merges ``extra`` (alias -> name), as the identity does when two ids meet."""
+    def patched(A, ids, refs, outside):
+        out, rename = orig(A, ids, refs, outside)
+        return out, {**rename, **extra}
+    return patched
+
+
+def test_a_locked_fit_dormant_branch_a_later_batch_merged_is_read_under_the_merged_id(tmp_path, monkeypatch):
+    """z's refit (batch 1) records q as dormant. The user locks z; batch 2 merges q into p and its refits record the
+    alias q -> p. Batch 3 reads z's stored fit: its held state names p where it named q, so p and q never meet."""
+    from isar.analyze.coupled.types import Dormant
+    ws = _workspace(tmp_path, (100, 150, 200), 1)
+    k = _keys(ws)
+    x, y, z = k["a03", 100.0], k["a03", 150.0], k["a03", 200.0]
+    w = Workspace.open(ws)
+    card, session = w.load()
+    for key, peaks in ((x, [(4.0, "q"), (8.0, "r")]), (y, [(8.0, "r")]), (z, [(4.0, "z0"), (8.0, "z1")])):
+        fp = session.scans[key].detectors[key.rsplit(":", 1)[1]]["fast_pass"]
+        fp["peaks"] = [{"index": i, "omega0": e, "Gamma": 0.5, "height": 1.0, "branch": b}
+                       for i, (e, b) in enumerate(peaks)]
+        fp["fake"] = {"toy": "keep"}
+    w.save(card, session)
+    first = _anchored(ws, [x])
+    Bench(ws).run(first)
+    z_fit = {r.unit: r for r, _ in _lines(ws, first.batch_id)}[z].fit
+    assert inter_values.set_lock(ws, z, locked=True, fit_id=z_fit).ok
+    monkeypatch.setattr(runner, "canonical_factors", _merging(runner.canonical_factors, {"q": "p"}))
+    Bench(ws).run(_simultaneous(ws, (x, y, z)))
+    later = _simultaneous(ws, (x, y, z))
+    run = runner._Run(Path(ws), runner.BatchItem("q3", f"inter:{later.batch_id}:batch", "inter", 1, later.to_json()),
+                      lambda p: None, lambda r: None, lambda t: {}, fakes, runner.TARGET_S)
+    run.records_mod, run.ctx, run.inputs, run.nodes = records, {z: None}, {}, read_nodes(ws).nodes
+    held = run.held_of(z, z_fit)
+    assert sorted(d.branch for d in held.dormant) == ["p", "r"]                    # q is p now, and r is y's
+    assert held.dormant[0] == Dormant("p", "fast", x)
+
+
 def test_a_locked_refit_is_drawn_with_the_calibration_resolution_and_temperature_it_was_made_with(tmp_path):
     """Through the real writer and facade: y's refit is locked, then y's calibration, resolution and temperature
     change and its fast solo is rerun. The locked refit stays in use (stale) and is still drawn in its own context,
