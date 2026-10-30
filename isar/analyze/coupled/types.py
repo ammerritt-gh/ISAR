@@ -88,7 +88,7 @@ class Assignment:                  # the frozen discrete decision of one spectru
     factors: tuple[Factor, ...]    # frozen definitions of every factor incident on unit (engine.Factor); the runner replaces them with the stage's canonical set before the continuous stage (S1U6 E18)
     discrete: str                  # "priced" | "skipped"
     triggers: tuple[str, ...]      # trigger codes that fired, e.g. "a:missing_branch", empty when skipped
-    candidates: tuple[dict, ...]   # evaluated {count, slots, ln_z, status, weight}, weights conditional on the evaluated set
+    candidates: tuple[dict, ...]   # evaluated {count, slots, ln_z, status, weight}: ln_z the deduplicated mass the decision weighed, weights conditional on the evaluated set
     coverage: dict                 # {"counts_tried","counts_untried","enumeration_truncated","missing_candidate_history","full_search"}
     search_limited: bool           # spec 3 assignment_search_limited
     changed: bool                  # count or association differs from snapshot.own AND won by the evidence rule (spec 5)

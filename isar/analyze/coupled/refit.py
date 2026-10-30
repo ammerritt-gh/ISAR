@@ -633,11 +633,19 @@ def assign_decide(snapshot: Snapshot, priced: Sequence[Priced]) -> Assignment:
     jobs, coverage, limited = spec.jobs()
     by_key = {p.key: p for p in priced}
     rows, cands = _basin_rows(spec, jobs, by_key), []
+    # each candidate carries the deduplicated mass of its own (count, slots), the one the decision weighs, so
+    # the identity reads the same evidence (a basin two orders found is not a rival of itself)
+    mass: dict[tuple, list[float]] = {}
+    for c, s_, z in rows:
+        if z is not None and math.isfinite(z):
+            mass.setdefault((c, tuple(s_)), []).append(z)
+    lz = {c: float(logsumexp(v)) for c, v in mass.items()}
     for j in jobs:
         p = by_key.get(j.key)
-        lz = p.ln_z if p is not None else None
-        cands.append({"count": j.count, "slots": j.slots, "ln_z": lz,
+        cands.append({"count": j.count, "slots": j.slots, "ln_z": lz.pop((j.count, tuple(j.slots)), None),
                       "status": p.status if p is not None else "unpriced", "key": j.key})
+    # a basin filed under an order no job named still counts in the decision
+    cands += [{"count": c, "slots": s_, "ln_z": z, "status": "ok", "key": None} for (c, s_), z in lz.items()]
     d = rules.decide(rows, (spec.n0, spec.incoming), eps=s.evidence_hysteresis_nats, conf=s.confidence,
                      close=s.close_call_nats)
     for c in cands:

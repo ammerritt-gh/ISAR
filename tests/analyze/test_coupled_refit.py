@@ -444,6 +444,33 @@ def test_two_slot_orders_that_converge_to_one_basin_count_its_evidence_once():
         logsumexp([t[0] for t in terms]) + w0 - pnn.ln_z, abs=1e-6)
 
 
+def test_identity_confidence_reads_the_deduplicated_masses_the_decision_used():
+    # both slot orders of one composition converge to one basin (b1 at 8.45, b2 at 8.55): the decision counts it
+    # once, under (b1, b2); the candidates the identity reads must not keep the swapped order as an equal rival
+    from isar.analyze.coupled import identity
+    true = [(8.0, 0.3, 30.0), (9.0, 0.3, 30.0)]
+    snap = t_pair(spectrum(true, scale=0.3, seed=3), true, ["fast:y#0", "fast:y#1"],
+                  [(8.45, 0.3, 30.0), (8.55, 0.3, 30.0)], ["b1", "b2"], kind="simultaneous", guard=0.5)
+    jobs = R._Spec(snap).jobs()[0]
+    basin = {"b1": (8.45, 0.3, 30.0, False), "b2": (8.55, 0.3, 30.0, False)}
+
+    def priced(j):
+        if j.count == 2 and set(j.slots) == {"b1", "b2"}:
+            rec = (0.0, "m", tuple((b, *basin[b]) for b in j.slots), (None, None))
+            return R.Priced(j.key, 2, j.slots, 0.0, "ok", None, None, 1, 0.0, (rec,))
+        return R.Priced(j.key, j.count, j.slots, -50.0, "ok", None, None, 1, 0.0)
+    a = R.assign_decide(snap, [priced(j) for j in jobs])
+    assert (a.count, a.slots, a.coverage["decision"]["ambiguous"]) == (2, ("b1", "b2"), False)
+    assert [identity._slot_support(a, m, S)[0] for m in range(2)] == [True, True]
+    swapped = next(c for c in a.candidates if tuple(c["slots"]) == ("b2", "b1"))
+    assert swapped["ln_z"] is None and swapped["weight"] == 0.0
+    # and two genuine rivals of near-equal mass still leave the slot unconfident
+    win = next(c["ln_z"] for c in a.candidates if tuple(c["slots"]) == ("b1", "b2"))
+    rival = replace(a, candidates=tuple({**c, "ln_z": win - 0.2} if tuple(c["slots"]) == ("b2", "b1") else c
+                                        for c in a.candidates))
+    assert identity._slot_support(rival, 0, S)[0] is False
+
+
 def test_a_poorly_pinned_unmatched_mode_is_not_held_by_neighbours():
     true = [(6.0, 6.0, 10.0)]
     weak = t_pair(spectrum(true, scale=0.5, seed=2), true, ["fast:y#0"], true, ["b1"])
