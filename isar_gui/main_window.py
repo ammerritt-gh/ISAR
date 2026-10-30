@@ -30,7 +30,7 @@ from types import SimpleNamespace
 from typing import NamedTuple
 from weakref import WeakSet
 
-from PySide6.QtCore import QByteArray, QEvent, Qt, QTimer, QUrl
+from PySide6.QtCore import QByteArray, QEvent, QPoint, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -101,6 +101,7 @@ from isar_gui.views.campaign_monitor import CampaignMonitor
 from isar_gui.views.sandbox_pane import SandboxPane
 from isar_gui.views.browser_dock import BrowserDock
 from isar_gui.views.card_dock import CardDock
+from isar_gui.views.analyzer_array_dock import DEFAULT_SIZE as _ARRAY_DEFAULT_SIZE, AnalyzerArrayDock
 from isar_gui.views.attention_list import AttentionList
 from isar_gui.views.center_host import CenterHost
 from isar_gui.views.details_dialog import DetailsDialog
@@ -121,7 +122,8 @@ from isar_gui.views.scan_list import ScanListPanel
 from isar_gui.views.scan_table_dock import ScanTableDock
 from isar_gui.views.setup_section import RUN_TEXT, RUN_TIP, SetupSection, locate_gpi_folder, locate_resolution_folder
 from isar_gui.views.scans_dock import ScansDock
-from isar_gui.selection import ORIGIN_GROUP, ORIGIN_LIST, ORIGIN_OTHER
+from isar_gui.selection import ORIGIN_ARRAY, ORIGIN_GROUP, ORIGIN_LIST, ORIGIN_OTHER
+from isar_gui.viewmodels.analyzer_array import AnalyzerArrayViewModel
 from isar_gui.watch_bridge import WatchBridge
 
 log = logging.getLogger(__name__)
@@ -367,6 +369,8 @@ class MainWindow(QMainWindow):
         self._empty = False           # True while showing the empty-start (no workspace) state
         self._import_note = ""        # "Last import: ..." for the Processing line; cleared when the workspace binds
         self.scans_page = None        # the Scan(s) page is rebuilt for each workspace binding
+        self.array_dock = None        # the Analyzer array dock and its view model, per binding
+        self.array_vm = None
         self._center_host: CenterHost | None = None   # hosts the four display surfaces once bound
         self.setAcceptDrops(True)      # drop a data folder/numor onto the window -> ingest (D2/D5)
 
@@ -720,7 +724,7 @@ class MainWindow(QMainWindow):
 
     def _on_selection_changed(self, change) -> None:
         """Follow list gestures and group recall while automatic page following is on."""
-        if (change.origin in (ORIGIN_LIST, ORIGIN_GROUP) and self._center_host is not None
+        if (change.origin in (ORIGIN_LIST, ORIGIN_GROUP, ORIGIN_ARRAY) and self._center_host is not None
                 and self._center_host.auto_follow):
             self._center_host.show_view("scan")
 
@@ -1040,6 +1044,15 @@ class MainWindow(QMainWindow):
             self.scans_vm.model.set_active_key(self.active_units.key)
             self._register_dock("Scan Table", self.scan_table_dock)
 
+            # The Analyzer array: one scan's analyzers as a grid. It reads the Scan(s) page's normalisation
+            # reference, so both plots of one spectrum agree; it parks hidden and floating (see _place_docks).
+            self.array_vm = AnalyzerArrayViewModel(self._ws, self.scan_list_vm, self.scans_page.vm.reference_for,
+                                                   parent=self)
+            self.array_vm.set_inter(self.inter)
+            self.array_vm.load_view_state(self._session)
+            self.array_dock = AnalyzerArrayDock(self.array_vm, self)
+            self._register_dock("Analyzer array", self.array_dock)
+
         # Scan(s), Plane, Dispersion and Sandbox are switchable pages of the central CenterHost,
         # built in _bind_workspace (see _build_center_host).
         self._place_docks()
@@ -1052,13 +1065,38 @@ class MainWindow(QMainWindow):
                                    "scan_table_dock")) if dock is not None]
 
     def _show_panel(self, dock) -> None:
-        """View > Panels shows ``dock``. A parked old panel joins the left column as a tab first."""
+        """View > Panels shows ``dock``. A parked old panel joins the left column as a tab first. The Analyzer
+        array floats on its first open and is left where the user puts it after that."""
+        if dock is self.array_dock and dock is not None:
+            self._place_array_dock_once()
+            dock.show()
+            dock.raise_()
+            return
         if dock in self._old_panels() and self.dockWidgetArea(dock) == Qt.NoDockWidgetArea:
             dock.setFloating(False)
             self.addDockWidget(Qt.LeftDockWidgetArea, dock)
             self.tabifyDockWidget(self.left_column_dock, dock)
         dock.show()
         dock.raise_()
+
+    def _place_array_dock_once(self) -> None:
+        """First open: a floating window of the default size (clamped to the screen), centred over this window.
+        The placed flag is kept with the session, so a later open (or a restart) never moves it again."""
+        view_state = self._session.view_state
+        if view_state.get("array_dock_placed"):
+            return
+        dock = self.array_dock
+        width, height = self._available_size()
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        origin = screen.availableGeometry().topLeft() if screen is not None else QPoint(0, 0)
+        w, h = min(_ARRAY_DEFAULT_SIZE[0], width), min(_ARRAY_DEFAULT_SIZE[1], height)
+        centre = self.geometry().center()
+        x = max(origin.x(), min(centre.x() - w // 2, origin.x() + width - w))
+        y = max(origin.y(), min(centre.y() - h // 2, origin.y() + height - h))
+        dock.setFloating(True)
+        dock.resize(w, h)
+        dock.move(x, y)
+        view_state["array_dock_placed"] = True
 
     def _hide_panel(self, dock) -> None:
         """View > Panels hides ``dock``. An old panel is parked again: a hidden tab left in the left
@@ -1087,6 +1125,10 @@ class MainWindow(QMainWindow):
         self.splitDockWidget(self.log_dock, self.output_dock, Qt.Horizontal)
         for dock in self._old_panels():
             self._hide_panel(dock)
+        if self.array_dock is not None:         # parked: floating and hidden until View > Panels opens it
+            self.addDockWidget(Qt.RightDockWidgetArea, self.array_dock)
+            self.array_dock.setFloating(True)
+            self.array_dock.hide()
         self.left_column_dock.raise_()
         self.processing_dock.raise_()
 
@@ -1106,6 +1148,7 @@ class MainWindow(QMainWindow):
         remembered width set to the kind's default."""
         sizes = _ARRANGEMENTS[kind]
         self._place_docks()
+        self._session.view_state.pop("array_dock_placed", None)     # the next open places the array dock afresh
         self._close_scan_inspector()        # remembers the open width: reset the width after it
         self._inspector_width = sizes.inspector
         self.resizeDocks([self.left_column_dock], [sizes.left], Qt.Horizontal)
@@ -2708,6 +2751,11 @@ class MainWindow(QMainWindow):
         self.scans_dock = None
         self.scan_table_dock = None
         self.campaign_dock = None
+        self.array_dock = None
+        if self.array_vm is not None:
+            self.array_vm.save_view_state(self._session)
+            self.array_vm.deleteLater()
+            self.array_vm = None
         # The old viewmodels are QObjects parented to self; without an explicit deleteLater() they
         # would linger as inert children (their dock's connections already dropped above) for the
         # rest of the window's life. Drop them so repeated rebinds don't accumulate.
@@ -2920,6 +2968,8 @@ class MainWindow(QMainWindow):
         self.dispersion_vm.save_view_state(self._session)
         if self.scans_page is not None:
             self.scans_page.save_view_state(self._session)
+        if self.array_vm is not None:
+            self.array_vm.save_view_state(self._session)
         self.scan_list_vm.save_view_state(self._session)
         self._session.view_state["attention_list"] = {"expanded": self.attention_list.is_expanded()}
         self.processing_panel.inter_box.save_view_state(self._session, self._ws.root)

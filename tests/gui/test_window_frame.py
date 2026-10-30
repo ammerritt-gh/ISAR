@@ -169,7 +169,7 @@ def test_example2_opening_an_experiment_changes_nothing_on_screen(qtbot, monkeyp
     for name in ("scans_dock", "browser_dock", "card_dock", "scan_table_dock"):
         assert getattr(w, name).isHidden()
     assert {a.text() for a in w._docks_menu.actions()} == {
-        "Log", "Files", "Campaign", "Processing", "Scans", "Browser", "Card", "Scan Table"}
+        "Log", "Files", "Campaign", "Processing", "Scans", "Browser", "Card", "Scan Table", "Analyzer array"}
     assert w.scan_list_vm.workspace is w._ws
     assert set_available[-1] == (True, True, "")
 
