@@ -225,8 +225,13 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   calibration versions, the dispersion prior, exclusions). For BL43LXU the policy half holds analysis
   settings only; its format is read from the *BL43 format file*.
 - **BL43 format file** — `isar/parsers/cards/bl43lxu.policy.toml`: the BL43LXU reader's format knowledge
-  (its files, reader, calibration pattern and detectors), shipped with ISAR and read at every load. A
-  workspace card does not hold these keys; `isar init` copies only the analysis-settings region of it.
+  (its files, reader, calibration pattern, detectors and analyzer layout), shipped with ISAR and read at every
+  load. A workspace card does not hold these keys; `isar init` copies only the analysis-settings region of it.
+- **Analyzer layout / internal name** — where each analyzer sits in an instrument's array, seen from the sample:
+  the card's `[[analyzer_layouts]]` table (BL43LXU: `BL43LXU-7x4`), resolved only by `layout_for`
+  (`isar/schema/analyzer_layout.py`). The internal name is a label: a letter for the row (A the bottom row, in the
+  scattering plane) and a number for the in-plane position (1 the lowest 2θ), so a03 is A1 and a06 is A4. Nothing
+  is stored against a position, so a layout change re-labels cells and moves no fit.
 - **workspace** — the per-experiment directory `isar init` creates: the card, the session ledger,
   and the `report/` output. One experiment = one workspace.
 - **session ledger** — ISAR's bookkeeping (`session.json`): which files it has seen and what
