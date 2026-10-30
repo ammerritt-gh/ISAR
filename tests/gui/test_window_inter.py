@@ -82,6 +82,66 @@ def test_saved_results_reload_the_inter_state(qtbot, bl43_ws, monkeypatch):
     assert reloads == [1]
 
 
+def _authoritative_refit(root, unit) -> str:
+    """One batch whose refit of ``unit`` the real writer accepts (made from the inputs in force now)."""
+    from isar.intake import inputs, scans as intake_scans, store
+    from isar.schema.card import load_state
+    from isar.session import writer
+    from isar.session.inter_spectra import records
+    read = store.read_all(root, store.ENTRIES)
+    now = records.inputs_now_from(intake_scans.read_scans(root), inputs.index_entries(read.entries, lines=read.lines),
+                                  load_state(root / "card.state.json").tabulated_calibration, [unit])
+    batch, fit = records.new_batch_id(), records.new_fit_id()
+    head = {"schema": records.SCHEMA_SAVE, "unit": f"inter:{batch}:batch", "pass": "inter", "batch": batch}
+    start = {"batch_kind": "anchored", "scope": {"direction": "q", "members": []}, "anchors": [], "rings": {},
+             "seams": [], "settings": {"version": 1, "values": {}}, "preview": "test", "fixed": {}, "unreached": {},
+             "terms": [], "metric": {}, "core": "test", "inputs_at": 0, "intake_seq": 0, "epochs": {}}
+    refit = {"fit": fit, "unit": unit, "status": "accepted", "reason": None, "seed": "fast", "inputs": now[unit],
+             "conditioned_on": [], "flag": {"score": 0.5, "flagged": False, "reasons": []}, "why_changed": None,
+             "payload": {"came_in": {}, "came_out": {}, "overlay": {"n_modes": 1}}}
+    stage = {"stage": "ring", "index": 1, "round": None, "refits": [refit], "seams": [], "progress": {},
+             "not_reached": {}}
+    v = writer.save_inter(root, [{**head, "event": "start", "start": start}, {**head, "event": "stage", "stage": stage}])
+    assert v[1]["accepted"] == {unit: fit}
+    return fit
+
+
+def test_a_saved_corrected_value_reloads_the_inter_state_so_a_stale_refit_is_no_longer_shown_in_use(qtbot, inter_ws):
+    from inter_fixtures import scan_keys
+    spec = spectrum_keys(inter_ws)[0]
+    fit = _authoritative_refit(inter_ws, spec)
+    from isar_gui.viewmodels.scan_list import COLUMNS
+
+    def fit_cell():                       # the scan list's Inter-spectra fit cell of the spectrum
+        item = w.scan_list._by_id.get(f"spec:{spec}")
+        if item is None:
+            return ""
+        parent = item.parent() or w.scan_list._model.invisibleRootItem()
+        return parent.child(item.row(), COLUMNS.index("inter")).text()
+    w = _win(qtbot, inter_ws)
+    qtbot.waitUntil(lambda: w.inter.row(spec) is not None and w.inter.row(spec).in_use, timeout=WAIT_MS)
+    assert w.inter.row(spec).fit_id == fit
+    qtbot.waitUntil(lambda: fit_cell() == w.inter.row(spec).label, timeout=WAIT_MS)
+    scan = next(s for s in scan_keys(inter_ws) if spec.startswith(f"{s}:"))
+    assert w.intake.save_value("temperature", [scan], 123.0, "corrected").ok      # the GUI's own writer
+    qtbot.waitUntil(lambda: not w.inter.row(spec).in_use, timeout=WAIT_MS)
+    assert w.inter.row(spec).fit_id == "fast" and w.inter.row(spec).stale
+    qtbot.waitUntil(lambda: fit_cell() == "stale: fast solo stands in", timeout=WAIT_MS)
+
+
+def test_the_workspace_watch_events_an_overview_depends_on_reload_the_inter_state(qtbot, bl43_ws, monkeypatch):
+    w = _win(qtbot, bl43_ws)
+    reloads = []
+    monkeypatch.setattr(w.inter, "reload", lambda: reloads.append(1))
+    for event in ("inter_user", "inter_log", "gpi", "intake_entries", "intake_scans", "card_state"):
+        reloads.clear()
+        w._on_workspace_changed({event}, refresh_shown=False)
+        assert reloads == [1], event
+    reloads.clear()
+    w._on_workspace_changed({"events"}, refresh_shown=False)
+    assert reloads == []
+
+
 def test_a_rename_waits_for_the_inter_worker_as_it_waits_for_the_intake(qtbot, monkeypatch, bl43_ws):
     w = _win(qtbot, bl43_ws)
     qtbot.waitUntil(lambda: w.inter.overview is not None, timeout=WAIT_MS)   # its read has ended before the rename

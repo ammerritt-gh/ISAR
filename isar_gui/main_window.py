@@ -235,6 +235,9 @@ class _EmptyWorkspace:
 
 
 # The watch events after which the intake reads are re-read (the intake files and what they derive from).
+# What an inter-spectra overview's authority and previews depend on: its own stores, the inputs in force (user
+# values, import records, gpi, calibration). A refresh only reads (hard rule 7).
+_INTER_RELOAD = frozenset({"inter_user", "inter_log", "gpi", "intake_entries", "intake_scans", "card_state"})
 _INTAKE_RELOAD = frozenset({"snapshot", "results", "card", "card_state", "intake_entries",
                            "intake_settings", "intake_scans", "fit_inputs", "curves", "gpi"})
 # The status bar's and Processing panel's word for each kind the coordinator emits.
@@ -786,6 +789,7 @@ class MainWindow(QMainWindow):
         self._queue.changed.connect(self._push_run_row)
         self._queue.results_saved.connect(self._on_results_saved)
         self._queue.results_saved.connect(lambda _keys: self.inter.reload())   # a batch's saves change its fits
+        self.intake.saved.connect(lambda _message: self.inter.reload())        # a saved value can make a refit stale
         self._operations.set_writer_guard(self._campaign_refusal)
 
         self._group_shortcuts = []
@@ -2787,6 +2791,8 @@ class MainWindow(QMainWindow):
             self.output_bar.note_written(datetime.now())
         if changed & _INTAKE_RELOAD:
             self.intake.reload()
+        if changed & _INTER_RELOAD:
+            self.inter.reload()
         self._live_label.setText(f"live — last update {datetime.now():%H:%M:%S}")
         self.statusBar().showMessage(f"Updated: {', '.join(sorted(changed)) or '(none)'}")
 
