@@ -147,7 +147,9 @@ by `cost_rel_tol`. A batch that reaches `sweep_cap` first keeps its results and 
 **Member states.** While a batch runs, the runner reports every member's state: `waiting`, `fitting` (a pool
 worker holds its job; at most `workers` at once), `done`, `refused`, `failed`, `not_reached`, or `held` (anchor,
 valid lock or stale lock), with a reason for the last four and for a stale lock. It sends the whole map as a
-`members` event, at most one per 0.25 s from pool transitions and at each phase boundary. The analysis service
+`members` event, at most one per 0.25 s from pool transitions, and at each phase boundary and as each pool run ends (a
+returned job is never left showing `fitting`). If a worker dies mid-run, the jobs not yet sent fail with its error and the
+stage is still saved; the next stage's first submit raises, as it did before. The analysis service
 relays it between the item's `started` and `finished` (protocol and ordering: the `analysis_service.py` module
 docstring). The events change no fit, acceptance, save, count or progress record. The GUI's Analyzer array dock follows
 each member's state from the queue controller's copy of this map (`design/gui.md` §0decies).
