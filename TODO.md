@@ -686,12 +686,15 @@ conditions — these are wants, not commitments.
   mark and by `intake_view.folder_status`, from different inputs, so a saved folder with no check yet
   can read differently on the button and the rows; one helper over (saved setting, check), reusing
   `readiness._stale`. Revisit when either judgement is next touched or the mismatch is reported.
+- `isar_gui/views/scan_list.py:551` — once the inter-spectra columns appear, the Scan column is squeezed until
+  a scan-set label reads "(…d)"; size the four inter columns to their contents so the Scan column keeps the
+  rest. Revisit at the first walk-through of the inter-spectra GUI.
 
 ---
 
 ## Notes
 
-routine suite 2.3 min, over its 1-min budget
+routine suite 3.1 min, over its 1-min budget
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test
