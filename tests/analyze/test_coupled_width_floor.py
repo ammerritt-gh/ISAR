@@ -3,7 +3,8 @@ line (change 8), seen through ``refit.price`` and ``refit.assign`` on synthetic 
 (hard rule 10: every number is made up; the committed resolution curve a06 is the only measured thing).
 
 W1-W3: the railed QE ridge and the six-mode case; W1F: the optimiser class (F1); W4-W5: a free width at the
-floor is never priced as a model of its own; W6-W7: a mask change alone becomes the saved fit.
+floor is never priced as a model of its own; W6-W7: a mask change alone becomes the saved fit; W8: a QE the
+decision prices away is not restored by the refit.
 """
 import sys
 from pathlib import Path
@@ -194,6 +195,29 @@ def test_an_incoming_resolution_limited_mode_keeps_its_mask_without_a_start_of_i
     assert "incomplete_comparison" not in a.reasons and not any(x.startswith("mask_unpriced") for x in a.reasons)
     r = R.refit(snap, stage="both")
     assert r.status in ("accepted", "unchanged") and R._selected_model(r.fit)["delta_modes"] == [0]
+
+
+# W8 --------------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("seed", [1, 2])
+def test_a_qe_line_the_decision_prices_away_is_not_restored(seed):
+    # the incoming fit carries a central QE pegged at its lower width bound; the truth has none, the decision prices
+    # that variant away, and the refit delivers the fit without the line
+    from dataclasses import replace
+
+    from test_coupled_refit import record
+    lo, _ = recipe.qe_floor()
+    truth = [(5.0, 0.4, 60.0), (11.0, 0.8, 40.0)]
+    snap = snapshot(recipe.widened(seed, gamma1=0.4, qe_h=0.0, qe_width=lo), truth)
+    spec = R._Spec(snap)
+    eng = R._Labelled(spec.ctx, spec.fs, spec.slot_objects(("b1", "b2")), structures=spec.structures)
+    model = eng.model(eng.variant(2, True, True, True), ())
+    values = {"phonon.omega0": 5.0, "phonon.Gamma": 0.4, "phonon.h": 60.0, "phonon2.omega0": 11.0,
+              "phonon2.Gamma": 0.8, "phonon2.h": 40.0, "elastic.h": 200.0, "qe.h": 0.0, "qe.width": lo, "bg.BG": 2.0}
+    rec = record(truth)
+    rec["models"][0].update(qe=True, map_params={n: values[n] for n in model.names})
+    r = R.refit(replace(snap, own_record=rec), stage="both")
+    assert r.status == "accepted", (r.status, r.reason)
+    assert not R._selected_model(r.fit)["qe"]
 
 
 # W1F (F1's class; removed with decision 5) -------------------------------------------------------------------

@@ -903,6 +903,10 @@ def _with(theta, free, z):
     return t
 
 
+def _variant_key(v) -> tuple:
+    return (v.elastic, v.background, v.qe)
+
+
 def _materially_moved(eng, model, theta, old) -> bool:
     if old is None or old[0] is not model:
         return True
@@ -1045,16 +1049,20 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
     mode = a.selected_model
     if mode is None and win is not None and win.mode is not None and tuple(win.mode[3]) == spec.inc_delta:
         mode = win.mode
+    sel_variant = None
     if mode is not None:
         el, bg, qe, delta, theta = mode
         variant = eng.variant(k, el, bg, qe)
         model = None if variant is None else eng.model(variant, delta)
         if model is not None:
-            selected = tuple(delta)
-            starts = [s for s in starts if tuple(s[0].delta) == selected] + [(model, np.array(theta, dtype=float))]
+            selected, sel_variant = tuple(delta), variant
+            starts = [s for s in starts if tuple(s[0].delta) == selected
+                      and _variant_key(s[0].variant) == _variant_key(variant)] + [(model, np.array(theta, dtype=float))]
             if win is not None:
                 priced = priced or (win,)
     variants = [old[0].variant] if old is not None else list(eng.variants.get(k, ()))
+    if sel_variant is not None:
+        variants = [sel_variant]         # the decision's variant only: a QE it priced away is not restored
     for _family, modes in _starts(spec, k, slots):
         for v in variants:
             model = eng.model(v, selected)
@@ -1077,9 +1085,11 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
 
     model, theta, J_new = best
     # a width mask is part of the topology: positions are slot positions, and at the incoming count the slot order
-    # is the incoming's ascending order, so the comparison is positional and valid for relabelled slots too
+    # is the incoming's ascending order, so the comparison is positional and valid for relabelled slots too.
+    # So is a variant (elastic, background, QE) change: the incoming's J is then not comparable
+    variant_changed = old is not None and _variant_key(model.variant) != _variant_key(old[0].variant)
     topology_changed = (k != spec.n0 or slots != spec.incoming
-                        or tuple(sorted(model.delta)) != spec.inc_delta)
+                        or tuple(sorted(model.delta)) != spec.inc_delta or variant_changed)
     J_old = eng.J(*old) if old is not None and not topology_changed else None
     fixed_ok = all(abs(theta[p] - v) <= 1e-12 * max(1.0, abs(v)) for p, v in zip(model.fixed_pos, model.fixed_vals))
     in_window = all(spec.lo <= theta[e] <= spec.hi for e, _g, _c in model.modes)
