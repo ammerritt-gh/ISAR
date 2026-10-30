@@ -107,7 +107,6 @@ class Priced:
     status: str                    # base engine status words ("ok", "ok_boundary", "no_evidence", "degenerate_twin", ...)
     mode: tuple | None             # posterior-mode parameters, labelled
     reason: str | None; starts: int; seconds: float
-    basins: tuple = ()             # (term, model, modes, qe) per priced basin (refit._basin_record): slot orders deduplicated
 
 
 @dataclass(frozen=True)

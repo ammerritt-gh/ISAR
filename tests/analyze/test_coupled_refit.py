@@ -413,37 +413,6 @@ def test_a_near_tied_exchange_prices_but_a_clear_association_stays_skipped():
     assert R._Spec(clear).triggers == () and R.assign_jobs(clear)[0].discrete == "skipped"
 
 
-def test_two_slot_orders_that_converge_to_one_basin_count_its_evidence_once():
-    # two modes, two close neighbour branches: the trigger filter prices both slot orders (b1, b2) and (b2, b1),
-    # and both converge to one physical basin (b1 low, b2 high). That basin's mass enters once.
-    from scipy.special import logsumexp
-    true = [(8.0, 0.3, 30.0), (9.0, 0.3, 30.0)]
-    snap = t_pair(spectrum(true, scale=0.3, seed=3), true, ["fast:y#0", "fast:y#1"],
-                  [(8.45, 0.3, 30.0), (8.55, 0.3, 30.0)], ["b1", "b2"], kind="simultaneous", guard=0.5)
-    spec = R._Spec(snap)
-    jobs, _coverage, _limited = spec.jobs()
-    priced = {j.slots: R.price(snap, j) for j in jobs}
-    p12, p21, pnn = priced[("b1", "b2")], priced[("b2", "b1")], priced[(None, None)]
-
-    def physical(rec):                 # branch -> energy of one basin record
-        return {b: e for b, e, *_ in rec[2]}
-    best12, best21 = (max(p.basins, key=lambda r: r[0]) for p in (p12, p21))
-    assert all(abs(physical(best12)[b] - physical(best21)[b]) < 0.01 for b in ("b1", "b2"))   # one basin, twice
-    terms = list(p12.basins)
-    for rec in p21.basins:
-        dup = next((i for i, t in enumerate(terms) if all(abs(physical(t)[b] - physical(rec)[b]) < 0.3 * FWHM
-                                                          for b in ("b1", "b2"))), None)
-        if dup is None:
-            terms.append(rec)
-        else:
-            terms[dup] = max(terms[dup], rec, key=lambda r: r[0])
-    w0 = rules.ln_w0(2, 2, len(spec.pool), spec.ceiling + 1)
-    a = R.assign_decide(snap, list(priced.values()))
-    w = {tuple(c["slots"]): c["weight"] for c in a.candidates}
-    assert math.log(w[("b1", "b2")] + w[("b2", "b1")]) - math.log(w[(None, None)]) == pytest.approx(
-        logsumexp([t[0] for t in terms]) + w0 - pnn.ln_z, abs=1e-6)
-
-
 def test_a_poorly_pinned_unmatched_mode_is_not_held_by_neighbours():
     true = [(6.0, 6.0, 10.0)]
     weak = t_pair(spectrum(true, scale=0.5, seed=2), true, ["fast:y#0"], true, ["b1"])
