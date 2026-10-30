@@ -6,10 +6,12 @@ reads ``real_data/``; every number is made up.
 """
 from __future__ import annotations
 
+import operator
 import os
 import sys
 import threading
 from concurrent.futures import Future
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 import pytest
@@ -233,6 +235,36 @@ def _fingerprint(ws, bench, spec):
     end.pop("timing")
     results = [(r.status, r.reason, r.cores) for r in bench.results if r.payload is None or r.payload["event"] != "end"]
     return refits, end, bench.end().status, results, bench.progress
+
+
+class _DyingPool:
+    """Stands in for ProcessPoolExecutor: its first ``ALIVE`` submits run the job at once; then a worker has died, so
+    every later submit raises BrokenProcessPool, as the real pool does."""
+    ALIVE = 3
+
+    def __init__(self, max_workers):
+        self.sent = 0
+
+    def submit(self, fn, *args):
+        if self.sent >= self.ALIVE:
+            raise BrokenProcessPool("a worker died")
+        self.sent += 1
+        f = Future()
+        f.set_result(fn(*args))
+        return f
+
+    def shutdown(self, *a, **k):
+        pass
+
+
+def test_a_pool_that_breaks_mid_stage_fails_the_rest_of_that_stage_and_the_next_stage_raises(monkeypatch):
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", _DyingPool)
+    pool = runner._Pool(operator, 2)                 # operator.neg stands in for a core call
+    out = pool.map("neg", [(i, (i,), {}) for i in range(6)])
+    assert [out[i] for i in range(3)] == [0, -1, -2]              # the jobs sent before the break were collected
+    assert all(isinstance(out[i], BrokenProcessPool) for i in range(3, 6))
+    with pytest.raises(BrokenProcessPool):                        # the next stage's first submit, as before
+        pool.map("neg", [(i, (i,), {}) for i in range(2)])
 
 
 @pytest.mark.parametrize("kind", ["anchored", "simultaneous"])

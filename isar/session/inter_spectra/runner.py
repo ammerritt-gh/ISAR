@@ -32,6 +32,7 @@ import time
 from collections import deque
 from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Literal
@@ -165,6 +166,7 @@ class _Pool:
     def __init__(self, core, workers: int, watch=None, tick=None) -> None:
         self.core, self.workers, self.ex, self.ship_s = core, workers, None, 0.0
         self.watch, self.tick = watch, tick
+        self.broken: BrokenProcessPool | None = None     # set when a worker died; the next map raises it, as its submit did
 
     def _note(self, key, on: bool) -> None:
         if self.watch is not None:
@@ -196,6 +198,8 @@ class _Pool:
                 finally:
                     self._note(key, False)
             return out
+        if self.broken is not None:
+            raise self.broken
         if self.ex is None:
             for name in _THREAD_ENV:          # one BLAS thread per process, as _deep_stage pins it
                 os.environ.setdefault(name, "1")
@@ -205,7 +209,15 @@ class _Pool:
             while pending and len(flying) < self.workers:
                 key, args, kwargs = pending.popleft()
                 blob = blob or self._pickle(args, kwargs)
-                flying[self.ex.submit(_work, self.core.__name__, fn, blob)] = key
+                try:
+                    flying[self.ex.submit(_work, self.core.__name__, fn, blob)] = key
+                except BrokenProcessPool as exc:          # a dead worker: the unsent jobs fail as the flying ones do
+                    log.error("%s: the worker pool broke (%s); %d jobs not sent", fn, exc, len(pending) + 1)
+                    self.broken = exc
+                    for k in [key, *(p[0] for p in pending)]:
+                        out[k] = exc
+                    pending.clear()
+                    break
                 blob = None
                 self._note(key, True)
                 if pending:
