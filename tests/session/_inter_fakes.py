@@ -1,8 +1,8 @@
 """A fake numerical core for the batch runner's tests and S1U13's timing tool (public name: ``_inter_fakes``).
 
 Module-level functions with the core's signatures (``isar.analyze.coupled.refit``): ``held_from_fit``,
-``assign_jobs``, ``price``, ``assign_decide``, ``refit``, ``stage_factors``, plus the real ``total_objective`` and ``seam_report``.
-``open_search`` is the C-search core's entry point: a ``_FakeSearch`` per spectrum, driven by the knobs above.
+``open_search``, ``price``, ``refit``, ``stage_factors``, plus the real ``total_objective`` and ``seam_report``.
+``open_search`` is the C-search core's entry point: a ``_FakeSearch`` per spectrum, driven by the knobs below.
 They are picklable by name, so the runner's pool workers import this module the way they import the real core
 (``tests/session`` must be on the path: the tests put it there, and spawned workers inherit it). Pass the module
 itself as ``run_batch(..., core=_inter_fakes)``; ``run_batch`` below is that call, for ``--inter-target``.
@@ -16,6 +16,16 @@ travels into pool workers with the snapshot and onto the refit's own record:
   omega0: never moves);
 - ``slots``: the stage-1 slot ids (default: the incoming branches); ``change_rounds``: rounds whose stage 1
   is priced and reports a changed assignment (``triggered``: priced every round, never changed);
+- the search (a spectrum that is not triggered is done at once with nothing to price): ``iterations`` (default 1)
+  passes of ``jobs_per_iteration`` (default 1) jobs each, ``starts`` (default 1) starts per job, then done;
+  ``stopped`` (the result's ``coverage["stopped"]``, default ``{"down": "fake", "up": "fake"}``);
+  ``search_raise`` (``"open"``, ``"next"``, ``"feed"`` or ``"result"``: that call raises); ``search_repeat`` (the
+  second pass asks the first pass's jobs again);
+- the price: ``fits`` (the optimizer fits it reports, default 1), ``price_sleep`` (seconds it takes, and reports),
+  ``price_raise`` (job indexes within a pass whose price raises ``RuntimeError("boom")``), ``price_none`` (every
+  price is ``ln_z None``, ``no_evidence``). A job key is a hash of the unit, its own and its neighbours' energies,
+  the slots and the pass and index, never a fit id: an unchanged spectrum reproduces its keys, a neighbour that
+  moved changes them;
 - ``fail``: the refit fails; ``sleep``: seconds each refit sleeps;
 - ``pid_dir``: each refit writes ``pid-<pid>`` there; ``hang``: then it sleeps until killed.
 
@@ -82,13 +92,14 @@ def stage_factors(snapshot) -> dict:
     return {f.factor_id: f for f in _factors(snapshot, tuple(m.branch for m in snapshot.own.modes))}
 
 
-def _assignment(snapshot, slots, *, discrete: str, changed: bool) -> Assignment:
+def _assignment(snapshot, slots, *, discrete: str, changed: bool, stopped=None) -> Assignment:
     cands = ({"count": len(slots), "slots": slots, "ln_z": 0.0, "status": "ok", "weight": 1.0},) \
         if discrete == "priced" else ()
     return Assignment(unit=snapshot.unit, snapshot_id=snapshot.stage_id, count=len(slots), slots=slots,
                       origins=tuple("matched" if b is not None else "new_branch" for b in slots),
                       factors=_factors(snapshot, slots), discrete=discrete, triggers=("fake",) if changed else (),
-                      candidates=cands, coverage={}, search_limited=False, changed=changed, reasons=())
+                      candidates=cands, coverage={} if stopped is None else {"stopped": stopped},
+                      search_limited=False, changed=changed, reasons=())
 
 
 def _triggered(snapshot) -> bool:
@@ -96,65 +107,95 @@ def _triggered(snapshot) -> bool:
     return bool(cfg.get("triggered")) or _number(snapshot.stage_id, "round") in cfg.get("change_rounds", ())
 
 
-def _key(snapshot, slots) -> str:
-    held = [(h.unit, h.fit, [m.omega0 for m in h.modes]) for ti in snapshot.terms for h in ti.held]
-    return hashlib.sha256(repr((snapshot.unit, snapshot.own.fit, slots, held)).encode()).hexdigest()
-
-
-def assign_jobs(snapshot, *, cached={}):
-    slots = _slots(snapshot)
-    if not _triggered(snapshot):
-        return _assignment(snapshot, slots, discrete="skipped", changed=False), ()
-    key = _key(snapshot, slots)
-    job = PricingJob(snapshot.unit, snapshot.snapshot_id, len(slots), slots, key)
-    return None, (() if key in cached else (job,))
-
-
-def price(snapshot, job) -> Priced:
-    return Priced(job.key, job.count, tuple(job.slots), 0.0, "ok", None, None, 1, 0.001)
+def _key(snapshot, slots, p: int = 0, i: int = 0) -> str:
+    held = [(h.unit, [m.omega0 for m in h.modes]) for ti in snapshot.terms for h in ti.held]
+    own = [m.omega0 for m in snapshot.own.modes]
+    return hashlib.sha256(repr((snapshot.unit, own, slots, held, p, i)).encode()).hexdigest()
 
 
 def _changed(snapshot) -> bool:
     return _number(snapshot.stage_id, "round") in _cfg(snapshot).get("change_rounds", ())
 
 
-def assign_decide(snapshot, priced) -> Assignment:
-    return _assignment(snapshot, _slots(snapshot), discrete="priced", changed=_changed(snapshot))
+def _index(snapshot, job) -> int:
+    """The index within its pass of one of this spectrum's jobs (the key is a hash, so find it by regenerating)."""
+    cfg, slots = _cfg(snapshot), _slots(snapshot)
+    for p in range(int(cfg.get("iterations", 1))):
+        for i in range(int(cfg.get("jobs_per_iteration", 1))):
+            if _key(snapshot, slots, p, i) == job.key:
+                return i
+    return 0
+
+
+def price(snapshot, job) -> Priced:
+    cfg = _cfg(snapshot)
+    if _index(snapshot, job) in cfg.get("price_raise", ()):
+        raise RuntimeError("boom")
+    secs = float(cfg.get("price_sleep", 0.0))
+    if secs:
+        time.sleep(secs)
+    if cfg.get("price_none"):
+        return Priced(job.key, job.count, tuple(job.slots), None, "no_evidence", None, "fake no evidence", 1,
+                      secs or 0.001)
+    return Priced(job.key, job.count, tuple(job.slots), 0.0, "ok", None, None, int(cfg.get("fits", 1)),
+                  secs or 0.001)
 
 
 class _FakeSearch:
-    """The fake core's Search: a triggered spectrum asks one job and is done once it is fed; any other is done at once."""
+    """The fake core's Search: a triggered spectrum asks ``jobs_per_iteration`` jobs for ``iterations`` passes and is
+    done once the last is fed; any other is done at once. ``search_raise`` makes one call raise."""
 
     def __init__(self, snapshot) -> None:
-        self._snapshot = snapshot
+        cfg = _cfg(snapshot)
+        self._raise = cfg.get("search_raise")
+        if self._raise == "open":
+            raise RuntimeError("the fake search failed to open")
+        self._snapshot, self._cfg = snapshot, cfg
         self._slots = _slots(snapshot)
-        self._jobs: tuple = ()
-        self._result: Assignment | None = None
-        if not _triggered(snapshot):
-            self._result = _assignment(snapshot, self._slots, discrete="skipped", changed=False)
-            return
-        own = snapshot.own.modes
+        self._passes = int(cfg.get("iterations", 1)) if _triggered(snapshot) else 0
+        self._pass = 0
+        self._outstanding: tuple = ()
+
+    def _jobs(self) -> tuple:
+        snap, cfg, slots = self._snapshot, self._cfg, self._slots
+        own = snap.own.modes
         start = Start("own", tuple((m.omega0, m.gamma, m.height) for m in
-                                   (own[min(i, len(own) - 1)] for i in range(len(self._slots)))))
-        self._jobs = (PricingJob(snapshot.unit, snapshot.snapshot_id, len(self._slots), self._slots,
-                                 _key(snapshot, self._slots), starts=(start,)),)
+                                   (own[min(i, len(own) - 1)] for i in range(len(slots)))))
+        p = 0 if (self._pass == 1 and cfg.get("search_repeat")) else self._pass
+        return tuple(PricingJob(snap.unit, snap.snapshot_id, len(slots), slots, _key(snap, slots, p, i),
+                                starts=(start,) * int(cfg.get("starts", 1)))
+                     for i in range(int(cfg.get("jobs_per_iteration", 1))))
 
     def next_jobs(self) -> tuple:
-        return () if self.done else self._jobs
+        if self._raise == "next":
+            raise RuntimeError("the fake search failed to ask")
+        if self.done:
+            return ()
+        self._outstanding = self._outstanding or self._jobs()
+        return self._outstanding
 
     def feed(self, priced) -> None:
-        if self.done or len(priced) != len(self._jobs) or any(p.key != j.key for p, j in zip(priced, self._jobs)):
+        jobs = self._outstanding
+        if self._raise == "feed":
+            raise RuntimeError("the fake search failed to read")
+        if self.done or not jobs or len(priced) != len(jobs) or any(p.key != j.key for p, j in zip(priced, jobs)):
             raise ValueError("feed takes one Priced per job of the last next_jobs(), in that order")
-        self._result = _assignment(self._snapshot, self._slots, discrete="priced", changed=_changed(self._snapshot))
+        self._pass += 1
+        self._outstanding = ()
 
     @property
     def done(self) -> bool:
-        return self._result is not None
+        return self._pass >= self._passes
 
     def result(self) -> Assignment:
-        if self._result is None:
+        if self._raise == "result":
+            raise RuntimeError("the fake search failed to answer")
+        if not self.done:
             raise RuntimeError("result() before the search is done")
-        return self._result
+        if self._passes == 0:
+            return _assignment(self._snapshot, self._slots, discrete="skipped", changed=False)
+        return _assignment(self._snapshot, self._slots, discrete="priced", changed=_changed(self._snapshot),
+                           stopped=self._cfg.get("stopped", {"down": "fake", "up": "fake"}))
 
 
 def open_search(snapshot) -> _FakeSearch:
