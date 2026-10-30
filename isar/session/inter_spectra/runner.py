@@ -513,11 +513,17 @@ class _Run:
         from isar.analyze.coupled.identity import merged_aliases
         self.aliases = merged_aliases(self.aliases, rename)
 
-    def note_dormant(self, ids, k: str, fit: str) -> tuple:
-        """The identity's absent records of ``k`` (C-identity) as its new fit's Dormant branches."""
+    def note_dormant(self, ids, k: str, fit: str, observed=()) -> tuple:
+        """The identity's absent records of ``k`` (C-identity) as its new fit's Dormant branches, under the batch's
+        merged ids: one record per canonical branch, none for a branch the fit observes (``observed``: its ids)."""
         from isar.analyze.coupled.types import Dormant
-        self.dormant[fit] = tuple(Dormant(r["branch"], r["last_seen_fit"], r["last_seen_unit"])
-                                  for r in (ids.absent or {}).get(k, ()))
+        canon = lambda b: self.aliases.get(b, b)     # noqa: E731
+        seen, out = {canon(b) for b in observed}, {}
+        for r in (ids.absent or {}).get(k, ()):
+            b = canon(r["branch"])
+            if b not in seen and b not in out:
+                out[b] = Dormant(b, r["last_seen_fit"], r["last_seen_unit"])
+        self.dormant[fit] = tuple(out.values())
         return self.dormant[fit]
 
     def snapshot(self, u: str, own, sid: str, terms, stage_id: str | None = None):
@@ -745,7 +751,8 @@ class _Run:
             ids_after, _ = self.identity(A, snaps, previous, sid, energies)
             seams = self.ring_seams(plan, r, R, ok, ids_after)
             for k, s in snaps.items():
-                self.note_dormant(ids_after, k, s.fit_id)
+                self.note_dormant(ids_after, k, s.fit_id,
+                                  () if isinstance(R[k], Exception) else [m.branch for m in R[k].modes])
             entries = [self.entry(k, snaps[k], R[k], self.identity_flags(ids, k)) for k in snaps]
             verdict = self.save_stage("ring", r, entries, seams)
             for k, s in snaps.items():
@@ -899,7 +906,7 @@ class _Run:
                             held[k] = self.core.held_from_fit(r.fit, unit=k, fit=gs[k].fit_id,
                                                               inputs=self.inputs.get(k), context=self.ctx[k],
                                                               T=self.nodes[k].T,
-                                                              dormant=self.note_dormant(ids, k, gs[k].fit_id))
+                                                              dormant=self.note_dormant(ids, k, gs[k].fit_id, r.energies))
                             data[k], unary[k] = r.D, r.unary
                         elif isinstance(r, Exception) or r.status == "failed":
                             move = math.inf              # rules.settled: a failed block is never quiet

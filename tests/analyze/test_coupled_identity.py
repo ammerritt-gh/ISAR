@@ -455,3 +455,17 @@ def test_each_spectrum_reads_only_its_own_identity_flag_values():
     (f1,), (f2,) = (runner._Run.identity_flags(None, r, k) for k in ("k1", "k2"))
     assert "\x27p\x27" in f1["text"] and "\x27q\x27" not in f1["text"]
     assert "\x27q\x27" in f2["text"] and "\x27p\x27" not in f2["text"]
+
+
+def test_dormant_records_follow_the_merged_ids():
+    # reconciliation merged q and s into p, and earlier o into q: y's absent records name q, s and t; it observes p
+    # and r. Dormant keeps one record per canonical branch and none for a branch y observes.
+    from types import SimpleNamespace
+    from isar.session.inter_spectra import runner
+    aliases = ident.merged_aliases({"o": "q"}, {"q": "p", "s": "p"})
+    assert aliases == {"o": "p", "q": "p", "s": "p"}
+    absent = {"y": [{"branch": b, "last_seen_fit": f"f{b}", "last_seen_unit": "x"} for b in ("q", "s", "t")]}
+    me = SimpleNamespace(aliases=aliases, dormant={})
+    ids = SimpleNamespace(absent=absent)
+    assert [d.branch for d in runner._Run.note_dormant(me, ids, "y", "f1")] == ["p", "t"]
+    assert [d.branch for d in runner._Run.note_dormant(me, ids, "y", "f1", ["p", "r"])] == ["t"]
