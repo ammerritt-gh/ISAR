@@ -17,10 +17,10 @@ from isar.intake.values import _Bad, _check_units, _given, _reason, _save, _targ
 def _without_fast(root, units: Sequence[str]) -> list[str]:
     """The units with no stored fast solo fit (``has_fast_solo``); the session ledger is read once for all of them."""
     from isar.session.inter_spectra.authority import has_fast_solo   # lazy: the intake side never loads isar.session
-    from isar.session.state import SessionState
+    from isar.session.state import load_shared
     from isar.session.workspace import SESSION_NAME
     try:
-        session = SessionState.load(Path(root) / SESSION_NAME)
+        session = load_shared(Path(root) / SESSION_NAME)
     except (OSError, ValueError) as exc:
         raise _Bad(f"the session ledger cannot be read ({exc})") from exc
     return [unit for unit in units if not has_fast_solo(session.get(unit), unit)]

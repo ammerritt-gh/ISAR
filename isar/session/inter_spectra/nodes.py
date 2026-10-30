@@ -71,7 +71,7 @@ def read_nodes(root) -> NodeSet:
     from isar.reduce.collate import _t_key
     from isar.session.workspace import Workspace
 
-    card, session = Workspace.open(root).load()
+    card, session = Workspace.open(root).load_read_only()
     pol = card.policy
     sample = (pol.sample or {}).get("name") or ""
     t_round = (pol.collation or {}).get("t_round", 0.1)

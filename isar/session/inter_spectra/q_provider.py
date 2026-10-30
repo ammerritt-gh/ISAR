@@ -61,7 +61,7 @@ def q_coordinates(root, keys: Collection[str]) -> QCoordinates:
     from isar.session.workspace import Workspace
 
     root = Path(root)
-    card, session = Workspace.open(root).load()
+    card, session = Workspace.open(root).load_read_only()
     rows = intake_scans.read_scans(root)                 # {} outside BL43: every key then has no accepted hkl
     index = gpi_now = None
     if rows:
