@@ -174,8 +174,15 @@ on each mode's energy, so a second mode that the neighbours show clearly can win
 count is not forced to be equal along a track (IS8). A mode that no neighbour matches pays the entry price
 `birth_edge`, and `birth_mid` more when it appears in the middle of the energy window, not at its edges (IS9). A
 mode the fast pass fitted as one, which the neighbours resolve into two, is reported as a neighbour-supported
-split (severity repaired), not as a new branch. A branch that a neighbour predicts in the window and that is not seen here is flagged
-`branch_lost_mid_window` and carries no fit cost (section 9).
+split (severity repaired), not as a new branch. A branch that a neighbour predicts in the window and that a candidate does not name pays the
+mirror of the entry price: `-L/2` nats in that candidate's evidence, `L = birth_edge + B(E_exp)` from the same entry price
+(`birth_mid` only away from a physical window edge, `birth_edge` alone at one), so a branch that disappears costs what one
+that appears costs. Every branch any neighbour carries in the frozen ring or round snapshot is eligible, under its merged
+name, with or without a coupling term; a branch a neighbour only remembers, or predicts only outside the window, pays nothing.
+`E_exp` is the mean over the neighbours of their own predictions inside the window, one vote per neighbour. The price is
+charged once per spectrum however many neighbours predict the branch, sits inside every basin term outside the normalised
+densities (so every slot order of a composition carries it equally), is frozen with the snapshot (it is not part of the refinement
+objective), and is recorded with each candidate (`loss`, `loss_nats`). The flag `branch_lost_mid_window` is kept (section 9).
 
 **A mode hidden under another.** A weak branch the neighbours support, sitting under a strong mode in this
 spectrum, is priced by integrating over how the intensity divides between the two (one pair per fit, the
@@ -399,7 +406,6 @@ entry points here.
 **Open, with who decides.**
 
 - *Calibration.* Seventeen settings are uncalibrated starting values. Their calibration is not done.
-- *Branch loss.* Built as a flag only, with no fit cost: a working assumption from the expert pair, not yet ruled by the operator. Whether a genuine loss should carry a fit cost mirroring the entry price is his to decide.
 - *Amplitude prior.* The amplitude-prior test was not run in planning. Amplitude stays free and there is no amplitude setting.
 - *Branch identity through crossings.* An unresolved crossing stays ambiguous and is flagged. The identity lives in `isar/analyze/coupled/identity.py`; extending `isar/session/branch_tracking.py` (`track_path`) is not done.
 - *Reports and exports, plan decision D6.* The fast-pass projection of `results.csv`, `modes.csv` and `report.json` is the built reading of the design's default; the operator is to confirm it.
@@ -409,7 +415,7 @@ entry points here.
 **Known effects, not fixed.**
 
 - The split integral covers one overlapping pair per fit: a stack of three overlapping modes reads `undetermined`, not integrated.
-- A matched branch whose intensity vanishes with no partner under it is priced as before (often `undetermined`); the loss price that decides its recovery belongs to the later fit-cost work.
+- A matched branch whose intensity vanishes with no partner under it is priced as before (often `undetermined`); the loss price of section 4 now decides its recovery, so a branch that really vanished is dropped or kept as a phantom according to the statistics: on synthetic data, a branch absent from a spectrum is dropped on strong statistics and kept as a phantom on weak ones, and a phantom hidden exactly under a strong mode costs only a few nats at any statistics, so the loss price keeps it there (`tests/analyze/test_coupled_loss.py`).
 - The scan inspector's Fast column keeps showing the stored fast pass, so it can disagree with the Scan(s) plot when a refit is authoritative.
 - The scan list shows a Lock column; Lock itself is set in the Scan(s) view.
 - Two scans of one q setting within the temperature rounding step at one temperature get no links to each other or across; a note names them. A series with repeats gets fewer T-links, never a wrong one.
