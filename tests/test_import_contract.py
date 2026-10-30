@@ -52,6 +52,8 @@ SANDBOX_VM_ALLOWED = GUI_ALLOWED | {"isar.sandbox_api"}
 # schema/session/report/analyze pieces it reads through, and the vendored geometry).
 WORKSPACE_API_ALLOWED = {
     "isar.schema.card",
+    # The analyzer layout resolver (C-array-view): stdlib-only, the same answer the inter-spectra grid reads.
+    "isar.schema.analyzer_layout",
     # Pure statistical-semantics read gate.  FitView delegates tolerant legacy handling to the
     # canonical schema rather than duplicating validation inside the read-only facade.
     "isar.schema.statistics",
