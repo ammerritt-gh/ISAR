@@ -26,6 +26,7 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | q-links from grid adjacency (4 × 7 grid, no diagonals) | Implemented: built and tested; coordinates are each analyzer's accepted per-analyzer hkl, and a lattice epoch, where its scan has one, only refines the spacing metric; no real-data run has been made (section 9) | `layout.py`, `graph.py`, `q_provider.py` | `tests/session/inter_spectra/test_graph_q.py`, `test_q_provider.py` |
 | Curvature terms (three collinear q points, simultaneous batches) | Partial: built and tested; on the BL43LXU gpi triplets, measured in the hkl metric (where a scan has no lattice epoch), the triplets lie off the straight line, and the collinearity tolerance (provisional default 0.01, uncalibrated, under the operator's review) decides whether a curvature term forms (section 9) | `graph.py`, `schedule.py` | `tests/session/inter_spectra/test_graph_q.py` |
 | Coupled refit of one spectrum: count and assignment stage, continuous stage, one shared objective, release fit | Implemented | `isar/analyze/coupled/refit.py`, `engine.py`, `rules.py` | `tests/analyze/test_coupled_engine.py`, `test_coupled_refit.py`, `test_coupled_rules.py` |
+| A mode hidden under another: guard against twin merges, evidence by integrating over the intensity split, undetermined status | Implemented on synthetic spectra, not established on real data | `isar/analyze/coupled/engine.py`, `refit.py` | `tests/analyze/test_coupled_hidden.py` |
 | Branch identity: persistent ids, loops, returns, cumulative T drift | Implemented | `isar/analyze/coupled/identity.py` | `tests/analyze/test_coupled_identity.py` |
 | Anchored batch: rings fixed by distance, seams, not reached | Implemented | `isar/session/inter_spectra/rings.py`, `runner.py` | `tests/session/inter_spectra/test_rings.py`, `tests/session/test_inter_spectra_runner.py` |
 | Simultaneous batch: rounds, sweeps, quiet-sweep settling, sweep cap (did not settle) | Implemented | `isar/session/inter_spectra/runner.py`, `schedule.py` | `tests/session/test_inter_spectra_runner.py` |
@@ -175,6 +176,14 @@ count is not forced to be equal along a track (IS8). A mode that no neighbour ma
 mode the fast pass fitted as one, which the neighbours resolve into two, is reported as a neighbour-supported
 split (severity repaired), not as a new branch. A branch that a neighbour predicts in the window and that is not seen here is flagged
 `branch_lost_mid_window` and carries no fit cost (section 9).
+
+**A mode hidden under another.** A weak branch the neighbours support, sitting under a strong mode in this
+spectrum, is priced by integrating over how the intensity divides between the two (one pair per fit, the
+height prior as the fit has it, no amplitude coupling). The evidence then says the neighbours support a second
+branch here and that this spectrum cannot size it, and the weaker mode reads held by neighbours (IS16). Distinct
+branches the neighbours support are not merged away by the twin screens merely because their peaks are close;
+repeated starts reaching one solution are still merged. A fit whose parameters stay undetermined has no
+evidence and says so (`undetermined`), never a made-up finite number.
 
 **Flags.** A refit is flagged when its score is above `flag_threshold`, or when it carries any reason other than
 the four notes (`neighbour_precision_unavailable`, `incomplete_comparison`, `release_fit_failed`,
@@ -326,7 +335,7 @@ or older refit is drawn and exported in its own context, never in a later fast s
 ## 8. Rulings
 
 Each ruling is the operator's own words as the design records them, quoted verbatim (line breaks in the
-record are joined; an ellipsis marks an elision in the record). Each is dated 2026-10-29. Each names what it
+record are joined; an ellipsis marks an elision in the record). Each carries its date. Each names what it
 decided. None is restated here as a new requirement. Ruling IDs are stable names; the glossary's Ruling IDs
 entry points here.
 
@@ -374,6 +383,9 @@ entry points here.
 **IS15 — No new windows.** Decides that the feature lives in the existing views.
 "I don't want new windows or new big new platforms … use what we have right now"
 
+**IS16 — A hidden mode is priced by integrating over the split.** Decides that a weak branch hidden exactly under a strong mode is priced by a numerical integral over the intensity split, not by the bell-curve approximation that fails along that flat direction. Dated 2026-10-30.
+"Ok, let's integrate over the split then."
+
 ## 9. Out of scope and open
 
 **Out of scope, by ruling.**
@@ -396,6 +408,8 @@ entry points here.
 
 **Known effects, not fixed.**
 
+- The split integral covers one overlapping pair per fit: a stack of three overlapping modes reads `undetermined`, not integrated.
+- A matched branch whose intensity vanishes with no partner under it is priced as before (often `undetermined`); the loss price that decides its recovery belongs to the later fit-cost work.
 - The scan inspector's Fast column keeps showing the stored fast pass, so it can disagree with the Scan(s) plot when a refit is authoritative.
 - The scan list shows a Lock column; Lock itself is set in the Scan(s) view.
 - Two scans of one q setting within the temperature rounding step at one temperature get no links to each other or across; a note names them. A series with repeats gets fewer T-links, never a wrong one.
