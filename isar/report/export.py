@@ -545,11 +545,14 @@ def _inter_block(unit, ent, ov, log, has_fast: bool):
                  "flagged": refit_flagged(log, r)}
                 for r in refits]
     line = ent.line if ent is not None else None
-    drawn = {k: ent.outcome[k] for k in authority.OVERLAY_KEYS if k in ent.outcome} if line else None
+    # the model and the context it was made in (temperature, calibration), so the export redraws the refit itself
+    drawn = ({k: ent.outcome[k] for k in (*authority.OVERLAY_KEYS, *authority.CONTEXT_KEYS) if k in ent.outcome}
+             if line else None)
     return {"authoritative": {"fit": ov.fit_id, "source": ov.source, "label": _fit_source(ent, ov),
                               "stale": ov.stale or ov.lock_stale, "locked": ov.locked},
             "flag": dataclasses.asdict(ov.flag) if ov.flag else None,
-            "why_changed": line.why_changed if line else None, "fit": drawn, "history": history}
+            "why_changed": line.why_changed if line else None, "fit": drawn, "history": history,
+            "resolution_curve": None}
 
 
 def _build(root: Path, stage: Path, progress) -> tuple:
@@ -653,6 +656,14 @@ def _build(root: Path, stage: Path, progress) -> tuple:
             if problem is not None:
                 record["resolution_problem"] = problem
                 problems.append({"spectrum_id": e.scan_id, "detector": det, "problem": problem})
+        inter = record["inter_spectra"]
+        ref = (((inter or {}).get("fit") or {}).get("calib") or {}).get("tabulated")
+        if ref:                                   # the curve the authoritative refit used, its own
+            curve_id, problem = curves.resolve(ref)
+            inter["resolution_curve"] = curve_id
+            if problem is not None:
+                inter["resolution_problem"] = problem
+                problems.append({"spectrum_id": e.scan_id, "detector": det, "problem": problem, "pass": "inter"})
 
         # the current stored data
         arrays = _read_arrays(api, e, det, oc)

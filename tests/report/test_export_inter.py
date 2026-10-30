@@ -129,6 +129,26 @@ def test_a_refit_is_exported_as_a_third_pass_and_the_fast_rows_stay(ws_root):
     assert doc["passes"]["exported"] == ["fast", "deep", "inter"]
 
 
+def test_an_exported_refit_carries_its_own_temperature_calibration_and_resolution(ws_root, tmp_path):
+    # the refit was made at 50 K with its own centre and curve; the solo fit since says otherwise: the export must
+    # let a reader rebuild the refit's model from what it carries, not pair it with the solo context
+    from isar.analyze.resolution import file_stamp
+    k1 = spectrum_keys(ws_root)[0]
+    curve = tmp_path / "rf_refit" / "refit.dat"
+    curve.parent.mkdir()
+    curve.write_text("# energy value\n-2 0.1\n-1 0.5\n0 1.0\n1 0.5\n2 0.1\n", encoding="utf-8", newline="\n")
+    ref = {"folder": str(curve.parent), "file": curve.name, "stamp": file_stamp(curve), "detector": "a01",
+           "setting": "60x60"}
+    _save_ring(ws_root, "b000000000001", [(F1, k1)],
+               overlay={**OVERLAY, "T": 50.0, "calib": {"center": 0.25, "tabulated": ref}})
+    _, doc, rec, _rows = _export(ws_root)
+    block = rec[k1]["inter_spectra"]
+    assert rec[k1]["T"] != 50.0                                   # the solo context differs
+    assert (block["fit"]["T"], block["fit"]["calib"]["center"]) == (50.0, 0.25)
+    cid = block["resolution_curve"]
+    assert cid in doc["resolution_curves"] and doc["resolution_curves"][cid]["reference"]["file"] == "refit.dat"
+
+
 def test_a_repair_is_listed_as_a_reason_but_is_not_flagged_for_review(ws_root):
     k1 = spectrum_keys(ws_root)[0]
     _save_ring(ws_root, "b000000000001", [(F1, k1)], number_flag=REPAIR)

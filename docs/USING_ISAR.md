@@ -709,8 +709,9 @@ folder holds:
   `missing`). The top-level `currentness.assessed` is true only for a BL43LXU experiment that holds
   fit-input records, and false for any other instrument. Each record also has an `inter_spectra` block
   (null when the spectrum has no inter-spectra entry): the `authoritative` fit with its source, label,
-  staleness and lock, its `flag`, `why_changed`, the refit's drawn `fit`, and the `history` of the
-  spectrum's fits.
+  staleness and lock, its `flag`, `why_changed`, the refit's drawn `fit` with the temperature and
+  calibration it was made with (`T`, `calib`), the `resolution_curve` that refit used, and the `history` of
+  the spectrum's fits.
 - `spectra/`: one CSV per spectrum with the data ISAR holds now. Its `#` header lines give the exposure
   the stored fit used, or `exposure: not stored` where ISAR stored none. The columns are the energy,
   counts, sigma (the square root of the counts, zero at zero counts, no floor) and the QC mask.
