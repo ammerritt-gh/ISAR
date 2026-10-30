@@ -1018,7 +1018,11 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
     starts = [] if old is None else [old]
     selected = tuple(old[0].delta) if old is not None else ()
     win = cached.get(spec.key(k, slots)) or next((p for p in priced if p.count == k and tuple(p.slots) == slots), None)
-    mode = win.mode if win is not None and win.mode is not None else a.selected_model   # the runner passes no prices
+    # the decision's chosen mask enters refinement; the job's own best basin only when it carries the incoming mask
+    # (the runner passes no prices, so the Assignment alone must carry the choice)
+    mode = a.selected_model
+    if mode is None and win is not None and win.mode is not None and tuple(win.mode[3]) == spec.inc_delta:
+        mode = win.mode
     if mode is not None:
         el, bg, qe, delta, theta = mode
         variant = eng.variant(k, el, bg, qe)
@@ -1050,7 +1054,10 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
                        timing, priced, hits, notes)
 
     model, theta, J_new = best
-    topology_changed = k != spec.n0 or slots != spec.incoming
+    # a width mask is part of the topology: positions are slot positions, and at the incoming count the slot order
+    # is the incoming's ascending order, so the comparison is positional and valid for relabelled slots too
+    topology_changed = (k != spec.n0 or slots != spec.incoming
+                        or tuple(sorted(model.delta)) != spec.inc_delta)
     J_old = eng.J(*old) if old is not None and not topology_changed else None
     fixed_ok = all(abs(theta[p] - v) <= 1e-12 * max(1.0, abs(v)) for p, v in zip(model.fixed_pos, model.fixed_vals))
     in_window = all(spec.lo <= theta[e] <= spec.hi for e, _g, _c in model.modes)
@@ -1247,6 +1254,8 @@ def _why(status, reason, n0, k, slots, incoming, J_old, J) -> str:
         return f"The neighbours' evidence changed the number of modes from {n0} to {k}."
     if status == "accepted" and slots != incoming:
         return "The neighbours' evidence changed which branch a mode belongs to."
+    if status == "accepted" and reason == "evidence":
+        return "The evidence changed which modes are resolution limited."
     if status == "accepted":
         gain = "" if J_old is None else f" by {J_old - J:.3g}"
         return f"Fitting with the neighbours lowered the shared objective{gain}, so the modes moved."

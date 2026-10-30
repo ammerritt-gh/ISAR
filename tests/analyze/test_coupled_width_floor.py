@@ -112,3 +112,73 @@ def test_a_free_width_pegged_at_the_floor_is_never_priced(seed, wide, monkeypatc
     assert not any(free_at_floor(rec) for rec in p.basins)
     assert p.status == "no_evidence" and p.ln_z is None
     assert "free width at the floor" in p.reason, p.reason
+
+
+# W5 --------------------------------------------------------------------------------------------------------
+def test_a_broad_mode_keeps_its_free_width_and_the_mask_prior_sits_in_the_basin_term():
+    truth = [(5.0, 0.8, 60.0), (11.0, 0.8, 40.0)]
+    ctx = recipe.widened(1, wide=1.0, gamma1=0.8)
+    snap = snapshot(ctx, truth)                    # its own modes are unmatched fast ids: the discrete stage runs
+    r = R.refit(snap, stage="both")
+    a = r.assignment
+    assert a.discrete == "priced" and not a.mask_only          # whatever the count and labels do, no width is fixed
+    assert a.selected_model[3] == () and R._selected_model(r.fit)["delta_modes"] == []
+    weights = {tuple(w["delta"]): w["p"] for w in a.coverage["decision"]["mask"]["weights"]}
+    assert all(p < weights[()] for dl, p in weights.items() if dl)       # a delta mask, if priced at all, is behind
+    spec = R._Spec(snap)
+    eng = R._Labelled(spec.ctx, spec.fs, spec.slot_objects(("b1", "b2")), structures=spec.structures)
+    v = eng.variants[2][0]
+    eng.fit(v, [(5.0, GAMMA_FLOOR, 60.0, True), (11.0, 0.8, 40.0, False)], "delta_start")
+    delta = [b for b in eng.basins() if b.model.delta]
+    assert delta
+    for b in delta:                                 # the mask prior is in the basin term; nothing adds a second one
+        assert b.ln_model_prior == pytest.approx(-np.log(len(eng.variants[2]) * 2 ** 2))
+
+
+# W6 --------------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("seed", [2, 6])
+def test_a_mask_change_alone_becomes_the_saved_fit_and_stays(seed):
+    from dataclasses import replace
+
+    from test_coupled_refit import spectrum
+    true = [(9.0, GAMMA_FLOOR, 40.0)]
+    prep = spectrum(true, seed=seed)
+    start = [(9.0, 0.3, 40.0)]
+    base = t_pair(prep, start, ["b1"], [(9.0, 0.05, 40.0)], ["b1"])
+    r0 = R.refit(base, stage="continuous", assignment=R._Spec(base).skipped())      # the converged free-width state
+    assert r0.status == "accepted" and R._selected_model(r0.fit)["delta_modes"] == []
+    assert r0.fit["peaks"][0]["Gamma"] < 0.1                                         # its width has railed
+    own = R.held_from_fit(r0.fit, unit="y", fit=base.fit_id, inputs=None, context=base.context, T=200.0)
+    snap = replace(t_pair(prep, start, ["b1"], [(9.0, 0.05, 40.0), (14.0, 0.3, 40.0)], ["b1", "b2"]),
+                   own=own, own_record=r0.fit, fit_id="f00000000000b")
+    r = R.refit(snap, stage="both")
+    a = r.assignment
+    # measured: the free mask of the incoming fit is priced here (far behind), so the eps comparison carries the
+    # change; the unpriced-incoming clause of decide is pinned by R4/R5
+    assert not any(x.startswith("mask_unpriced") for x in a.reasons)
+    assert (a.count, a.slots) == (1, ("b1",)) and a.changed and a.mask_only
+    assert r.status == "accepted" and r.reason == "evidence"
+    assert R._selected_model(r.fit)["delta_modes"] == [0]
+    assert "resolution limited" in r.why_changed
+    own2 = R.held_from_fit(r.fit, unit="y", fit=snap.fit_id, inputs=None, context=snap.context, T=200.0)
+    sweep2 = replace(snap, snapshot_id="b1:sweep2", own=own2, own_record=r.fit, fit_id="f00000000000c")
+    r2 = R.refit(sweep2, stage="continuous", assignment=a)
+    assert r2.status in ("accepted", "unchanged") and R._selected_model(r2.fit)["delta_modes"] == [0]
+
+
+# W7 --------------------------------------------------------------------------------------------------------
+@pytest.mark.parametrize("seed", [2, 6])
+def test_an_incoming_resolution_limited_mode_keeps_its_mask_without_a_start_of_its_own(seed):
+    from test_coupled_refit import _names, record, spectrum
+    true = [(9.0, GAMMA_FLOOR, 40.0)]
+    rec = record(true)
+    rec["models"][0].update(delta_modes=[0], free=[n for n in _names(1) if n != "phonon.Gamma"])
+    snap = t_pair(spectrum(true, seed=seed), true, ["b1"], [(9.0, 0.05, 40.0), (14.0, 0.3, 40.0)], ["b1", "b2"],
+                  rec=rec)
+    a, _priced = R.assign(snap)
+    incoming = next(c for c in a.candidates if c["count"] == 1 and tuple(c["slots"]) == ("b1",))
+    assert incoming["ln_z"] is not None and np.isfinite(incoming["ln_z"])
+    assert a.selected_model[3] == (0,) and not a.changed
+    assert "incomplete_comparison" not in a.reasons and not any(x.startswith("mask_unpriced") for x in a.reasons)
+    r = R.refit(snap, stage="both")
+    assert r.status in ("accepted", "unchanged") and R._selected_model(r.fit)["delta_modes"] == [0]

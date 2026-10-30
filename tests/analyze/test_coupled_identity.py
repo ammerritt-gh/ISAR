@@ -34,7 +34,7 @@ def held(unit, fit, modes, dormant=()):
     return Held(unit=unit, fit=fit, inputs=None, window=(0.0, 30.0), modes=hm, dormant=tuple(dormant), T=None)
 
 
-def asg(unit, sid, slots, origins=None, *, cands=None, changed=False, discrete="priced"):
+def asg(unit, sid, slots, origins=None, *, cands=None, changed=False, discrete="priced", mask_only=False):
     slots = tuple(slots)
     origins = tuple(origins or ("matched" if b else "new_branch" for b in slots))
     if cands is None:
@@ -43,7 +43,7 @@ def asg(unit, sid, slots, origins=None, *, cands=None, changed=False, discrete="
                        for s, z in cands)
     return Assignment(unit=unit, snapshot_id=sid, count=len(slots), slots=slots, origins=origins, factors=(),
                       discrete=discrete, triggers=(), candidates=candidates, coverage={},
-                      search_limited=False, changed=changed, reasons=())
+                      search_limited=False, changed=changed, reasons=(), mask_only=mask_only)
 
 
 def refs(unit, n):
@@ -502,3 +502,22 @@ def test_a_held_fit_carries_its_dormant_ids_through_the_batch_rename():
     assert [x.branch for x in unseen.dormant] == ["p", "t"]
     same = held("y", "f1", [("r", 5.0)], [d("t")])
     assert runner._renamed(same, rename) is same
+
+
+# ---- a width-mask change alone relabels nothing (I1) ----------------------------------------------
+def test_a_mask_only_change_is_no_relabelling_anchored_and_simultaneous():
+    def anchored(**kw):
+        previous = {"A": held("A", "fA", [("p", 10.0)]), "k": held("k", "fast", [("fast:k#0", 10.0)])}
+        r = run(["k"], [link("A", "k")], {"k": asg("k", "b:ring1", ("p",), **kw)}, previous)
+        return r.ids, r.status, r.alternatives["aliases"]
+
+    def simultaneous(**kw):
+        previous = {"x": held("x", "fast", [("q", 10.0)]), "y": held("y", "fast", [("p", 9.0), ("q", 10.0)])}
+        A = {"x": asg("x", "b:round1", ("p",), **kw), "y": asg("y", "b:round1", ("p", "q"))}
+        r = run(["x", "y"], [link("x", "y")], A, previous, mode="simultaneous", sid="b:round1")
+        return r.ids, r.status, r.alternatives["aliases"]
+    for build in (anchored, simultaneous):
+        quiet = build(changed=False)
+        assert build(changed=True, mask_only=True) == quiet
+        assert build(changed=True) != quiet                 # the relabelling reading differs: the guard is not moot
+    assert anchored(changed=False)[2] == {"p": ["fast:k#0"]}

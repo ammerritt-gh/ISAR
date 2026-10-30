@@ -378,11 +378,12 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
         a, refs, elig = assignments[k], tuple(modes[k]), eligible(k)
         own = previous.get(k)
         carried = _carried_ids(a, own, energies[k]) if own is not None else {}
-        continues = own is not None and not a.changed and len(own.modes) == a.count
+        relabelled = a.changed and not a.mask_only       # a width-mask change alone relabels nothing
+        continues = own is not None and not relabelled and len(own.modes) == a.count
         inherited = continues and a.discrete == "skipped"    # an untriggered decision is not re-tested for support
         # simultaneous, a changed assignment of the same count: an own id no eligible neighbour carries was
         # unmatched coming in, so a slot that now names a neighbour's id still continues that own mode
-        unknown = set() if (batch_mode != "simultaneous" or own is None or not a.changed
+        unknown = set() if (batch_mode != "simultaneous" or own is None or not relabelled
                             or len(own.modes) != a.count) else \
             {md.branch for md in own.modes} - {md.branch for j in elig for md in previous[j].modes} \
             - {d.branch for j in elig for d in previous[j].dormant} - set(a.slots)
