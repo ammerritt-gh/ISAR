@@ -210,7 +210,7 @@ def test_the_ring_runs_only_while_a_visible_cell_fits_and_a_stopped_ring_is_stil
     d = env.dock
     _show(env, A6)
     _put(env, members(STATES, reasons=REASONS))
-    cell, quiet = d.cell_at("a06"), d.cell_at("a07")
+    cell = d.cell_at("a06")
     assert d.ring_timer.isActive() and d.ring_timer.interval() >= 100          # slow
     phases = set()
     for _ in range(12):
@@ -219,14 +219,14 @@ def test_the_ring_runs_only_while_a_visible_cell_fits_and_a_stopped_ring_is_stil
     assert len(phases) > 3 and all(0.0 <= p <= 1.0 for p in phases)
     d.ring_timer.stop()                                                      # the timer off: the ring is still there
     y = cell.height() // 2
-    ring_px, plain_px = cell.grab().toImage().pixelColor(2, y), quiet.grab().toImage().pixelColor(2, y)
-    assert ring_px != plain_px
+    ring_px = cell.grab().toImage().pixelColor(2, y)                         # the same cell, ring on ...
     d.hide()
     assert not d.ring_timer.isActive()
     d.show()
     assert d.ring_timer.isActive()
     d.apply(replace(d.vm.state, cells=tuple(replace(c, batch=None) for c in d.vm.state.cells)))
     assert not d.ring_timer.isActive() and not any(c.ringing for c in d.cells.values())
+    assert ring_px != cell.grab().toImage().pixelColor(2, y)                 # ... and off, same selection
 
 
 def test_a_members_event_never_redraws_a_curve(env):
