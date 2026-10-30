@@ -261,11 +261,13 @@ def rebuilt_factors(core, A: Mapping, snaps: Mapping, rename: Mapping[str, str])
 
 def canonical_factors(A: Mapping, ids, refs: Mapping, outside: Mapping) -> tuple[dict, dict]:
     """E18: one factor set for the stage. Each assignment's slot ids are mapped to the reconciled ids; a factor
-    is kept only when every member of its term carries its (reconciled) branch, stage members by their
-    reconciled slots and fixed neighbours (``outside``: unit -> Held) by their modes. Returns the assignments
-    with their incident kept factors, and the rename (alias -> name) the stage's held values follow."""
+    is kept only when every member of its term carries its (reconciled) branch, stage members by the reconciled
+    ids of their matched slots (an unmatched slot has no neighbour density, so its block could not hold the factor
+    its partner would: the batch would not minimise one objective) and fixed neighbours (``outside``: unit -> Held)
+    by their modes. Returns the assignments with their incident kept factors, and the rename (alias -> name) the
+    stage's held values follow."""
     rename = {o: name for name, others in (ids.alternatives.get("aliases") or {}).items() for o in others}
-    carries = {k: {ids.ids.get(r) for r in refs[k]} - {None} for k in A}
+    carries = {k: {ids.ids.get(r) for r, s in zip(refs[k], a.slots) if s is not None} - {None} for k, a in A.items()}
     for u, h in outside.items():
         if u not in carries:
             carries[u] = {rename.get(m.branch, m.branch) for m in h.modes}

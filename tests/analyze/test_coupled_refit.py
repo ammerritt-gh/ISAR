@@ -333,6 +333,26 @@ def test_a_link_between_two_fast_solos_is_one_definition_once_their_ids_are_reco
     assert R.total_objective([fx, fy], E, {}, {}) == R.total_objective([fy, fx], E, {}, {})
 
 
+def test_every_kept_factor_sits_in_every_stage_block_it_couples():
+    # a neighbour-supported split: x matched (a, b) against y's two fast modes; y matched only a, its second mode
+    # unmatched but carrying b. y's block cannot hold the b factor (its slot is unmatched), so x must not either.
+    from isar.session.inter_spectra import runner
+    f = {b: cc.Factor(f"T-change:x|y:{b}", b, ("x", "y"), (1.0, -1.0), s=1.0, C=12.0, kind="dT") for b in "ab"}
+    base = dict(snapshot_id="s", discrete="priced", triggers=(), candidates=(), coverage={}, search_limited=False,
+                changed=True, reasons=())
+    A = {"x": R.Assignment(unit="x", count=2, slots=("a", "b"), origins=("matched",) * 2, factors=(f["a"], f["b"]),
+                           **base),
+         "y": R.Assignment(unit="y", count=2, slots=("a", None), origins=("matched", "new_branch"),
+                           factors=(f["a"],), **base)}
+    refs = {u: [(u, f"f{u}", m) for m in range(2)] for u in "xy"}
+    ids = SimpleNamespace(ids={r: b for u in "xy" for r, b in zip(refs[u], "ab")}, alternatives={"aliases": {}})
+    out, _rename = runner.canonical_factors(A, ids, refs, {})
+    kept = {g.factor_id: g for a in out.values() for g in a.factors}
+    assert kept == {f["a"].factor_id: f["a"]}
+    for g in kept.values():
+        assert all(g in out[m].factors for m in g.members if m in out)
+
+
 # 10 --------------------------------------------------------------------------------------------------------
 def test_identical_snapshots_reuse_prices_and_any_move_reprices():
     true = [(9.0, 0.5, 40.0)]
