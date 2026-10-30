@@ -689,8 +689,9 @@ folder holds:
   say which fit ISAR uses: `authoritative` (`true` on the row whose fit is in use, `false` on the others,
   empty on deep rows), `fit_source` (the spectrum's fit in use in words, such as `Fast solo`,
   `Batch 2 · sweep 3`, `Your pick: ...` or `Locked: ...`), `fit_id` (the row's own fit: `fast` or the refit's
-  id) and `flagged` (inter rows: sent to a person for review, meaning a `warn` or `serious` reason; a repair
-  such as a neighbour-supported split is listed in `fits.json` but not flagged). An inter row's errors are conditional, so
+  id) and `flagged` (inter rows: sent to a person for review, meaning a score over the threshold or a
+  `warn` or `serious` reason that is not a note; a repair such as a neighbour-supported split, and a note
+  such as `release_fit_failed`, is listed in `fits.json` but not flagged). An inter row's errors are conditional, so
   its `uncertainty_kind` is `hesse_conditional`: the error holds the neighbours' modes fixed and is not
   comparable with a solo error. `trust` is the
   deep record's own flag on deep rows; fast rows say `not assessed`, because the fast pass stores no trust

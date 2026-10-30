@@ -157,7 +157,8 @@ split (severity repaired), not as a new branch. A branch that a neighbour predic
 
 **Flags.** A refit is flagged when its score is above `flag_threshold`, or when it carries any reason other than
 the four notes (`neighbour_precision_unavailable`, `incomplete_comparison`, `release_fit_failed`,
-`errors_unavailable`), whatever its score. The score is F = R + U: R is the cost of coupling, how much worse the
+`errors_unavailable`) and a neighbour-supported split, whatever its score. A split is a repair: it is shown
+as repaired and kept off the review list, so the list is not flooded by successes. The score is F = R + U: R is the cost of coupling, how much worse the
 spectrum fits its own counts coupled than in a release fit at the same count with its neighbours removed; U is
 the largest unlevelled mismatch statistic on any link touching the spectrum, taken before its penalty levels off, so a
 penalty that levels off cannot hide a jump. The change from
@@ -377,7 +378,6 @@ entry points here.
 - Two scans of one q setting within the temperature rounding step at one temperature get no links to each other or across; a note names them. A series with repeats gets fewer T-links, never a wrong one.
 - Grid adjacency has no diagonals (assumption A1).
 - Stage 1 outcomes of a simultaneous round are saved inside the next sweep's refit events, so a stop between stage 1 and the first sweep loses them. A stop in the middle of a ring loses that ring's unfinished refits; rings are saved whole.
-- A flag on a neighbour-supported split: under the current rule a split (severity repaired) also sets the flag, so it appears in the review list. Whether a repair should flag at all is open for the operator's review.
 
 ## 10. Measured so far
 

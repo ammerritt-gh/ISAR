@@ -52,9 +52,10 @@ PARAM_REL_TOL = 1e-3
 # The fast pass's record shape (C-fastpass-record): a refit's ``fit`` keeps it so every reader of a solo
 # record reads a refit too; its ``source`` says which it is.
 RECORD_SCHEMA = "isar.fast-pass/1"
-# Flag codes shown as notes: they never set ``flagged`` (S1U2 blueprint, "Flags and severities").
+# Flag codes that never set ``flagged`` (S1U2 blueprint, "Flags and severities"): the four notes, and the
+# neighbour-supported split, a repair the review list must not be flooded with (design, Flags).
 NOTE_CODES = ("neighbour_precision_unavailable", "incomplete_comparison", "release_fit_failed",
-              "errors_unavailable")
+              "errors_unavailable", "neighbour_supported_split")
 _PRICED = ("ok", "ok_boundary")
 _FACTOR_KIND = {"T-change": "dT", "q-change": "dq", "curvature": "curv"}
 
@@ -905,7 +906,7 @@ def _fast_modes(fast: Held, ids, energy, *, exact_only: bool) -> dict[str, HeldM
 
 def _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, F, R, cov, notes, dropped) -> dict:
     """The flag (N2): F against the threshold, and every own reason of the design's list (they flag
-    whatever the score); the four note codes never set ``flagged``."""
+    whatever the score); the four note codes and a neighbour-supported split never set ``flagged``."""
     s = snapshot.settings
     k = len(slots)
     reasons = list(notes)

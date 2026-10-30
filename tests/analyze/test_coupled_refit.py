@@ -122,6 +122,21 @@ def test_overlap_is_recovered_without_a_birth_charge():
     assert solo[(None,)] > solo[(None, None)]
 
 
+def test_a_split_is_a_repair_not_a_review_flag_but_a_neighbour_count_change_is():
+    # one rule (design, Flags): a neighbour-supported split reads "repaired" and stays off the review list;
+    # a count the neighbours changed otherwise is a warn and is flagged
+    spec = SimpleNamespace(n0=1, incoming=(None,), pool=(), pred={}, band=1.0, d_edge=lambda e: 0.0)
+    snap, a = SimpleNamespace(settings=S, unit="y"), SimpleNamespace(changed=True, reasons=())
+
+    def flag(slots, energies):
+        model = SimpleNamespace(modes=[(m,) for m in range(len(slots))])
+        return R._flags(snap, spec, a, "accepted", slots, [], model, np.array(energies), [], {}, 0.0, 0.0,
+                        object(), [], [])
+    split, merge = flag(("b1", "b2"), [8.0, 10.0]), flag((), [])
+    assert [r["code"] for r in split["reasons"]] == ["neighbour_supported_split"] and not split["flagged"]
+    assert [r["code"] for r in merge["reasons"]] == ["count_changed_by_neighbours"] and merge["flagged"]
+
+
 # 2 ---------------------------------------------------------------------------------------------------------
 def _entry_snapshot(settings=S):
     true = [(8.0, 0.4, 40.0), (15.0, 0.4, 60.0)]
