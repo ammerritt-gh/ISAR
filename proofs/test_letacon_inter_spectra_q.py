@@ -156,18 +156,16 @@ def _timing_view(ws, batch) -> dict:
             "sweeps": batch.end.get("sweeps"), "refit_timings": timings, "timing": batch.end["timing"]}
 
 
-def _judged_spectra(ws, nodes, exp) -> dict:
-    """Every spectrum of the qT batch: key -> (T, its flag as the facade shows it, its modes matched to the paper's
-    phonons at its temperature), read from its authoritative refit (its fast solo fit when none stands)."""
+def _judged_spectra(ws, nodes) -> dict:
+    """Every spectrum of the qT batch: key -> (T, its flag as the facade shows it, its modes), read from its
+    authoritative refit (its fast solo fit when none stands). The modes carry the branch ids the refits propagate."""
     log, by_key, fast = records.read_log(ws), inter_overview(ws).by_key, _fits(ws)
-    tol = exp.get("match_tolerance_meV")
     out = {}
     for key, n in nodes.nodes.items():
         T = round(n.T)
         line = _authoritative_line(log, by_key, key)
-        paper = {name: ref["omega0"] for name, ref in exp["paper"][str(T)].items()}
-        matches = chk.match_modes(_peaks_of(ws, line, fast[(T, n.detector)][1]), paper, tol)
-        out[key] = (T, _as_flag(by_key[key].flag, line) if key in by_key else None, matches)
+        out[key] = (T, _as_flag(by_key[key].flag, line) if key in by_key else None,
+                    _peaks_of(ws, line, fast[(T, n.detector)][1]))
     return out
 
 
@@ -282,10 +280,15 @@ def test_moving_mode_flagged_and_flats_quiet_on_every_spectrum(qt_run, ws, nodes
     exp = expectation
     analyzer, moving, flats = exp["analyzer"], exp["moving_mode"], tuple(exp["flat_modes"])
     tol = exp.get("match_tolerance_meV")
-    spectra = _judged_spectra(ws, nodes, exp)
-    at = {T: spectra[_key(nodes, T, analyzer)] for T in TEMPERATURES}     # the moving mode's analyzer
-    moving_v = chk.moving_is_flagged({T: at[T][1] for T in at}, {T: at[T][2] for T in at}, tol, moving=moving)
-    flats_v = qc.flats_quiet_on_every_spectrum(spectra, flats)           # every spectrum, not only that analyzer
+    spectra = _judged_spectra(ws, nodes)
+    at = {T: spectra[_key(nodes, T, analyzer)] for T in TEMPERATURES}     # the expectation's analyzer
+    paper = {T: {name: ref["omega0"] for name, ref in exp["paper"][str(T)].items()} for T in at}
+    matches = {T: chk.match_modes(at[T][2], paper[T], tol) for T in at}  # paper energies: this analyzer only
+    moving_v = chk.moving_is_flagged({T: at[T][1] for T in at}, matches, tol, moving=moving)
+    # the flat modes elsewhere are the branches matched here, carried by the refits; never matched by energy
+    branches = qc.flat_branches(matches, flats)
+    print(f"flat branches from {analyzer}: { {n: sorted(b) for n, b in branches.items()} }")
+    flats_v = qc.flats_quiet_on_every_spectrum(spectra, flats, branches)
     print(f"\nmoving: {moving_v.why}\nflats: {flats_v.why}")
     RESULTS["moving"] = {"ok": moving_v.ok, "why": moving_v.why}
     RESULTS["flats"] = {"ok": flats_v.ok, "why": flats_v.why}

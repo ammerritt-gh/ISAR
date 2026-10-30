@@ -78,14 +78,29 @@ def flag_with(*reasons: tuple[str, str, list[str] | None]) -> Flag:
     return Flag(None, True, tuple({"code": c, "severity": s, "text": "", "ids": ids} for c, s, ids in reasons))
 
 
-def test_a_flat_mode_flagged_above_info_on_any_spectrum_fails_the_quiet_check():
-    flat = {"A": {"omega0": 10.0, "branch": "b1"}}
-    quiet = {k("a04"): (302, None, flat), k("a05"): (302, flag_with(("x", "info", ["b1"])), flat)}
-    assert qc.flats_quiet_on_every_spectrum(quiet, ("A",)).ok
-    # the flat mode warned on a spectrum the expectation does not name: the proof must see it
-    hit = {**quiet, k("a05"): (302, flag_with(("t_drift_cumulative", "warn", ["b1"])), flat)}
-    verdict = qc.flats_quiet_on_every_spectrum(hit, ("A",))
+def test_flat_modes_are_found_by_branch_id_not_by_energy():
+    """Every spectrum is judged on the mode carrying the expectation analyzer's flat branch, wherever its energy sits."""
+    branches = qc.flat_branches({302: {"A": {"omega0": 10.0, "branch": "b1"}, "C": None},
+                                 97: {"A": {"omega0": 10.0, "branch": "b9"}, "C": {"omega0": 20.0, "branch": "c1"}}},
+                                ("A", "C"))
+    assert branches == {"A": {"b1", "b9"}, "C": {"c1"}}
+    far = [{"omega0": 55.0, "branch": "b1"}, {"omega0": 20.0, "branch": "c1"}]   # A dispersed far from 10 meV here
+    quiet = {k("a04"): (302, flag_with(("x", "info", ["b1"])), far), k("a05"): (302, None, far)}
+    assert qc.flats_quiet_on_every_spectrum(quiet, ("A", "C"), branches).ok
+    # the flat mode warned on a spectrum the expectation does not name, at an energy no paper match would find
+    hit = {**quiet, k("a05"): (302, flag_with(("t_drift_cumulative", "warn", ["b1"])), far)}
+    verdict = qc.flats_quiet_on_every_spectrum(hit, ("A", "C"), branches)
     assert not verdict.ok and k("a05") in verdict.why
     # a reason on another branch is not the flat mode's
-    other = {k("a05"): (302, flag_with(("t_drift_cumulative", "warn", ["b2"])), flat)}
-    assert qc.flats_quiet_on_every_spectrum(other, ("A",)).ok
+    other = {k("a05"): (302, flag_with(("t_drift_cumulative", "warn", ["b2"])), far)}
+    assert qc.flats_quiet_on_every_spectrum(other, ("A", "C"), branches).ok
+
+
+def test_a_spectrum_without_the_flat_branch_is_listed_and_a_branch_found_nowhere_fails():
+    branches = {"A": {"b1"}}
+    spectra = {k("a04"): (302, None, [{"omega0": 10.0, "branch": "b1"}]),
+               k("a05"): (302, flag_with(("t_drift_cumulative", "warn", ["b1"])), [{"omega0": 10.0, "branch": "b7"}])}
+    v = qc.flats_quiet_on_every_spectrum(spectra, ("A",), branches)
+    assert v.ok and f"{k('a05')}:A" in v.why                      # not judged for A, and said so
+    nowhere = {k("a05"): spectra[k("a05")]}
+    assert not qc.flats_quiet_on_every_spectrum(nowhere, ("A",), branches).ok

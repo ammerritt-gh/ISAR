@@ -86,15 +86,30 @@ def q_linked_spectra_named(not_coupled: Mapping[str, str], q_linked: Collection[
                    if not bad else f"{len(bad)} q-linked spectra are in no term and unnamed, first: {bad[0]}")
 
 
-def flats_quiet_on_every_spectrum(spectra: Mapping[str, tuple[float, Flag | None, Mapping]],
-                                  flats: tuple[str, ...]) -> Verdict:
-    """``flats_are_quiet`` on every spectrum of the batch, each with its own flag and its own matched modes, not only
-    the expectation's analyzer. ``spectra``: key -> (T, the spectrum's flag, its modes matched at T)."""
-    bad = []
+def flat_branches(matches_by_T: Mapping[float, Mapping], flats: tuple[str, ...]) -> dict[str, set[str]]:
+    """The branch ids of the flat modes matched on the expectation's analyzer (``matches_by_T``: T -> name -> mode or
+    None), at any temperature. The refits carry these ids to the other analyzers."""
+    return {n: {m[n]["branch"] for m in matches_by_T.values() if m.get(n) is not None} for n in flats}
+
+
+def flats_quiet_on_every_spectrum(spectra: Mapping[str, tuple[float, Flag | None, Sequence[Mapping]]],
+                                  flats: tuple[str, ...], branches: Mapping[str, Collection[str]]) -> Verdict:
+    """``flats_are_quiet`` on every spectrum of the batch. A spectrum's flat mode is its mode whose branch id is one of
+    ``branches[name]`` (see ``flat_branches``), never one found by energy. A spectrum without that branch is not judged
+    for it (listed in the verdict). A flat mode found on no spectrum fails: nothing was judged.
+    ``spectra``: key -> (T, the spectrum's flag, its modes)."""
+    bad, unjudged, judged = [], [], set()
     for key in sorted(spectra):
-        T, flag, matches = spectra[key]
+        T, flag, peaks = spectra[key]
+        matches = {n: next((p for p in peaks if p.get("branch") in branches[n]), None) for n in flats}
+        for n, mode in matches.items():
+            (judged.add(n) if mode is not None else unjudged.append(f"{key}:{n}"))
         v = flats_are_quiet({T: flag}, {T: matches}, flats)
         if not v.ok:
             bad.append(f"{key}: {v.why}")
-    return Verdict(not bad, f"{len(spectra)} spectra, no reason above info on {', '.join(flats)}" if not bad
-                   else f"{len(bad)} spectra flag a flat mode, first: {bad[0]}")
+    never = [n for n in flats if n not in judged]
+    note = f"; not judged (no mode on the flat branch): {', '.join(unjudged)}" if unjudged else ""
+    if never:
+        return Verdict(False, f"flat mode {', '.join(never)} is found on no spectrum by its branch ids{note}")
+    return Verdict(not bad, (f"{len(spectra)} spectra, no reason above info on {', '.join(flats)}{note}" if not bad
+                             else f"{len(bad)} spectra flag a flat mode, first: {bad[0]}{note}"))
