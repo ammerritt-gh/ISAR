@@ -4,7 +4,8 @@ The cell draws what its ``CellState`` says and nothing else (hard rule 7); it is
 cells of a grid are built once and a scan switch repaints only the plots whose data changed. It paints its own
 outlines (anchor solid, lock dashed, both nested), focus and the batch ring, so it carries an accessible name and
 description. A batch mark is a word with a dot in the name row (the tone repeats it), a dimmed plot while waiting, and
-a ring while a worker holds the spectrum; the dock's timer only moves the ring's brightness.
+a ring while a worker holds the spectrum; the dock's timer only moves the ring's brightness. An absence word ("no fit")
+sits in a strip under the plot, never over the data.
 """
 from __future__ import annotations
 
@@ -125,17 +126,18 @@ class AnalyzerCell(QFrame):
         self.plot = pg.PlotWidget(box, background="w")
         self._setup_plot(show_x_ticks)
         stack.addWidget(self.plot)
-        self.absence_label = QLabel("", box)
-        self.absence_label.setObjectName("absence_word")
-        self.absence_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.absence_label.setWordWrap(True)
-        _small(self.absence_label, bold=True, shrink=0)
-        self.absence_label.hide()
-        stack.addWidget(self.absence_label)
         self.veil = _Veil(box)
         stack.addWidget(self.veil)
-        stack.setCurrentWidget(self.absence_label)      # StackAll raises the current widget: the word sits over the plot
         outer.addWidget(box, 1)
+        self.absence_label = ElidedLabel("", self, Qt.TextElideMode.ElideRight)   # a strip under the plot: never over data
+        self.absence_label.setObjectName("absence_word")
+        self.absence_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _small(self.absence_label, bold=True, shrink=0)
+        policy = self.absence_label.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)           # the strip keeps its height, so the plots of a row line up
+        self.absence_label.setSizePolicy(policy)
+        self.absence_label.hide()
+        outer.addWidget(self.absence_label)
 
         self.hkl_label = ElidedLabel("", self, Qt.TextElideMode.ElideRight)
         self.hkl_label.setObjectName("hkl_label")
@@ -233,11 +235,8 @@ class AnalyzerCell(QFrame):
 
         self.plot.setVisible(cell.plot is not None)   # no empty axes where nothing is drawn: they would read as zero
         self.absence_label.setVisible(cell.absence is not None)
-        self.absence_label.setText(cell.absence or "")
+        self.absence_label.set_full_text(cell.absence or "")
         self.absence_label.setToolTip(cell.absence_tip or "")
-        # With data drawn under it the word sits in the top right corner, clear of the peak; alone it is centred.
-        self.absence_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop if cell.plot is not None
-                                        else Qt.AlignmentFlag.AlignCenter)
 
         if cell.key is None:
             self.hkl_label.set_full_text("")

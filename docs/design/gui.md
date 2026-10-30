@@ -401,7 +401,8 @@ when several scans are selected. Rulings that bind it:
 - Each cell draws the authoritative fit only (`row.fit_id`); a fit picked in the Scan(s) menu does not move it. Linear y, no error bars,
   no peak values, masked points hollow. Absences are words: "no file", "no fit", "not zeroed" (plus "not read", "no monitor",
   "no curve" for the other not-drawn codes, and for an authoritative fit the read cannot draw: the read falls back to the
-  solo's data, and the cell then shows "no curve", never the solo's curve), never a flat line.
+  solo's data, and the cell then shows "no curve", never the solo's curve), never a flat line. The word sits in a strip
+  under the plot, never over the data.
 - Normalised uses the Scan(s) page's frozen reference (`ScansPageViewModel.reference_for`), so both plots of a spectrum agree. The y mode
   (each cell / one shared limit) and the typed limit per scale are saved in `view_state["analyzer_array"]`.
 - Dock: floats on its first open (`array_dock_placed`), then stays where the operator put it; Reset layout parks it again. No

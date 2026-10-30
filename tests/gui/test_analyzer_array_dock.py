@@ -10,7 +10,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -204,6 +204,14 @@ def test_the_three_absences_are_words_on_the_cells(env, monkeypatch):
     env.vm.refreshed.emit()
     d.flush_redraw()
     assert d.cell_at("a05").absence_label.text() == "not zeroed" and not d.cell_at("a05").plot.isVisible()
+
+
+def test_a_word_beside_drawn_data_sits_under_the_plot_not_over_it(env):
+    _show(env, A6)
+    cell = env.dock.cell_at("a09")                                     # "no fit", with its data drawn
+    assert cell.absence_label.isVisible() and cell.plot.isVisible()
+    word = QRect(cell.absence_label.mapTo(cell, QPoint(0, 0)), cell.absence_label.size())
+    assert not cell.plot_box.geometry().intersects(word)
 
 
 def test_switching_scans_keeps_the_widgets_and_redraws_only_what_changed(env):
