@@ -121,7 +121,7 @@ def q_anchored_run(snapshot, service, ws, q_anchor, nodes):
 
 
 @pytest.fixture(scope="module")
-def qt_run(snapshot, service, ws, nodes):
+def qt_run(snapshot, service, ws, nodes, q_anchor):     # the q anchor is set first, so this batch sees it as before
     keys = tuple(sorted(nodes.nodes))
     assert len(keys) == len(TEMPERATURES) * N_ANALYZERS, f"the import record holds {len(keys)} spectra"
     g = _build(ws, nodes, frozenset(keys), frozenset({"q", "T"}))
