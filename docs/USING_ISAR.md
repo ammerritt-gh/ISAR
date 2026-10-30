@@ -578,7 +578,8 @@ in the menu bar, which defaults to this machine's cores less two. A lower number
 finish. Once work is queued, the only thing you do is add more or stop something.
 
 **Adding work.** Select one or more analyzer files in the scan list, then press *Fast pass* or
-*Deep pass* under *Add to queue:* in *Processing*. Selecting alone queues nothing; pooled masters are named and excluded. *Fast-pass all ready (N)* is the
+*Deep pass* under *Add to queue:* at the top of *Processing*, above the *Inter-spectra fitting* box and the queue.
+Selecting alone queues nothing; pooled masters are named and excluded. *Fast-pass all ready (N)* is the
 button at the top of the left column; it is also in *Processing*, in the *Run* menu, and in the needs-attention and
 readiness lists. It adds a fast pass for every ready analyzer file that has no current one, and its label says how
 many. With *Fast-pass new scans as they arrive* on (the default for a new experiment), every analyzer file read in
