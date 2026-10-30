@@ -847,10 +847,12 @@ def test_batch_progress_and_each_saved_ring_reach_the_view_and_the_results_saved
     iid, key = start["item_id"], start["unit_key"]
     progress = {"ev": "progress", "item_id": iid, "t": 1.0, "pass": "inter", "kind": "anchored", "stage": "ring",
                 "index": 1, "of": 2, "round": None, "phase": "assign", "done": 2, "failed": 0, "not_reached": 1,
-                "fixed": 1, "total": 3}
+                "fixed": 1, "total": 3, "failed_reasons": [["it broke", 1]], "not_reached_reasons": [["cut off", 2]]}
     r.emit(progress)
     r.wait(lambda: r.ctrl.view().batches[0].progress is not None)
     assert r.ctrl.view().batches[0].progress == {k: v for k, v in progress.items() if k not in ("ev", "item_id", "t")}
+    b = r.ctrl.view().batches[0]                     # the runner's reasons reach the row as tuples, nothing more
+    assert (b.failed_reasons, b.not_reached_reasons) == ((("it broke", 1),), (("cut off", 2),))
     r.emit(_result(iid, key, "inter"))                          # ring 1 handed to the writer
     r.wait(lambda: r.ctrl.view().batches[0].status == "saving")
     r.emit(_batch_saved(iid, key, (A06, A07)))
@@ -861,6 +863,20 @@ def test_batch_progress_and_each_saved_ring_reach_the_view_and_the_results_saved
     r.wait(lambda: r.ctrl.view().batches[0].status == "done")
     assert r.lines[-1] == (f"Batch finished: {r.ctrl.view().batches[0].label} (anchored): "
                            "2 refitted, 0 failed, 1 not reached")
+
+
+def test_the_finished_line_of_a_batch_names_why_spectra_failed(rig, monkeypatch):
+    r = rig(cores=2)
+    _start_batch(r, monkeypatch)
+    (start,) = r.wait_commands("start", 1)
+    iid, key = start["item_id"], start["unit_key"]
+    r.emit({"ev": "progress", "item_id": iid, "t": 1.0, "pass": "inter", "kind": "anchored", "stage": "ring",
+            "index": 1, "of": 1, "round": None, "phase": "save", "done": 1, "failed": 2, "not_reached": 0,
+            "fixed": 0, "total": 3, "failed_reasons": [["fitted but not saved (x)", 2]], "not_reached_reasons": []})
+    r.emit(_result(iid, key, "inter", event="end"), _batch_saved(iid, key, ()))
+    r.emit(_finished(iid))
+    r.wait(lambda: r.ctrl.view().batches[0].status in ("done", "done_warning"))
+    assert r.lines[-1].endswith("1 refitted, 2 failed, 0 not reached (failed: 2 fitted but not saved (x))")
 
 
 def test_a_batch_whose_process_ends_without_an_end_record_settles_failed_though_its_rings_were_saved(rig, monkeypatch):
