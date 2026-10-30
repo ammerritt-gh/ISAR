@@ -6,6 +6,8 @@ queues it (AGENTS.md hard rule 7: nothing is computed here).
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
                                QPushButton, QRadioButton, QToolButton, QVBoxLayout, QWidget)
@@ -165,16 +167,24 @@ class InterBatchBox(QWidget):
             controller.changed.connect(lambda *_: self.refresh())
         self.refresh()
 
-    def save_view_state(self, session) -> None:
-        session.view_state["inter_box"] = {"folded": not self._expanded, "direction": self._direction}
-
-    def load_view_state(self, session) -> None:
-        saved = (getattr(session, "view_state", None) or {}).get("inter_box")
-        if not isinstance(saved, dict):
+    def save_view_state(self, session, root) -> None:
+        """Remember this box's fold and direction for the experiment at ``root`` (None: nothing to remember)."""
+        if root is None:
             return
+        boxes = session.view_state.get("inter_box")
+        if not isinstance(boxes, dict) or "folded" in boxes:      # an unkeyed value from before: replaced
+            boxes = session.view_state["inter_box"] = {}
+        # shortcut: one small entry per experiment ever opened, prune if session view_state grows
+        boxes[str(Path(root).resolve())] = {"folded": not self._expanded, "direction": self._direction}
+
+    def load_view_state(self, session, root) -> None:
+        """Apply the fold and direction remembered for the experiment at ``root``; none: expanded, the default."""
+        boxes = (getattr(session, "view_state", None) or {}).get("inter_box")
+        saved = boxes.get(str(Path(root).resolve())) if root is not None and isinstance(boxes, dict) else None
+        saved = saved if isinstance(saved, dict) else {}
         self._direction = saved.get("direction") if saved.get("direction") in DIRECTIONS else DIRECTIONS[0]
         self._radios[self._direction].setChecked(True)
-        self._set_expanded(saved.get("folded") is not True)     # "expanded" is the old default, never read
+        self._set_expanded(saved.get("folded") is not True)
 
     # ---- what the box shows ---------------------------------------------------------------------
     def refresh(self) -> None:

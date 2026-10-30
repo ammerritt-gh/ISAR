@@ -197,6 +197,16 @@ def test_a_batch_start_becomes_one_queued_row_and_the_leave_question_names_it(qt
         _forget_queue(w)
 
 
+def test_a_fold_is_remembered_for_its_experiment_and_a_new_experiment_opens_expanded(qtbot, bl43_ws, inter_ws):
+    w = _win(qtbot, bl43_ws)
+    box = w.processing_panel.inter_box
+    box._toggle.click()                                    # folded in experiment A
+    assert w.load_workspace(str(inter_ws))
+    assert box._expanded                                   # B has no fold of its own: open
+    assert w.load_workspace(str(bl43_ws))
+    assert not box._expanded                               # A keeps its fold
+
+
 def _forget_queue(w) -> None:
     """Leave no process and no queued work behind: closing the window at teardown then asks nothing."""
     w._queue._drop_service()

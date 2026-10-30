@@ -487,7 +487,6 @@ class MainWindow(QMainWindow):
         # exists, so the saved layout (or the default for this screen) is applied once and nothing
         # re-arranges when the first data arrives.
         self.scan_list_vm.load_view_state(self._session)
-        self.processing_panel.inter_box.load_view_state(self._session)
         self._restore_layout()
         self._sync_workspace_actions()
         QTimer.singleShot(0, self, self._surface_session_security_warnings)
@@ -505,6 +504,7 @@ class MainWindow(QMainWindow):
         self._empty = ws is None
         self._ws = _EmptyWorkspace() if self._empty else ws
         ws = self._ws
+        self.processing_panel.inter_box.load_view_state(self._session, ws.root)
         self._warn_generation = 0  # a fresh bind starts a new warnings-generation sequence
         self._update_title()
         # The Log dock persists across rebinds, so mark the workspace boundary in its scrollback and
@@ -2707,6 +2707,8 @@ class MainWindow(QMainWindow):
         if getattr(self, "_entropy_action", None) is not None:
             self._entropy_action.deleteLater()
             self._entropy_action = None
+        # _ws is still the outgoing experiment here; _bind_workspace swaps it
+        self.processing_panel.inter_box.save_view_state(self._session, self._ws.root)
         self.heatmap_vm.save_view_state(self._session)
         self.heatmap_vm.deleteLater()
         self.dispersion_vm.save_view_state(self._session)
@@ -2907,7 +2909,7 @@ class MainWindow(QMainWindow):
             self.scans_page.save_view_state(self._session)
         self.scan_list_vm.save_view_state(self._session)
         self._session.view_state["attention_list"] = {"expanded": self.attention_list.is_expanded()}
-        self.processing_panel.inter_box.save_view_state(self._session)
+        self.processing_panel.inter_box.save_view_state(self._session, self._ws.root)
         # Persist the central view switcher (current page + auto-follow) alongside the other
         # view-state writes; restored on the next ready bind (default: Scan page, auto-follow on).
         if self._center_host is not None:

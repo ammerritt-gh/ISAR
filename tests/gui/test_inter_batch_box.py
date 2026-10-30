@@ -3,6 +3,7 @@ the adds and removes as deltas, the direction's preview, the greyed Start button
 InterState and the queue controller are fakes; the scan list is the real view model over the BL43 sample."""
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -220,28 +221,31 @@ def test_the_box_is_open_by_default_and_a_fold_holds_when_anchors_appear(made, q
     assert box._expanded
 
 
-def test_the_direction_and_the_fold_are_restored_from_the_view_state(made, qtbot):
+def test_the_direction_and_the_fold_are_restored_for_each_experiment(made, qtbot, tmp_path):
     box, vm, inter, _ = made
+    a, b = tmp_path / "a", tmp_path / "b"
     box._radios["qT"].setChecked(True)
-    box._toggle.click()                                       # folded
+    box._toggle.click()                                       # folded in experiment a
     session = SimpleNamespace(view_state={})
-    box.save_view_state(session)
-    assert session.view_state["inter_box"] == {"folded": True, "direction": "qT"}
+    box.save_view_state(session, a)
+    assert session.view_state["inter_box"] == {str(a.resolve()): {"folded": True, "direction": "qT"}}
     again = InterBatchBox()
     qtbot.addWidget(again)
     again.set_inter(inter, vm)
-    again.load_view_state(session)
+    again.load_view_state(session, b)                         # experiment b has no entry: expanded, the default
+    assert again._radios["q"].isChecked() and again._expanded
+    again.load_view_state(session, a)
     assert again._radios["qT"].isChecked() and not again._expanded
 
 
-def test_an_experiment_saved_before_the_fold_was_remembered_opens_the_box(made, qtbot):
+def test_an_unkeyed_fold_from_before_the_per_experiment_key_is_ignored(made, qtbot, tmp_path):
     box, vm, inter, _ = made
-    old = SimpleNamespace(view_state={"inter_box": {"expanded": False, "direction": "T"}})   # the old default
+    old = SimpleNamespace(view_state={"inter_box": {"folded": True, "direction": "T"}})   # written before the key
     again = InterBatchBox()
     qtbot.addWidget(again)
     again.set_inter(inter, vm)
-    again.load_view_state(old)
-    assert again._expanded and again._radios["T"].isChecked()
+    again.load_view_state(old, tmp_path / "a")
+    assert again._expanded and again._radios["q"].isChecked()
 
 
 def test_every_control_in_the_box_is_described(made):
