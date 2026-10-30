@@ -242,9 +242,8 @@ class ScansPageViewModel(ViewModel):
             out.append(OverLimitGroup(f'{info.set_label} · {info.t} · {count} ({extent})', names))
         return tuple(out)
 
-    def _normalisation(self, snapshot):
-        if self.scale == 'raw':
-            return None
+    def reference_for(self, snapshot):
+        """The frozen normalisation reference; the Analyzer array dock reads it too, so both plots agree."""
         value = self._store.normalisation_reference() if self._store else self._reference
         if value is None and snapshot is not self._reference_snapshot:
             self._reference_snapshot = snapshot
@@ -302,7 +301,7 @@ class ScansPageViewModel(ViewModel):
             self._fits = (tuple((e.fit_id, e.label, e.stale, e.errors_available) for e in wf_entries) if wf else
                           tuple(self._fit_info(b.key, choice, history) for b in self._bundles))
             read_started = perf_counter()
-            reference = self._normalisation(snapshot)
+            reference = None if self.scale == 'raw' else self.reference_for(snapshot)
             revisions = tuple((b.key, b.revision, f[0]) for b, f in zip(self._bundles, self._fits))
             token = (revisions, self.scale, reference)
             if token != self._scaled_token:
