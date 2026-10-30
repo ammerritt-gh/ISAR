@@ -119,6 +119,7 @@ def test_a_duplicate_member_is_recorded(tmp_path):
 
 
 def test_an_old_row_with_members_removed_rebuilds_from_paths_and_left_out(tmp_path):
+    """Also the shape `isar run` leaves: manifest rows with no `scan_ids`, so only the row's paths record the files."""
     ws = workspace(tmp_path / "w")
     data = _copy(tmp_path / "data", BL43_A03, BL43_VAR)
     (data / BL43_A04.name).write_bytes(b"")
@@ -128,6 +129,10 @@ def test_an_old_row_with_members_removed_rebuilds_from_paths_and_left_out(tmp_pa
     (row,) = doc["scans"].values()
     del row["import"]["members"]
     path.write_text(json.dumps(doc), encoding="utf-8", newline="\n")
+    card, session = ws.load()
+    for entry in session.files.values():
+        entry["scan_ids"] = []
+    ws.save(card, session)
     rec, _src = _prepared(ws)
     assert content_hash(rec) == row["data_revision"]
 
