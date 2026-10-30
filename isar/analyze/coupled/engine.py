@@ -179,7 +179,7 @@ class Entry:
 @dataclass(frozen=True)
 class SplitResult:
     ln_z: float | None
-    kind: str          # "ok" | "undetermined" | "not_converged"
+    kind: str          # "ok" | "undetermined" | "not_converged" | "no_evidence" (a node failed for another reason)
     reason: str
     sets: tuple        # ((n, ln I), ...) the node sets used
     nodes: int         # conditional solves done
@@ -188,7 +188,8 @@ class SplitResult:
 
 def integrate_split(node, f_joint, *, sets=SPLIT_NODE_SETS, tol=SPLIT_TOL_NATS, bail=SPLIT_BAIL_NATS) -> SplitResult:
     """ln of the integral over f in (0, 1) of exp(node(f, near)); node returns ln Z_f, or None when f has no
-    positive-definite conditional Hessian (the whole integral is then undetermined: never interpolated across).
+    positive-definite conditional Hessian (the whole integral is then undetermined: never interpolated across),
+    or the reason a node failed otherwise (no_evidence with that reason).
     Gauss-Legendre node sets are tried in order; two successive sets within ``tol`` agree. Sets further apart
     than ``bail`` cannot resolve the integrand (a narrow peak in f: the data pin the split): not converged,
     without trying the larger set. Nodes are solved outward from ``f_joint``, ``near`` the previous node."""
@@ -206,6 +207,8 @@ def integrate_split(node, f_joint, *, sets=SPLIT_NODE_SETS, tol=SPLIT_TOL_NATS, 
                 if v is None:
                     return SplitResult(None, "undetermined",
                                        f"Hessian not positive definite: split node f={f[i]:.4f}", tuple(done), nodes)
+                if isinstance(v, str):
+                    return SplitResult(None, "no_evidence", f"{v}: split node f={f[i]:.4f}", tuple(done), nodes)
                 lz[i], near = v, float(f[i])
         done.append((n, float(logsumexp(lz + np.log(w)))))
         if len(done) >= 2:
@@ -324,8 +327,8 @@ class CoupledEngine(fast_pass._Engine):
             self._relabel(b)
             b.reason = b.reason or res.reason
             return
-        if res.kind == "undetermined":
-            b.status, b.reason = "undetermined", res.reason
+        if res.kind in ("undetermined", "no_evidence"):
+            b.status, b.reason = res.kind, res.reason
             return
         rep = res.theta
         rkey = self._pair_point(model, rep, pair)
@@ -437,6 +440,7 @@ class CoupledEngine(fast_pass._Engine):
             g, h2 = objective(f)
             # continuation from the previous node (a chain start: the nearest node solved so far), else the joint start
             key = near if near is not None else min(solved, key=lambda k: abs(k - f), default=None)
+            why = "non-finite objective at every start"
             for start in ([solved[key]] if key is not None else []) + [xi_joint]:
                 v, x = _polish(g, lo, h2, start)
                 for _ in range(SPLIT_ESCAPES):
@@ -446,16 +450,21 @@ class CoupledEngine(fast_pass._Engine):
                     if lap.status != "no_evidence":
                         solved[f], lnz_at[f] = x, float(lap.ln_z)
                         return float(lap.ln_z)
+                    why = lap.reason
                     # a saddle escape: follow the negative direction of the Hessian both ways (needed at weak/strong ties)
                     steps = np.minimum(SPLIT_FD_REL * np.maximum(np.abs(x), 1e-2 * (h2 - lo)), (h2 - lo) / 4.0)
                     ev, vec = np.linalg.eigh(prior.hessian_fd(g, np.clip(x, lo + 2 * steps, h2 - 2 * steps), steps))
-                    if not (np.all(np.isfinite(ev)) and ev[0] < 0):
+                    if not np.all(np.isfinite(ev)):
+                        why = "non-finite Hessian (finite differences)"
+                        break
+                    if ev[0] >= 0:
                         break
                     n = int(np.argmax(np.abs(vec[:, 0])))
                     d = 0.1 * (h2[n] - lo[n]) / abs(vec[n, 0])
                     v, x = min((_polish(g, lo, h2, x + s * d * vec[:, 0]) for s in (1.0, -1.0)),
                                key=lambda c: c[0])
-            return None
+            # undetermined only for a non-positive-definite Hessian; other failures keep their reason
+            return None if why.startswith(UNDETERMINED_REASONS[0]) else why
 
         def counted(f, near):
             self.n_split_nodes += 1

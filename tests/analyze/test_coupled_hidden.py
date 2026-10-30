@@ -55,6 +55,12 @@ def test_a_node_without_a_positive_definite_hessian_makes_the_integral_undetermi
     assert res.reason.startswith("Hessian not positive definite") and "f=0.9" in res.reason
 
 
+def test_a_node_failing_for_another_reason_keeps_that_reason_as_no_evidence():
+    res = cc.integrate_split(lambda f, near: "non-finite Hessian (finite differences)" if f > 0.9 else 0.0, 0.5)
+    assert res.kind == "no_evidence" and res.ln_z is None
+    assert res.reason.startswith("non-finite Hessian") and "f=0.9" in res.reason
+
+
 def test_a_kink_converges_within_tolerance_or_says_not_converged():
     ln_exact = math.log(quad(lambda f: math.exp(-abs(f - 0.37)), 0, 1, points=[0.37])[0])
     res = cc.integrate_split(lambda f, near: -abs(f - 0.37), 0.5)
@@ -159,6 +165,17 @@ def test_a_failure_is_not_undetermined(monkeypatch):
     monkeypatch.setattr(fast_pass._Engine, "price", fake)
     eng.price(b)
     assert b.status == "no_evidence"
+
+
+def test_a_split_node_failure_reads_no_evidence_with_its_reason(monkeypatch):
+    spec, eng, _ = _engines(hidden_snapshot(3.0, asimov=True))
+    model = eng.model(eng.variant(2, True, True), ())
+    theta = eng._start(model, [(8.0, 0.4, 40.0, False), (8.0, 0.4, 3.0, False)], {"elastic": 100.0, "bg": 2.0})
+    b = eng._place(model, theta, eng.cost(model, theta), "x", 0, "")
+    monkeypatch.setattr(cc, "integrate_split", lambda *a, **k: cc.SplitResult(
+        None, "no_evidence", "posterior optimiser: ABNORMAL: split node f=0.5000", (), 1))
+    eng.price(b)
+    assert b.status == "no_evidence" and b.reason.startswith("posterior optimiser: ABNORMAL")
 
 
 def test_the_two_reason_strings_are_pinned_on_prior():
