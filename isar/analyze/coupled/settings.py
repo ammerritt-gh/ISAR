@@ -84,10 +84,17 @@ SETTING_DEFS: tuple[SettingDef, ...] = (
          "Alternatives within this much log evidence of the winner are kept for review."),
     _row("evidence_hysteresis_nats", "hidden", "float", 0.1, "nats", 0, 5,
          "A count or assignment change must win the evidence by this margin, or the incoming one stays."),
+    _row("stop_margin_nats", "hidden", "float", 5.0, "nats", 0, 100,
+         "The candidate search keeps stepping to a neighbouring mode count or labelling while it is no more than this "
+         "many nats behind the best found, and stops at the first one further behind."),
     _row("linewidth_ratio", "hidden", "float", 2.0, None, 1, 100,
          "A linewidth change is reported when a mode's damping ratio to its fast solo fit passes this.", strict=True),
     _row("full_search", "hidden", "bool", False, None, None, None,
-         "Price every allowed count and composition, not only the triggered ones (slow; for calibration and proofs)."),
+         "Price every mode count up to the full-search count and every labelling of each, with no pruning (slow; a check "
+         "for calibration and proofs)."),
+    _row("full_search_max_count", "hidden", "int", 4, "modes", 0, 12,
+         "With the full search on: the largest mode count it prices (every count from none up to this). The number of "
+         "labellings grows factorially with it and nothing else limits the run."),
 )
 
 _BY_NAME = {d.name: d for d in SETTING_DEFS}
@@ -143,8 +150,10 @@ class InterSettings:
     confidence: float = 0.80
     close_call_nats: float = 2.0
     evidence_hysteresis_nats: float = 0.1
+    stop_margin_nats: float = 5.0
     linewidth_ratio: float = 2.0
     full_search: bool = False
+    full_search_max_count: int = 4
 
     @staticmethod
     def from_values(values: Mapping[str, object]) -> "InterSettings":

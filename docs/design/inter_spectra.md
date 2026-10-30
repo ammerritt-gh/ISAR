@@ -285,8 +285,10 @@ dialog*. `tests/docs/test_inter_spectra_docs.py` keeps the names, marks and help
 | `confidence` | not in the dialog | 0.8 | 0.5 to 1 | uncalibrated | A mode count or assignment whose probability is below this is reported as ambiguous. |
 | `close_call_nats` | not in the dialog | 2 nats | 0 to 20 | uncalibrated | Alternatives within this much log evidence of the winner are kept for review. |
 | `evidence_hysteresis_nats` | not in the dialog | 0.1 nats | 0 to 5 | uncalibrated | A count or assignment change must win the evidence by this margin, or the incoming one stays. |
+| `stop_margin_nats` | not in the dialog | 5 nats | 0 to 100 | uncalibrated | The candidate search keeps stepping to a neighbouring mode count or labelling while it is no more than this many nats behind the best found, and stops at the first one further behind. |
 | `linewidth_ratio` | not in the dialog | 2 | > 1 to 100 | uncalibrated | A linewidth change is reported when a mode's damping ratio to its fast solo fit passes this. |
-| `full_search` | not in the dialog | false |  | uncalibrated | Price every allowed count and composition, not only the triggered ones (slow; for calibration and proofs). |
+| `full_search` | not in the dialog | false |  | uncalibrated | Price every mode count up to the full-search count and every labelling of each, with no pruning (slow; a check for calibration and proofs). |
+| `full_search_max_count` | not in the dialog | 4 modes | 0 to 12 | uncalibrated | With the full search on: the largest mode count it prices (every count from none up to this). The number of labellings grows factorially with it and nothing else limits the run. |
 
 A saved value of `q_tolerance_meV` or `q_change_scale_meV` is logged and ignored, never reported as damaged, and has no effect; the two q slopes start at their defaults. The two q slopes are provisional until sample handling is written out. The rows marked calibrated were calibrated before the propagation of section 4 existed. That propagation also widens the temperature and curvature penalties, so for the same neighbour uncertainty those penalties, and the flag statistic they feed, are lower. Their marks stand and the calibration is not redone.
 

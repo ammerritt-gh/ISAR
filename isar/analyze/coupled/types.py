@@ -88,19 +88,27 @@ class Assignment:                  # the frozen discrete decision of one spectru
     origins: tuple[str, ...]       # per mode: "matched" | "new_branch" | "returning" | "unresolved"
     factors: tuple[Factor, ...]    # frozen definitions of every factor incident on unit (engine.Factor); the runner replaces them with the stage's canonical set before the continuous stage (S1U6 E18)
     discrete: str                  # "priced" | "skipped"
-    triggers: tuple[str, ...]      # trigger codes that fired, e.g. "a:missing_branch", empty when skipped
-    candidates: tuple[dict, ...]   # evaluated {count, slots, ln_z, status, weight, loss, loss_nats} (loss: [[branch, expected_meV, deviance], ...], loss_nats = -sum(deviance)/2, 0.0 if none): ln_z the deduplicated mass the decision weighed, weights conditional on the evaluated set
-    coverage: dict                 # {"counts_tried","counts_untried","enumeration_truncated","missing_candidate_history","full_search"}
+    triggers: tuple[str, ...]      # the seed sources the search started from (C-search-record "seeds"), empty when skipped
+    candidates: tuple[dict, ...]   # C-search-record rows: one per distinct labelling scored and per attempted job with no price (ln_z None, reason kept); loss: [[branch, expected_meV, deviance], ...], loss_nats = -sum(deviance)/2, 0.0 if none; ln_z the deduplicated mass the decision weighed, weights conditional on the evaluated set
+    coverage: dict                 # C-search-record coverage: counts_priced, counts_unresolved, stopped (the one the runner reads), full_search, enumeration_truncated, decision
     search_limited: bool           # spec 3 assignment_search_limited
     changed: bool                  # count, association or width mask differs from snapshot.own AND won by the evidence rule (spec 5); a mask counts when it won beyond the hysteresis or the incoming mask has no priced row
     reasons: tuple[str, ...]       # missing-evidence and failure reasons of the comparison
     selected_model: tuple | None = None   # the winner's Priced.mode (elastic, background, qe, delta mask, theta in slot order): the basin of the evidence-chosen mask; None: the incoming fit's
     mask_only: bool = False        # changed by the width mask alone (same count and labels): a discrete change accepted by the evidence rule, not a relabelling
+    search: Mapping[str, object] = field(default_factory=dict)   # the full search record (C-search-record); {} from a fake
+
+
+@dataclass(frozen=True)
+class Start:                       # one optimizer start of a pricing job, in the job's slot order
+    family: str                    # "own" | "neighbour" | "step" | "split" | "residual" | "move" | "full" | "record": the fit's label (statistics only)
+    modes: tuple[tuple[float, float, float | None], ...]   # (omega0 meV, Gamma meV, height or None) per slot; None = solved by Poisson NNLS (engine._start)
 
 
 @dataclass(frozen=True)
 class PricingJob:                  # one composition at one count, with all its starts (the expensive unit of work)
     unit: str; snapshot_id: str; count: int; slots: tuple[str | None, ...]; key: str   # key: hash of everything the price depends on
+    starts: tuple[Start, ...] = ()   # empty until S3U2's search; price() requires it non-empty from then on
 
 
 @dataclass(frozen=True)
@@ -110,8 +118,9 @@ class Priced:
     status: str                    # base engine status words ("ok", "ok_boundary", "no_evidence", "degenerate_twin", ...); "undetermined": no valid price because the parameters stay undetermined (ln_z None, reason names the cause)
     mode: tuple | None             # posterior-mode parameters, labelled
     reason: str | None; starts: int; seconds: float
-    basins: tuple = ()             # (term, model, modes, qe, mode, slot_mode) per priced basin (refit._basin_record; mode in energy order, slot_mode the same tuple in slot order): slot orders deduplicated; a basin priced by the split integral has the model label suffix "|split" and records its pair at the mean energy and width with H/2 each
+    basins: tuple = ()             # (term, model, modes, qe, mode, slot_mode) per priced basin (refit._basin_record; mode in energy order, slot_mode the same tuple in slot order): slot orders deduplicated; a basin priced by the split integral has the model label suffix "|split" and records its pair at the mean energy and width with H/2 each; from S3U2 each mode may carry sigma_omega0 as a sixth element
     loss: tuple = ()               # ((branch, expected_meV, deviance), ...) sorted by branch: every eligible in-window neighbour branch the candidate does not name, its expected energy and its price L (-L/2 nats, already inside ln_z and every basin term); () = none missing. A function of the snapshot and the slot multiset only; set even when the candidate is unpriced
+    residual_peak: tuple[float, float] | None = None   # (omega0 meV, height) of the largest positive standardised residual of the best basin (fast_pass._additions' rule); None when there is no priced basin. S3U2 fills it
 
 
 @dataclass(frozen=True)

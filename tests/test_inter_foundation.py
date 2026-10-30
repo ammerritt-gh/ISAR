@@ -28,8 +28,9 @@ MODULES = (
     "isar.session.inter_spectra.rings", "isar.session.inter_spectra.schedule", "isar.session.inter_spectra.preview",
     "isar.session.inter_spectra.q_provider", "isar.session.inter_spectra.records",
     "isar.session.inter_spectra.authority", "isar.session.inter_spectra.runner",
-    "isar.analyze.coupled.types", "isar.analyze.coupled.refit", "isar.analyze.coupled.identity",
-    "isar.intake.inter_spectra", "isar.intake.inter_values", "isar.workspace_api.inter_spectra",
+    "isar.analyze.coupled.types", "isar.analyze.coupled.refit",
+    "isar.analyze.coupled.identity", "isar.intake.inter_spectra", "isar.intake.inter_values",
+    "isar.workspace_api.inter_spectra",
 )
 
 # (module, class, field names in order), from the plan's connection blocks
@@ -82,10 +83,11 @@ CONTRACT = (
       "batch_kind", "fast", "aliases"]),
     ("isar.analyze.coupled.types", "Assignment",
      ["unit", "snapshot_id", "count", "slots", "origins", "factors", "discrete", "triggers", "candidates",
-      "coverage", "search_limited", "changed", "reasons", "selected_model", "mask_only"]),
-    ("isar.analyze.coupled.types", "PricingJob", ["unit", "snapshot_id", "count", "slots", "key"]),
+      "coverage", "search_limited", "changed", "reasons", "selected_model", "mask_only", "search"]),
+    ("isar.analyze.coupled.types", "Start", ["family", "modes"]),
+    ("isar.analyze.coupled.types", "PricingJob", ["unit", "snapshot_id", "count", "slots", "key", "starts"]),
     ("isar.analyze.coupled.types", "Priced", ["key", "count", "slots", "ln_z", "status", "mode", "reason", "starts",
-                                              "seconds", "basins", "loss"]),
+                                              "seconds", "basins", "loss", "residual_peak"]),
     ("isar.analyze.coupled.types", "RefitResult",
      ["unit", "snapshot_id", "status", "reason", "assignment", "fit", "modes", "D", "J", "P", "U", "unary",
       "energies", "R", "R_signed", "F", "delta_fast", "flag", "why_changed", "overlay", "overlay_unavailable",
@@ -129,7 +131,8 @@ SETTING_TABLE = (
     ("birth_edge", "hidden", 2.0), ("birth_mid", "hidden", 12.0), ("cost_rel_tol", "hidden", 1e-5),
     ("collinearity_tol", "hidden", 0.01), ("composition_limit", "hidden", 4), ("confidence", "hidden", 0.80),
     ("close_call_nats", "hidden", 2.0), ("evidence_hysteresis_nats", "hidden", 0.1),
-    ("linewidth_ratio", "hidden", 2.0), ("full_search", "hidden", False),
+    ("stop_margin_nats", "hidden", 5.0), ("linewidth_ratio", "hidden", 2.0), ("full_search", "hidden", False),
+    ("full_search_max_count", "hidden", 4),
 )
 
 
