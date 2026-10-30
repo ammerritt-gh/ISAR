@@ -50,11 +50,10 @@ from isar.session.workspace import POLICY_NAME                         # noqa: E
 from isar.workspace_api.inter_spectra import inter_overview, is_flagged  # noqa: E402
 from proofs import inter_spectra_checks as chk                         # noqa: E402
 from proofs import inter_spectra_q_checks as qc                        # noqa: E402
-from proofs.conftest import REAL_DATA                                  # noqa: E402
-from proofs.letacon_common import (BATCH_WORKERS, FOLDER, N_ANALYZERS, ROOT, TEMPERATURES, _fits, _timings)  # noqa: E402
+from proofs.letacon_common import (BATCH_WORKERS, N_ANALYZERS, ROOT, TEMPERATURES, _fits, _timings)  # noqa: E402
 # The S1 proof's helpers and fixtures: the service protocol, the graph build, the flag reading, the workspace fast pass.
 from proofs.test_letacon_inter_spectra import (EXPECT, TARGET_S, _Service, _as_flag, _authoritative_line,  # noqa: E402
-                                               _build, _key, _peaks_of, _run_batch, _snapshot, ws)  # noqa: F401
+                                               _build, _key, _peaks_of, _run_batch, _snapshot, real, ws)  # noqa: F401
 
 # The batches run for as long as they take; each wait is limited by the service's WAIT_LIMIT_S, as in the S1 proof.
 pytestmark = pytest.mark.timeout(0)
@@ -66,16 +65,8 @@ RESULTS: dict = {}                      # filled by the tests in file order; the
 
 # ---------------------------------------------------------------- fixtures
 @pytest.fixture(scope="module")
-def real():
-    folder = REAL_DATA / FOLDER
-    if not folder.is_dir():
-        pytest.fail(f"proof needs real data that is missing: {folder}", pytrace=False)
-    return folder
-
-
-@pytest.fixture(scope="module")
-def expectation(real):
-    path = real / EXPECT
+def expectation(real):                  # the S1 proof's ``real``: (folder, rf)
+    path = real[0] / EXPECT
     if not path.is_file():
         pytest.fail(f"proof needs its expectation file, which is missing: {path}", pytrace=False)
     exp = json.loads(path.read_text(encoding="utf-8"))
