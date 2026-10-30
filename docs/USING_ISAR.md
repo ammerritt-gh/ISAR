@@ -423,7 +423,8 @@ from *Columns ▾*, ISAR remembers your choice and no longer overrides it. A set
 files received for *Parsed*.
 
 The *hkl* column is the analyzer's hkl in r.l.u., the value a fit uses: on BL43LXU the accepted gpi file's, else
-the file's own. Its hover names the source. It is blank when there is no hkl, and its hover gives the reason.
+the file's own. Each component displays to two decimal places; its hover keeps the more precise value and names
+the source. It is blank when there is no hkl, and its hover gives the reason.
 *|Q| (nm⁻¹)* is the file's own |Q| where the file gives one (a dash otherwise); it is never mixed into the hkl
 column. A pooled row shows an hkl only when all its members fall in one bin, and says on hover when they differ.
 *gpi* and *rf* give each analyzer a check or a cross; a scan set shows a check only when every analyzer is good,

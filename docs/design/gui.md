@@ -402,6 +402,7 @@ operator's answer was (a): its tooltip and accessible description explain it, an
   rejected or withdrawn gpi file leaves the cell blank. Pooled rows show the members' component-wise mean when
   every member falls in one bin, else blank with "the members' hkl differ". The Scans dock's auto q-groups and
   `q:` filter bin the same hkl (`hkl_bin`, the card's `hkl_round_step`).
+  The column displays each component to two decimal places; its tooltip keeps the more precise value and source.
 - **|Q| (nm⁻¹)** (`absq`, optional, off by default, remembered like the other optional columns): the file's
   `Q_nm`, in its own column. A pooled row leaves it blank.
 - **gpi and rf** (BL43LXU only; shown by default there). One mark per analyzer; a scan set or pooled row shows a

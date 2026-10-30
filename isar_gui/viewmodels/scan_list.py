@@ -115,7 +115,8 @@ def _hkl_cell(fact: Fact) -> Cell:
     text = _fact_text(fact, with_unit=False)
     if text is None:                  # no hkl is blank, the reason on the hover (the design's rule)
         return Cell("", fact.reason or "not available")
-    return Cell(text, f"{text} r.l.u. ({source_words(fact.source)})")
+    display = ", ".join(f"{x:.2f}" for x in fact.value)
+    return Cell(display, f"{text} r.l.u. ({source_words(fact.source)})")
 
 
 def _mark_cell(mark: Mark | None) -> Cell:

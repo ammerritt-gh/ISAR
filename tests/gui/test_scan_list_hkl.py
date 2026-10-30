@@ -87,7 +87,8 @@ def test_accepted_gpi_shows_each_analyzers_hkl_checks_and_an_optional_absq(qtbot
     for a, text in HKL.items():
         sp = spectra[a]
         hkl = _item(panel, f"spec:{sp.key}", "hkl")
-        assert hkl.text() == text and hkl.toolTip() == f"{text} r.l.u. (from the gpi file)"
+        assert hkl.text() == ", ".join(f"{float(x):.2f}" for x in text.split(", "))
+        assert hkl.toolTip() == f"{text} r.l.u. (from the gpi file)"
         gpi = _item(panel, f"spec:{sp.key}", "gpi")
         assert _is(gpi, True) and gpi.data(ACCESS) == "gpi: accepted" and gpi.toolTip() == f"gpi.{GPI_SET}"
         rf = _item(panel, f"spec:{sp.key}", "rf")
@@ -128,7 +129,7 @@ def test_a_missing_curve_crosses_that_analyzer_and_the_scan_row_on_rf_only(qtbot
     assert _is(_item(panel, f"set:{ss.key}", "rf"), False)
     assert _item(panel, f"set:{ss.key}", "rf").data(ACCESS) == "rf: 1 of 3 analyzers not good"
     assert _is(_item(panel, f"set:{ss.key}", "gpi"), True)                 # a missing curve leaves gpi alone
-    assert _item(panel, f"spec:{spectra['a04'].key}", "hkl").text() == HKL["a04"]
+    assert _item(panel, f"spec:{spectra['a04'].key}", "hkl").text() == "0.50, 0.50, 3.50"
 
 
 # ---- a TAVI workspace: no gpi file, no curves; file hkl from the header -------------------------
@@ -154,19 +155,19 @@ def test_a_card_without_gpi_or_curves_has_no_gpi_or_rf_column_and_shows_the_file
     assert "gpi" not in vm.visible_columns() and "rf" not in vm.visible_columns()
     assert not panel._column_actions["gpi"].isVisible() and not panel._column_actions["rf"].isVisible()
     hkl = _item(panel, "spec:tavi:11:det", "hkl")
-    assert hkl.text() == "2, 0, 0" and hkl.toolTip() == "2, 0, 0 r.l.u. (from the header)"
+    assert hkl.text() == "2.00, 0.00, 0.00" and hkl.toolTip() == "2, 0, 0 r.l.u. (from the header)"
     assert _item(panel, "spec:tavi:11:det", "gpi").data(ACCESS) is None
 
 
 def test_a_pool_of_agreeing_members_shows_their_mean_and_one_whose_members_differ_shows_blank(qtbot, tmp_path):
     vm, panel = _panel(qtbot, _tavi(tmp_path / "agree"))
     pool = _item(panel, "pool:tavi:900:det", "hkl")
-    assert pool.text() == "2, 0, 0" and pool.toolTip() == "2, 0, 0 r.l.u. (mean of the pool's members)"
+    assert pool.text() == "2.00, 0.00, 0.00" and pool.toolTip() == "2, 0, 0 r.l.u. (mean of the pool's members)"
 
     vm, panel = _panel(qtbot, _tavi(tmp_path / "differ", member_q=((2.0, 0.0, 0.0), (2.0, 0.5, 0.0))))
     pool = _item(panel, "pool:tavi:900:det", "hkl")
     assert pool.text() == "" and pool.toolTip() == "the members' hkl differ"
-    assert _item(panel, "spec:tavi:12:det", "hkl").text() == "2, 0.5, 0"    # each member keeps its own
+    assert _item(panel, "spec:tavi:12:det", "hkl").text() == "2.00, 0.50, 0.00"    # each member keeps its own
 
 
 # ---- remembered hiding, and continuity ----------------------------------------------------------
@@ -216,14 +217,15 @@ def test_a_refresh_that_changes_an_hkl_cell_keeps_selection_scroll_and_expansion
     vm.selection.changed.connect(lambda *a: changes.append(a))
     selected = vm.selection.keys
 
-    moved = dataclasses.replace(sets[1].spectra[1], q=Fact((0.5, 0.5, 9.0), "rlu", "gpi", "file"))
+    moved = dataclasses.replace(sets[1].spectra[1], q=Fact((0.5123, -0.5678, 9.1234), "rlu", "gpi", "file"))
     box["snap"] = dataclasses.replace(real, sets=tuple(
         dataclasses.replace(s, spectra=(s.spectra[0], moved, *s.spectra[2:])) if s is sets[1] else s
         for s in sets))
     vm.on_workspace_changed()
     QApplication.processEvents()
 
-    assert _item(panel, f"spec:{moved.key}", "hkl").text() == "0.5, 0.5, 9"
+    assert _item(panel, f"spec:{moved.key}", "hkl").text() == "0.51, -0.57, 9.12"
+    assert _item(panel, f"spec:{moved.key}", "hkl").toolTip() == "0.5123, -0.5678, 9.1234 r.l.u. (from the gpi file)"
     assert panel._view.isExpanded(_index(panel, f"set:{sets[0].key}"))
     assert panel._view.isExpanded(_index(panel, f"set:{sets[1].key}"))
     assert vm.selection.keys == selected and vm.selection.active == moved.key
