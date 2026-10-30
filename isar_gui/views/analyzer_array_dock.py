@@ -264,7 +264,8 @@ class AnalyzerArrayDock(QDockWidget):
                                  (self.note_label, state.selection_note,
                                   "The grid shows the scan of the spectrum you picked first."),
                                  (self.layout_label, state.layout_line,
-                                  "The analyzer layout this scan is drawn on, and how it was chosen."),
+                                  "The analyzer layout this scan is drawn on, and how it was chosen. The grid is drawn as "
+                                  "seen from the sample: the scattering-plane row A at the bottom, 2θ rising to the left."),
                                  (self.unplaced_label, state.unplaced_line, state.unplaced_tip),
                                  (self.batch_label, state.batch_line, state.batch_line_tip),
                                  (self.caption_label, state.caption if state.body == "grid" else "",
