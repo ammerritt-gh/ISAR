@@ -325,7 +325,7 @@ class CoupledEngine(fast_pass._Engine):
         if res.kind == "not_converged":          # the data pin the split: what Laplace is good at
             super().price(b)
             self._relabel(b)
-            b.reason = b.reason or res.reason
+            b.reason = "; ".join(x for x in (b.reason, f"split integral not converged: {res.reason}") if x)
             return
         if res.kind in ("undetermined", "no_evidence"):
             b.status, b.reason = res.kind, res.reason

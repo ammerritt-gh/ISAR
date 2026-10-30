@@ -178,6 +178,23 @@ def test_a_split_node_failure_reads_no_evidence_with_its_reason(monkeypatch):
     assert b.status == "no_evidence" and b.reason.startswith("posterior optimiser: ABNORMAL")
 
 
+def test_a_split_that_does_not_converge_keeps_both_reasons(monkeypatch):
+    spec, eng, _ = _engines(hidden_snapshot(3.0, asimov=True))
+    model = eng.model(eng.variant(2, True, True), ())
+    theta = eng._start(model, [(8.0, 0.4, 40.0, False), (8.0, 0.4, 3.0, False)], {"elastic": 100.0, "bg": 2.0})
+    b = eng._place(model, theta, eng.cost(model, theta), "x", 0, "")
+    monkeypatch.setattr(cc, "integrate_split", lambda *a, **k: cc.SplitResult(
+        None, "not_converged", "node sets differ by 2.00 nats", (), 1))
+
+    def fake(self, basin):
+        basin.status, basin.reason = "no_evidence", "posterior optimiser: ABNORMAL"
+    monkeypatch.setattr(fast_pass._Engine, "price", fake)
+    eng.price(b)
+    assert b.status == "no_evidence"
+    assert "posterior optimiser: ABNORMAL" in b.reason
+    assert "split integral not converged: node sets differ by 2.00 nats" in b.reason
+
+
 def test_the_two_reason_strings_are_pinned_on_prior():
     lo, hi, x0 = np.array([-1.0, -1.0]), np.array([1.0, 1.0]), np.array([0.1, 0.1])
     concave = prior.laplace_log_evidence(lambda x: -float(x @ x), x0, lo, hi)
