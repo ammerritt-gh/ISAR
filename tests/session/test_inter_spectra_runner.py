@@ -640,7 +640,7 @@ def test_only_a_units_latest_attempt_gives_a_failure_reason():
     r = runner._Run.__new__(runner._Run)
     r.members, r.fixed, r.stale_locks = ("a", "b", "c"), {}, set()
     r.latest, r.failed, r.not_reached = {}, {}, {}
-    r.records_mod = records
+    r.records_mod, r.refused = records, set()
     nothing = {"refused": {}, "accepted": {}}
     r.judge("a", ValueError("x"), nothing, "f1")
     r.judge("b", ValueError("x"), nothing, "f2")

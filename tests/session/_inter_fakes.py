@@ -163,8 +163,8 @@ def refit(snapshot, *, stage, assignment=None, cached={}, workers: int = 1) -> R
                 "uncertainty_s": 0.0, "release_s": 0.0}, priced=(), cache_hits=0)
 
 
-def run_batch(root, item, *, progress, emit, ack) -> None:
+def run_batch(root, item, *, progress, emit, ack, members=None) -> None:
     """The real runner on this fake core: the service's ``--inter-target _inter_fakes:run_batch``."""
     import sys
     from isar.session.inter_spectra import runner
-    runner.run_batch(root, item, progress=progress, emit=emit, ack=ack, core=sys.modules[__name__])
+    runner.run_batch(root, item, progress=progress, emit=emit, ack=ack, core=sys.modules[__name__], members=members)

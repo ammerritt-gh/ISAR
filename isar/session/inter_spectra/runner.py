@@ -29,8 +29,9 @@ import math
 import os
 import pickle
 import time
+from collections import deque
 from collections.abc import Mapping
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Literal
@@ -48,6 +49,9 @@ INPUTS_REMEDY = ("; start the batch again, and if it fails the same way, add the
                  "their folder) so ISAR reads them afresh")
 STALE_LOCK = "its locked fit is out of date, so it is neither refitted nor used"
 NOTHING_LEFT = "no spectrum was left to refit before a round settled; its results are kept"
+# the members event (C-members-event): the whole map per event, at most one per MEMBERS_GAP_S from pool transitions
+# shortcut: full map per event, upgrade to deltas past ~5000 members
+MEMBERS_GAP_S = 0.25
 _THREAD_ENV = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")    # as driver._THREAD_ENV
 _ELIGIBLE = ("accepted", "unchanged")
 _KINDS = ("anchored", "simultaneous")
@@ -122,10 +126,12 @@ class _Ended(Exception):
 
 def run_batch(workspace_root: Path, item: BatchItem, *, progress: Callable[[dict], None],
               emit: Callable[[InterResult], None], ack: Callable[[int], dict], core=None,
-              target_s: float = TARGET_S) -> None:
+              target_s: float = TARGET_S, members: Callable[[dict], None] | None = None) -> None:
     # never raises for an analysis failure: it is logged and emitted as event "end" outcome "failed".
     # ack(token) blocks until the service has saved that result and returns the verdict.
-    run = _Run(Path(workspace_root), item, progress, emit, ack, core, target_s)
+    # members(ev), when given, gets the full map of member states (waiting, fitting, done, refused, failed,
+    # not_reached, held), from this thread only; it is never part of a progress dict.
+    run = _Run(Path(workspace_root), item, progress, emit, ack, core, target_s, members)
     try:
         try:
             run.go()
@@ -152,40 +158,69 @@ def _work(core_name: str, fn: str, blob: bytes):
 
 
 class _Pool:
-    """The runner's one refit pool, opened on the first call wide enough; one job or one worker runs inline."""
+    """The runner's one refit pool, opened on the first call wide enough; one job or one worker runs inline.
+    At most ``workers`` jobs are in flight, so "submitted and not collected" means a worker has it. ``watch(key, on)``
+    is told of each job's start and collection; ``tick(force)`` lets the run publish its members map."""
 
-    def __init__(self, core, workers: int) -> None:
+    def __init__(self, core, workers: int, watch=None, tick=None) -> None:
         self.core, self.workers, self.ex, self.ship_s = core, workers, None, 0.0
+        self.watch, self.tick = watch, tick
+
+    def _note(self, key, on: bool) -> None:
+        if self.watch is not None:
+            self.watch(key, on)
+
+    def _tick(self, force: bool) -> None:
+        if self.tick is not None:
+            self.tick(force)
+
+    def _pickle(self, args, kwargs) -> bytes:
+        # shortcut: ctx pickled per job, upgrade to an initializer-shipped dict when ship_s exceeds 10% of wall
+        t0 = time.perf_counter()
+        blob = pickle.dumps((args, kwargs), protocol=pickle.HIGHEST_PROTOCOL)
+        self.ship_s += time.perf_counter() - t0
+        return blob
 
     def map(self, fn: str, calls: list) -> dict:
         """``{key: result or the exception it raised}`` of ``core.<fn>(*args, **kwargs)`` per ``(key, args, kwargs)``."""
         out: dict = {}
         if self.workers <= 1 or len(calls) <= 1:
             for key, args, kwargs in calls:
+                self._note(key, True)
+                self._tick(True)                  # this job may run for minutes: show it now
                 try:
                     out[key] = getattr(self.core, fn)(*args, **kwargs)
                 except Exception as exc:  # noqa: BLE001 — one spectrum's failure is its result
                     log.exception("%s of %s failed", fn, key)
                     out[key] = exc
+                finally:
+                    self._note(key, False)
             return out
         if self.ex is None:
             for name in _THREAD_ENV:          # one BLAS thread per process, as _deep_stage pins it
                 os.environ.setdefault(name, "1")
             self.ex = ProcessPoolExecutor(max_workers=self.workers)
-        futures = {}
-        for key, args, kwargs in calls:
-            # shortcut: ctx pickled per job, upgrade to an initializer-shipped dict when ship_s exceeds 10% of wall
-            t0 = time.perf_counter()
-            blob = pickle.dumps((args, kwargs), protocol=pickle.HIGHEST_PROTOCOL)
-            self.ship_s += time.perf_counter() - t0
-            futures[key] = self.ex.submit(_work, self.core.__name__, fn, blob)
-        for key, fut in futures.items():
-            try:
-                out[key] = fut.result()
-            except Exception as exc:  # noqa: BLE001 — one spectrum's failure is its result
-                log.exception("%s of %s failed in the pool", fn, key)
-                out[key] = exc
-        return out
+        pending, flying, blob = deque(calls), {}, None      # blob: the pickle of pending[0], made while workers run
+        while pending or flying:
+            while pending and len(flying) < self.workers:
+                key, args, kwargs = pending.popleft()
+                blob = blob or self._pickle(args, kwargs)
+                flying[self.ex.submit(_work, self.core.__name__, fn, blob)] = key
+                blob = None
+                self._note(key, True)
+                if pending:
+                    blob = self._pickle(pending[0][1], pending[0][2])
+            done, _ = wait(flying, timeout=MEMBERS_GAP_S, return_when=FIRST_COMPLETED)
+            for fut in done:
+                key = flying.pop(fut)
+                try:
+                    out[key] = fut.result()
+                except Exception as exc:  # noqa: BLE001 — one spectrum's failure is its result
+                    log.exception("%s of %s failed in the pool", fn, key)
+                    out[key] = exc
+                self._note(key, False)
+            self._tick(False)                 # flushes a throttled transition
+        return {key: out[key] for key, _a, _k in calls}      # the order of calls, as before
 
     def close(self) -> None:
         if self.ex is not None:
@@ -298,7 +333,8 @@ def canonical_factors(A: Mapping, ids, refs: Mapping, outside: Mapping) -> tuple
 
 # ---- one batch --------------------------------------------------------------------------------------------
 class _Run:
-    def __init__(self, root: Path, item: BatchItem, progress, emit, ack, core, target_s: float) -> None:
+    def __init__(self, root: Path, item: BatchItem, progress, emit, ack, core, target_s: float,
+                 members=None) -> None:
         self.root, self.item, self._progress, self._emit, self._ack = root, item, progress, emit, ack
         self.core, self.target_s = core, target_s
         self.pool = _Pool(None, 1)
@@ -325,6 +361,58 @@ class _Run:
         self.stage_name, self.index, self.of, self.round = "prepare", 0, None, None
         self.rings_done = self.sweeps = self.rounds = None
         self.drift = None
+        self._members_cb = members
+        self.fitting: dict[str, int] = {}         # unit -> pool jobs in flight (pricing jobs of one unit may overlap)
+        self.refused: set[str] = set()            # units whose latest failed attempt was a writer refusal
+        self.final = False                        # end() has started: a member never attempted is "not reached"
+        self._members_last = None                 # the last event sent
+        self._members_at = -math.inf              # perf_counter of the last send
+
+    # -- the members event
+    def fly(self, key, on: bool) -> None:
+        """_Pool.watch: a job of a unit starts or is collected (bookkeeping only; price keys are (unit, job key))."""
+        u = key[0] if isinstance(key, tuple) else key
+        n = self.fitting.get(u, 0) + (1 if on else -1)
+        if n > 0:
+            self.fitting[u] = n
+        else:
+            self.fitting.pop(u, None)
+
+    def member_states(self) -> tuple[dict, dict]:
+        held = self.held()
+        states, reasons = {}, {}
+        for u in self.members:
+            if u in held:
+                states[u] = "held"
+                if u in self.stale_locks:
+                    reasons[u] = STALE_LOCK
+            elif u in self.fitting:
+                states[u] = "fitting"
+            elif self.latest.get(u) == "done":
+                states[u] = "done"                # only judge() sets it: the writer accepted the save
+            elif self.latest.get(u) == "failed":
+                states[u] = "refused" if u in self.refused else "failed"
+                reasons[u] = self.failed.get(u) or "failed"
+            elif u in self.not_reached or self.final:
+                states[u] = "not_reached"
+                reasons[u] = self.not_reached.get(u, "not reached")      # the words unreached_list() uses
+            else:
+                states[u] = "waiting"             # queued for this ring or sweep, or returned and not yet judged
+        return states, reasons
+
+    def publish(self, force: bool = False) -> None:
+        if self._members_cb is None or not self.members:         # before the freeze there is no map
+            return
+        now = time.perf_counter()
+        if not force and now - self._members_at < MEMBERS_GAP_S:
+            return                                # nothing is lost: the next call recomputes from live state
+        states, reasons = self.member_states()
+        ev = {"batch": self.batch, "kind": self.kind, "stage": self.stage_name, "index": self.index, "of": self.of,
+              "round": self.round, "counts": self.counts(), "states": states, "reasons": reasons}
+        if ev == self._members_last:
+            return
+        self._members_last, self._members_at = ev, now
+        self._members_cb(ev)                      # a dead pipe raises: run_batch's outer except handles it
 
     # -- the service side
     def send(self, payload: dict, status: str = "done", reason: str | None = None) -> dict:
@@ -371,6 +459,7 @@ class _Run:
         self._progress({"pass": "inter", "kind": self.kind, "stage": self.stage_name, "index": self.index,
                         "of": self.of, "round": self.round, "phase": phase, **self.counts(),
                         "failed_reasons": self.failed_reasons(), "not_reached_reasons": self.not_reached_reasons()})
+        self.publish(True)            # every phase boundary, the judge result and the final map are never throttled
 
     def unreached_list(self) -> list[dict]:
         held = self.held()
@@ -381,6 +470,7 @@ class _Run:
         if not self.started:          # nothing saved yet: the writer would refuse the end of an unknown batch
             self._emit(InterResult(self.item.item_id, self.item.unit_key, "inter", "failed", reason, None))
             return
+        self.final = True
         self.progress("end")          # the last event a finished batch leaves in the GUI carries its final accounting
         self.timing["wall_s"] = time.perf_counter() - self.t0
         self.timing["ship_s"] = self.pool.ship_s
@@ -700,6 +790,7 @@ class _Run:
         if not isinstance(r, Exception) and r.status in _ELIGIBLE and verdict["accepted"].get(k) == fit_id:
             self.latest[k] = "done"
             self.failed.pop(k, None)
+            self.refused.discard(k)
             return True
         refused = verdict["refused"].get(k)
         if refused is not None:       # fitted, but the writer kept it out of use; an inputs refusal says what to do
@@ -708,6 +799,7 @@ class _Run:
         why = (refused or (f"analysis error ({type(r).__name__}: {r})" if isinstance(r, Exception)
                                              else r.reason or r.status))
         self.latest[k], self.failed[k] = "failed", why
+        (self.refused.add if verdict["refused"].get(k) is not None else self.refused.discard)(k)
         return False
 
     def identity_flags(self, ids, k: str) -> list[dict]:
@@ -747,7 +839,7 @@ class _Run:
 
     def open_pool(self, width: int) -> None:
         w = pool_size(self.item.cores, width)
-        self.pool = _Pool(self.core, w)
+        self.pool = _Pool(self.core, w, watch=self.fly, tick=self.publish)
         if w < self.item.cores:              # the cores this batch cannot use go back to the queue
             self._emit(InterResult(self.item.item_id, self.item.unit_key, "cores", "cores", None, None, w))
 
@@ -797,6 +889,7 @@ class _Run:
             if not todo:
                 self.rings_done = r
                 self.stage_timing("ring", r, t_ring, 0, 0)
+                self.publish(True)                      # this ring's members were just cut off or are held
                 continue
             snaps = {k: self.snapshot(k, self.incoming[k], sid, terms) for k, terms in todo.items()}
             self.progress("assign")
