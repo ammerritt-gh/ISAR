@@ -629,6 +629,37 @@ them on an experiment while the window is analysing it (`WORKSPACE_AND_CLI.md`).
 
 The full set of states, what each control affects and the open items are in `design/gui.md` §0sexies.
 
+### Refining fits with neighbours (inter-spectra batches)
+
+A *batch* refits spectra together, after the fast pass, so that neighbours share what they show. An **anchored**
+batch starts from the spectra you trust: select scans in the scan list, press **Add selected scans as anchors** in the
+Processing panel, then choose **Spread in q**, **Spread in T** or **Spread in q and T** and press **Start anchored
+batch**. It grows outward from the anchors, ring by ring. A **simultaneous** batch refits every spectrum you select in
+the scan list together, until the fits settle: press **Start simultaneous batch on the selection**. Nothing starts by
+itself, and each batch is one row in the analysis queue.
+
+Two spectra are q-neighbours when they are adjacent analyzers of one scan, and both need an accepted hkl for that
+link. They are T-neighbours when they are the same analyzer at adjacent temperatures. An analyzer without an accepted
+hkl gets its T-links only.
+
+A Start button stays greyed out until its batch can run, and its tooltip gives the reason, in the preview's words:
+
+- `no anchor in the list`, or `no anchor can be used: ...`
+- `nothing is linked to the anchors: no analyzer of the scan has an accepted hkl`
+- `nothing is linked to the anchors: the recorded lattice epoch is not a valid cell`
+- `nothing is linked to the anchors: this instrument has no analyzer layout`
+- `the selection has no linked spectra: ...`, for a simultaneous selection that couples to nothing
+
+The simultaneous preview line gives its spectra, T-links, curvature terms and groups. A curvature term needs three
+collinear spectra on a line, so a two-spectrum set has none. On BL43LXU data the default collinearity tolerance forms
+no curvature term, and that default is under review, so a batch may form none at all.
+
+The **Inter-spectra fit** column of the scan list names the fit ISAR uses for each spectrum: the fast solo fit or a
+refit. **Flag** marks spectra for a person to review, with the reasons on hover, and **Lock** marks a fit no batch may
+change. In the Scan(s) view, **Inter-spectra fitting** lists a spectrum's fits by batch, and **Make authoritative**
+makes the chosen one the fit ISAR uses. The rules, the settings and how far each is calibrated are in
+[design/inter_spectra.md](design/inter_spectra.md).
+
 ### Log and Output
 
 The Log, bottom left, holds what the window reports. The Output, bottom right, names the experiment folder and when it last changed. It has two actions:
