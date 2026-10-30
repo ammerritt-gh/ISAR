@@ -7,6 +7,7 @@ floor is never priced as a model of its own; W6-W7: a mask change alone becomes 
 """
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -112,6 +113,17 @@ def test_a_free_width_pegged_at_the_floor_is_never_priced(seed, wide, monkeypatc
     assert not any(free_at_floor(rec) for rec in p.basins)
     assert p.status == "no_evidence" and p.ln_z is None
     assert "free width at the floor" in p.reason, p.reason
+
+
+def test_a_split_basin_exempts_only_its_hidden_pair():
+    # hand-made split basin: modes 0 and 1 are the hidden pair (their widths are likelihood-blind), so a width of
+    # a third mode pegged at the floor is still a resolution-limited mode
+    basin = SimpleNamespace(boundary_method="split", hidden_pair=(0, 1),
+                            theta_map={1: GAMMA_FLOOR, 4: GAMMA_FLOOR, 7: 0.8},
+                            model=SimpleNamespace(free=[1, 4, 7], modes=[(0, 1, 2), (3, 4, 5), (6, 7, 8)]))
+    assert not R._free_width_at_floor(basin)
+    basin.theta_map[7] = GAMMA_FLOOR
+    assert R._free_width_at_floor(basin)
 
 
 # W5 --------------------------------------------------------------------------------------------------------

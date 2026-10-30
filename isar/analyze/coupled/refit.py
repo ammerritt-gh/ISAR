@@ -639,12 +639,13 @@ def _starts(spec: _Spec, k: int, slots) -> list:
 
 def _free_width_at_floor(b) -> bool:
     """A free width pegged at the floor is a resolution-limited mode, priced as its own delta model with its own
-    weight, never as a free width (a split basin's weak-mode width is likelihood-blind: not read)."""
-    if getattr(b, "boundary_method", "") == "split":
-        return False
+    weight, never as a free width. A split basin's hidden pair is exempt (its weak-mode width is likelihood-blind:
+    not read); any other free width at the floor still counts."""
+    hidden = set(b.hidden_pair) if getattr(b, "boundary_method", "") == "split" else set()
     free = {int(i) for i in b.model.free}
     return any(g in free and b.theta_map[g] <= fast_pass.GAMMA_FLOOR
-               + loop.DEGENERATE_LIMIT_TOL * max(fast_pass.GAMMA_FLOOR, 1.0) for _a, g, _c in b.model.modes)
+               + loop.DEGENERATE_LIMIT_TOL * max(fast_pass.GAMMA_FLOOR, 1.0)
+               for i, (_a, g, _c) in enumerate(b.model.modes) if i not in hidden)
 
 
 def _failure_reason(basins, *, floored: bool) -> str:
