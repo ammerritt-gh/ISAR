@@ -737,7 +737,7 @@ def test_shutdown_with_a_running_batch_stops_it_and_writes_the_end_once(inter_wo
 
 
 def test_a_batch_that_never_saved_its_start_gets_no_end_line_and_no_warning(inter_workspace, service):
-    root = inter_workspace({"b00000000007": {"pre_hang": 120}})
+    root = inter_workspace({"b00000000007": {"pre_hang": 120, "member_events": True}})
     svc = service(root)
     svc.wait("ready")
     _start_inter(svc, "q1", "b00000000007")
@@ -747,6 +747,25 @@ def test_a_batch_that_never_saved_its_start_gets_no_end_line_and_no_warning(inte
     assert svc.shutdown() == 0
     assert _saved(root) == []                                # the fake refused "unknown batch": nothing written
     assert not [e for e in svc.events if e["ev"] == "log" and e["level"] == "warning"]
+    assert not [e for e in svc.of("q1") if e["ev"] == "members"]
+
+
+def test_members_events_come_in_the_runner_order_and_leave_progress_alone(inter_workspace, service):
+    root = inter_workspace({"b00000000011": {"stages": 2, "member_events": True}})
+    svc = service(root)
+    svc.wait("ready")
+    _start_inter(svc, "q1", "b00000000011")
+    assert svc.wait("finished", "q1")["end"] == "completed"
+    seen = [e for e in svc.of("q1") if e["ev"] in ("started", "result", "progress", "members", "finished")]
+    assert [e["ev"] for e in seen] == ["started", "result", "members", "progress", "result", "members",
+                                       "progress", "result", "members", "result", "finished"]
+    maps = [e for e in seen if e["ev"] == "members"]
+    assert [m["index"] for m in maps] == [0, 1, 2]
+    assert all(set(m) == {"ev", "item_id", "t", "batch", "kind", "stage", "index", "of", "round", "counts",
+                          "states", "reasons"} and m["item_id"] == "q1" and isinstance(m["t"], float) for m in maps)
+    assert maps[1]["states"] == {"E:1:r1": "done", "E:1:r2": "waiting"} and maps[1]["stage"] == "ring"
+    assert not [e for e in seen if e["ev"] == "progress" and "states" in e]
+    assert svc.shutdown() == 0
 
 
 def test_inter_starts_are_refused_for_a_bad_batch_or_an_overlap(inter_workspace, service):

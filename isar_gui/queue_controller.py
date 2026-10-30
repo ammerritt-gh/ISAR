@@ -18,6 +18,10 @@ here when an event arrives, never the service's clock. Returned views are frozen
 A batch (:meth:`start_inter_batch`) is one ``inter`` item: it appears in :attr:`QueueView.batches`, never in
 the per-file marks.
 
+A batch's member map (:meth:`batch_members`) is the live view of its spectra: the service's ``members`` events give
+each member's state, the newest started batch's map is kept here (settled when the batch ends abnormally), and
+``members_changed`` says when it moved. The map is not persisted and is not part of ``changed``.
+
 shortcut: ``view()``, ``marks()`` and every event rebuild their answer from the scheduler's snapshot, O(items);
 fine for the hundreds of items of a beamtime, cache per change if a queue ever holds many thousands.
 """
@@ -28,7 +32,7 @@ import logging
 import secrets
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -58,11 +62,19 @@ _PROGRESS_KEYS = ("pass", "phase", "step", "of", "stage", "stages", "kind", "ind
                  "not_reached", "fixed", "total", "failed_reasons", "not_reached_reasons")
 _CRASH = "the analysis process ended unexpectedly; see {log}"
 _UNCONFIRMED = "not confirmed saved; re-add it"
+_MEMBER_STATES = frozenset(("waiting", "fitting", "done", "refused", "failed", "not_reached", "held"))
 
 
 def _pairs(reasons) -> tuple[tuple[str, int], ...]:
     """The runner's [[reason, n], ...] as tuples; nothing (an older event) gives ()."""
     return tuple((str(why), int(n)) for why, n in reasons or ())
+
+
+def _string_map(value) -> dict[str, str]:
+    """A JSON object whose keys and values are all strings; anything else raises ValueError."""
+    if not isinstance(value, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+        raise ValueError("not a map of strings")
+    return dict(value)
 
 
 # ---- what the views read ------------------------------------------------------------------------------
@@ -124,6 +136,23 @@ class BatchView:                  # one inter-spectra batch: the dock's row (C-q
 
 
 @dataclass(frozen=True)
+class BatchMembers:              # the newest batch's member map, as the controller keeps it (C-members-event)
+    item_id: str
+    batch_id: str
+    kind: str                    # "anchored" | "simultaneous", from the batch spec
+    direction: str | None        # "q" | "T" | "qT" | None, from the batch spec
+    stage: str | None            # "plan" | "ring" | "sweep"; None before the first members event
+    index: int | None            # ring or sweep number; 0 at "plan"
+    of: int | None               # rings in the plan, or the sweep cap
+    round: int | None            # simultaneous only
+    counts: Mapping[str, int]    # the runner's counts(): done, failed, not_reached, fixed, total
+    states: Mapping[str, str]    # spectrum key -> state word; every member of the batch
+    reasons: Mapping[str, str]   # spectrum key -> plain words, for refused, failed, not_reached and a stale lock
+    ended: str | None            # None while running; "completed" | "stopped" | "failed"
+    ended_reason: str | None     # the finished event's reason when stopped or failed; else None
+
+
+@dataclass(frozen=True)
 class QueueView:
     bound: bool
     fast: tuple[QueueGroup, ...]
@@ -182,7 +211,7 @@ class _Rec:
     """What the controller knows about an item that the scheduler does not keep."""
 
     __slots__ = ("item_id", "unit_key", "pass_kind", "automatic", "set_key", "analyzer", "label", "spec", "results",
-                 "saves", "final", "finished_at", "override")
+                 "saves", "final", "finished_at", "override", "members")
 
     def __init__(self, view: _SchedItem, spec: dict | None = None, label: str = "") -> None:
         self.item_id = view.item_id
@@ -199,6 +228,7 @@ class _Rec:
         self.final: str | None = None       # the scheduler's settled state, once seen
         self.finished_at: float | None = None
         self.override: str | None = None    # a reason the scheduler cannot know (the process died)
+        self.members: BatchMembers | None = None    # a batch's member map from its start; None for a file
 
     def pending(self, pass_kind: str) -> bool:
         if pass_kind == "inter":
@@ -232,6 +262,7 @@ class QueueController(QObject):
     changed = Signal()            # anything in view(), selection(), marks() or fast_all() changed
     log_line = Signal(str)        # one Log line (design step 22); the window prints it
     results_saved = Signal(tuple)  # tuple[str, ...]: unit keys confirmed saved by one batch of `saved` events
+    members_changed = Signal(str)  # item_id of the batch whose member map moved; "" when no batch map is kept
     auto_fast_changed = Signal(bool)   # the switch moved; the window saves it in the GuiStore
 
     def __init__(self, python_exe: str, intake, scan_list_vm, *, cores: int,
@@ -254,6 +285,7 @@ class QueueController(QObject):
         self._stages: list[tuple[_Rec, str, str | None, float]] = []   # saved fast stages of deep items
         self._held_adds: list[tuple[tuple[str, ...], str, bool]] = []
         self._saved_batch: list[str] = []
+        self._last_inter: str | None = None         # the newest started batch: the one the dock shows
         self._labels: tuple[object, dict[str, str]] = (None, {})
         # the service
         self._runner: ProcessRunner | None = None
@@ -290,6 +322,7 @@ class QueueController(QObject):
             gone = self._queue.abandon_active("the experiment folder was renamed")
             if gone:
                 log.warning("renamed with %d running or saving item(s); they are failed", len(gone))
+            self._settle_members("failed", "the experiment folder was renamed")
             self._root = root
             self._sync()
         else:
@@ -313,6 +346,8 @@ class QueueController(QObject):
         self._bind_no += 1
         self._holds = 0
         self._hold_sent = self._hold_confirmed = False
+        self._last_inter = None
+        self.members_changed.emit("")
 
     def _has_work(self) -> bool:
         snap = self._queue.snapshot()
@@ -486,6 +521,11 @@ class QueueController(QObject):
         for key in unit_keys:
             by_set.setdefault(scan_prefix(key), []).append(str(split_key(key)[2]))
         return "; ".join(f"{self._label(s)}{sep}{', '.join(names)}" for s, names in by_set.items())
+
+    def batch_members(self) -> BatchMembers | None:
+        """The member map of the newest started batch (kept until the experiment is left), or None."""
+        rec = None if self._last_inter is None else self._recs.get(self._last_inter)
+        return None if rec is None else rec.members
 
     def marks(self) -> Mapping[str, Mapping[str, Mark]]:
         """``unit_key -> {pass_kind: mark}`` for the active items. A deep item's own fast stage shows on its
@@ -801,7 +841,7 @@ class QueueController(QObject):
                     "cores": self._ev_cores, "result": self._ev_result, "saved": self._ev_saved,
                     "save_failed": self._ev_save_failed, "finished": self._ev_finished,
                     "writes_held": self._ev_writes_held, "writes_released": self._ev_writes_released,
-                    "log": self._ev_log, "error": self._ev_error}
+                    "log": self._ev_log, "error": self._ev_error, "members": self._ev_members}
         handler = handlers.get(ev["ev"])
         if handler is None:
             return                      # pong, bye: nothing to do
@@ -809,6 +849,8 @@ class QueueController(QObject):
             handler(ev)
         except (KeyError, ValueError, TypeError) as exc:
             log.warning("analysis event %r not applied (%s: %s)", ev, type(exc).__name__, exc)
+        if ev["ev"] == "members":       # the member map has its own signal; nothing the other views read has moved
+            return
         self._sync()
         self.changed.emit()
 
@@ -821,8 +863,18 @@ class QueueController(QObject):
         self._pump()
 
     def _ev_started(self, ev: dict) -> None:
-        if not self._queue.on_started(ev["item_id"], at=self._clock()):
-            log.warning("started for %s, which is not running", ev["item_id"])
+        iid = ev["item_id"]
+        if not self._queue.on_started(iid, at=self._clock()):
+            log.warning("started for %s, which is not running", iid)
+            return
+        rec = self._recs.get(iid)
+        if rec is not None and rec.pass_kind == "inter":     # the dock's batch, empty until its first members event
+            spec = rec.spec
+            rec.members = BatchMembers(item_id=iid, batch_id=spec["batch_id"], kind=spec["kind"],
+                                       direction=spec["direction"], stage=None, index=None, of=None, round=None,
+                                       counts={}, states={}, reasons={}, ended=None, ended_reason=None)
+            self._last_inter = iid
+            self.members_changed.emit(iid)
 
     def _ev_progress(self, ev: dict) -> None:
         self._queue.on_progress(ev["item_id"], {k: ev[k] for k in _PROGRESS_KEYS if k in ev}, at=self._clock())
@@ -864,8 +916,62 @@ class QueueController(QObject):
         self._pump()
 
     def _ev_finished(self, ev: dict) -> None:
-        self._queue.on_finished(ev["item_id"], ev["end"], ev.get("reason"))
+        iid = ev["item_id"]
+        self._queue.on_finished(iid, ev["end"], ev.get("reason"))
+        rec = self._recs.get(iid)
+        if rec is not None and rec.members is not None and rec.members.ended is None:
+            self._end_members(iid, ev["end"], ev.get("reason"))
         self._pump()
+
+    def _ev_members(self, ev: dict) -> None:
+        """A batch's member map: the latest event is the truth, so it replaces the map. Another batch's map is kept
+        silently; an event that cannot be applied is logged and dropped, and the map it would have replaced stays."""
+        iid = ev["item_id"]
+        rec = self._recs.get(iid)
+        if rec is None or rec.members is None:
+            log.warning("members for %s, which has no started batch; dropped: %r", iid, ev)
+            return
+        if rec.members.ended is not None:
+            log.warning("members for %s after the batch ended; dropped: %r", iid, ev)
+            return
+        try:
+            states = _string_map(ev["states"])
+            reasons = _string_map(ev["reasons"])
+            unknown = set(states.values()) - _MEMBER_STATES
+            if unknown:
+                raise ValueError(f"unknown state {sorted(unknown)}")
+            counts = {str(k): int(v) for k, v in dict(ev["counts"]).items()}
+        except (KeyError, TypeError, ValueError) as exc:
+            log.warning("members for %s not applied (%s: %s); dropped: %r", iid, type(exc).__name__, exc, ev)
+            return
+        rec.members = replace(rec.members, stage=ev.get("stage"), index=ev.get("index"), of=ev.get("of"),
+                              round=ev.get("round"), counts=counts, states=states, reasons=reasons)
+        if iid == self._last_inter:
+            self.members_changed.emit(iid)
+
+    def _end_members(self, iid: str, end: str, reason: str | None) -> None:
+        """Settle a batch's map at its end. Stopped or failed, its members still waiting or fitting were never reached;
+        a completed batch sent its own final map, so only its end is recorded."""
+        m = self._recs[iid].members
+        states, reasons = dict(m.states), dict(m.reasons)
+        if end != "completed":
+            if end == "stopped":
+                why = "the batch was stopped"
+            else:
+                why = f"the batch failed: {reason}" if reason else "the batch failed"
+            for key, state in m.states.items():
+                if state in ("waiting", "fitting"):
+                    states[key], reasons[key] = "not_reached", why
+        self._recs[iid].members = replace(m, states=states, reasons=reasons, ended=end,
+                                          ended_reason=None if end == "completed" else reason)
+        if iid == self._last_inter:
+            self.members_changed.emit(iid)
+
+    def _settle_members(self, end: str, reason: str | None) -> None:
+        """The process is gone or its batches were abandoned: every batch whose map is still open ends with ``end``."""
+        for iid, rec in list(self._recs.items()):
+            if rec.members is not None and rec.members.ended is None:
+                self._end_members(iid, end, reason)
 
     def _ev_writes_held(self, ev: dict) -> None:
         self._hold_confirmed = True
@@ -951,6 +1057,7 @@ class QueueController(QObject):
                 self._log_unconfirmed("the analysis process ended while stopping")
             self._silence_logged = False
             self._queue.abandon_active("the analysis process was stopped")
+            self._settle_members("stopped", None)
             self._sync()
             self._service = "off"
             self._release_hold_waiters()    # a copy asked for during the leave reads the folder before the reopen
@@ -960,6 +1067,7 @@ class QueueController(QObject):
         saving = {iid for iid, rec in self._recs.items() if self._own_pending(rec)}
         for iid in self._queue.abandon_active(reason):
             self._recs[iid].override = _UNCONFIRMED if iid in saving else reason
+        self._settle_members("failed", reason)
         self._service = "failed"
         self._service_error = f"the analysis process ended unexpectedly (exit code {code}); see {self._service_log}"
         log.error("analysis process exited with %s", code)

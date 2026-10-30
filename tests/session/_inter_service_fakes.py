@@ -5,8 +5,9 @@
 payloads after the start, default 3), ``refuse`` (``{"<stage index>": "reason"}`` the save refuses for that
 ring's unit), ``save_fail`` (stage index whose payload the save refuses whole), ``end`` (False: no ``end``
 payload, the item just ends; "hang" is the stop tests' way to keep it alive), ``hang`` (seconds to sleep after
-the last stage), ``pre_hang`` (the same before the start payload), ``raise``, ``cores_notice``. Every payload is acked; the verdict each ack returned goes to
-``<root>/acks-<batch_id>.jsonl`` the moment it arrives.
+the last stage), ``pre_hang`` (the same before the start payload), ``raise``, ``cores_notice``, ``member_events``
+(true: a ``members`` event after the start and after each ring, when the runner was given ``members``). Every
+payload is acked; the verdict each ack returned goes to ``<root>/acks-<batch_id>.jsonl`` the moment it arrives.
 
 ``save_inter`` appends each payload to ``<root>/inter_saved.jsonl`` and answers the real writer's verdict
 words: a stage or end for a batch with no start is the str ``"unknown batch <id>"``, an ``end`` for a batch
@@ -51,13 +52,14 @@ def _payload(item: BatchItem, event: str, index: int | None, spec: dict) -> dict
     return p
 
 
-def run_batch(root, item, *, progress, emit, ack) -> None:
+def run_batch(root, item, *, progress, emit, ack, members=None) -> None:
     root = Path(root)
     bid = item.spec["batch_id"]
     spec = json.loads((root / "fake_inter_plan.json").read_text(encoding="utf-8")).get(bid, {})
     if spec.get("cores_notice"):
         emit(InterResult(item.item_id, item.unit_key, "cores", "cores", None, None, spec["cores_notice"]))
     token = 0
+    n = int(spec.get("stages", 3))
 
     def send(event: str, index: int | None, status: str = "done", reason: str | None = None) -> None:
         nonlocal token
@@ -68,14 +70,25 @@ def run_batch(root, item, *, progress, emit, ack) -> None:
         with open(root / f"acks-{bid}.jsonl", "a", encoding="utf-8", newline="\n") as f:
             f.write(json.dumps({"token": token, "event": event, "index": index, "verdict": verdict}) + "\n")
 
+    def member_map(k: int) -> None:
+        # the runner's map after k rings (0: at the plan): the first k members done, the rest waiting
+        if members is None or not spec.get("member_events"):
+            return
+        names = item.spec["members"]
+        members({"batch": bid, "kind": item.spec["kind"], "stage": "plan" if k == 0 else "ring", "index": k,
+                 "of": n, "round": None,
+                 "counts": {"done": k, "failed": 0, "not_reached": len(names) - k, "fixed": 0, "total": len(names)},
+                 "states": {m: "done" if i < k else "waiting" for i, m in enumerate(names)}, "reasons": {}})
+
     if spec.get("pre_hang"):
         time.sleep(float(spec["pre_hang"]))
     send("start", None)
-    n = int(spec.get("stages", 3))
+    member_map(0)
     for k in range(1, n + 1):
         progress({"pass": "inter", "kind": "anchored", "stage": "ring", "index": k, "of": n, "round": None,
                   "phase": "save", "done": k, "failed": 0, "not_reached": n - k, "fixed": 0, "total": n})
         send("stage", k)
+        member_map(k)
     if spec.get("hang"):
         time.sleep(float(spec["hang"]))
     if spec.get("raise"):
