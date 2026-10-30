@@ -54,7 +54,7 @@ BATCH_WORDS = {"waiting": "waiting", "fitting": "fitting now", "done": "done", "
 BATCH_TIPS = {
     "waiting": "Queued for this ring or sweep; a worker does not have it yet.",
     "fitting": "A worker has this spectrum now and has not returned it.",
-    "done": "Refitted; the new fit is saved and drawn.",
+    "done": "Refitted and saved; the new fit replaces the drawn one once ISAR reloads it.",
 }
 KIND_WORDS = {"anchored": "Anchored batch", "simultaneous": "Simultaneous batch"}
 DIRECTION_WORDS = {"q": "spread in q", "T": "spread in T", "qT": "spread in q and T"}

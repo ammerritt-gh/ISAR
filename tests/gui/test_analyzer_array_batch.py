@@ -117,7 +117,7 @@ def test_a_cell_goes_waiting_then_fitting_now_then_done_and_others_end_apart(env
     _put(env, members({**STATES, A6: "done"}, reasons=REASONS))
     assert (cell.state_caption.full_text(), cell.dimmed, cell.ringing) == ("done", False, False)
     assert not d.ring_timer.isActive()                                        # the ring stops with the work
-    assert "new fit is saved and drawn" in cell.state_caption.toolTip()
+    assert "the new fit replaces the drawn one once ISAR reloads it" in cell.state_caption.toolTip()
     # every word comes with its tone as a dot, and the three that stand apart name the runner's reason
     for name, state in (("a05", "waiting"), ("a06", "done"), ("a07", "done"), ("a08", "refused"), ("a09", "failed")):
         c = d.cell_at(name)
