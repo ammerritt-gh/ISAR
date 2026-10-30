@@ -69,7 +69,7 @@ class BatchOverlay:                      # C-cell-marks
 
 @dataclass(frozen=True)
 class CellPlot:
-    token: tuple                         # (bundle.revision, fit_id, scale, reference): redraw only when it changes
+    token: tuple                         # (key, revision, fit_id, scale, curve drawn, reference): redraw only when it changes
     x: np.ndarray = field(compare=False)
     y: np.ndarray = field(compare=False)
     kept: np.ndarray = field(compare=False)
@@ -482,7 +482,7 @@ class AnalyzerArrayViewModel(ViewModel):
             code = fast.code if fast is not None else NO_PASS
             absence = "no_fit" if code == NO_PASS else "no_curve" if code == CURVE_UNAVAILABLE else "other"
             tip = fast.text if absence != "no_fit" else None
-        plot = CellPlot((bundle.key, bundle.revision, bundle.fit_id, self.scale, reference),
+        plot = CellPlot((bundle.key, bundle.revision, bundle.fit_id, self.scale, fitted is not None, reference),
                         scaled.x, scaled.y, scaled.kept,
                         None if fitted is None else scaled.fine_x, None if fitted is None else fitted.total,
                         () if fitted is None else tuple(c.values for c in fitted.components))

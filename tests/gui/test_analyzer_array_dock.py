@@ -15,13 +15,13 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from bl43_fixture import KEY_A, KEY_B
-from gui.array_helpers import inter_row, make_array_view, open_dock
+from gui.array_helpers import inter_row, make_array_view, make_env, open_dock
 from gui.inter_fakes import FakeInterState, make_overview
 from gui.inter_helpers import assert_described
 from gui.window_frame_checks import assert_elided_have_tooltips
 from isar_gui.theme import marker_icon
 from isar_gui.viewmodels import analyzer_array as vm_mod
-from isar_gui.views.analyzer_cell import CELL_MIN
+from isar_gui.views.analyzer_cell import CELL_MIN, AnalyzerCell
 from scans_view_fixture import SPECTRA_A, SPECTRA_B
 
 A3, A4, A5, A6, A7, A8, A9 = SPECTRA_A
@@ -212,6 +212,27 @@ def test_a_word_beside_drawn_data_sits_under_the_plot_not_over_it(env):
     assert cell.absence_label.isVisible() and cell.plot.isVisible()
     word = QRect(cell.absence_label.mapTo(cell, QPoint(0, 0)), cell.absence_label.size())
     assert not cell.plot_box.geometry().intersects(word)
+
+
+def _curve_points(item) -> int:
+    y = item.getData()[1]
+    return 0 if y is None else len(y)
+
+
+def test_a_drawn_solo_curve_is_cleared_when_its_fit_becomes_no_curve(qtbot, scans_view_ws_readonly):
+    # the cell drew the fast solo; the authoritative batch fit then cannot be drawn: the solo must not stay on screen
+    inter = FakeInterState()
+    env = make_env(scans_view_ws_readonly, inter=inter)
+    env.selection.set((A6,))
+    cell = AnalyzerCell("a06", "A4", True)
+    qtbot.addWidget(cell)
+    cell.apply(next(c for c in env.vm.recompute().cells if c.key == A6))
+    assert _curve_points(cell._total) > 0
+    inter.overview = make_overview(by_key={A6: inter_row(A6, "b1:fit")})
+    refused = next(c for c in env.vm.recompute().cells if c.key == A6)
+    assert refused.absence == "no curve" and refused.plot is not None and refused.plot.total is None
+    cell.apply(refused)
+    assert _curve_points(cell._total) == 0 and cell.absence_label.text() == "no curve"
 
 
 def test_switching_scans_keeps_the_widgets_and_redraws_only_what_changed(env):
