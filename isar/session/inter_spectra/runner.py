@@ -43,6 +43,9 @@ TARGET_S = 1800.0          # the design's 30-minute target: recorded and reporte
 NOT_CURRENT = "its fast pass is not current; run the fast pass first"
 CUT_OFF = "cut off by a failed neighbour"
 SCOPE_CHANGED = "the scope changed since the preview"
+# what a refused spectrum is told to do when the cause is its inputs (the writer cannot say which way they differ)
+INPUTS_REMEDY = ("; start the batch again, and if it fails the same way, add the data again (the same files or "
+                 "their folder) so ISAR reads them afresh")
 STALE_LOCK = "its locked fit is out of date, so it is neither refitted nor used"
 NOTHING_LEFT = "no spectrum was left to refit before a round settled; its results are kept"
 _THREAD_ENV = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")    # as driver._THREAD_ENV
@@ -312,6 +315,7 @@ class _Run:
         self.latest: dict[str, str] = {}          # unit -> "done" | "failed": its latest attempt (counts are current)
         self.failed: dict[str, str] = {}          # unit -> reason of its latest failed attempt
         self.not_reached: dict[str, str] = {}     # unit -> reason it was never attempted
+        self.stale_locks: set[str] = set()        # locked on an out-of-date fit: neither refitted nor used (fixed)
         self.records: dict[str, dict] = {}        # fit id -> record of a refit accepted in this batch
         self.dormant: dict[str, tuple] = {}       # fit id -> its Dormant records (branches not observed in it)
         self.aliases: dict[str, str] = {}         # every id merged in this batch so far: alias -> canonical name
@@ -335,25 +339,49 @@ class _Run:
         return {"schema": "isar.inter-result/1", "unit": f"inter:{self.batch}:batch", "pass": "inter",
                 "batch": self.batch, "event": event, event: body}
 
+    def held(self) -> set:
+        """The members that stay as they are: anchors, locks, and stale locks (never refitted, so never to do)."""
+        return set(self.fixed) | (self.stale_locks & set(self.members))
+
     def counts(self) -> dict:
-        done = sum(1 for u, s in self.latest.items() if s == "done" and u not in self.fixed)
-        failed = sum(1 for u, s in self.latest.items() if s == "failed" and u not in self.fixed)
+        held = self.held()
+        done = sum(1 for u, s in self.latest.items() if s == "done" and u not in held)
+        failed = sum(1 for u, s in self.latest.items() if s == "failed" and u not in held)
         n = len(self.members)
-        return {"done": done, "failed": failed, "not_reached": n - done - failed - len(self.fixed),
-                "fixed": len(self.fixed), "total": n}
+        return {"done": done, "failed": failed, "not_reached": n - done - failed - len(held),
+                "fixed": len(held), "total": n}
+
+    @staticmethod
+    def _grouped(reasons) -> list[list]:
+        """[[reason, n], ...], most frequent first, ties in first-seen order."""
+        tally: dict[str, int] = {}
+        for why in reasons:
+            tally[why] = tally.get(why, 0) + 1
+        return [[why, n] for why, n in sorted(tally.items(), key=lambda kv: -kv[1])]
+
+    def failed_reasons(self) -> list[list]:
+        held = self.held()
+        return self._grouped(why for u, why in self.failed.items()
+                             if u in self.members and u not in held and self.latest.get(u) == "failed")
+
+    def not_reached_reasons(self) -> list[list]:
+        return self._grouped(d["reason"] for d in self.unreached_list())
 
     def progress(self, phase: str) -> None:
         self._progress({"pass": "inter", "kind": self.kind, "stage": self.stage_name, "index": self.index,
-                        "of": self.of, "round": self.round, "phase": phase, **self.counts()})
+                        "of": self.of, "round": self.round, "phase": phase, **self.counts(),
+                        "failed_reasons": self.failed_reasons(), "not_reached_reasons": self.not_reached_reasons()})
 
     def unreached_list(self) -> list[dict]:
+        held = self.held()
         return [{"unit": u, "reason": self.not_reached.get(u, "not reached")} for u in self.members
-                if u not in self.fixed and u not in self.latest]
+                if u not in held and u not in self.latest]
 
     def end(self, state: str, reason: str | None = None) -> None:
         if not self.started:          # nothing saved yet: the writer would refuse the end of an unknown batch
             self._emit(InterResult(self.item.item_id, self.item.unit_key, "inter", "failed", reason, None))
             return
+        self.progress("end")          # the last event a finished batch leaves in the GUI carries its final accounting
         self.timing["wall_s"] = time.perf_counter() - self.t0
         self.timing["ship_s"] = self.pool.ship_s
         self.timing["over_target"] = self.timing["wall_s"] > self.target_s     # information only
@@ -368,6 +396,9 @@ class _Run:
         else:
             status = "done"
         body = {"state": state, "reason": reason, "done": c["done"], "failed": c["failed"], "not_reached": missed,
+                "failed_units": [{"unit": u, "reason": why} for u, why in self.failed.items()
+                                 if u in self.members and self.latest.get(u) == "failed" and u not in self.held()],
+                "stale_locks": [{"unit": u, "reason": STALE_LOCK} for u in sorted(self.stale_locks & set(self.members))],
                 "rings_done": self.rings_done, "sweeps": self.sweeps, "rounds": self.rounds,
                 "timing": _plain(self.timing), "drift": self.drift}
         self.send(self.payload("end", body), status, reason)
@@ -670,7 +701,11 @@ class _Run:
             self.latest[k] = "done"
             self.failed.pop(k, None)
             return True
-        why = (verdict["refused"].get(k) or (f"analysis error ({type(r).__name__}: {r})" if isinstance(r, Exception)
+        refused = verdict["refused"].get(k)
+        if refused is not None:       # fitted, but the writer kept it out of use; an inputs refusal says what to do
+            refused = (f"fitted but not saved ({refused})"
+                       + (INPUTS_REMEDY if refused.endswith(self.records_mod.INPUTS_TAIL) else ""))
+        why = (refused or (f"analysis error ({type(r).__name__}: {r})" if isinstance(r, Exception)
                                              else r.reason or r.status))
         self.latest[k], self.failed[k] = "failed", why
         return False

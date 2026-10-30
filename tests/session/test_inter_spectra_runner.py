@@ -366,6 +366,15 @@ def test_the_fingerprint_the_runner_stamps_is_the_one_the_writer_checks(tmp_path
     assert lines[stay].inputs == _now(ws, [stay])[stay] == stored is not None
     assert lines[stay].accept.decision == "authoritative"
     assert (lines[moved].accept.decision, lines[moved].accept.reason) == ("declined", "inputs_changed")
+    # the batch says why: one reason, the runner's own sentence, in the last event and the end record
+    why = ("fitted but not saved (the inputs it was fitted from do not match the experiment's record); start the "
+           "batch again, and if it fails the same way, add the data again (the same files or their folder) so ISAR "
+           "reads them afresh")
+    last = [p for p in bench.progress if p["stage"] == "ring"][-1]
+    assert last["failed_reasons"] == [[why, last["failed"]]] and last["failed"] >= 1
+    assert sum(n for _, n in last["not_reached_reasons"]) == last["not_reached"]
+    failed_units = bench.end().payload["end"]["failed_units"]
+    assert {"unit": moved, "reason": why} in failed_units and len(failed_units) == last["failed"]
 
 
 # ---------------------------------------------------------------------------
@@ -574,6 +583,51 @@ def test_a_stale_locked_fit_never_conditions_a_refit(tmp_path, when):
         assert used and {(c.fit, c.inputs) for c in used} == {(y_line.fit, y_line.inputs)}
     else:
         assert all(c.fit != y_line.fit for c in used)
+
+
+def test_a_stale_lock_counts_as_fixed_and_is_recorded_not_called_unreached(tmp_path):
+    """Operator ruling 2026-10-30: the to-do counts leave out whatever will not be fit. A stale lock is neither
+    refitted nor used, so it is fixed (not 'not reached'), is left out of the end record's not-reached list, and is
+    recorded in its own list; the accounting still adds up to the batch."""
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"},) * 3)
+    first = _simultaneous(ws, (x, y, z))
+    Bench(ws).run(first)
+    (y_line,) = [r for r, _ in _lines(ws, first.batch_id) if r.unit == y and r.accept.decision == "authoritative"][-1:]
+    scan, det = z.rsplit(":", 1)
+    _calibrate(ws, scan, det, 0.5)
+    assert inter_values.set_lock(ws, y, locked=True, fit_id=y_line.fit).ok
+    bench = Bench(ws)
+    spec = _simultaneous(ws, (x, y))
+    bench.run(spec)
+    body = bench.end().payload["end"]
+    assert body["stale_locks"] == [{"unit": y, "reason": runner.STALE_LOCK}]
+    assert all(d["unit"] != y for d in body["not_reached"])
+    last = bench.progress[-1]
+    assert (last["fixed"], last["total"]) == (1, 2)
+    assert last["done"] + last["failed"] + last["not_reached"] + last["fixed"] == last["total"]
+    assert all(r != runner.STALE_LOCK for r, _ in last["not_reached_reasons"])
+    assert bench.progress[0]["phase"] == "prepare" and bench.progress[0]["fixed"] == 0
+
+
+def test_only_a_units_latest_attempt_gives_a_failure_reason():
+    """judge() keeps a unit's latest attempt: two analysis errors and a refusal group by sentence, and a unit that
+    then succeeds leaves the list."""
+    import types
+    r = runner._Run.__new__(runner._Run)
+    r.members, r.fixed, r.stale_locks = ("a", "b", "c"), {}, set()
+    r.latest, r.failed, r.not_reached = {}, {}, {}
+    r.records_mod = records
+    nothing = {"refused": {}, "accepted": {}}
+    r.judge("a", ValueError("x"), nothing, "f1")
+    r.judge("b", ValueError("x"), nothing, "f2")
+    r.judge("c", types.SimpleNamespace(status="failed", reason="r"),
+            {"refused": {"c": records.REFUSED["locked"]}, "accepted": {}}, "f3")
+    assert r.failed_reasons() == [["analysis error (ValueError: x)", 2],
+                                  ["fitted but not saved (locked since the batch started)", 1]]
+    r.latest["a"] = "done"
+    r.failed.pop("a")
+    assert r.failed_reasons()[0] == ["analysis error (ValueError: x)", 1]
+    assert r.counts()["not_reached"] == 0
 
 
 def test_a_batch_whose_members_all_leave_is_not_called_settled(tmp_path):
