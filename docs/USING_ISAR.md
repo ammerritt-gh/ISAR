@@ -113,7 +113,12 @@ isar run "D:\beamtime\numors" --workspace my_experiment    # same command; only 
     "scans": {"added": ["exp:1"], "updated": [], "unchanged": []},  // scan-level "exp:scan" ids
     "deduped": [{"scan": "exp:7", "kept": "...", "superseded": ["..."]}],  // growing-file resends
     "passed_over": [{"set": "...", "scans": [58, 59], "reason": "..."}],  // summed sets whose scans are present
-    "gaps": [["exp", 4, 7]]            // (experiment, after, before) scan-number gaps
+    "gaps": [["exp", 4, 7]],           // (experiment, after, before) scan-number gaps
+    "companions": {                    // BL43 with a workspace, else null: what this import found beside the files
+      "sidecar": {"read": ["set"], "missing": [], "unreadable": []},   // .var, by set name
+      "gpi": {"folder": "...", "found": [], "missing": ["set"], "not_used": [], "error": null},
+      "curves": {"folder": null, "n_curves": 0, "n_analyzers": 0, "problem": "...", "error": null}
+    }
   }
   ```
 
@@ -981,7 +986,8 @@ The `.var` sidecar supplies `si_order`, `bin_meV` (the bin size) and `n_merged_s
 analyzer `efficiency`, `polarisation_factor`, `elastic_centroid_meV` and `elastic_area`. A `.var` that
 is missing or unreadable raises `missing_sidecar`; one that is empty or has no analyzer list (for
 example still being copied) counts as unreadable, and importing the scan's folder or files again once it
-is whole completes the scan. A re-import reads every file again (a file is never skipped as unchanged), so
+is whole completes the scan. The `.var` is looked for in the analyzer files' folder whether you add the
+files or the folder (it is the one file ISAR takes that you did not name). A re-import reads every file again (a file is never skipped as unchanged), so
 it also picks up a corrected reader. Moving or renaming the data folder and importing it from its new place
 marks no scan changed, because the data revision ignores where the files sit; the import record keeps the
 new paths. A resolution folder saved inside the moved folder (the usual `rf/` beside the data) is not
