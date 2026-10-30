@@ -116,7 +116,7 @@ def test_each_neighbour_votes_once_however_many_terms_it_sits_in():
     x = held("x", [(8.0, 0.4, 40.0), (14.0, 0.4, 40.0)], ["b1", "b2"], T=100.0)
     z = held("z", [(8.0, 0.4, 40.0), (15.0, 0.4, 40.0)], ["b1", "b2"], T=300.0)
     # x sits in two terms with y (a T pair and a q pair), z in one: x's 14.0 counts once, not twice
-    q = Term("q-change", ("x", "y"), (0.1,), None, None)
+    q = Term("q-change", ("x", "y"), (0.1,), None, None, "hkl")
     snap = replace(base, terms=(TermInput(base.terms[0].term, (x,)), TermInput(q, (x,)),
                                 TermInput(base.terms[1].term, (z,))))
     spec = R._Spec(snap)
