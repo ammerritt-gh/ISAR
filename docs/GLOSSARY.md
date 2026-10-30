@@ -66,7 +66,7 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   detailed-balance form has no finite all-energy integral. The width prior is a penalty, not a cap:
   not allowed below 1 resolution FWHM, flat to 2 FWHM, then -1 nat per FWHM (STATS_PRIMER). A card
   `quasielastic_fwhm` pins the width and drops its prior. The elastic line is also in every BL43LXU
-  model and is never removed: a QE that fits to zero height is removed by the duplicate-model rule and
+  model and is never removed: a QE that fits to zero height or to its lower width bound is removed by the duplicate-model rule and
   the reduced model is priced on its own evidence, as one result in place of its parent. Triple-axis,
   IN8's fixed-width `QuasiElastic` and every other instrument are unchanged.
 - **phenomenon catalogue** — the single registry (`isar.phenomenon-catalogue/1`) of what can be
@@ -183,7 +183,8 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   fit record but is not reported as found.
 - **degenerate limit / twin** — a fit railed at a lower limit is the degenerate case of a model next to it: a
   mode's amplitude or the elastic height at zero, a mode's energy at zero, a mode's width at its floor (the
-  resolution-limited delta-function mode), or the background at zero (the background-free model). That neighbour
+  resolution-limited delta-function mode), a central QE's width at its lower bound (the model without the QE),
+  or the background at zero (the background-free model). That neighbour
   is its twin. The railed model is not a second vote for its twin.
 - **resolvable (benchmark)** — a synthetic truth whose extra mode a reference fit finds in at least 90% of Poisson
   draws, and whose weakest-removed version is split in at most 5%. The benchmark's measurable sense of "a human could

@@ -320,7 +320,7 @@ own peak with a width". The fast pass applies the rule to every limit a model ca
 (`fast_pass._Engine.resolve`, with the shared builder `loop.delta_twin_hypothesis`; the earlier ladder's
 `loop._resolve_degenerate` applies it to the same limits until that ladder is retired). At a model's
 posterior mode the first screen that hits acts, and its twin is refitted from that point with one
-fewer free parameter; except for a railed width, the twin must reach the parent's cost within
+fewer free parameter; except for a railed width and a QE at its narrowest width, the twin must reach the parent's cost within
 `twin_cost_tolerance` (2 deviance units), otherwise the parent stays a model of its own. The
 screens, in this order:
 
@@ -329,6 +329,7 @@ screens, in this order:
 | a mode's height at or below `twin_height_frac` (1e-3) of the height ceiling | that mode is not there | the count below, same elastic variant, without that mode |
 | a mode's energy ω₀ at the zero-energy edge of the window, or its line shape equal to the elastic line's within `elastic_twin_tolerance` | that mode is the elastic line | the count below, with the elastic line |
 | the elastic height at or below the same fraction | there is no elastic line | the same count without the elastic line (not on BL43LXU: the elastic line is never removed there, §2.1) |
+| the central QE's free width at its lower bound (BL43LXU, in a model with an elastic line) | that QE is the elastic line | the same count without the QE |
 | two modes closer than `twin_coincide_fwhm` (0.5) resolution FWHM | one mode | the count below with the pair merged, one pair at a time (exactly coincident delta pairs first); the all-pairs merge is one more candidate |
 | a mode's width Γ at the floor | that mode is resolution limited | the same model with that Γ pinned at the floor: a delta-function mode convolved with the resolution |
 | the flat background at or below the same fraction of its ceiling | there is no background | the same model without its background |
@@ -341,10 +342,11 @@ amplitude and its evidence with it. The B-spline average keeps the area, the cen
 moment independent of where the mode sits between nodes, for both the Stokes side and its Bose-weighted
 anti-Stokes partner; ordinary widths are point-sampled as before.
 
-A railed width is the one twin that is not tested against the parent's cost: a width at the floor is
+A railed width and a QE at its narrowest width are the twins that are not tested against the parent's cost: a width at the floor is
 the resolution limit by definition, and the delta mode has its width coordinate and width-prior
 factor removed (its covariance row and column are zero), so it is a model of its own with its own
-evidence. A width near zero without railing (Γ below 4.5 of its own standard errors, so the data
+evidence. A QE at its narrowest width is the elastic line by definition, so the model without the QE
+stands in for it, untested like a railed width. A width near zero without railing (Γ below 4.5 of its own standard errors, so the data
 cannot tell it from the floor) is priced as a delta mask as well. Twins resolve recursively: a twin
 that itself rails resolves in turn, and every terminal model keeps exactly one identity
 (`ModelResult.model_id`, e.g. `elastic+stokes3+bg_delta2#0`), with each railed ancestor recorded as
@@ -459,8 +461,8 @@ so a recipe change does not mark it stale; force the masters to refit them under
 **The central quasi-elastic component (BL43LXU only).** Every BL43LXU model is the elastic line, one
 central quasi-elastic component (QE), the phonons and an optional flat background; the QE is not a
 phonon and does not change a model's phonon count. The elastic line is never removed on BL43LXU, not
-even at zero height: a zero QE is removed (the reduced model without it is priced on its own), and a
-model with no elastic line is never offered. It is phenomenological, a "central excess" with no
+even at zero height: a zero QE is removed (the reduced model without it is priced on its own), and so is a QE whose fitted width reaches its
+lower bound, which is the elastic line; a model with no elastic line is never offered. It is phenomenological, a "central excess" with no
 mechanism claimed: ISAR reports a fitted spectral weight and a fitted width, never a relaxation time, a
 mobile fraction or a process. Its shape is a Lorentzian of fitted intrinsic FWHM centred on the
 calibrated energy zero, times the relaxational detailed-balance factor `(E/kT) / (1 - exp(-E/kT))` at
