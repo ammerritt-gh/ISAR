@@ -34,22 +34,35 @@ def _lse(xs):
 
 
 def decide(priced, incoming, *, eps=EPS_LOGZ, conf=CONFIDENCE, close=CLOSE_CALL):
-    """priced: [(count, slots, ln_z or None)], ln_z already including ln w0 and variant weight; one row
-    per distinct labelled basin (same (count, slots) rows are summed). incoming: (count, slots).
-    Returns dict: winner (count, slots), changed, weights {(count, slots): p}, count_p {count: p},
-    ambiguous, close_calls, reasons. A None ln_z is unpriced: never zero evidence, listed in reasons."""
-    mass, reasons = defaultdict(list), []
-    for k, s, z in priced:
+    """priced: [(count, slots, delta, ln_z or None)], ln_z already including ln w0 and variant weight; one
+    row per distinct basin; delta = ascending slot positions whose width is held at the floor (() = every width
+    free). Rows of one (count, slots, delta) are summed, and of one (count, slots) over every delta.
+    incoming: (count, slots, delta).
+    The (count, slots) is chosen on the masses with the mask summed out, so a mask never moves a label
+    probability; the winner's mask is chosen after it. With the incoming mask priced, another mask replaces it
+    only beyond ``eps``; with no priced row for it (typically the free-width mask, superseded by its delta
+    replacement) the best priced mask is taken without a comparison. Ties between masks go to the incoming
+    mask, then to fewer widths held at the floor, then lexicographically.
+    Returns dict: winner (count, slots), delta, changed (labelling or mask), mask_only, weights
+    {(count, slots): p}, mask_weights {(count, slots, delta): p}, count_p {count: p}, ambiguous, close_calls,
+    reasons. A None ln_z is unpriced: never zero evidence, listed in reasons."""
+    mass, mmass, reasons = defaultdict(list), defaultdict(list), []
+    inc_delta = tuple(incoming[2])
+    for k, s, d, z in priced:
         if z is None or not math.isfinite(z):
             reasons.append(f"unpriced:{k}:{s}")
         else:
             mass[(k, tuple(s))].append(z)
+            mmass[(k, tuple(s), tuple(d))].append(z)
     if not mass:
-        return {"winner": None, "changed": False, "weights": {}, "count_p": {}, "ambiguous": True,
-                "close_calls": [], "reasons": reasons + ["no_priced_candidate"]}
+        return {"winner": None, "delta": (), "changed": False, "mask_only": False, "weights": {},
+                "mask_weights": {}, "count_p": {}, "ambiguous": True, "close_calls": [],
+                "reasons": reasons + ["no_priced_candidate"]}
     lz = {c: _lse(v) for c, v in mass.items()}
     tot = _lse(list(lz.values()))
     weights = {c: math.exp(v - tot) for c, v in lz.items()}
+    mask_lz = {c: _lse(v) for c, v in mmass.items()}
+    mask_weights = {c: math.exp(v - tot) for c, v in mask_lz.items()}
     by_k = defaultdict(list)
     for (k, s), v in lz.items():
         by_k[k].append(v)
@@ -67,8 +80,24 @@ def decide(priced, incoming, *, eps=EPS_LOGZ, conf=CONFIDENCE, close=CLOSE_CALL)
     assoc_p = math.exp(lz[winner] - _lse(within)) if winner in lz else 0.0
     close_calls = [c for c in lz if c != winner and winner in lz and lz[c] >= lz[winner] - close]
     ambiguous = count_p.get(kw, 0.0) < conf or assoc_p < conf or bool(reasons)
-    return {"winner": winner, "changed": changed, "weights": weights, "count_p": count_p,
-            "ambiguous": ambiguous, "close_calls": close_calls, "reasons": reasons}
+    # the mask of the winner: sorted, so a full tie goes to the lexicographically first
+    delta, mask_only = inc_delta, False
+    masks = {d: v for (k, s, d), v in mask_lz.items() if (k, s) == winner}
+    if masks:
+        keep = inc_delta if winner == inc else None       # another labelling has no incoming mask to keep
+        top = max(sorted(masks), key=lambda d: (masks[d], d == keep, -len(d)))
+        if winner != inc:
+            delta = top
+        elif inc_delta in masks:
+            delta = top if masks[top] > masks[inc_delta] + eps else inc_delta
+        else:                      # no incoming mass to compare with: not an ambiguity, a record
+            delta = top
+            reasons.append(f"mask_unpriced:{kw}:{winner[1]}:{inc_delta}")
+        mask_only = winner == inc and delta != inc_delta
+        changed = changed or mask_only
+    return {"winner": winner, "delta": delta, "changed": changed, "mask_only": mask_only, "weights": weights,
+            "mask_weights": mask_weights, "count_p": count_p, "ambiguous": ambiguous,
+            "close_calls": close_calls, "reasons": reasons}
 
 
 def eps_J(J_old: float) -> float:

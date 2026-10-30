@@ -545,7 +545,7 @@ def test_the_hidden_basin_is_one_record_under_either_slot_order():
     assert a[1] == b[1] and sorted(m[0] for m in a[2]) == sorted(m[0] for m in b[2])
     jobs = [_job(snap, JOB12), _job(snap, JOB21)]
     rows = R._basin_rows(spec, jobs, {j.key: priced[j.slots] for j in jobs})[0]
-    top = sorted((z for _c, _s, z in rows if z is not None), reverse=True)
+    top = sorted((z for _c, _s, _d, z in rows if z is not None), reverse=True)
     assert top[0] - top[1] > 5.0                             # the hidden basin is one row, not one per slot order
     canon = lambda r: (*r[:2], tuple(sorted(r[2], key=lambda m: (m[1], str(m[0])))), *r[3:])      # noqa: E731
     assert R._same_basin(spec, canon(a), canon(b))           # the base rule's closeness: the same physical basin
@@ -569,7 +569,7 @@ def test_the_record_carries_the_solved_pair_not_the_start():
     assert math.isfinite(eng.cost(b.model, b.theta_map))
     (ai, gi, ci), (aj, gj, cj) = b.model.modes
     assert b.theta_map[ci] + b.theta_map[cj] == pytest.approx(b.theta[ci] + b.theta[cj], rel=0.05)
-    term, label, modes, qe, mode = rec
+    term, label, modes, qe, mode, _slot_mode = rec
     assert label.endswith("|split") and [m[0] for m in modes] == ["b1", "b2"]
     assert modes[0][1] == modes[1][1] == pytest.approx((b.theta_map[ai] + b.theta_map[aj]) / 2)
     assert modes[0][3] == modes[1][3] == pytest.approx((b.theta_map[ci] + b.theta_map[cj]) / 2)

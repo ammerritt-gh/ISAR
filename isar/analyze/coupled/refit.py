@@ -531,6 +531,13 @@ class _Spec:
     def incident(self, slots) -> tuple:
         return tuple(f for b in slots if b is not None for f in self.factors.get(b, ()))
 
+    @property
+    def inc_delta(self) -> tuple:
+        """The incoming fit's width mask (slot positions, ascending), as ``_incoming_state`` reads it; () when its
+        selected model has another count. Pricing does not depend on it, so ``key`` does not hash it."""
+        sel = _selected_model(self.snap.own_record)
+        return () if sel is None or sel.get("n_peaks") != self.n0 else tuple(sorted(sel.get("delta_modes") or ()))
+
     def skipped(self) -> Assignment:
         return Assignment(
             unit=self.snap.unit, snapshot_id=self.snap.stage_id, count=self.n0, slots=self.incoming,
@@ -692,9 +699,10 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
 
 
 def _basin_record(b, slots, term: float) -> tuple:
-    """(term, model label, ((slot, omega0, Gamma, h, delta) per mode in slot order), (QE height, width), mode)
-    of one priced basin at its posterior mode (``mode`` as ``Priced.mode``, in energy order):
-    what ``_basin_rows`` compares across the slot orders of a composition. A split basin (a mode hidden under
+    """(term, model label, ((slot, omega0, Gamma, h, delta) per mode in slot order), (QE height, width), mode,
+    slot_mode) of one priced basin at its posterior mode (``mode`` as ``Priced.mode`` but in energy order,
+    ``slot_mode`` the same tuple in slot order, its mask by slot position): what ``_basin_rows`` compares across
+    the slot orders of a composition. A split basin (a mode hidden under
     another, priced by the integral over the intensity split) is labelled ``|split`` and records its pair at the
     pair's mean energy and width with H/2 each: the split is integrated, not fitted, so the two slot orders of
     one hidden basin are one record. (The representative's weak-mode width is likelihood-blind: not read.)"""
@@ -720,7 +728,8 @@ def _basin_record(b, slots, term: float) -> tuple:
     v = m.variant
     mode = (v.elastic, v.background, v.qe, tuple(j for j, i in enumerate(perm) if i in m.delta),
             tuple(float(x) for x in theta))
-    return float(term), m.variant.label + ("|split" if split else ""), modes, qe, mode
+    slot_mode = (v.elastic, v.background, v.qe, tuple(sorted(m.delta)), tuple(float(x) for x in th))
+    return float(term), m.variant.label + ("|split" if split else ""), modes, qe, mode, slot_mode
 
 
 def _same_basin(spec: _Spec, x: tuple, y: tuple) -> bool:
@@ -739,34 +748,41 @@ def _same_basin(spec: _Spec, x: tuple, y: tuple) -> bool:
 
 
 def _basin_rows(spec: _Spec, jobs, by_key) -> list:
-    """The evidence rows (count, slots, ln_z), terms and prices that already include the loss price (one constant
-    of a slot multiset, so the slot orders of a composition share it): one per job, except that the slot orders of one composition
-    (one count, one multiset of slots) are starts of one problem. Each job optimises the full labelled space, so
-    two orders can converge to one physical basin: their basins are pooled, each is filed under the order of its
-    own final energies (the mode lowest in energy takes the first slot), and a basin two orders found counts
-    once (the larger of its two prices). Pricing stays exact; nothing is reused across snapshots.
-    Returns (rows, modes): modes maps (count, slots) to the ``Priced.mode`` of the best basin filed under it,
-    in that slot order, whichever job found it."""
+    """The evidence rows (count, slots, delta, ln_z), terms and prices that already include the loss price (one
+    constant of a slot multiset, so the slot orders of a composition share it): one per priced basin, except that
+    the slot orders of one composition (one count, one multiset of slots) are starts of one problem. Each job
+    optimises the full labelled space, so two orders can converge to one physical basin: their basins are pooled,
+    each is filed under the order of its own final energies (the mode lowest in energy takes the first slot), and
+    a basin two orders found counts once (the larger of its two prices). ``delta`` is the basin's mask by position
+    in its slot order (the width held at the floor); a job without a priced basin keeps one row, under the mask of
+    its best basin. Pricing stays exact; nothing is reused across snapshots.
+    Returns (rows, modes): modes maps (count, slots, delta) to the ``Priced.mode`` of the best basin filed under
+    it, in that slot order, whichever job found it."""
     rows, groups, modes, best = [], {}, {}, {}
     for j in jobs:
         p = by_key.get(j.key)
         if p is None or p.ln_z is None or not p.basins:
-            rows.append((j.count, j.slots, None if p is None else p.ln_z))
+            mask = tuple(p.mode[3]) if p is not None and p.mode is not None and len(p.mode) > 3 else ()
+            rows.append((j.count, j.slots, mask, None if p is None else p.ln_z))
             if p is not None and p.mode is not None:
-                modes[(j.count, tuple(j.slots))] = p.mode
+                modes[(j.count, tuple(j.slots), mask)] = p.mode
         else:
             groups.setdefault((j.count, tuple(sorted(map(str, j.slots)))), []).append((j, p))
     for members in groups.values():
-        if len(members) == 1:
-            j, p = members[0]
-            rows.append((j.count, j.slots, p.ln_z))
-            modes[(j.count, tuple(j.slots))] = p.mode
-            continue
         k, u = members[0][0].count, sum(b is None for b in members[0][0].slots)
         w0 = rules.ln_w0(k, k - u, len(spec.pool), spec.ceiling + 1)
+        if len(members) == 1:
+            j, p = members[0]
+            for rec in p.basins:
+                delta = tuple(i for i, m in enumerate(rec[2]) if m[4])
+                rows.append((k, tuple(j.slots), delta, rec[0] + w0))
+                key = (k, tuple(j.slots), delta)
+                if key not in best or rec[0] > best[key][0]:
+                    best[key] = (rec[0], rec[5] if len(rec) > 5 else rec[4])
+            continue
         unique: list[tuple] = []
         for _j, p in members:
-            for term, model, bmodes, qe, mode in p.basins:
+            for term, model, bmodes, qe, mode, *_slot in p.basins:
                 rec = (term, model, tuple(sorted(bmodes, key=lambda m: (m[1], str(m[0])))), qe, mode)
                 i = next((i for i, u_ in enumerate(unique) if _same_basin(spec, u_, rec)), None)
                 if i is None:
@@ -774,7 +790,7 @@ def _basin_rows(spec: _Spec, jobs, by_key) -> list:
                 elif term > unique[i][0]:
                     unique[i] = rec
         for rec in unique:
-            key = (k, tuple(m[0] for m in rec[2]))
+            key = (k, tuple(m[0] for m in rec[2]), tuple(i for i, m in enumerate(rec[2]) if m[4]))
             rows.append((*key, rec[0] + w0))
             if key not in best or rec[0] > best[key][0]:
                 best[key] = (rec[0], rec[4])
@@ -802,7 +818,7 @@ def assign_decide(snapshot: Snapshot, priced: Sequence[Priced]) -> Assignment:
     # each candidate carries the deduplicated mass of its own (count, slots), the one the decision weighs, so
     # the identity reads the same evidence (a basin two orders found is not a rival of itself)
     mass: dict[tuple, list[float]] = {}
-    for c, s_, z in rows:
+    for c, s_, _d, z in rows:
         if z is not None and math.isfinite(z):
             mass.setdefault((c, tuple(s_)), []).append(z)
     lz = {c: float(logsumexp(v)) for c, v in mass.items()}
@@ -813,22 +829,25 @@ def assign_decide(snapshot: Snapshot, priced: Sequence[Priced]) -> Assignment:
     # a basin filed under an order no job named still counts in the decision
     cands += [{"count": c, "slots": s_, "ln_z": z, "status": "ok", "key": None, **_loss_record(spec, s_)}
               for (c, s_), z in lz.items()]
-    d = rules.decide(rows, (spec.n0, spec.incoming), eps=s.evidence_hysteresis_nats, conf=s.confidence,
-                     close=s.close_call_nats)
+    d = rules.decide(rows, (spec.n0, spec.incoming, spec.inc_delta), eps=s.evidence_hysteresis_nats,
+                     conf=s.confidence, close=s.close_call_nats)
     for c in cands:
         c["weight"] = d["weights"].get((c["count"], tuple(c["slots"])), 0.0)
     winner = d["winner"] or (spec.n0, spec.incoming)
     k, slots = winner[0], tuple(winner[1])
-    # the refinement fits the evidence-selected basin's delta mask, whichever order's job found it (a free width is
-    # chosen by evidence, never by the continuous objective)
+    # the refinement fits the evidence-chosen mask's basin, whichever order's job found it (a free width is chosen
+    # by evidence, never by the continuous objective)
+    mask_p = sorted(((dl, p) for (c, s_, dl), p in d["mask_weights"].items() if (c, s_) == (k, slots)))
     coverage = {**coverage, "decision": {
         "ambiguous": d["ambiguous"], "close_calls": [[c[0], list(c[1])] for c in d["close_calls"]],
-        "count_p": {str(c): p for c, p in sorted(d["count_p"].items())}}}
+        "count_p": {str(c): p for c, p in sorted(d["count_p"].items())},
+        "mask": {"incoming": list(spec.inc_delta), "chosen": list(d["delta"]),
+                 "weights": [{"delta": list(dl), "p": p} for dl, p in mask_p]}}}
     return Assignment(unit=snapshot.unit, snapshot_id=snapshot.stage_id, count=k, slots=slots,
                       origins=spec.origins(slots), factors=spec.incident(slots), discrete="priced",
                       triggers=spec.triggers, candidates=tuple(cands), coverage=coverage, search_limited=limited,
                       changed=bool(d["changed"]), reasons=tuple(d["reasons"]),
-                      selected_model=modes.get((k, slots)))
+                      selected_model=modes.get((k, slots, d["delta"])), mask_only=bool(d["mask_only"]))
 
 
 def assign(snapshot: Snapshot, *, cached: Mapping[str, Priced] = {}) -> tuple[Assignment, tuple[Priced, ...]]:

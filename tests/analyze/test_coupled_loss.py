@@ -227,7 +227,10 @@ def test_slot_orders_of_one_composition_carry_the_loss_once():
         assert len(jobs) == 2
         by_key = {j.key: R.price(snap, j) for j in jobs}
         out, _modes = R._basin_rows(spec, jobs, by_key)
-        return {(c, tuple(s)): z for c, s, z in out}, spec.loss_terms(("b1", "b2"))
+        mass = {}
+        for c, s, _d, z in out:                       # the mass of a (count, slots), the masks summed out
+            mass.setdefault((c, tuple(s)), []).append(z)
+        return {key: math.log(sum(math.exp(z) for z in v)) for key, v in mass.items()}, spec.loss_terms(("b1", "b2"))
     with_loss, loss = rows(S)
     without, none = rows(ZERO)
     (_b, _e, L), = loss

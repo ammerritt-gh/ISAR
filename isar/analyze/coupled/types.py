@@ -92,9 +92,10 @@ class Assignment:                  # the frozen discrete decision of one spectru
     candidates: tuple[dict, ...]   # evaluated {count, slots, ln_z, status, weight, loss, loss_nats} (loss: [[branch, expected_meV, deviance], ...], loss_nats = -sum(deviance)/2, 0.0 if none): ln_z the deduplicated mass the decision weighed, weights conditional on the evaluated set
     coverage: dict                 # {"counts_tried","counts_untried","enumeration_truncated","missing_candidate_history","full_search"}
     search_limited: bool           # spec 3 assignment_search_limited
-    changed: bool                  # count or association differs from snapshot.own AND won by the evidence rule (spec 5)
+    changed: bool                  # count, association or width mask differs from snapshot.own AND won by the evidence rule (spec 5); a mask counts when it won beyond the hysteresis or the incoming mask has no priced row
     reasons: tuple[str, ...]       # missing-evidence and failure reasons of the comparison
-    selected_model: tuple | None = None   # the winner's Priced.mode (elastic, background, qe, delta mask, theta in slot order); None: the incoming fit's
+    selected_model: tuple | None = None   # the winner's Priced.mode (elastic, background, qe, delta mask, theta in slot order): the basin of the evidence-chosen mask; None: the incoming fit's
+    mask_only: bool = False        # changed by the width mask alone (same count and labels): a discrete change accepted by the evidence rule, not a relabelling
 
 
 @dataclass(frozen=True)
@@ -109,7 +110,7 @@ class Priced:
     status: str                    # base engine status words ("ok", "ok_boundary", "no_evidence", "degenerate_twin", ...); "undetermined": no valid price because the parameters stay undetermined (ln_z None, reason names the cause)
     mode: tuple | None             # posterior-mode parameters, labelled
     reason: str | None; starts: int; seconds: float
-    basins: tuple = ()             # (term, model, modes, qe, mode) per priced basin (refit._basin_record): slot orders deduplicated; a basin priced by the split integral has the model label suffix "|split" and records its pair at the mean energy and width with H/2 each
+    basins: tuple = ()             # (term, model, modes, qe, mode, slot_mode) per priced basin (refit._basin_record; mode in energy order, slot_mode the same tuple in slot order): slot orders deduplicated; a basin priced by the split integral has the model label suffix "|split" and records its pair at the mean energy and width with H/2 each
     loss: tuple = ()               # ((branch, expected_meV, deviance), ...) sorted by branch: every eligible in-window neighbour branch the candidate does not name, its expected energy and its price L (-L/2 nats, already inside ln_z and every basin term); () = none missing. A function of the snapshot and the slot multiset only; set even when the candidate is unpriced
 
 

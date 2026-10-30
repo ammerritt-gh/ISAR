@@ -405,7 +405,7 @@ def test_a_label_swap_of_two_close_modes_loses_by_a_clear_margin():
     jobs = [R.PricingJob("y", "s", 2, s, spec.key(2, s)) for s in (("b1", "b2"), ("b2", "b1"))]
     priced = {j.key: R.price(snap, j) for j in jobs}
     rows, _modes = R._basin_rows(spec, jobs, priced)
-    mass = {s: logsumexp([z for _c, s_, z in rows if tuple(s_) == s]) for s in (("b1", "b2"), ("b2", "b1"))}
+    mass = {s: logsumexp([z for _c, s_, _d, z in rows if tuple(s_) == s]) for s in (("b1", "b2"), ("b2", "b1"))}
     assert mass[("b1", "b2")] - mass[("b2", "b1")] > 3.0
 
 
