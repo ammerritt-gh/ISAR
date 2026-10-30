@@ -477,7 +477,9 @@ class CoupledEngine(fast_pass._Engine):
         res = integrate_split(counted, f_joint, sets=sets)
         if res.kind != "ok":
             return res
-        f_star = max(lnz_at, key=lnz_at.get)                     # a solved node, not the TRF start (a representative)
+        # a solved node (not the TRF start) within the agreement tolerance of the best, the nearest to the start's split
+        top = max(lnz_at.values())
+        f_star = min((f for f, z in lnz_at.items() if z >= top - SPLIT_TOL_NATS), key=lambda f: abs(f - f_joint))
         return replace(res, theta=theta_of(solved[f_star], f_star))
 
     def ln_prior(self, model, theta) -> float:

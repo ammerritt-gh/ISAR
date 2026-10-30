@@ -546,10 +546,27 @@ def stage_factors(snapshot: Snapshot) -> dict[str, Factor]:
     return {f.factor_id: f for fs in _Spec(snapshot).factors.values() for f in fs}
 
 
+def _own_by_slot(spec: _Spec, k: int, slots) -> list:
+    """The base modes at count k in slot order. An incoming mode matched to a slot's branch takes that slot
+    (base_modes keeps the incoming values as they are); the rest fill the free slots in base order. Pairing by
+    position alone gave a neighbour-added mode the incoming mode's branch whenever the energies tied."""
+    out, rest = [None] * k, []
+    matched = {(m.omega0, m.gamma, m.height): b for m, b in zip(spec.own.modes, spec.incoming) if b is not None}
+    for md in spec.base_modes(k):
+        s = slots.index(matched[md]) if md in matched and matched[md] in slots else None
+        if s is not None and out[s] is None:
+            out[s] = md
+        else:
+            rest.append(md)
+    for s, md in zip([s for s in range(k) if out[s] is None], rest):
+        out[s] = md
+    return out
+
+
 def _starts(spec: _Spec, k: int, slots) -> list:
     """Slot-ordered starts of one composition: its own (the base modes) and neighbour-placed (every
     matched slot at its branch's predicted energy)."""
-    own = [(e, g, h, False) for e, g, h in spec.base_modes(k)]
+    own = [(e, g, h, False) for e, g, h in _own_by_slot(spec, k, slots)]
     placed = []
     for (e, g, h, d), b in zip(own, slots):
         cs = [c for c in spec.pred.get(b, ()) if spec.lo <= c <= spec.hi] if b is not None else []

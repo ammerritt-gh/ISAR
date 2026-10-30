@@ -579,7 +579,6 @@ def test_the_weaker_of_two_overlapped_modes_is_held_by_neighbours():
     assert len(res.modes) == 2
     e = [m.omega0 for m in res.modes]
     assert abs(e[0] - e[1]) < spec.fs.twin_coincide_fwhm * spec.fwhm            # the premise: the pair overlaps
-    status = [m.status for m in res.modes]
-    weak = min(range(2), key=lambda i: res.modes[i].height)
-    assert status[weak] == "held_by_neighbours"
-    assert status[1 - weak] != "held_by_neighbours"
+    by = {m.branch: m for m in res.modes}                                       # b1 is the strong branch, b2 the hidden one
+    assert by["b1"].height > by["b2"].height, (by["b1"].height, by["b2"].height)
+    assert by["b2"].status == "held_by_neighbours" and by["b1"].status != "held_by_neighbours"
