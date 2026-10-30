@@ -2,7 +2,9 @@
 
 The cell draws what its ``CellState`` says and nothing else (hard rule 7); it is updated in place, so the 28
 cells of a grid are built once and a scan switch repaints only the plots whose data changed. It paints its own
-outlines (anchor solid, lock dashed, both nested) and focus, so it carries an accessible name and description.
+outlines (anchor solid, lock dashed, both nested), focus and the batch ring, so it carries an accessible name and
+description. A batch mark is a word with a dot in the name row (the tone repeats it), a dimmed plot while waiting, and
+a ring while a worker holds the spectrum; the dock's timer only moves the ring's brightness.
 """
 from __future__ import annotations
 
@@ -12,13 +14,18 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QStackedLayout, QVBox
 import pyqtgraph as pg
 
 from isar.plotspec.spec import Role
+from isar_gui.inter_words import BATCH_TIPS, BATCH_WORDS
 from isar_gui.plotspec_pg import ROLE_COLOR
-from isar_gui.theme import marker_icon
+from isar_gui.theme import TONE_COLOR, Tone, dot_icon, marker_icon
 from isar_gui.viewmodels.analyzer_array import CellState
 from isar_gui.views.elided_label import ElidedLabel
 
 CELL_MIN = (132, 150)        # px: a dock smaller than the grid scrolls, the cells never shrink below this
 AXIS_COLOR = "#404040"
+VEIL_ALPHA = 170             # of 255: the window-coloured veil over a waiting cell's plot
+RING_STILL = 0.6             # the ring's brightness with the timer stopped (the reduced-motion look)
+BATCH_TONES = {"waiting": Tone.IDLE, "fitting": Tone.ACTIVE, "done": Tone.OK, "refused": Tone.WARN,
+               "failed": Tone.ERR, "not_reached": Tone.IDLE}
 MARKERS = {"anchor": "Anchor: a spectrum you trust. An anchored batch grows outward from it.",
            "lock": "Locked: this spectrum's fit is fixed, so no batch will refit it."}
 
@@ -32,6 +39,24 @@ def _small(widget: QWidget, bold: bool = False, shrink: float = 1.0) -> None:
     widget.setFont(font)
 
 
+class _Veil(QWidget):
+    """A translucent sheet in the window colour over the plot while a cell waits. A graphics effect on the embedded plot renders it
+    dark offscreen and on some drivers, so the dim is painted instead; the word beside it stays at full strength."""
+
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setObjectName("batch_veil")
+        self.hide()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        painter = QPainter(self)
+        veil = self.palette().color(QPalette.ColorRole.Window)
+        veil.setAlpha(VEIL_ALPHA)
+        painter.fillRect(self.rect(), veil)
+        painter.end()
+
+
 class AnalyzerCell(QFrame):
     clicked = Signal(object, bool)          # (spectrum key or None, ctrl held)
 
@@ -41,6 +66,10 @@ class AnalyzerCell(QFrame):
         self.key: str | None = None
         self.selected = False
         self.outline_kind = "none"          # none | anchor | lock | both
+        self.batch_state: str | None = None
+        self.dimmed = False                 # waiting: a veil fades the plot, the word stays
+        self.ringing = False                # a worker holds the spectrum: the ring is painted
+        self.ring_phase = RING_STILL        # 0..1, the dock's timer moves it only while some cell rings
         self.redraws = 0                    # how many times the plot items were refilled (the in-place check)
         self.cell: CellState | None = None
         self._token = None
@@ -78,14 +107,18 @@ class AnalyzerCell(QFrame):
         row.addWidget(self.internal_label)
         row.addWidget(self.beamline_label)
         row.addStretch(1)
-        self.state_caption = ElidedLabel("", self.name_row, Qt.TextElideMode.ElideRight)   # S1U4: the batch word
+        self.state_dot = QLabel(self.name_row)       # the batch word's tone, so colour never stands alone
+        self.state_dot.setObjectName("state_dot")
+        self.state_dot.hide()
+        row.addWidget(self.state_dot)
+        self.state_caption = ElidedLabel("", self.name_row, Qt.TextElideMode.ElideRight)   # the batch word
         self.state_caption.setObjectName("state_caption")
         _small(self.state_caption)
         self.state_caption.hide()
         row.addWidget(self.state_caption, 1)
         outer.addWidget(self.name_row)
 
-        box = QWidget(self)
+        box = self.plot_box = QWidget(self)
         stack = QStackedLayout(box)
         stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
         stack.setContentsMargins(0, 0, 0, 0)
@@ -99,6 +132,8 @@ class AnalyzerCell(QFrame):
         _small(self.absence_label, bold=True, shrink=0)
         self.absence_label.hide()
         stack.addWidget(self.absence_label)
+        self.veil = _Veil(box)
+        stack.addWidget(self.veil)
         stack.setCurrentWidget(self.absence_label)      # StackAll raises the current widget: the word sits over the plot
         outer.addWidget(box, 1)
 
@@ -179,8 +214,7 @@ class AnalyzerCell(QFrame):
                              else "lock" if cell.lock else "none")
         self.icons["anchor"].setVisible(cell.anchor)
         self.icons["lock"].setVisible(cell.lock)
-        self.state_caption.set_full_text("")         # S1U4 draws the batch mark here
-        self.state_caption.hide()
+        self._apply_batch(cell)
         token = None if cell.plot is None else cell.plot.token
         if token != self._token:
             self._draw(cell.plot)
@@ -219,6 +253,34 @@ class AnalyzerCell(QFrame):
         self.setAccessibleDescription(self._description(cell))
         self.update()
 
+    def _apply_batch(self, cell: CellState) -> None:
+        """The caption word and dot, the dim and the ring for ``cell.batch`` (None clears all of them)."""
+        mark = cell.batch
+        state = None if mark is None else mark.state
+        self.batch_state = state
+        self.ringing = state == "fitting"
+        self.dimmed = state == "waiting"
+        self.veil.setVisible(self.dimmed)
+        if self.dimmed:
+            self.veil.raise_()                       # the stacked layout raises the absence word; the veil goes over it
+        if mark is None:
+            self.state_caption.set_full_text("")
+            self.state_caption.hide()
+            self.state_dot.hide()
+            return
+        word = BATCH_WORDS.get(state, state)
+        self.state_caption.set_full_text(word)
+        self.state_caption.setToolTip(f"{word}: {mark.reason or BATCH_TIPS.get(state, '')}")
+        self.state_caption.show()
+        self.state_dot.setPixmap(dot_icon(BATCH_TONES.get(state, Tone.IDLE)).pixmap(10, 10))
+        self.state_dot.setToolTip(self.state_caption.toolTip())
+        self.state_dot.show()
+
+    def set_ring_phase(self, phase: float) -> None:
+        self.ring_phase = phase
+        if self.ringing:
+            self.update()
+
     @staticmethod
     def _tooltip(cell: CellState) -> str:
         lines = [f"Analyzer {cell.internal} · beamline {cell.beamline}"]
@@ -233,6 +295,9 @@ class AnalyzerCell(QFrame):
             lines.append(MARKERS["anchor"])
         if cell.lock:
             lines.append(MARKERS["lock"])
+        if cell.batch is not None:
+            word = BATCH_WORDS.get(cell.batch.state, cell.batch.state)
+            lines.append(f"Batch: {word}. {cell.batch.reason or BATCH_TIPS.get(cell.batch.state, '')}")
         lines.append("Click to select this spectrum in the scan list; Ctrl-click adds or removes it.")
         return "\n".join(lines)
 
@@ -250,7 +315,7 @@ class AnalyzerCell(QFrame):
             parts.append(cell.absence)
         parts += [f"hkl {cell.hkl}" if cell.hkl else "hkl missing", cell.q]
         if cell.batch is not None:
-            parts.append(cell.batch.state.replace("_", " "))
+            parts.append("batch: " + BATCH_WORDS.get(cell.batch.state, cell.batch.state))
         return ", ".join(parts)
 
     # ---- gestures ------------------------------------------------------------------------------
@@ -302,6 +367,11 @@ class AnalyzerCell(QFrame):
             pen = QPen(ink, 2, Qt.PenStyle.SolidLine if style == "solid" else Qt.PenStyle.DashLine)
             painter.setPen(pen)
             painter.drawRect(rect)
+        if self.ringing:                 # a worker holds this spectrum; the brightness, not the position, is the pulse
+            ring = QColor(TONE_COLOR[Tone.ACTIVE])
+            ring.setAlphaF(0.35 + 0.65 * self.ring_phase)
+            painter.setPen(QPen(ring, 2))
+            painter.drawRect(QRectF(self.rect()).adjusted(2, 2, -2, -2))
         if self.hasFocus():
             painter.setPen(QPen(palette.color(QPalette.ColorRole.Highlight), 1, Qt.PenStyle.DotLine))
             painter.drawRect(QRectF(self.rect()).adjusted(4.5, 4.5, -4.5, -4.5))

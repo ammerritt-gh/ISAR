@@ -24,6 +24,7 @@ from isar.workspace_api.scan_list import Fact, SpectrumRow
 from isar.workspace_api.spectra import (CURVE_UNAVAILABLE, MONITOR_NOT_STORED, NO_ENERGY_ZERO, NO_MONITOR,
                                         NO_PASS, NOT_PARSED, ZERO_BEAMLINE, ZERO_NONE, NotDrawn,
                                         spectrum_bundles)
+from isar_gui.inter_words import batch_line, batch_tip
 from isar_gui.selection import ORIGIN_ARRAY
 from isar_gui.viewmodels.base import ViewModel
 from isar_gui.viewmodels.scan_list import fact_cell, hkl_cell
@@ -131,6 +132,21 @@ class ArrayState:
     timing: RedrawTiming | None = field(default=None, compare=False)
 
 
+def overlay_from_members(m, shown: frozenset[str]) -> BatchOverlay:
+    """The marks and header sentence for the controller's member map ``m`` (``BatchMembers``) while the cells of
+    ``shown`` are drawn. Members in other scans are counted in the sentence and have no cell; held members (anchors,
+    locks) get no mark. Before the batch's first members event (``m.stage is None``) there are no marks and the
+    placeholder's empty counts are never read."""
+    if m.stage is None:
+        line = batch_line(m.kind, m.direction, None, None, 0, 0, m.ended)
+        return BatchOverlay(m.batch_id, line, batch_tip({}, m.ended_reason), {})
+    marks = {k: BatchMark(s, m.reasons.get(k)) for k, s in m.states.items() if s in BATCH_STATES}
+    elsewhere = sum(1 for k in marks if k not in shown)
+    line = batch_line(m.kind, m.direction, m.stage, m.index, m.counts.get("done", 0),
+                      m.counts.get("total", 0) - m.counts.get("fixed", 0), m.ended, elsewhere)
+    return BatchOverlay(m.batch_id, line, batch_tip(m.states, m.ended_reason), marks)
+
+
 class Drawn(NamedTuple):
     """What one spectrum's cell shows: an absence word (with its hover) or a plot, and the labels that go with it."""
     absence: str | None
@@ -191,6 +207,7 @@ class AnalyzerArrayViewModel(ViewModel):
         self.limit_error: str | None = None
         self.active = False                              # the dock does nothing while hidden
         self._overlay: BatchOverlay | None = None
+        self._queue = None                               # the controller whose member map the marks show
         self._scaled: dict = {}
         self._state = ArrayState()
 
@@ -239,8 +256,20 @@ class AnalyzerArrayViewModel(ViewModel):
         self.refreshed.emit()
         return True
 
+    def follow_queue(self, ctrl) -> None:
+        """Show the marks of ``ctrl``'s newest batch (its ``batch_members()``, C-members-event). The map is read
+        again when the state is built, so a burst of events costs one read per dock redraw and a scan switch sees the
+        current map; curves never move on a members event (a cell redraws its plot only when its data token changes)."""
+        self._queue = ctrl
+        ctrl.members_changed.connect(self._members_moved)     # a bound method: the window's queue outlives a rebind
+        self.refreshed.emit()
+
+    def _members_moved(self, _item_id: str) -> None:
+        self.refreshed.emit()
+
     def set_batch_overlay(self, overlay: BatchOverlay | None) -> None:
-        """The batch marks to draw (memory only; ``None`` clears them). An equal overlay changes nothing."""
+        """The batch marks to draw (memory only; ``None`` clears them). An equal overlay changes nothing.
+        Ignored once ``follow_queue`` has made the controller the source."""
         if overlay != self._overlay:
             self._overlay = overlay
             self.refreshed.emit()
@@ -359,7 +388,10 @@ class AnalyzerArrayViewModel(ViewModel):
         x_range = self._x_range(d.plot for d in drawn.values())
 
         selected = frozenset(self.selection.keys)
-        marks = self._overlay.marks if self._overlay is not None else {}
+        members = self._queue.batch_members() if self._queue is not None else None
+        overlay = overlay_from_members(members, frozenset(drawn)) if members is not None else (
+            self._overlay if self._queue is None else None)
+        marks = overlay.marks if overlay is not None else {}
         cells = []
         for c in view.cells:
             d = drawn.get(c.key, _NO_FILE)           # a key the list no longer has reads as no file, never a crash
@@ -402,8 +434,7 @@ class AnalyzerArrayViewModel(ViewModel):
             x_label=x_label, x_tip=x_tip, y_label=y_label, y_tip=y_tip,
             caption=f"x: energy transfer (meV), the same in every cell · y: {shown_unit}, linear",
             n_rows=view.layout.n_rows, n_cols=view.layout.n_cols, cells=tuple(cells),
-            batch_line=self._overlay.line if self._overlay else "",
-            batch_line_tip=self._overlay.line_tip if self._overlay else "",
+            batch_line=overlay.line if overlay else "", batch_line_tip=overlay.line_tip if overlay else "",
             timing=RedrawTiming(len(keyed), read_s, total - read_s, 0.0, total))
 
     def _scaled_for(self, bundle, reference):

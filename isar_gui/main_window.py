@@ -1049,6 +1049,7 @@ class MainWindow(QMainWindow):
             self.array_vm = AnalyzerArrayViewModel(self._ws, self.scan_list_vm, self.scans_page.vm.reference_for,
                                                    parent=self)
             self.array_vm.set_inter(self.inter)
+            self.array_vm.follow_queue(self._queue)
             self.array_vm.load_view_state(self._session)
             self.array_dock = AnalyzerArrayDock(self.array_vm, self)
             self._register_dock("Analyzer array", self.array_dock)

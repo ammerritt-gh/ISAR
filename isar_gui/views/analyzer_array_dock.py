@@ -24,6 +24,8 @@ _log = logging.getLogger(__name__)
 
 DEFAULT_SIZE = (1060, 800)           # px: the floating window's first size, clamped to the screen by the window
 AXIS_THICKNESS = 20
+RING_TICK_MS = 100
+RING_PERIOD_TICKS = 24               # a slow pulse: 2.4 s from dim to bright to dim
 SCALE_TIPS = {
     "normalised": "Normalised: counts per one experiment-wide reference monitor, the same reference as the "
                   "Scan(s) plot. Affects every cell's intensity.",
@@ -88,6 +90,10 @@ class AnalyzerArrayDock(QDockWidget):
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._redraw)
+        self.ring_timer = QTimer(self)      # moves the fitting ring's brightness; runs only while a visible cell rings
+        self.ring_timer.setInterval(RING_TICK_MS)
+        self.ring_timer.timeout.connect(self._ring_tick)
+        self._ring_t = 0
 
         root = QWidget(self)
         outer = QVBoxLayout(root)
@@ -197,10 +203,12 @@ class AnalyzerArrayDock(QDockWidget):
         super().showEvent(event)
         self.vm.set_active(True)
         self.refresh()
+        self._sync_ring()
 
     def hideEvent(self, event) -> None:  # noqa: N802 (Qt override)
         super().hideEvent(event)
         self.vm.set_active(False)
+        self._sync_ring()
 
     def _redraw(self) -> None:
         if not self.vm.active:
@@ -218,17 +226,37 @@ class AnalyzerArrayDock(QDockWidget):
                        self.last_redraw.total_s)
         self._applied = state
 
+    def _sync_ring(self) -> None:
+        """Run the ring timer exactly while a visible cell is fitting; a stopped ring stays painted, still."""
+        want = self.isVisible() and any(c.ringing for c in self.cells.values())
+        if want and not self.ring_timer.isActive():
+            self.ring_timer.start()
+        elif not want and self.ring_timer.isActive():
+            self.ring_timer.stop()
+
+    def _ring_tick(self) -> None:
+        self._ring_t = (self._ring_t + 1) % RING_PERIOD_TICKS
+        x = self._ring_t / RING_PERIOD_TICKS
+        phase = 1.0 - abs(2.0 * x - 1.0)          # a triangle wave, 0 to 1 and back
+        for cell in self.cells.values():
+            if cell.ringing:
+                cell.set_ring_phase(phase)
+
     def apply(self, state: ArrayState) -> None:
         self._header(state)
         self.body.setCurrentIndex(1 if state.body == "grid" else 0)
         self.message.setText(state.message)
         if state.body != "grid":
+            for cell in self.cells.values():       # no grid shown: nothing may keep ringing
+                cell.ringing = False
+            self._sync_ring()
             return
         self._ensure_cells(state)
         for cell_state in state.cells:
             self.cells[cell_state.beamline].apply(cell_state)
         self.x_axis.set_full_text(state.x_label, state.x_tip)
         self.y_axis.set_full_text(state.y_label, state.y_tip)
+        self._sync_ring()
 
     def _header(self, state: ArrayState) -> None:
         for label, text, tip in ((self.title_label, state.title, state.title_tip),
