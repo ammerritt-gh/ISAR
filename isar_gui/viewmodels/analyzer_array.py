@@ -19,7 +19,7 @@ from typing import Literal, NamedTuple
 import numpy as np
 from PySide6.QtCore import Signal
 
-from isar.workspace_api.analyzer_array import StepSummary, array_view
+from isar.workspace_api.analyzer_array import ArrayHeader, StepSummary, array_view
 from isar.workspace_api.scan_list import Fact, SpectrumRow
 from isar.workspace_api.spectra import (CURVE_UNAVAILABLE, MONITOR_NOT_STORED, NO_ENERGY_ZERO, NO_MONITOR,
                                         NO_PASS, NOT_PARSED, ZERO_BEAMLINE, ZERO_NONE, NotDrawn,
@@ -319,8 +319,8 @@ class AnalyzerArrayViewModel(ViewModel):
                     limit_reason=(self.limit_error or None) if enabled else LIMIT_REASON,
                     limit_unit=_unit_words(self.scale))
 
-    def _message(self, text: str) -> ArrayState:
-        return ArrayState(message=text, **self._controls())
+    def _message(self, text: str, **header) -> ArrayState:
+        return ArrayState(message=text, **header, **self._controls())
 
     def _build(self, started: float) -> ArrayState:
         snapshot = self.scan_list.snapshot
@@ -333,7 +333,8 @@ class AnalyzerArrayViewModel(ViewModel):
         head = view.header
         if view.layout is None:
             name = head.instrument or "this instrument"
-            return self._message(f"There is no analyzer layout for {name}; this view covers BL43LXU for now.")
+            return self._message(f"There is no analyzer layout for {name}; this view covers BL43LXU for now.",
+                                 **_header_words(head, n_scans))
 
         read_started = perf_counter()
         keyed = [c for c in view.cells if c.key is not None and snapshot.spectrum(c.key) is not None]
@@ -387,19 +388,10 @@ class AnalyzerArrayViewModel(ViewModel):
         x_label, x_tip = _step_label("In plane — 2θ increases ←", "analyzer", view.in_plane)
         y_label, y_tip = _step_label("Out of plane ↑", "row", view.out_of_plane)
         unplaced = view.unplaced
-        distinct = f"Showing scan {head.scan_label} — {n_scans} scans selected, only one is shown"
         shown_unit = unit or _unit_words(self.scale)
-        parts = [head.experiment_id if head.experiment_id and head.experiment_id != head.scan_label else None,
-                 f"scan {head.scan_label}", _fact_words(head.sample, "sample missing"),
-                 _fact_words(head.temperature, "T missing"),
-                 ("hkl " + hkl_cell(head.hkl_nominal).text) if head.hkl_nominal.value is not None
-                 else "nominal hkl missing"]
         total = perf_counter() - started
         return ArrayState(
-            body="grid", title=" · ".join(p for p in parts if p),
-            title_tip=f"Scan {head.scan_label} of {head.experiment_id or 'this experiment'}: "
-                      f"{head.n_spectra} spectra. The hkl is the scan's nominal position.",
-            selection_note=distinct if n_scans > 1 else "",
+            body="grid", **_header_words(head, n_scans),
             layout_line=f"Layout {view.layout.id} ({view.how})",
             unplaced_line=(f"{len(unplaced)} spectrum not in layout {view.layout.id}: {', '.join(_tail(unplaced))}"
                            if len(unplaced) == 1 else
@@ -460,6 +452,21 @@ class AnalyzerArrayViewModel(ViewModel):
         lo, hi = min(float(v.min()) for v in spans), max(float(v.max()) for v in spans)
         pad = X_PAD * (hi - lo) if hi > lo else 1.0
         return lo - pad, hi + pad
+
+
+def _header_words(head: ArrayHeader, n_scans: int) -> dict:
+    """The header's title and selection note, for the grid and for the no-layout message alike."""
+    parts = [head.experiment_id if head.experiment_id and head.experiment_id != head.scan_label else None,
+             f"scan {head.scan_label}", _fact_words(head.sample, "sample missing"),
+             _fact_words(head.temperature, "T missing"),
+             ("hkl " + hkl_cell(head.hkl_nominal).text) if head.hkl_nominal.value is not None
+             else "nominal hkl missing"]
+    return dict(
+        title=" · ".join(p for p in parts if p),
+        title_tip=f"Scan {head.scan_label} of {head.experiment_id or 'this experiment'}: "
+                  f"{head.n_spectra} spectra. The hkl is the scan's nominal position.",
+        selection_note=(f"Showing scan {head.scan_label} — {n_scans} scans selected, only one is shown"
+                        if n_scans > 1 else ""))
 
 
 def _unit_words(scale: str) -> str:

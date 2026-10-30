@@ -64,6 +64,7 @@ def test_body_states(scans_view_ws_readonly, tmp_path):
     state = tavi.vm.recompute()
     assert state.body == "message" and "no analyzer layout" in state.message.lower()
     assert "BL43LXU for now" in state.message and state.cells == ()
+    assert "scan 11" in state.title and state.body == "message"       # the header still says which scan
     env.selection.set((A6,))
     assert env.vm.recompute().body == "grid"
 

@@ -90,6 +90,7 @@ def test_a_scan_with_no_layout_says_so(qtbot, tmp_path):
     _show(tavi, "tavi:11:det")
     assert tavi.dock.body.currentWidget() is tavi.dock.message
     assert "no analyzer layout" in tavi.dock.message.text().lower() and "BL43LXU for now" in tavi.dock.message.text()
+    assert "scan 11" in tavi.dock.title_label.text()
     assert tavi.dock.cells == {}
 
 
