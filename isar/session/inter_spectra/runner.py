@@ -279,7 +279,10 @@ def _came_in(snap) -> dict:
 
 def _term(link):
     from isar.session.inter_spectra.graph import Term
-    return Term("T-change" if link.kind == "T" else "q-change", (link.a, link.b), (float(link.step),), None, None)
+    if link.kind == "q" and link.metric not in ("hkl", "lattice"):
+        raise ValueError(f"q link {link.a}|{link.b} has no metric, so no tolerated slope applies")
+    return Term("T-change" if link.kind == "T" else "q-change", (link.a, link.b), (float(link.step),), None, None,
+                link.metric)
 
 
 def _other(link, k: str) -> str:
@@ -701,12 +704,17 @@ class _Run:
                         aliases=dict(self.aliases))
 
     def start(self, *, anchors, rings, seams, preview, terms) -> None:
+        # the slope each scan's q-change penalty used; an anchored batch only (a simultaneous one uses no q slope)
+        slopes = {s: {"metric": m, "slope": self.settings.q_slope(m, s),
+                      "unit": "meV per r.l.u." if m == "hkl" else "meV per inverse angstrom"}
+                  for s, m in self.graph.metric.items()} if self.kind == "anchored" else {}
         body = {"batch_kind": self.kind, "scope": {"direction": self.spec.direction, "members": list(self.members)},
                 "anchors": list(anchors), "rings": dict(rings), "seams": [list(s) for s in seams],
                 "settings": {"version": self.settings.version, "values": _plain(self.settings.to_values())},
                 "preview": preview, "fixed": dict(self.fixed),
                 "unreached": {u: self.not_reached[u] for u in self.members if u in self.not_reached},
-                "terms": [_plain(t) for t in terms], "metric": dict(self.graph.metric), "core": CORE_VERSION,
+                "terms": [_plain(t) for t in terms], "metric": dict(self.graph.metric), "q_slope": slopes,
+                "core": CORE_VERSION,
                 "inputs_at": int(self.frozen.inputs_at), "intake_seq": int(self.intake_seq),
                 "epochs": dict(self.epochs), "inputs": {u: self.inputs.get(u) for u in self.members}}
         verdict = self.send(self.payload("start", body))

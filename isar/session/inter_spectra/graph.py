@@ -16,6 +16,7 @@ from isar.session.inter_spectra.q_provider import NO_HKL, QPoint
 
 Kind = Literal["T", "q"]
 Direction = Literal["q", "T", "qT"]
+Metric = Literal["hkl", "lattice"]                   # a scan's q metric: r.l.u. without a lattice, inverse angstrom with one
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class Link:
     a: str; b: str                                   # spectrum keys; T: a colder, b warmer; q: a before b in grid order (row-major)
     step: float                                      # T: K (>0). q: |q_b - q_a| in its scan's q metric (rlu without a lattice epoch, inverse angstrom with one) (>0)
     dq: tuple[float, float, float] | None            # q-links: q_b - q_a in the graph's q metric, else None
+    metric: Metric | None = None                     # q-links: the metric ``step`` is in; T-links: None
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,7 @@ class Term:
     spacings: tuple[float, ...]                      # change: (step,); curvature: (|c-l|, |r-c|) in the graph's q metric
     t_frac: float | None                             # curvature only: (c-l).(r-l)/|r-l|^2, position of the centre on the chord, ~0.5 equal spacing
     line: str | None                                 # curvature only: "row 2" / "col 5"
+    metric: Metric | None = None                     # q-change: copied from its link; T-change and curvature: None
 
 
 @dataclass(frozen=True)
@@ -105,7 +108,7 @@ def build_graph(nodes: Mapping[str, SpectrumNode], ns: NodeSet, *, scope: Collec
                 dq = tuple(y - x for x, y in zip(va, vb))
                 step = math.sqrt(_dot(dq, dq))
                 if step > 0:
-                    links.append(Link("q", a, b, step, dq))
+                    links.append(Link("q", a, b, step, dq, "lattice" if lattice else "hkl"))
                     metric[scan] = "lattice" if lattice else "hkl"
                 else:
                     notes.append(f"{scan_label[scan]}: {da} and {db} have the same q, no q-link")

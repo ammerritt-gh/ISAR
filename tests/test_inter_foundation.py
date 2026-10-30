@@ -7,15 +7,18 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
+import math
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import isar
 from inter_fixtures import build_inter_workspace, scan_keys, spectrum_keys
-from isar.analyze.coupled.settings import SETTING_DEFS, InterSettings
+from isar.analyze.coupled.settings import RETIRED_SETTINGS, SETTING_DEFS, InterSettings
 from isar.analyze.coupled.types import FLAG_CODES, SEVERITIES, SEVERITY_OF
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -37,8 +40,8 @@ CONTRACT = (
     ("isar.session.inter_spectra.layout", "Grid", ["rows"]),
     ("isar.session.inter_spectra.q_provider", "QPoint", ["hkl", "source", "cart", "epoch"]),
     ("isar.session.inter_spectra.q_provider", "QCoordinates", ["points", "reasons", "lattices"]),
-    ("isar.session.inter_spectra.graph", "Link", ["kind", "a", "b", "step", "dq"]),
-    ("isar.session.inter_spectra.graph", "Term", ["kind", "members", "spacings", "t_frac", "line"]),
+    ("isar.session.inter_spectra.graph", "Link", ["kind", "a", "b", "step", "dq", "metric"]),
+    ("isar.session.inter_spectra.graph", "Term", ["kind", "members", "spacings", "t_frac", "line", "metric"]),
     ("isar.session.inter_spectra.graph", "LinkGraph", ["nodes", "metric", "links", "triplets", "unlinked", "notes"]),
     ("isar.session.inter_spectra.rings", "Ring", ["index", "members", "locked", "conditioners"]),
     ("isar.session.inter_spectra.rings", "Seam", ["ring", "link", "fronts"]),
@@ -117,10 +120,11 @@ CONTRACT = (
 
 # the settings table, in display order: (name, group, default), the plan's table
 SETTING_TABLE = (
-    ("q_tolerance_meV", "front", 2.0), ("t_tolerance_meV", "front", 1.0), ("flag_threshold", "front", 54.0),
+    ("q_slope_meV_per_rlu", "front", 10.6), ("q_slope_meV_per_invA", "front", 8.0),
+    ("t_tolerance_meV", "front", 1.0), ("flag_threshold", "front", 54.0),
     ("shape_family", "advanced", "welsch"), ("step_exponent", "advanced", 0.25),
     ("sweep_tol_meV", "advanced", 0.01), ("sweep_cap", "advanced", 20),
-    ("q_change_scale_meV", "hidden", 1.0), ("q_curvature_scale_meV", "hidden", 1.0),
+    ("q_curvature_scale_meV", "hidden", 1.0),
     ("reference_T_K", "hidden", 100.0), ("t_spacing_form", "hidden", "widen"), ("penalty_cap", "hidden", 12.0),
     ("birth_edge", "hidden", 2.0), ("birth_mid", "hidden", 12.0), ("cost_rel_tol", "hidden", 1e-5),
     ("collinearity_tol", "hidden", 0.01), ("composition_limit", "hidden", 4), ("confidence", "hidden", 0.80),
@@ -177,6 +181,29 @@ def test_from_values_worked_examples():
                       ({"confidence": 0.3}, "confidence"), ({"t_tolerance_meV": 0}, "t_tolerance_meV")):
         with pytest.raises(ValueError, match=name):
             InterSettings.from_values(bad)
+
+
+def test_the_q_tolerance_is_a_slope_times_the_spacing_in_its_own_metric():
+    s = InterSettings()
+    assert s.q_tolerance("hkl", 0.19, "w") == pytest.approx(10.6 * 0.19)
+    assert s.q_tolerance("lattice", 0.25, "w") == pytest.approx(2.0)
+    for bad in (None, "kelvin"):
+        with pytest.raises(ValueError, match="x: a q link has no metric"):
+            s.q_tolerance(bad, 0.1, "x")
+    assert s.widened(2.0, 0.04) == pytest.approx(math.sqrt(4 + 6 * 0.04))
+    assert replace(s, penalty_cap=24.0).widened(2.0, 0.04) == pytest.approx(math.sqrt(4 + 12 * 0.04))
+    # the divide arm's curvature is C/d, so its width uses C/d (correction 1 of S2)
+    assert s.widened(1.0, 0.5, d=0.25) == pytest.approx(math.sqrt(1 + 0.5 * 12 / 0.25 * 0.5))
+    assert s.t_base(100.0) == pytest.approx((1.0, 0.0))
+    assert replace(s, t_spacing_form="divide").t_base(50.0) == pytest.approx((1.0, 0.5))
+    link = SimpleNamespace(kind="T", step=100.0, metric=None, a="x", b="y")
+    assert s.link_tolerance(link) == pytest.approx(1.0)
+    assert s.link_tolerance(SimpleNamespace(kind="q", step=0.1, metric="hkl", a="a", b="b")) == pytest.approx(1.06)
+
+
+def test_the_retired_settings_are_gone_from_the_table():
+    assert RETIRED_SETTINGS == {"q_tolerance_meV", "q_change_scale_meV"}
+    assert not RETIRED_SETTINGS & {d.name for d in SETTING_DEFS}
 
 
 def test_severity_table_covers_every_flag_code():

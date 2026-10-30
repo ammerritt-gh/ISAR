@@ -165,6 +165,30 @@ def test_a_batch_spec_round_trips_and_a_bad_field_is_named():
             runner.BatchSpec.from_json({**spec.to_json(), **bad})
 
 
+def test_a_start_records_the_q_slope_each_anchored_scan_used_and_a_q_link_needs_a_metric():
+    # the start body built by the real _Run.start, only its transport stubbed: an anchored batch names the slope
+    # and unit of each scan's metric, a simultaneous one names none (it uses no q slope)
+    from types import SimpleNamespace
+    from isar.analyze.coupled.settings import InterSettings
+    sent = []
+    graph = SimpleNamespace(metric={"E:1": "hkl", "E:2": "lattice"})
+    for kind in ("anchored", "simultaneous"):
+        run = SimpleNamespace(kind=kind, settings=InterSettings(), graph=graph, members=(), fixed={}, not_reached={},
+                              frozen=SimpleNamespace(inputs_at=0), intake_seq=0, epochs={}, inputs={},
+                              spec=SimpleNamespace(direction="q"), started=False,
+                              payload=lambda event, body: {"event": event, "start": body},
+                              send=lambda p: sent.append(p) or {"saved": True})
+        runner._Run.start(run, anchors=(), rings={}, seams=(), preview="", terms=())
+    anchored, simultaneous = (p["start"]["q_slope"] for p in sent)
+    assert anchored == {"E:1": {"metric": "hkl", "slope": 10.6, "unit": "meV per r.l.u."},
+                        "E:2": {"metric": "lattice", "slope": 8.0, "unit": "meV per inverse angstrom"}}
+    assert simultaneous == {}
+    link = SimpleNamespace(kind="q", a="E:1:a03", b="E:1:a04", step=0.1, metric=None)
+    with pytest.raises(ValueError, match=r"E:1:a03\|E:1:a04 has no metric"):
+        runner._term(link)
+    assert runner._term(SimpleNamespace(**{**vars(link), "metric": "hkl"})).metric == "hkl"
+
+
 # ---------------------------------------------------------------------------
 # check 1: anchored
 # ---------------------------------------------------------------------------

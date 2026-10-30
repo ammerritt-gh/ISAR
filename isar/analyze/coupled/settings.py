@@ -36,15 +36,20 @@ def _row(name, group, kind, default, unit, minimum, maximum, help_, *, choices=N
 
 
 SETTING_DEFS: tuple[SettingDef, ...] = (
-    _row("q_tolerance_meV", "front", "float", 2.0, "meV", 0, 50,
-         "Anchored batches: the energy change along q that costs nothing before any penalty applies."),
+    _row("q_slope_meV_per_rlu", "front", "float", 10.6, "meV/r.l.u.", 0, 1000,
+         "Anchored batches, scans with no lattice loaded: the energy change per reciprocal lattice unit of distance "
+         "between neighbours at which the q-change penalty rises most steeply.", strict=True),
+    _row("q_slope_meV_per_invA", "front", "float", 8.0, "meV/Å⁻¹", 0, 1000,
+         "Anchored batches, scans with a lattice loaded: the energy change per inverse angstrom of distance between "
+         "neighbours at which the q-change penalty rises most steeply.", strict=True),
     _row("t_tolerance_meV", "front", "float", 1.0, "meV", 0, 50,
          "Temperature neighbours: the energy change that costs little at the reference temperature step.",
          strict=True, cal=True),
     _row("flag_threshold", "front", "float", 54.0, None, 0, 1000,
          "A spectrum is flagged for review when its flag score reaches this value.", strict=True, cal=True),
     _row("shape_family", "advanced", "choice", "welsch", None, None, None,
-         "The shape of the penalty: welsch (bounded, the default) or quartic (for comparison).",
+         "The shape of the temperature and curvature penalties: welsch (bounded, the default) or quartic (for comparison); "
+         "the q-change penalty is always welsch.",
          choices=("welsch", "quartic")),
     _row("step_exponent", "advanced", "float", 0.25, None, 0, 2,
          "How much the tolerated temperature change widens with the size of the temperature step.", cal=True),
@@ -53,8 +58,6 @@ SETTING_DEFS: tuple[SettingDef, ...] = (
          strict=True),
     _row("sweep_cap", "advanced", "int", 20, "sweeps", 2, 1000,
          "A simultaneous batch that has not settled after this many sweeps is kept and flagged as did not settle."),
-    _row("q_change_scale_meV", "hidden", "float", 1.0, "meV", 0, 50,
-         "Anchored q changes: the energy scale of the penalty beyond the zero zone.", strict=True),
     _row("q_curvature_scale_meV", "hidden", "float", 1.0, "meV", 0, 50,
          "Simultaneous q links: the energy scale of the curvature residual along a line of three spectra.",
          strict=True),
@@ -88,6 +91,7 @@ SETTING_DEFS: tuple[SettingDef, ...] = (
 )
 
 _BY_NAME = {d.name: d for d in SETTING_DEFS}
+RETIRED_SETTINGS = frozenset({"q_tolerance_meV", "q_change_scale_meV"})   # saved values are ignored (intake fold)
 
 
 def _expect(d: SettingDef) -> str:
@@ -119,14 +123,14 @@ def _checked(d: SettingDef, value: object) -> object:
 @dataclass(frozen=True)
 class InterSettings:
     version: int = SETTINGS_VERSION
-    q_tolerance_meV: float = 2.0
+    q_slope_meV_per_rlu: float = 10.6
+    q_slope_meV_per_invA: float = 8.0
     t_tolerance_meV: float = 1.0
     flag_threshold: float = 54.0
     shape_family: str = "welsch"
     step_exponent: float = 0.25
     sweep_tol_meV: float = 0.01
     sweep_cap: int = 20
-    q_change_scale_meV: float = 1.0
     q_curvature_scale_meV: float = 1.0
     reference_T_K: float = 100.0
     t_spacing_form: str = "widen"
@@ -152,3 +156,35 @@ class InterSettings:
 
     def to_values(self) -> dict[str, object]:
         return {d.name: getattr(self, d.name) for d in SETTING_DEFS}
+
+    # -- the q-change penalty and the width every penalty takes from its neighbours' uncertainty
+    def q_slope(self, metric: str | None, where: str) -> float:
+        """Tolerated slope of a q link, meV per unit of its own metric: r.l.u. ("hkl") or inverse angstrom ("lattice")."""
+        if metric == "hkl":
+            return self.q_slope_meV_per_rlu
+        if metric == "lattice":
+            return self.q_slope_meV_per_invA
+        raise ValueError(f"{where}: a q link has no metric ({metric!r}), so no tolerated slope applies")
+
+    def q_tolerance(self, metric: str | None, spacing: float, where: str) -> float:
+        """s_dispersion of a q-change, meV: slope(metric) times the link's spacing in that metric."""
+        return self.q_slope(metric, where) * abs(float(spacing))
+
+    def t_base(self, dT: float) -> tuple[float, float]:
+        """(base meV, d) of a temperature change over |dT| kelvin: widen form (base, 0.0); divide form (t_tolerance, step)."""
+        step = abs(float(dT)) / self.reference_T_K
+        if self.t_spacing_form == "divide":
+            return self.t_tolerance_meV, step
+        return self.t_tolerance_meV * step ** self.step_exponent, 0.0
+
+    def widened(self, base: float, spread_sq: float, d: float = 0.0) -> float:
+        """s_eff = sqrt(base^2 + (C_eff/2) * spread_sq): spread_sq is the sum of squared neighbour guards.
+        C_eff = C/d on the divide arm (its curvature at the centre is C/d), else C."""
+        cap = self.penalty_cap / d if d > 0 else self.penalty_cap
+        return math.sqrt(base * base + 0.5 * cap * spread_sq)
+
+    def link_tolerance(self, link) -> float:
+        """Tolerated energy change across one graph link (duck-typed: kind, step, metric, a, b)."""
+        if link.kind == "q":
+            return self.q_tolerance(link.metric, link.step, f"{link.a}|{link.b}")
+        return self.t_base(link.step)[0]

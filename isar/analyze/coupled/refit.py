@@ -279,17 +279,14 @@ class _Spec:
                 guards = {u: self._guard(h, b) for u, h in held.items()}
                 # anchored: the held end's guard only; simultaneous: both ends (symmetric, spec 1)
                 guards[me] = 0.0 if anchored else self._guard(self.own, b)
-                w = d = 0.0
+                d, family = 0.0, s.shape_family
                 if term.kind == "T-change":
                     a = (1.0, -1.0)
-                    step = abs(float(term.spacings[0])) / s.reference_T_K
-                    if s.t_spacing_form == "divide":
-                        base, d = s.t_tolerance_meV, step
-                    else:
-                        base = s.t_tolerance_meV * step ** s.step_exponent
+                    base, d = s.t_base(term.spacings[0])
                     spread = sum(guards[u] ** 2 for u in members)
                 elif term.kind == "q-change":
-                    a, base, w = (1.0, -1.0), s.q_change_scale_meV, s.q_tolerance_meV
+                    a, family = (1.0, -1.0), "welsch"
+                    base = s.q_tolerance(term.metric, term.spacings[0], f"{me}: q-change {members}")
                     spread = sum(guards[u] ** 2 for u in members)
                 elif term.kind == "curvature":
                     t = float(term.t_frac)
@@ -299,8 +296,8 @@ class _Spec:
                 else:
                     raise ValueError(f"unknown term kind {term.kind!r}")
                 f = cc.Factor(f"{term.kind}:{'|'.join(members)}:{b}", b, members, a,
-                              s=math.sqrt(base * base + spread), C=s.penalty_cap, kind=_FACTOR_KIND[term.kind],
-                              w=w, d=d, family=s.shape_family)
+                              s=s.widened(base, spread, d), C=s.penalty_cap, kind=_FACTOR_KIND[term.kind],
+                              d=d, family=family)
                 factors.setdefault(b, []).append(f)
                 frozen.setdefault(b, {}).update(energy)
         return factors, frozen
@@ -1266,12 +1263,11 @@ def seam_report(a: RefitResult, b: RefitResult, link: Link, settings: InterSetti
     fit. ``over`` is True when any U passes ``flag_threshold`` (the seam_disagreement flag)."""
     s = settings
     if link.kind == "T":
-        step = abs(float(link.step)) / s.reference_T_K
-        base, d = ((s.t_tolerance_meV, step) if s.t_spacing_form == "divide"
-                   else (s.t_tolerance_meV * step ** s.step_exponent, 0.0))
-        w, kind = 0.0, "dT"
+        base, d = s.t_base(link.step)
+        kind, family = "dT", s.shape_family
     else:
-        base, d, w, kind = s.q_change_scale_meV, 0.0, s.q_tolerance_meV, "dq"
+        base = s.q_tolerance(link.metric, link.step, f"seam {link.a}|{link.b}")
+        d, kind, family = 0.0, "dq", "welsch"
     first, second = (a, b) if a.unit == link.a else (b, a)
     ga = {m.branch: m for m in first.modes}
     gb = {m.branch: m for m in second.modes}
@@ -1281,8 +1277,7 @@ def seam_report(a: RefitResult, b: RefitResult, link: Link, settings: InterSetti
         sa, sb = (m.guard if m.guard is not None else _ell(r) / math.sqrt(12.0)
                   for m, r in ((ga[br], first), (gb[br], second)))
         f = cc.Factor(f"seam:{link.a}|{link.b}:{br}", br, (link.a, link.b), (1.0, -1.0),
-                      s=math.sqrt(base * base + sa * sa + sb * sb), C=s.penalty_cap, kind=kind, w=w, d=d,
-                      family=s.shape_family)
+                      s=s.widened(base, sa * sa + sb * sb, d), C=s.penalty_cap, kind=kind, d=d, family=family)
         u = ga[br].omega0 - gb[br].omega0
         pairs.append({"branch": br, "dE": u, "P": cc.potential(f, u), "U": cc.mismatch(f, u),
                       "guard_unavailable": ga[br].guard is None or gb[br].guard is None})

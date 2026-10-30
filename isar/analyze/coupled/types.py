@@ -60,7 +60,7 @@ class Held:                        # a fit as a neighbour (or the spectrum's own
 
 @dataclass(frozen=True)
 class TermInput:
-    term: Term                     # C-graph: kind, members, spacings, t_frac
+    term: Term                     # C-graph: kind, members, spacings, t_frac, line, metric (q-change: the link metric)
     held: tuple[Held, ...]         # every member of the term other than the spectrum, in term.members order
 
 

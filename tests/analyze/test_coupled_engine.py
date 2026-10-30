@@ -24,7 +24,7 @@ def ep():
 def test_one_normaliser_of_the_product():
     e = ep()
     fT = cc.Factor("t1", "b1", ("me", "nT"), (1.0, -1.0), s=1.0, C=12.0, kind="dT")
-    fq = cc.Factor("q1", "b1", ("me", "nq"), (1.0, -1.0), s=1.0, C=12.0, kind="dq", w=2.0)
+    fq = cc.Factor("q1", "b1", ("me", "nq"), (1.0, -1.0), s=1.0, C=12.0, kind="dq")
     frozen = {"nT": 12.0, "nq": 15.5}
     d = cc.MatchedDensity(e, "me", [fT, fq], frozen)
     assert d.status == "ok"
@@ -48,14 +48,33 @@ def test_birth_price_survives_normalisation():
     assert abs(mid.ln_weight(e.hi) - e.log_pdf(e.hi) + 1.0) < 1e-12
 
 
-def test_knee_is_c2():
-    h, E = 1e-6, cc.EPS_KNEE
-    for j in (0.0, E):
-        f = cc._knee
-        v0, v1 = f(j - h), f(j + h)
-        d0 = (f(j) - f(j - h)) / h
-        d1 = (f(j + h) - f(j)) / h
-        assert abs(v1 - v0) < 1e-5 and abs(d1 - d0) < 1e-3, (j, v0, v1, d0, d1)
+def _q(s=2.0):
+    return cc.Factor("q1", "b1", ("me", "nq"), (1.0, -1.0), s=s, C=12.0, kind="dq")
+
+
+@pytest.mark.parametrize("u, P", [(0.0, 0.0), (0.1, 0.0150), (0.5, 0.3692), (0.8, 0.9226), (1.0, 1.4100),
+                                  (2.0, 4.7216), (2.4, 6.1590), (4.0, 10.3763), (10.0, 12.0)])
+def test_the_q_penalty_rises_from_zero_and_caps(u, P):
+    assert cc.potential(_q(), u) == pytest.approx(P, rel=1e-3, abs=1e-4)
+
+
+def test_the_q_penalty_is_monotone_capped_and_steepest_at_its_tolerance():
+    f = _q()
+    grid = np.linspace(0.0, 8.0, 1601)
+    P = np.array([cc.potential(f, float(u)) for u in grid])
+    assert np.all(np.diff(P) > 0) and P[-1] <= 12.0
+    assert cc.potential(f, 1e3) == pytest.approx(12.0)
+    assert grid[np.argmax(np.gradient(P, grid))] == pytest.approx(2.0, abs=0.01)
+    assert cc.mismatch(f, 2.0) == pytest.approx(6.0) and cc.mismatch(f, 4.0) == pytest.approx(24.0)
+
+
+def test_a_narrow_q_tolerance_still_has_a_normalised_density():
+    e = ep()
+    for s in (0.05, 0.01):
+        d = cc.MatchedDensity(e, "me", [_q(s)], {"nq": 15.5})
+        assert d.status == "ok"
+        tot = quad(lambda x: math.exp(d.ln_pdf(x)), e.lo, e.hi, limit=400, points=[15.5])[0]
+        assert abs(tot - 1.0) < 1e-6, (s, tot)
 
 
 # ---- check 5, rebuilt: zero-price entries reproduce the solo engine ---------------------------------

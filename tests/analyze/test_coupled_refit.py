@@ -328,7 +328,7 @@ def test_a_link_between_two_fast_solos_is_one_definition_once_their_ids_are_reco
     (fx,), (fy,) = A["x"].factors, A["y"].factors
     assert fx == fy and fx.branch_id == "B"
     base = S.t_tolerance_meV * (100.0 / S.reference_T_K) ** S.step_exponent
-    assert fx.s == pytest.approx(math.sqrt(base ** 2 + 0.1 ** 2 + 1.0 ** 2))
+    assert fx.s == pytest.approx(math.sqrt(base ** 2 + (S.penalty_cap / 2) * (0.1 ** 2 + 1.0 ** 2)))
     E = {("x", fx.factor_id): 8.0, ("y", fx.factor_id): 8.5}
     assert R.total_objective([fx, fy], E, {}, {}) == R.total_objective([fy, fx], E, {}, {})
 
@@ -378,13 +378,33 @@ def _ring_mate(unit, e):
                                                       "underdamped", False),))
 
 
-def test_a_seam_reports_unlevelled_mismatch_beyond_the_zero_zone():
-    link = Link("q", "a", "b", 0.1, None)
+def test_a_seam_reports_unlevelled_mismatch_that_grows_with_the_shift():
+    link = Link("q", "a", "b", 0.1, None, "hkl")               # tolerance 10.6 * 0.1 = 1.06 meV
     far = R.seam_report(_ring_mate("a", 8.0), _ring_mate("b", 14.0), link, S)
     assert far["over"] and far["max_U"] > S.flag_threshold
     assert far["pairs"][0]["P"] < S.penalty_cap                # the Welsch potential has saturated
     near = R.seam_report(_ring_mate("a", 8.0), _ring_mate("b", 9.5), link, S)
-    assert near["max_U"] == 0.0 and not near["over"]
+    assert 0.0 < near["max_U"] < S.flag_threshold and not near["over"]   # no flat zone: a 1.5 meV shift costs
+
+
+def test_a_label_swap_of_two_close_modes_loses_by_a_clear_margin():
+    # two modes 2.4 meV apart (made-up energies); swapping their branches shifts each one by 2.4 meV across the link
+    from scipy.special import logsumexp
+    modes = [(3.0, 0.3, 40.0), (5.4, 0.3, 40.0)]
+    spacing = 2.0 / S.q_slope_meV_per_rlu                     # a 2 meV tolerance at this spacing
+    own = held("y", modes, ["fast:y#0", "fast:y#1"])
+    term = TermInput(Term("q-change", ("x", "y"), (spacing,), None, None, "hkl"), (held("x", modes, ["b1", "b2"]),))
+    snap = Snapshot("s", "s", "y", "f1", spectrum(modes, seed=21), own, record(modes), (term,), S, "anchored")
+    a, _priced = R.assign(snap)
+    assert a.slots == ("b1", "b2")
+    # the swapped order can be pruned from the candidates, so price both orders and read the basin ledger: the
+    # swapped basin (mode at 3.0 on b2) files under (b2, b1); the straight basin one order finds is counted once
+    spec = R._Spec(snap)
+    jobs = [R.PricingJob("y", "s", 2, s, spec.key(2, s)) for s in (("b1", "b2"), ("b2", "b1"))]
+    priced = {j.key: R.price(snap, j) for j in jobs}
+    rows, _modes = R._basin_rows(spec, jobs, priced)
+    mass = {s: logsumexp([z for _c, s_, z in rows if tuple(s_) == s]) for s in (("b1", "b2"), ("b2", "b1"))}
+    assert mass[("b1", "b2")] - mass[("b2", "b1")] > 3.0
 
 
 # 12 --------------------------------------------------------------------------------------------------------
@@ -467,14 +487,14 @@ def test_two_slot_orders_that_converge_to_one_basin_count_its_evidence_once():
         return {b: e for b, e, *_ in rec[2]}
     best12, best21 = (max(p.basins, key=lambda r: r[0]) for p in (p12, p21))
     assert all(abs(physical(best12)[b] - physical(best21)[b]) < 0.01 for b in ("b1", "b2"))   # one basin, twice
-    terms = list(p12.basins)
-    for rec in p21.basins:
-        dup = next((i for i, t in enumerate(terms) if all(abs(physical(t)[b] - physical(rec)[b]) < 0.3 * FWHM
-                                                          for b in ("b1", "b2"))), None)
+    terms = []                         # the engine's own basin rule (as _basin_rows files them), not an energy-only test
+    for rec in (*p12.basins, *p21.basins):
+        rec = (rec[0], rec[1], tuple(sorted(rec[2], key=lambda m: (m[1], str(m[0])))), rec[3], rec[4])
+        dup = next((i for i, t in enumerate(terms) if R._same_basin(spec, t, rec)), None)
         if dup is None:
             terms.append(rec)
-        else:
-            terms[dup] = max(terms[dup], rec, key=lambda r: r[0])
+        elif rec[0] > terms[dup][0]:
+            terms[dup] = rec
     w0 = rules.ln_w0(2, 2, len(spec.pool), spec.ceiling + 1)
     a = R.assign_decide(snap, list(priced.values()))
     w = {tuple(c["slots"]): c["weight"] for c in a.candidates}
@@ -574,12 +594,12 @@ def test_a_refit_without_a_release_sigma_hands_no_conditional_precision_to_its_n
     (f,) = spec.factors["b1"]
     base = S.t_tolerance_meV * (100.0 / S.reference_T_K) ** S.step_exponent
     fallback = (x.window[1] - x.window[0]) / math.sqrt(12.0)
-    assert f.s == pytest.approx(math.sqrt(base ** 2 + fallback ** 2))
+    assert f.s == pytest.approx(math.sqrt(base ** 2 + (S.penalty_cap / 2) * fallback ** 2))
     assert [n["code"] for n in spec.notes] == ["neighbour_precision_unavailable"]
 
 
 def test_a_missing_seam_guard_widens_the_tolerance_instead_of_vanishing():
-    link = Link("q", "a", "b", 0.1, None)
+    link = Link("q", "a", "b", 0.1, None, "hkl")
     ok, lost = _ring_mate("b", 14.0), _ring_mate("b", 14.0)
     lost.modes = (replace(lost.modes[0], guard=None, guard_source="unavailable"),)
     for mate in (ok, lost):
@@ -591,6 +611,42 @@ def test_a_missing_seam_guard_widens_the_tolerance_instead_of_vanishing():
     # a real refit's record carries the window it was fitted in
     snap = t_pair(spectrum([(8.0, 0.4, 40.0)], seed=1), [(8.0, 0.4, 40.0)], ["b1"], [(8.0, 0.4, 40.0)], ["b1"])
     assert R._ell(R.refit(snap, stage="both")) == pytest.approx(R._Spec(snap).ell)
+
+
+def _q_factor(metric, spacing, *, x_guard=0.0, own_guard=0.0, kind="anchored", settings=S):
+    own = held("y", [(8.0, 0.4, 40.0)], ["b1"], guard=own_guard)
+    x = held("x", [(8.0, 0.4, 40.0)], ["b1"], guard=x_guard, T=100.0)
+    term = TermInput(Term("q-change", ("x", "y"), (spacing,), None, None, metric), (x,))
+    snap = Snapshot("s", "s", "y", "f1", spectrum([(8.0, 0.4, 40.0)]), own, record([(8.0, 0.4, 40.0)]), (term,),
+                    settings, kind)
+    return R._Spec(snap).factors["b1"][0]
+
+
+def test_the_q_penalty_is_welsch_and_its_slope_follows_the_metric_and_the_spacing():
+    f = _q_factor("hkl", 0.1, settings=replace(S, shape_family="quartic"))
+    assert f.family == "welsch" and f.d == 0.0 and f.s == pytest.approx(10.6 * 0.1)
+    assert _q_factor("lattice", 0.1).s == pytest.approx(8.0 * 0.1)
+    assert _q_factor("hkl", 0.2).s == pytest.approx(2 * 10.6 * 0.1)
+
+
+def test_the_q_width_takes_each_held_end_guard_under_the_cap_half():
+    base = 10.6 * 0.1
+    # anchored: the held end's guard only; simultaneous: the own guard as well (both ends are frozen neighbours)
+    assert _q_factor("hkl", 0.1, x_guard=0.5, own_guard=0.3).s == pytest.approx(math.sqrt(base ** 2 + 6 * 0.25))
+    both = _q_factor("hkl", 0.1, x_guard=0.5, own_guard=0.3, kind="simultaneous")
+    assert both.s == pytest.approx(math.sqrt(base ** 2 + 6 * (0.25 + 0.09)))
+
+
+def test_the_divide_arm_widens_by_its_own_centre_curvature_cap():
+    # the divide form's centre curvature is C/d, so its neighbour-guard term carries C/d, not C
+    own = held("y", [(8.0, 0.4, 40.0)], ["b1"], guard=0.0)
+    x = held("x", [(8.0, 0.4, 40.0)], ["b1"], guard=0.5, T=100.0)
+    term = TermInput(Term("T-change", ("x", "y"), (10.0,), None, None), (x,))
+    snap = Snapshot("s", "s", "y", "f1", spectrum([(8.0, 0.4, 40.0)]), own, record([(8.0, 0.4, 40.0)]), (term,),
+                    replace(S, t_spacing_form="divide"), "anchored")
+    (f,) = R._Spec(snap).factors["b1"]
+    assert f.d == pytest.approx(0.1)
+    assert f.s == pytest.approx(math.sqrt(1.0 + (12.0 / 0.1 / 2) * 0.5 ** 2))
 
 
 @pytest.mark.parametrize("seed", [1, 2, 3, 4])

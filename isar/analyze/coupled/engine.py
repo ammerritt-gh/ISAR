@@ -26,8 +26,6 @@ from scipy.special import logsumexp
 
 from isar.analyze import fast_pass, prior
 
-EPS_KNEE = 0.05          # meV, smooth zero-zone knee (uncalibrated numerical setting)
-
 # The split integral of a mode hidden under another (S1U1); algorithm settings, not operator settings.
 SPLIT_NODE_SETS = (6, 12, 24, 48)   # Gauss-Legendre node counts over the split f, tried in order
 SPLIT_TOL_NATS = 0.1                # required agreement between two successive node sets
@@ -45,7 +43,7 @@ UNDETERMINED_REASONS = ("Hessian not positive definite", "box covariance numeric
 class Factor:
     """One coupling term, held exactly once: residual u = sum_j a_j E_j over its members.
 
-    kind: "dT" (pair), "dq" (anchored q change pair, zero zone w), "curv" (collinear q triplet).
+    kind: "dT" (pair), "dq" (anchored q change pair), "curv" (collinear q triplet).
     s: frozen tolerance (meV) including the neighbour-uncertainty broadening (spec 1, frozen per stage).
     C: cap in deviance units. ``d`` > 0 only for the literal outside-division T arm (comparison only).
     """
@@ -56,25 +54,14 @@ class Factor:
     s: float
     C: float
     kind: str
-    w: float = 0.0
     d: float = 0.0
     family: str = "welsch"    # "welsch" | "quartic" (comparison family)
 
 
-def _knee(v: float) -> float:
-    """max(0, v) rounded C2 over [0, EPS_KNEE] (spec 1, smooth zero-zone knee)."""
-    if v <= 0.0:
-        return 0.0
-    if v >= EPS_KNEE:
-        return v
-    x = v / EPS_KNEE
-    return EPS_KNEE * x ** 3 * (6.0 - 8.0 * x + 3.0 * x * x)
-
-
 def potential(f: Factor, u: float) -> float:
-    """Welsch P = C (1 - exp(-z^2/2)), z = knee(|u| - w) / s; outside-division arm when f.d > 0.
+    """Welsch P = C (1 - exp(-z^2/2)), z = |u| / s; outside-division arm when f.d > 0.
     family "quartic": the bounded P = C z^4 / (1 + z^4), written in 1/z beyond z = 1 so it never overflows."""
-    t = _knee(abs(u) - f.w) if f.w > 0 else abs(u)
+    t = abs(u)
     if f.family == "quartic":
         z = t / f.s
         p = f.C / (1.0 + (1.0 / z) ** 4) if z > 1.0 else f.C * z ** 4 / (1.0 + z ** 4)
@@ -87,8 +74,7 @@ def potential(f: Factor, u: float) -> float:
 def mismatch(f: Factor, u: float) -> float:
     """Unlevelled small-z cost U = C z^2 / 2 (flag statistic, spec 6); /d on the literal arm.
     family "quartic": U = C z^4."""
-    t = _knee(abs(u) - f.w) if f.w > 0 else abs(u)
-    z2 = (t / f.s) ** 2
+    z2 = (abs(u) / f.s) ** 2
     U = f.C * z2 * z2 if f.family == "quartic" else 0.5 * f.C * z2
     return U / f.d if f.d > 0 else U
 
@@ -119,10 +105,9 @@ class MatchedDensity:
     def __post_init__(self):
         lo, hi = float(self.ep.lo), float(self.ep.hi)
         pts = []
-        for f in self.factors:                # split at each factor's predicted centre and knees
+        for f in self.factors:                # split at each factor's predicted centre
             ai = next(a for k, a in zip(f.members, f.a) if k == self.me)
-            c = -sum(a * self.frozen[k] for k, a in zip(f.members, f.a) if k != self.me) / ai
-            pts += [c, c - f.w, c + f.w, c - f.w - EPS_KNEE, c + f.w + EPS_KNEE]
+            pts += [-sum(a * self.frozen[k] for k, a in zip(f.members, f.a) if k != self.me) / ai]
         pts += [self.ep.start, self.ep.end]
         pts = sorted({p for p in pts if lo < p < hi})
         grid = np.linspace(lo, hi, 401)

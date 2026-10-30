@@ -7,6 +7,7 @@ from __future__ import annotations
 import itertools
 import math
 import random
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -50,7 +51,7 @@ def refs(unit, n):
 
 
 def link(a, b, kind="T"):
-    return Link(kind=kind, a=a, b=b, step=1.0, dq=None)
+    return Link(kind=kind, a=a, b=b, step=1.0, dq=None, metric="hkl" if kind == "q" else None)
 
 
 def run(stage, links, assignments, previous, *, mode="anchored", rings=None, sid="b:ring1", settings=S,
@@ -265,6 +266,23 @@ def test_independent_births_across_a_seam_are_flagged_not_merged():
     assert r.seams == [{"link": ("a", "b"), "issue": "independent_births", "modes": born,
                         "ids": ["f_a#1", "f_b#1"]}]
     assert run(["a", "b"], links[::-1], dict(reversed(A.items())), previous) == r
+
+
+def test_the_seam_tolerance_follows_the_link_metric_and_a_metricless_q_link_is_refused():
+    # two independent births 9 meV apart: inside the r.l.u. tolerance (10.6 x step), outside the lattice one (8.0 x step)
+    A, previous, links = _ring()
+    A["a"] = asg("a", "b:ring1", ("p", None))
+    energies = {"a": [10.0, 20.0], "b": [10.0, 29.0]}
+    as_lattice = [replace(l, metric="lattice") if l.kind == "q" else l for l in links]
+    assert [s["issue"] for s in run(["a", "b"], links, A, previous, energies=energies).seams] == ["independent_births"]
+    assert run(["a", "b"], as_lattice, A, previous, energies=energies).seams == []
+    # a T link's tolerance is the T base (0.316 meV at one kelvin here): a 0.1 meV birth pair is one mode's split
+    as_T = [link("A", "a"), link("A", "b"), link("a", "b")]
+    assert [s["issue"] for s in run(["a", "b"], as_T, A, previous,
+                                    energies={"a": [10.0, 20.0], "b": [10.0, 20.1]}).seams] == ["independent_births"]
+    no_metric = [replace(l, metric=None) if l.kind == "q" else l for l in links]
+    with pytest.raises(ValueError, match=r"a\|b: a q link has no metric"):
+        run(["a", "b"], no_metric, A, previous, energies=energies)
 
 
 def test_births_far_apart_across_a_seam_are_not_a_disagreement():

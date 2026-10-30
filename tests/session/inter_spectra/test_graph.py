@@ -108,6 +108,7 @@ def test_metric_is_chosen_per_scan():
     assert g.metric == {"E:1": "lattice", "E:2": "hkl"}
     steps = {l.a: l.step for l in g.links}
     assert steps["E:1:a14"] == pytest.approx(0.2) and steps["E:2:a14"] == pytest.approx(0.1)
+    assert {l.a: l.metric for l in g.links} == {"E:1:a14": "lattice", "E:2:a14": "hkl"}   # the step's own metric
 
 
 def test_anchored_scope_by_direction():

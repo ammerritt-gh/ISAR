@@ -293,7 +293,7 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
     """Resolve the display ids of one stage's spectra from all eligible neighbours at once.
 
     order: the stage's spectrum keys (any order; the result never depends on it).
-    links: the graph's active links (objects with ``a`` and ``b`` spectrum keys).
+    links: the graph's active links (objects with ``a``, ``b`` spectrum keys, and ``kind``, ``step``, ``metric``).
     modes: stage key -> the ModeRefs of its assignment's slots, ``(key, Snapshot.fit_id, m)`` for
         m in range(count); the refit keeps each slot's id with its labelled coordinates.
     batch_mode: "anchored" | "simultaneous"; rings: key -> ring (anchored, ``plan.ring_of``) or None.
@@ -511,8 +511,8 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
     seams = []
     if batch_mode == "anchored":
         done = set(valid)
-        pairs = sorted({tuple(sorted((link.a, link.b))) for link in links})
-        for pair in pairs:
+        link_of = {tuple(sorted((link.a, link.b))): link for link in links}
+        for pair in sorted(link_of):
             if not (pair[0] in done and pair[1] in done):
                 continue
             unsure = sorted(r for k in pair for r in modes[k] if status[r] in ("ambiguous", "unresolved_return"))
@@ -520,7 +520,7 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
                           if status[r] == "new_branch" and ids[r] == new_branch_id(r[1], r[2]))
             if unsure:
                 seams.append({"link": pair, "issue": "identity_unresolved", "modes": unsure})
-            tol = settings.q_tolerance_meV + settings.q_change_scale_meV
+            tol = settings.link_tolerance(link_of[pair])
             near = any(abs(energies[x[0]][x[2]] - energies[y[0]][y[2]]) <= tol
                        for x in born for y in born if x[0] < y[0])
             if born and {r[0] for r in born} == set(pair) and near:
@@ -536,9 +536,8 @@ def propagate_ids(order, links, modes, settings: InterSettings, *, batch_mode, r
 # ---- drift_report -------------------------------------------------------------------------------
 def _t_unlevelled(dE: float, dT: float, g0: float, g1: float, s: InterSettings) -> tuple[float, float]:
     """(s_eff, U) of a T change on the core's unlevelled scale (spec 1 and 6), independent guards."""
-    d = abs(dT) / s.reference_T_K
-    base = s.t_tolerance_meV if s.t_spacing_form == "divide" else s.t_tolerance_meV * d ** s.step_exponent
-    s_eff = math.sqrt(base * base + g0 * g0 + g1 * g1)
+    base, d = s.t_base(dT)
+    s_eff = s.widened(base, g0 * g0 + g1 * g1, d)
     z = abs(dE) / s_eff
     U = s.penalty_cap * z ** 4 if s.shape_family == "quartic" else 0.5 * s.penalty_cap * z * z
     return s_eff, (U / d if s.t_spacing_form == "divide" else U)
