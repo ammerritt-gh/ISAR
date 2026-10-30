@@ -11,7 +11,8 @@ fixture). Then the batches run through the analysis service as the GUI starts th
 1. Preconditions, named failures: every spectrum has an accepted hkl; the qT graph has q-links and curvature terms.
    The curvature term is the one that fails at the current default collinearity tolerance (the tolerance is the
    operator's to rule); the failure names it and prints the tolerance in use.
-2. Scope q: an anchored batch spread in q from one 302 K analyzer, then a simultaneous batch of the 302 K spectra.
+2. Scope q: an anchored batch spread in q from one 302 K analyzer. The 302 K-only simultaneous batch is not run: it has
+   no links at the default collinearity tolerance, so it cannot start (design/inter_spectra.md section 9).
 3. Scope qT: one simultaneous batch of all 56 spectra.
 4. Checks: accounting per batch; the fast solo fits and results.csv untouched; the recorded terms of the qT batch
    (curvature lines, one axis per link, parallel groups conflict-free, every q-linked spectrum in a term or named);
@@ -119,21 +120,6 @@ def q_anchored_run(snapshot, service, ws, q_anchor, nodes):
 
 
 @pytest.fixture(scope="module")
-def q_simultaneous_run(q_anchored_run, service, ws, nodes):
-    keys = tuple(sorted(k for k, n in nodes.nodes.items() if n.T is not None and round(n.T) == Q_T))
-    assert keys, f"the import record holds no {Q_T} K spectrum"
-    g = _build(ws, nodes, frozenset(keys), frozenset({"q", "T"}))
-    pv = preview_simultaneous(g, plan_simultaneous(g, set()))
-    print(f"q simultaneous preview ({Q_T} K only): {pv.text}")
-    for note in pv.notes:
-        print(f"  note: {note}")
-    if not pv.can_start:
-        pytest.fail(f"the {Q_T} K simultaneous batch cannot start: {pv.blocked}", pytrace=False)
-    spec = runner.BatchSpec(records.new_batch_id(), "simultaneous", None, (), keys)
-    return _run_batch(service, "inter-q-simultaneous", spec, "q simultaneous")
-
-
-@pytest.fixture(scope="module")
 def qt_run(snapshot, service, ws, nodes):
     keys = tuple(sorted(nodes.nodes))
     assert len(keys) == len(TEMPERATURES) * N_ANALYZERS, f"the import record holds {len(keys)} spectra"
@@ -223,11 +209,6 @@ def _accounting(ws, b) -> str | None:
 def test_q_anchored_and_qT_batches_account_for_every_spectrum(ws, q_anchored_run, qt_run):
     problems = [p for p in (_accounting(ws, q_anchored_run), _accounting(ws, qt_run)) if p]
     assert not problems, "; ".join(problems)
-
-
-def test_q_simultaneous_302K_batch_accounts_for_every_spectrum(ws, q_simultaneous_run):
-    problem = _accounting(ws, q_simultaneous_run)
-    assert problem is None, problem
 
 
 def test_fast_solo_and_results_csv_are_untouched(snapshot, qt_run, ws):
