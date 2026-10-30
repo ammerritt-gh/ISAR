@@ -359,6 +359,10 @@ def test_q_anchored_batch_accounts_for_every_spectrum(ws_q, q_anchored_run):
     assert problem is None, problem
 
 
+def test_q_fast_solo_and_results_csv_are_untouched(snapshot_q, q_anchored_run, ws_q):
+    _fast_solo_untouched(snapshot_q, ws_q, "q anchored")
+
+
 def test_timing_is_reported_never_asserted(q_anchored_run, qt_run, ws, ws_q, ws_qT, out_dir, expectation):
     fast_round = next((s["seconds"] for s in _timings(ws)["stages"] if s["stage"] == "fit_scans"), None)
     reports = {}
