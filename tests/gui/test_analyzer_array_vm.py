@@ -218,6 +218,7 @@ def test_absences_are_words_never_zero(scans_view_ws_readonly, monkeypatch):
     assert cells["a05"].absence == "not zeroed" and cells["a05"].plot is None       # held: no curve, no data
     assert "no energy zero" in cells["a05"].absence_tip
     assert cells["a09"].absence == "no fit" and cells["a09"].plot is not None       # data still drawn
+    assert cells["a09"].fit_label is None and cells["a06"].fit_label == "Fast solo"  # a fit is named only when drawn
     assert cells["a06"].absence is None and cells["a06"].plot.total is not None
     assert all(c.plot is None for c in cells.values() if c.absence in ("no file", "not zeroed"))
     assert {"no file", "no fit", "not zeroed"} <= {word for word, _ in ABSENCE_WORDS.values()}

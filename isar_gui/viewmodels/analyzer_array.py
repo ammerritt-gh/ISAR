@@ -447,7 +447,7 @@ class AnalyzerArrayViewModel(ViewModel):
                         scaled.x, scaled.y, scaled.kept,
                         None if fitted is None else scaled.fine_x, None if fitted is None else fitted.total,
                         () if fitted is None else tuple(c.values for c in fitted.components))
-        return Drawn(absence, tip, plot, unit, bzero, bundle.fit_label)
+        return Drawn(absence, tip, plot, unit, bzero, None if fitted is None else bundle.fit_label)
 
     @staticmethod
     def _x_range(plots) -> tuple[float, float] | None:
