@@ -38,7 +38,7 @@ class HeldMode:                    # one mode of a held fit
     branch: str                    # persistent branch id (S1U3); never the energy order
     omega0: float; gamma: float; height: float
     guard: float | None            # frozen uncertainty guard of omega0, meV (spec 1); None = unavailable
-    guard_source: str              # "release" | "conditional" | "max" | "solo" | "unavailable"
+    guard_source: str              # "release" | "max" | "solo" | "unavailable" (a conditional sigma alone is never a guard)
     status: str                    # "determined_by_own_data" | "held_by_neighbours" | "poorly_determined"
     regime: str                    # the fast pass's Regime word: "near_elastic" | "underdamped" | "overdamped"
     pinned: bool                   # an explicit user energy pin (existing fixed-coordinate mechanism); a lock never implies one

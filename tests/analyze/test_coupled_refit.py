@@ -422,6 +422,28 @@ def test_a_poorly_pinned_unmatched_mode_is_not_held_by_neighbours():
     assert held.modes[0].status == "held_by_neighbours"                              # a matched slot still reads it
 
 
+def test_a_refit_without_a_release_sigma_hands_no_conditional_precision_to_its_neighbours():
+    # the refit's own sigma is conditional on its neighbours; without a release sigma its guard is unavailable,
+    # so a later neighbour's factor widens by the window fallback and notes it
+    true = [(9.0, 0.5, 40.0)]
+    prep = spectrum(true)
+    rec = {**record(true), "peaks": [{"omega0": 9.0, "Gamma": 0.5, "height": 40.0, "sigma_omega0": 0.15,
+                                      "sigma_release": None, "mode_status": "held_by_neighbours", "branch": "b1"}]}
+    x = R.held_from_fit(rec, unit="x", fit="f00000000000b", inputs=None, context=prep, T=100.0)
+    assert (x.modes[0].guard, x.modes[0].guard_source) == (None, "unavailable")
+    both = R.held_from_fit({**rec, "peaks": [{**rec["peaks"][0], "sigma_release": 0.4}]}, unit="x",
+                           fit="f00000000000b", inputs=None, context=prep, T=100.0)
+    assert (both.modes[0].guard, both.modes[0].guard_source) == (0.4, "max")
+    snap = Snapshot("s", "s", "y", "f1", prep, held("y", true, ["b1"], T=200.0), record(true),
+                    (TermInput(Term("T-change", ("x", "y"), (100.0,), None, None), (x,)),), S, "anchored")
+    spec = R._Spec(snap)
+    (f,) = spec.factors["b1"]
+    base = S.t_tolerance_meV * (100.0 / S.reference_T_K) ** S.step_exponent
+    fallback = (x.window[1] - x.window[0]) / math.sqrt(12.0)
+    assert f.s == pytest.approx(math.sqrt(base ** 2 + fallback ** 2))
+    assert [n["code"] for n in spec.notes] == ["neighbour_precision_unavailable"]
+
+
 def test_a_missing_seam_guard_widens_the_tolerance_instead_of_vanishing():
     link = Link("q", "a", "b", 0.1, None)
     ok, lost = _ring_mate("b", 14.0), _ring_mate("b", 14.0)

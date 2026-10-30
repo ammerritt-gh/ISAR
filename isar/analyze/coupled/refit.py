@@ -135,8 +135,9 @@ def held_from_fit(record: dict, *, unit: str, fit: str, inputs: str | None, cont
     """A stored fit (fast-pass record shape) as a neighbour or incoming state reads it.
 
     The guard of each energy (spec 1): for the fast solo its own covariance sigma; for a refit the
-    maximum of the release sigma stored with it and its conditional sigma. ``None`` (source
-    "unavailable") when neither exists: a factor that uses it falls back to ``ell/sqrt(12)`` and notes
+    release sigma stored with it, or its maximum with the conditional sigma. ``None`` (source
+    "unavailable") without a release sigma, since a conditional sigma alone is precision borrowed from
+    the neighbours: a factor that uses it falls back to ``ell/sqrt(12)`` and notes
     ``neighbour_precision_unavailable``. Branch ids: ``branch_ids``, else those stored on the peaks, else
     ``fast:<unit>#<i>`` for the fast solo (``<fit>#<i>`` for a refit). A mode is pinned only by an
     explicit user energy pin (its energy is not a free coordinate of the stored model)."""
@@ -161,7 +162,7 @@ def held_from_fit(record: dict, *, unit: str, fit: str, inputs: str | None, cont
         elif cond is not None and rel is not None:
             guard, source = max(cond, rel), "max"
         else:
-            guard, source = (rel, "release") if rel is not None else (cond, "conditional")
+            guard, source = rel, "release"
         if guard is None or not math.isfinite(guard) or guard <= 0:
             guard, source = None, "unavailable"
         status = p.get("mode_status") or ("determined_by_own_data" if guard is not None else "poorly_determined")
@@ -858,9 +859,9 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
     for m, (ai, gi, ci) in enumerate(model.modes):
         e, g, h = float(theta[ai]), float(theta[gi]), float(theta[ci])
         cond, relsig = sd.get(ai), rel_sd.get(ai)
-        found = [x for x in (cond, relsig) if x is not None]
-        source = ("max" if len(found) == 2 else "conditional" if cond is not None
-                  else "release" if relsig is not None else "unavailable")
+        # the guard handed to later neighbours: never the conditional sigma alone, which the neighbours lent
+        found = [x for x in (cond, relsig) if x is not None] if relsig is not None else []
+        source = "max" if len(found) == 2 else "release" if found else "unavailable"
         # the fast pass's own parameter diagnostics on the release fit: a usable covariance, an energy sd
         # below the flat-prior width (else "undetermined") and off its bounds (else "boundary_limited");
         # corr(omega0, Gamma) is the regime rule, not identifiability, so it does not enter here
