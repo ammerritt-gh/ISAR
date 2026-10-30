@@ -462,7 +462,7 @@ def test_preview_anchored_wraps_the_graph_and_adds_provider_notes(root, monkeypa
     assert p.can_start and p.reason is None and p.line == "anchored qT" and p.members == tuple(keys)
     assert p.notes == ("n1", "the recorded lattice epoch is not a valid cell: 2 spectra")
     assert f.calls["build"]["grid"] is not None and f.calls["build"]["kinds"] == frozenset({"q", "T"})
-    assert f.calls["build"]["collinearity_tol"] == 1e-6
+    assert f.calls["build"]["collinearity_tol"] == 0.01
     assert f.calls["build"]["q_reasons"]["e:1:a04"] == "the recorded lattice epoch is not a valid cell"
 
 

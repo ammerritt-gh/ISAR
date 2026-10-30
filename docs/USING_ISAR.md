@@ -651,8 +651,8 @@ A Start button stays greyed out until its batch can run, and its tooltip gives t
 - `the selection has no linked spectra: ...`, for a simultaneous selection that couples to nothing
 
 The simultaneous preview line gives its spectra, T-links, curvature terms and groups. A curvature term needs three
-collinear spectra on a line, so a two-spectrum set has none. On BL43LXU data the default collinearity tolerance forms
-no curvature term, and that default is under review, so a batch may form none at all.
+collinear spectra on a line, so a two-spectrum set has none. On BL43LXU data the triplets sit off the straight line, so
+whether a curvature term forms depends on the collinearity tolerance, whose provisional default (0.01) is under review.
 
 The **Inter-spectra fit** column of the scan list names the fit ISAR uses for each spectrum: the fast solo fit or a
 refit. **Flag** marks spectra for a person to review, with the reasons on hover, and **Lock** marks a fit no batch may

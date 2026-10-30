@@ -24,7 +24,7 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | Spectrum keys, series (one q setting, several temperatures), T order, eligibility | Implemented | `isar/session/inter_spectra/nodes.py` | `tests/session/inter_spectra/test_nodes.py` |
 | T-links between temperature neighbours of one series | Implemented | `isar/session/inter_spectra/graph.py`, `schedule.py` | `tests/session/inter_spectra/test_graph.py`, `test_groups.py` |
 | q-links from grid adjacency (4 × 7 grid, no diagonals) | Implemented: built and tested; coordinates are each analyzer's accepted per-analyzer hkl, and a lattice epoch, where its scan has one, only refines the spacing metric; no real-data run has been made (section 9) | `layout.py`, `graph.py`, `q_provider.py` | `tests/session/inter_spectra/test_graph_q.py`, `test_q_provider.py` |
-| Curvature terms (three collinear q points, simultaneous batches) | Partial: built and tested; on the BL43LXU gpi triplets, measured in the hkl metric (where a scan has no lattice epoch), the triplets lie off the straight line by more than the default collinearity tolerance allows, and that default is under the operator's review, so with the default no curvature term forms (section 9) | `graph.py`, `schedule.py` | `tests/session/inter_spectra/test_graph_q.py` |
+| Curvature terms (three collinear q points, simultaneous batches) | Partial: built and tested; on the BL43LXU gpi triplets, measured in the hkl metric (where a scan has no lattice epoch), the triplets lie off the straight line, and the collinearity tolerance (provisional default 0.01, uncalibrated, under the operator's review) decides whether a curvature term forms (section 9) | `graph.py`, `schedule.py` | `tests/session/inter_spectra/test_graph_q.py` |
 | Coupled refit of one spectrum: count and assignment stage, continuous stage, one shared objective, release fit | Implemented | `isar/analyze/coupled/refit.py`, `engine.py`, `rules.py` | `tests/analyze/test_coupled_engine.py`, `test_coupled_refit.py`, `test_coupled_rules.py` |
 | Branch identity: persistent ids, loops, returns, cumulative T drift | Implemented | `isar/analyze/coupled/identity.py` | `tests/analyze/test_coupled_identity.py` |
 | Anchored batch: rings fixed by distance, seams, not reached | Implemented | `isar/session/inter_spectra/rings.py`, `runner.py` | `tests/session/inter_spectra/test_rings.py`, `tests/session/test_inter_spectra_runner.py` |
@@ -224,7 +224,7 @@ dialog*. `tests/docs/test_inter_spectra_docs.py` keeps the names, marks and help
 | `birth_edge` | not in the dialog | 2 deviance | 0 to 1000 | uncalibrated | The entry price of a branch that no neighbour predicts, at any energy in the window. |
 | `birth_mid` | not in the dialog | 12 deviance | 0 to 1000 | uncalibrated | The extra entry price of such a branch when it appears in the middle of the window. |
 | `cost_rel_tol` | not in the dialog | 1e-05 | > 0 to 1 | uncalibrated | A sweep whose total cost improves by less than this relative amount is not improving. |
-| `collinearity_tol` | not in the dialog | 1e-06 | 0 to 1 | uncalibrated | How far, relative to its length, the middle of three q points may sit off the straight line through the outer two. |
+| `collinearity_tol` | not in the dialog | 0.01 | 0 to 1 | uncalibrated | How far, relative to its length, the middle of three q points may sit off the straight line through the outer two. |
 | `composition_limit` | not in the dialog | 4 | 0 to 100 | uncalibrated | How many ranked alternative compositions are priced per mode count, beyond the incoming and all-unmatched ones. |
 | `confidence` | not in the dialog | 0.8 | 0.5 to 1 | uncalibrated | A mode count or assignment whose probability is below this is reported as ambiguous. |
 | `close_call_nats` | not in the dialog | 2 nats | 0 to 20 | uncalibrated | Alternatives within this much log evidence of the winner are kept for review. |
@@ -374,7 +374,7 @@ entry points here.
 - *Branch identity through crossings.* An unresolved crossing stays ambiguous and is flagged. The identity lives in `isar/analyze/coupled/identity.py`; extending `isar/session/branch_tracking.py` (`track_path`) is not done.
 - *Reports and exports, plan decision D6.* The fast-pass projection of `results.csv`, `modes.csv` and `report.json` is the built reading of the design's default; the operator is to confirm it.
 - *Settling time.* Whether a simultaneous batch settles in useful time on a real row is not measured (section 10).
-- *q-links and curvature on real data.* On the BL43LXU gpi triplets, measured in the hkl metric, the triplets lie off the straight line by more than the default `collinearity_tol` allows, so with the default no curvature term forms and q-links act through anchored change terms only. The default is under the operator's review and is not changed here. The q proof (section 1) reports the curvature count when it is run.
+- *q-links and curvature on real data.* On the BL43LXU gpi triplets, measured in the hkl metric, the triplets lie off the straight line, so whether a curvature term forms depends on `collinearity_tol`. Its default is now 0.01, a provisional value, still uncalibrated and under the operator's review. The q proof (section 1) reports the curvature count when it is run.
 
 **Known effects, not fixed.**
 

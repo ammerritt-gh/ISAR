@@ -123,7 +123,7 @@ SETTING_TABLE = (
     ("q_change_scale_meV", "hidden", 1.0), ("q_curvature_scale_meV", "hidden", 1.0),
     ("reference_T_K", "hidden", 100.0), ("t_spacing_form", "hidden", "widen"), ("penalty_cap", "hidden", 12.0),
     ("birth_edge", "hidden", 2.0), ("birth_mid", "hidden", 12.0), ("cost_rel_tol", "hidden", 1e-5),
-    ("collinearity_tol", "hidden", 1e-6), ("composition_limit", "hidden", 4), ("confidence", "hidden", 0.80),
+    ("collinearity_tol", "hidden", 0.01), ("composition_limit", "hidden", 4), ("confidence", "hidden", 0.80),
     ("close_call_nats", "hidden", 2.0), ("evidence_hysteresis_nats", "hidden", 0.1),
     ("linewidth_ratio", "hidden", 2.0), ("full_search", "hidden", False),
 )

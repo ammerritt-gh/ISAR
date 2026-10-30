@@ -71,7 +71,7 @@ SETTING_DEFS: tuple[SettingDef, ...] = (
          "The extra entry price of such a branch when it appears in the middle of the window."),
     _row("cost_rel_tol", "hidden", "float", 1e-5, None, 0, 1,
          "A sweep whose total cost improves by less than this relative amount is not improving.", strict=True),
-    _row("collinearity_tol", "hidden", "float", 1e-6, None, 0, 1,
+    _row("collinearity_tol", "hidden", "float", 0.01, None, 0, 1,
          "How far, relative to its length, the middle of three q points may sit off the straight line through the outer two."),
     _row("composition_limit", "hidden", "int", 4, None, 0, 100,
          "How many ranked alternative compositions are priced per mode count, beyond the incoming and all-unmatched ones."),
@@ -134,7 +134,7 @@ class InterSettings:
     birth_edge: float = 2.0
     birth_mid: float = 12.0
     cost_rel_tol: float = 1e-5
-    collinearity_tol: float = 1e-6
+    collinearity_tol: float = 0.01
     composition_limit: int = 4
     confidence: float = 0.80
     close_call_nats: float = 2.0
