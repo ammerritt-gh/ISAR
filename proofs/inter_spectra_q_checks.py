@@ -38,6 +38,15 @@ def curvature_structure_ok(terms: Sequence[Mapping], grid: Grid) -> Verdict:
                         f"with the centre between its neighbours, first: {bad[0]}")
 
 
+def curvature_terms_recorded(terms: Sequence[Mapping], planned: int) -> Verdict:
+    """The batch record holds a curvature term whenever the preview counted curvature triplets (``planned``): a runner
+    that saved only T terms would use no q curvature while every other structural check still passed."""
+    got = sum(1 for t in terms if t["kind"] == "curvature")
+    if planned > 0 and got == 0:
+        return Verdict(False, f"the preview counted {planned} curvature triplets but the batch record holds none")
+    return Verdict(True, f"{got} curvature terms recorded, {planned} counted by the preview")
+
+
 def links_join_one_axis(terms: Sequence[Mapping]) -> Verdict:
     """No link joins two spectra that differ in both q and T. A T-change joins one analyzer across two scans; a
     q-change or a curvature term stays in one scan and joins different analyzers."""

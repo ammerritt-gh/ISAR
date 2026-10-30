@@ -247,7 +247,9 @@ def test_qT_batch_terms_are_structurally_right(ws, nodes, qt_run):
     q_linked = {k for link in g.links if link.kind == "q" for k in (link.a, link.b)}
     in_term = {m for t in terms for m in t["members"]}
     # the named reasons are the batch's own (its unreached map), not a recomputed plan's
+    planned = sum(1 for t in plan.terms if t.kind == "curvature")
     verdicts = {
+        "curvature_recorded": qc.curvature_terms_recorded(terms, planned),
         "curvature_structure": qc.curvature_structure_ok(terms, grid),
         "one_axis_per_link": qc.links_join_one_axis(terms),
         "groups_conflict_free": qc.groups_conflict_free(terms, [list(g_) for g_ in plan.groups]),

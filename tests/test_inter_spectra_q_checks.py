@@ -52,6 +52,13 @@ def test_two_members_of_one_term_in_one_parallel_group_fail():
     assert not qc.groups_conflict_free(terms, [[k("a04"), k("a06")], [k("a05")]]).ok
 
 
+def test_a_batch_record_without_curvature_terms_fails_when_the_preview_counted_some():
+    t_only = [term("T-change", "s1:a04", "s2:a04")]
+    assert not qc.curvature_terms_recorded(t_only, 3).ok
+    assert qc.curvature_terms_recorded(t_only, 0).ok
+    assert qc.curvature_terms_recorded([*t_only, term("curvature", k("a04"), k("a05"), k("a06"), line="row 1")], 3).ok
+
+
 def test_a_diagonal_link_joining_q_and_T_fails():
     assert qc.links_join_one_axis([term("T-change", "s1:a04", "s2:a04")]).ok
     assert qc.links_join_one_axis([term("curvature", k("a04"), k("a05"), k("a06"), line="row 1")]).ok
