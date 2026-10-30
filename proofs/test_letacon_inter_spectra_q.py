@@ -17,7 +17,8 @@ fixture). Then the batches run through the analysis service as the GUI starts th
 4. Checks: accounting per batch; the fast solo fits and results.csv untouched; the recorded terms of the qT batch
    (curvature lines, one axis per link, parallel groups conflict-free, every q-linked spectrum in a term or named);
    the moving mode flagged or held, the flat modes quiet, with q-links on; the operator's named kink analyzers
-   flagged; the timing.
+   flagged; the timing. The q anchored batch runs after every check of the qT batch, so the verdicts judge the qT
+   batch's authoritative fits.
 
 The 30-minute figure is a target: timing is printed and written to ``summary.json``, never asserted. Numbers the
 operator sets in the expectation file the S1 proof reads (``real_data/leTacon_SP8_CsV3Sb5/`` and its
@@ -206,9 +207,9 @@ def _accounting(ws, b) -> str | None:
     return None if verdict.ok else f"{b.label}: {verdict.why}"
 
 
-def test_q_anchored_and_qT_batches_account_for_every_spectrum(ws, q_anchored_run, qt_run):
-    problems = [p for p in (_accounting(ws, q_anchored_run), _accounting(ws, qt_run)) if p]
-    assert not problems, "; ".join(problems)
+def test_qT_batch_accounts_for_every_spectrum(ws, qt_run):
+    problem = _accounting(ws, qt_run)
+    assert problem is None, problem
 
 
 def test_fast_solo_and_results_csv_are_untouched(snapshot, qt_run, ws):
@@ -294,6 +295,12 @@ def test_named_kink_analyzers_are_flagged(qt_run, ws, nodes, expectation):
             unflagged.append(det)
     # the flag codes carry no curvature code, so this reads the spectrum's own flag, not a curvature reason
     assert not unflagged, f"no spectrum of {unflagged} is flagged, though the expectation names them as kinks"
+
+
+def test_q_anchored_batch_accounts_for_every_spectrum(ws, q_anchored_run):
+    # Runs after every check of the qT batch, so those verdicts judge the qT batch's authoritative fits.
+    problem = _accounting(ws, q_anchored_run)
+    assert problem is None, problem
 
 
 def test_timing_is_reported_never_asserted(q_anchored_run, qt_run, ws, out_dir, expectation):
