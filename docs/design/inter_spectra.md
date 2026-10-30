@@ -144,6 +144,13 @@ answer from every start. A batch settles when counts and assignments stop changi
 mode energy moves by more than `sweep_tol_meV`, two quiet sweeps in a row, and the total cost no longer improves
 by `cost_rel_tol`. A batch that reaches `sweep_cap` first keeps its results and is flagged `did_not_settle`.
 
+**Member states.** While a batch runs, the runner reports every member's state: `waiting`, `fitting` (a pool
+worker holds its job; at most `workers` at once), `done`, `refused`, `failed`, `not_reached`, or `held` (anchor,
+valid lock or stale lock), with a reason for the last four and for a stale lock. It sends the whole map as a
+`members` event, at most one per 0.25 s from pool transitions and at each phase boundary. The analysis service
+relays it between the item's `started` and `finished` (protocol and ordering: the `analysis_service.py` module
+docstring). The events change no fit, acceptance, save, count or progress record.
+
 **Acceptance.** A completed refit becomes authoritative only if, at save time, none of these holds: its
 spectrum is locked (`locked`); the user picked a fit for it since the batch started (`picked`; the batch then
 refits it no more, and only a pick older than the batch start is one the batch replaces); the inputs it was

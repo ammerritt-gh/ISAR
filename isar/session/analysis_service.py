@@ -32,6 +32,7 @@ Events (stdout, one JSON object per line, flushed per line)::
     {"ev": "started", "item_id", "pid"}
     {"ev": "cores", "item_id", "cores"}        deep only: the item keeps these, the rest are free now
     {"ev": "progress", "item_id", "t", **the C-progress dict}       t: seconds since "started"
+    {"ev": "members", "item_id", "t", **the runner's member map}   inter only: each member's state
     {"ev": "result", "item_id", "unit_key", "pass", "status", "reason", "saving"}     inter adds "event": start|stage|end
     {"ev": "saved", "item_id", "unit_key", "pass", "status", "reason"}     inter adds "keys", "refused"
     {"ev": "save_failed", "item_id", "unit_key", "pass", "error"}
@@ -42,9 +43,11 @@ Events (stdout, one JSON object per line, flushed per line)::
 The rules the consumer may rely on:
 
 * ``ready`` is the first line and ``bye`` the last.
-* Per item, ``started`` comes before its ``progress`` / ``cores`` / ``result`` events, and all of those
-  before its ``finished``, in the order the item sent them. ``finished`` means the item's process and every
+* Per item, ``started`` comes before its ``progress`` / ``cores`` / ``result`` / ``members`` events, and all of
+  those before its ``finished``, in the order the item sent them. ``finished`` means the item's process and every
   process under it are gone and its cores are free.
+* A ``members`` event is the runner's whole member-state map, the latest one alone being the batch's state. It
+  is not a ``progress`` event: the item's progress, its counts and the queue's step timer do not change for it.
 * Every ``result`` with ``saving`` true gets exactly one ``saved`` or ``save_failed`` (before or after the
   item's ``finished``); saves follow arrival order across all items, and none is reported between
   ``writes_held`` and the next ``writes_released``.
@@ -261,13 +264,14 @@ def _ack_reader(ack_conn):
 def _item_main(fit_spec: str, root: str, fields: tuple, conn, ack_conn=None) -> None:
     """The item process: run the fit target on one item and send what it reports down ``conn`` as
     ``("progress", dict)``, ``("result", dict)``, then ``("end",)`` or ``("error", text)``. An inter item
-    (``ack_conn`` given) also reads the save verdicts back from it."""
+    (``ack_conn`` given) also sends ``("members", dict)`` and reads the save verdicts back from ``ack_conn``."""
     if os.name != "nt":
         os.setpgrp()                    # the stop kills the group (POSIX); Windows uses the item's job
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format=_LOG_FORMAT)
     try:
         module, fit = _target(fit_spec)
-        extra = {} if ack_conn is None else {"ack": _ack_reader(ack_conn)}
+        extra = {} if ack_conn is None else {"ack": _ack_reader(ack_conn),
+                                             "members": lambda ev: conn.send(("members", dict(ev)))}
         fit(Path(root), (module.FileItem if ack_conn is None else module.BatchItem)(*fields),
             progress=lambda ev: conn.send(("progress", dict(ev))),
             emit=lambda r: conn.send(("result", dataclasses.asdict(r))), **extra)
@@ -653,6 +657,8 @@ class _Service:
         if kind == "progress":
             item.progress = msg[1]
             self.emit({"ev": "progress", "item_id": item.item_id, "t": time.monotonic() - item.t0, **msg[1]})
+        elif kind == "members":             # not progress: the item's progress dict and count stay as they were
+            self.emit({"ev": "members", "item_id": item.item_id, "t": time.monotonic() - item.t0, **msg[1]})
         elif kind == "result":
             self._result(item, msg[1])
         elif kind == "error":
