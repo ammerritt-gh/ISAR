@@ -26,6 +26,7 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | q-links from grid adjacency (4 × 7 grid, no diagonals) | Implemented: built and tested; coordinates are each analyzer's accepted per-analyzer hkl, and a lattice epoch, where its scan has one, only refines the spacing metric; no real-data run has been made (section 9) | `layout.py`, `graph.py`, `q_provider.py` | `tests/session/inter_spectra/test_graph_q.py`, `test_q_provider.py` |
 | Curvature terms (three collinear q points, simultaneous batches) | Partial: built and tested; on the BL43LXU gpi triplets, measured in the hkl metric (where a scan has no lattice epoch), the triplets lie off the straight line, and the collinearity tolerance (provisional default 0.01, uncalibrated, under the operator's review) decides whether a curvature term forms (section 9) | `graph.py`, `schedule.py` | `tests/session/inter_spectra/test_graph_q.py` |
 | Coupled refit of one spectrum: count and assignment stage, continuous stage, one shared objective, release fit | Implemented | `isar/analyze/coupled/refit.py`, `engine.py`, `rules.py` | `tests/analyze/test_coupled_engine.py`, `test_coupled_refit.py`, `test_coupled_rules.py` |
+| q-change penalty: Welsch from zero, tolerance = tolerated slope x link spacing, neighbour uncertainty propagated (`s_eff^2 = s^2 + (C/2) sigma^2`) | Implemented | `isar/analyze/coupled/engine.py`, `refit.py`, `settings.py` | `tests/analyze/test_coupled_engine.py`, `test_coupled_refit.py` |
 | A mode hidden under another: guard against twin merges, evidence by integrating over the intensity split, undetermined status | Implemented on synthetic spectra, not established on real data | `isar/analyze/coupled/engine.py`, `refit.py` | `tests/analyze/test_coupled_hidden.py` |
 | Branch identity: persistent ids, loops, returns, cumulative T drift | Implemented | `isar/analyze/coupled/identity.py` | `tests/analyze/test_coupled_identity.py` |
 | Anchored batch: rings fixed by distance, seams, not reached | Implemented | `isar/session/inter_spectra/rings.py`, `runner.py` | `tests/session/inter_spectra/test_rings.py`, `tests/session/test_inter_spectra_runner.py` |
@@ -58,6 +59,11 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 - **Series**: the code's word for the design's *scan set*: scans at one q setting, at several temperatures.
 - **Penalty**: a cost added to a spectrum's fit for disagreeing with a neighbour. It is soft: it makes a
   move expensive and never forbids it.
+- **q-change penalty**: what an anchored matched mode pays for its energy change from the neighbour branch it
+  continues. It is Welsch from zero, so every nonzero shift pays something, and it levels off at the cap.
+- **Tolerated slope**: the energy change per unit of q distance that a q-change penalty tolerates, in meV per
+  r.l.u. when the scan has no lattice loaded and meV per inverse angstrom when it has one. Times the q distance
+  between two spectra it gives their tolerance; each slope is used only in its own case.
 - **Curvature term**: a q triplet of collinear spectra; the middle one's mode energy is penalised for
   leaving the straight line through the outer two.
 - **Anchor**: a spectrum the user trusts, from which an anchored batch grows. Only a user chooses one.
@@ -187,6 +193,8 @@ charged once per spectrum however many neighbours predict the branch, sits insid
 densities (so every slot order of a composition carries it equally), is frozen with the snapshot (it is not part of the refinement
 objective), and is recorded with each candidate (`loss`, `loss_nats`). The flag `branch_lost_mid_window` is kept (section 9).
 
+**The q-change penalty.** In an anchored batch a matched mode pays `C(1 - exp(-z^2/2))` for its energy change from the neighbour branch it continues, where `z` is the shift over the tolerance (IS17). The curve rises from zero, so every nonzero shift pays something: small shifts very little, the steepest rise at the tolerance, and a levelling off at `penalty_cap`, so a large shift never costs without bound. The tolerance is the tolerated slope of the scan's metric times the q distance to that neighbour (IS18): `q_slope_meV_per_rlu` when the scan has no lattice loaded, `q_slope_meV_per_invA` when it has one, and each batch records which slope it used. The width is `s_eff^2 = tolerance^2 + (C/2) sigma^2`, where `sigma` is the held neighbour's energy uncertainty. In an anchored batch the spectrum being refitted adds none of its own; a simultaneous batch adds both ends'. Near its centre the Welsch curve acts like a bell curve about 2.5 times narrower than its width setting, which is why the factor is `C/2`. The same width rule applies to the temperature and curvature penalties, whose `shape_family` (welsch or quartic) still governs only those two; the q-change penalty is always Welsch. A shift of exactly zero costs exactly zero.
+
 **A mode hidden under another.** A weak branch the neighbours support, sitting under a strong mode in this
 spectrum, is priced by integrating over how the intensity divides between the two (one pair per fit, the
 height prior as the fit has it, no amplitude coupling). The evidence then says the neighbours support a second
@@ -246,14 +254,14 @@ dialog*. `tests/docs/test_inter_spectra_docs.py` keeps the names, marks and help
 
 | Setting | Group | Default | Bounds | Mark | What it does |
 |---|---|---|---|---|---|
-| `q_tolerance_meV` | up front | 2 meV | 0 to 50 | uncalibrated | Anchored batches: the energy change along q that costs nothing before any penalty applies. |
+| `q_slope_meV_per_rlu` | up front | 10.6 meV/r.l.u. | > 0 to 1000 | uncalibrated | Anchored batches, scans with no lattice loaded: the energy change per reciprocal lattice unit of distance between neighbours at which the q-change penalty rises most steeply. |
+| `q_slope_meV_per_invA` | up front | 8 meV/Å⁻¹ | > 0 to 1000 | uncalibrated | Anchored batches, scans with a lattice loaded: the energy change per inverse angstrom of distance between neighbours at which the q-change penalty rises most steeply. |
 | `t_tolerance_meV` | up front | 1 meV | > 0 to 50 | calibrated on synthetic tracks, not on real data | Temperature neighbours: the energy change that costs little at the reference temperature step. |
 | `flag_threshold` | up front | 54 | > 0 to 1000 | calibrated on synthetic tracks, not on real data | A spectrum is flagged for review when its flag score reaches this value. |
-| `shape_family` | advanced | welsch | one of welsch, quartic | uncalibrated | The shape of the penalty: welsch (bounded, the default) or quartic (for comparison). |
+| `shape_family` | advanced | welsch | one of welsch, quartic | uncalibrated | The shape of the temperature and curvature penalties: welsch (bounded, the default) or quartic (for comparison); the q-change penalty is always welsch. |
 | `step_exponent` | advanced | 0.25 | 0 to 2 | calibrated on synthetic tracks, not on real data | How much the tolerated temperature change widens with the size of the temperature step. |
 | `sweep_tol_meV` | advanced | 0.01 meV | > 0 to 1 | uncalibrated | A sweep that moves no mode energy by more than this is quiet; two quiet sweeps settle a batch. |
 | `sweep_cap` | advanced | 20 sweeps | 2 to 1000 | uncalibrated | A simultaneous batch that has not settled after this many sweeps is kept and flagged as did not settle. |
-| `q_change_scale_meV` | not in the dialog | 1 meV | > 0 to 50 | uncalibrated | Anchored q changes: the energy scale of the penalty beyond the zero zone. |
 | `q_curvature_scale_meV` | not in the dialog | 1 meV | > 0 to 50 | uncalibrated | Simultaneous q links: the energy scale of the curvature residual along a line of three spectra. |
 | `reference_T_K` | not in the dialog | 100 K | > 0 to 1000 | calibrated on synthetic tracks, not on real data | The temperature step, in kelvin, at which the temperature tolerance applies unchanged. |
 | `t_spacing_form` | not in the dialog | widen | one of widen, divide | uncalibrated | How the temperature step enters the penalty: widen (the default) or divide (the literal form, for comparison). |
@@ -268,6 +276,8 @@ dialog*. `tests/docs/test_inter_spectra_docs.py` keeps the names, marks and help
 | `evidence_hysteresis_nats` | not in the dialog | 0.1 nats | 0 to 5 | uncalibrated | A count or assignment change must win the evidence by this margin, or the incoming one stays. |
 | `linewidth_ratio` | not in the dialog | 2 | > 1 to 100 | uncalibrated | A linewidth change is reported when a mode's damping ratio to its fast solo fit passes this. |
 | `full_search` | not in the dialog | false |  | uncalibrated | Price every allowed count and composition, not only the triggered ones (slow; for calibration and proofs). |
+
+A saved value of `q_tolerance_meV` or `q_change_scale_meV` is logged and ignored, never reported as damaged, and has no effect; the two q slopes start at their defaults. The two q slopes are provisional until sample handling is written out. The rows marked calibrated were calibrated before the propagation of section 4 existed. That propagation also widens the temperature and curvature penalties, so for the same neighbour uncertainty those penalties, and the flag statistic they feed, are lower. Their marks stand and the calibration is not redone.
 
 ## 6. Storage
 
@@ -294,7 +304,7 @@ A refit line of the index (`kind` `refit`; `payload` is the file, byte offset an
 ```
 
 The other index kinds: `batch_start` carries the batch's number, kind (`batch_kind`), scope, anchors, rings, seams,
-settings, preview, fixed and not-reached counts, terms, metric, core, `intake_seq` and lattice epochs; `stage`
+settings, preview, fixed and not-reached counts, terms, metric, `q_slope` (per scan with a q link: the metric and slope an anchored batch used; empty for a simultaneous batch), core, `intake_seq` and lattice epochs; `stage`
 carries `stage`, `index`, `round`, `progress`, `seams` and `not_reached`; `batch_end` carries how the batch
 finished. Each refit payload holds what the refit came in with (`came_in`) and came out with (`came_out`, with
 the branches not observed in it under `dormant`) and its `overlay`, so a history entry can be read in full. The
@@ -395,6 +405,12 @@ entry points here.
 
 **IS16 — A hidden mode is priced by integrating over the split.** Decides that a weak branch hidden exactly under a strong mode is priced by a numerical integral over the intensity split, not by the bell-curve approximation that fails along that flat direction. Dated 2026-10-30.
 "Ok, let's integrate over the split then."
+
+**IS17 — The q-change penalty rises from zero.** Decides that no shift of a matched mode is free: the flat zone goes, the q-change penalty is Welsch, and the neighbour's uncertainty is propagated into its width as `s_eff^2 = s^2 + (C/2) sigma^2`. Restores IS5. Dated 2026-10-30.
+"we need to not have a perfectly flat zone … there is always some penalty." And: "It was a bit sigmoidal shaped; so gentle curve inside, rising more at it, but levelling off so it doesn't go to infinity." Offered Welsch or the code's quartic family, the operator chose "Welsch". The propagation was proposed by the agent from the external review; the operator answered "Ok".
+
+**IS18 — The q tolerance is a slope times the spacing.** Decides that a q-change tolerance scales with the distance to each neighbour: a tolerated slope with one setting per metric, meV per r.l.u. with no lattice loaded and meV per inverse angstrom with one, so a number never changes meaning when a lattice is loaded. The slopes are provisional. Dated 2026-10-30.
+"Your recommendation is fine, we'll have to handle sample characteristics more thoroughly in the future so this is provisional anyway." And: "The spacings could vary a lot, e.g. sample with very different in-plane versus out-of-plane lattice constants … But I think this is fine, we'll see how it does with the data we have now." Asked whether the dialog should show the saved values of retired settings, the operator answered "Ignore it, don't worry about old experiments".
 
 ## 9. Out of scope and open
 
