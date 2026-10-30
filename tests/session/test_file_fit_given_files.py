@@ -195,11 +195,11 @@ def test_given_files_lists_the_recorded_files_and_the_preview_never_walks_the_fo
     ws.save(card, session)
     card, session = ws.load()
     rows = intake_scans.read_scans(ws.root)
-    files = file_fit.given_files(session, rows)
+    unit = next(iter(session.scans))
+    files = file_fit.given_files(session, rows, unit)
     names = sorted(Path(f).name for f in files)
     assert BL43_A03.name in names and BL43_A04.name not in names
     calls = _spy_discover(monkeypatch)
-    unit = next(iter(session.scans))
     sandbox_api.preview_fit(ws.root, unit)
     assert calls and all(Path(p).is_file() for call in calls for p in call)
     assert all(Path(p).name != BL43_A04.name for call in calls for p in call)
@@ -209,11 +209,21 @@ def test_given_files_with_an_empty_ledger_gives_the_reason_and_the_preview_is_he
     ws, data = _subset(tmp_path)
     _forget(ws)
     card, session = ws.load()
-    reason = file_fit.given_files(session, intake_scans.read_scans(ws.root))
-    assert isinstance(reason, str) and "no record" in reason
     unit = next(iter(session.scans))
+    reason = file_fit.given_files(session, intake_scans.read_scans(ws.root), unit)
+    assert isinstance(reason, str) and "no record" in reason
     out = sandbox_api.preview_fit(ws.root, unit)
     assert out.status == "held" and "no record" in out.reason
+
+
+def test_a_preview_of_a_set_with_a_recorded_file_gone_is_held_as_the_fit_holds_it(tmp_path):
+    ws = workspace(tmp_path / "w")
+    data = _copy(tmp_path / "data", BL43_A03, BL43_A04, BL43_VAR)
+    _import(ws, data / BL43_A03.name, data / BL43_A04.name)
+    (data / BL43_A04.name).unlink()
+    unit = next(iter(ws.load()[1].scans))
+    out = sandbox_api.preview_fit(ws.root, unit)
+    assert out.status == "held" and BL43_A04.name in out.reason
 
 
 def test_all_recorded_files_leaves_out_a_file_withheld_at_a_later_import(tmp_path):

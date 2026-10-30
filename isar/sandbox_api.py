@@ -241,7 +241,7 @@ def preview_fit(workspace_root, unit_key: str, *, center_override: float | None 
         except (ValueError, OSError):
             log.exception("sandbox preview_fit: the import record of %s is unreadable", workspace_root)
             rows = None
-        files = file_fit.given_files(session, rows)          # the files the user gave, never the folders
+        files = file_fit.given_files(session, rows, unit_key)   # the files the user gave, never the folders
         if isinstance(files, str):
             return _held(unit_key, files)
         plan = ingest.discover(files, card)

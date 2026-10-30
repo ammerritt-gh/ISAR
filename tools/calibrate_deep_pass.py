@@ -1427,7 +1427,8 @@ def load_workspace(workspace, spectrum, detector=None, *, refresh_fast_pass=Fals
     except (ValueError, OSError):
         logging.getLogger(__name__).exception("the import record of %s is unreadable", workspace)
         rows = None
-    files = file_fit.given_files(session, rows)              # the files the user gave, never the folders
+    # the files the user gave, never the folders; this scan's own set is checked first, as the preview does
+    files = file_fit.given_files(session, rows, f"{experiment}:{scan_number}:{det}")
     if isinstance(files, str):
         raise ValueError(files)
     plan = ingest.discover(files, card)

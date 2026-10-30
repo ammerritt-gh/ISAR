@@ -333,9 +333,16 @@ def _given_files(rows, session, key: str, file_set: str) -> list[Path] | str:
     return [Path(p) for p in listed]
 
 
-def given_files(session, rows) -> list[Path] | str:
+def given_files(session, rows, unit_key: str) -> list[Path] | str:
     """Every file the user gave the experiment that is still there, for readers of the whole experiment (the
-    fit preview, the deep-pass tool); the reason when none is recorded. Never a folder walk."""
+    fit preview, the deep-pass tool) with the unit ``unit_key`` in view: that unit's own set is checked by the
+    fit's rule first, so the reason the fit gives is the reason here. Never a folder walk."""
+    prev = session.scans.get(unit_key)
+    file_set = (prev.provenance or {}).get("file_set") if prev is not None else None
+    if file_set:
+        own = _given_files(rows, session, unit_key.rsplit(":", 1)[0], file_set)
+        if isinstance(own, str):
+            return own
     listed = intake_scans.all_recorded_files(rows, session.files)
     out = []
     for p in listed:
