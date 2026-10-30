@@ -232,10 +232,18 @@ def _other(link, k: str) -> str:
 
 
 def _renamed(h, rename: Mapping[str, str]):
-    """``h`` with its branch ids under the stage's reconciled names (E18); ``h`` itself when none changes."""
-    if not rename or not any(m.branch in rename for m in h.modes):
+    """``h`` with its branch ids, observed and dormant, under the reconciled names (E18); ``h`` itself when none
+    changes. A dormant id that a rename merges into one the fit observes (or into another dormant id) is not a
+    returning branch: it is dropped, and one record is kept per canonical branch."""
+    if not rename or not (any(m.branch in rename for m in h.modes) or any(d.branch in rename for d in h.dormant)):
         return h
-    return replace(h, modes=tuple(replace(m, branch=rename.get(m.branch, m.branch)) for m in h.modes))
+    modes = tuple(replace(m, branch=rename.get(m.branch, m.branch)) for m in h.modes)
+    seen, dormant = {m.branch for m in modes}, {}
+    for d in h.dormant:
+        b = rename.get(d.branch, d.branch)
+        if b not in seen and b not in dormant:
+            dormant[b] = replace(d, branch=b)
+    return replace(h, modes=modes, dormant=tuple(dormant.values()))
 
 
 def _renamed_snapshot(s, rename: Mapping[str, str]):
@@ -243,8 +251,9 @@ def _renamed_snapshot(s, rename: Mapping[str, str]):
     if not rename:
         return s
     from isar.analyze.coupled.identity import merged_aliases
-    return replace(s, own=_renamed(s.own, rename), aliases=merged_aliases(s.aliases, rename),
-                   terms=tuple(replace(t, held=tuple(_renamed(h, rename) for h in t.held)) for t in s.terms))
+    merged = merged_aliases(s.aliases, rename)     # a stored dormant id may name a branch merged in an earlier stage
+    return replace(s, own=_renamed(s.own, merged), aliases=merged,
+                   terms=tuple(replace(t, held=tuple(_renamed(h, merged) for h in t.held)) for t in s.terms))
 
 
 def rebuilt_factors(core, A: Mapping, snaps: Mapping, rename: Mapping[str, str]) -> dict:

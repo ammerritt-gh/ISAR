@@ -469,3 +469,18 @@ def test_dormant_records_follow_the_merged_ids():
     ids = SimpleNamespace(absent=absent)
     assert [d.branch for d in runner._Run.note_dormant(me, ids, "y", "f1")] == ["p", "t"]
     assert [d.branch for d in runner._Run.note_dormant(me, ids, "y", "f1", ["p", "r"])] == ["t"]
+
+
+def test_a_held_fit_carries_its_dormant_ids_through_the_batch_rename():
+    # the rename merges q and s into p: a held fit that observes p drops its dormant q; one that does not keeps a
+    # single dormant p for q and s; an unrelated dormant id is untouched. Without it a later sweep prices the old
+    # id q as a returning branch next to the merged p.
+    from isar.session.inter_spectra import runner
+    d = lambda b: Dormant(b, f"f{b}", "x")      # noqa: E731
+    rename = {"q": "p", "s": "p"}
+    sees_p = runner._renamed(held("y", "f1", [("p", 5.0)], [d("q"), d("t")]), rename)
+    assert [m.branch for m in sees_p.modes] == ["p"] and [x.branch for x in sees_p.dormant] == ["t"]
+    unseen = runner._renamed(held("y", "f1", [("r", 5.0)], [d("q"), d("s"), d("t")]), rename)
+    assert [x.branch for x in unseen.dormant] == ["p", "t"]
+    same = held("y", "f1", [("r", 5.0)], [d("t")])
+    assert runner._renamed(same, rename) is same
