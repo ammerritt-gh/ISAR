@@ -17,8 +17,8 @@ fixture). Then the batches run through the analysis service as the GUI starts th
 4. Checks: accounting per batch; the fast solo fits and results.csv untouched; the recorded terms of the qT batch
    (curvature lines, one axis per link, parallel groups conflict-free, every q-linked spectrum in a term or named);
    the moving mode flagged or held, the flat modes quiet on every spectrum, with q-links on; the operator's named
-   kink analyzers flagged; the timing. The q anchored batch runs after every check of the qT batch, so the verdicts judge the qT
-   batch's authoritative fits.
+   kink analyzers flagged; the timing. The q anchored batch runs after every check of the qT batch, so the verdicts
+   judge the qT batch's authoritative fits.
 
 The 30-minute figure is a target: timing is printed and written to ``summary.json``, never asserted. Numbers the
 operator sets in the expectation file the S1 proof reads (``real_data/leTacon_SP8_CsV3Sb5/`` and its
@@ -246,11 +246,12 @@ def test_qT_batch_terms_are_structurally_right(ws, nodes, qt_run):
     grid = grid_for(load_policy(ws / POLICY_NAME).plugin)
     q_linked = {k for link in g.links if link.kind == "q" for k in (link.a, link.b)}
     in_term = {m for t in terms for m in t["members"]}
+    # the named reasons are the batch's own (its unreached map), not a recomputed plan's
     verdicts = {
         "curvature_structure": qc.curvature_structure_ok(terms, grid),
         "one_axis_per_link": qc.links_join_one_axis(terms),
         "groups_conflict_free": qc.groups_conflict_free(terms, [list(g_) for g_ in plan.groups]),
-        "q_linked_in_term_or_named": qc.q_linked_spectra_named(batch.unreached, q_linked, in_term),  # the recorded reasons
+        "q_linked_in_term_or_named": qc.q_linked_spectra_named(batch.unreached, q_linked, in_term),
     }
     for name, v in verdicts.items():
         print(f"{name}: {v.why}")
