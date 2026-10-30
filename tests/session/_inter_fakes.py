@@ -1,7 +1,7 @@
 """A fake numerical core for the batch runner's tests and S1U13's timing tool (public name: ``_inter_fakes``).
 
 Module-level functions with the core's signatures (``isar.analyze.coupled.refit``): ``held_from_fit``,
-``assign_jobs``, ``price``, ``assign_decide``, ``refit``, plus the real ``total_objective`` and ``seam_report``.
+``assign_jobs``, ``price``, ``assign_decide``, ``refit``, ``stage_factors``, plus the real ``total_objective`` and ``seam_report``.
 They are picklable by name, so the runner's pool workers import this module the way they import the real core
 (``tests/session`` must be on the path: the tests put it there, and spawned workers inherit it). Pass the module
 itself as ``run_batch(..., core=_inter_fakes)``; ``run_batch`` below is that call, for ``--inter-target``.
@@ -75,6 +75,10 @@ def _factors(snapshot, slots) -> tuple:
             out.append(Factor(f"{t.kind}:{'|'.join(members)}:{b}", b, members, a, s=1.0, C=12.0,
                               kind={"T-change": "dT", "q-change": "dq", "curvature": "curv"}[t.kind]))
     return tuple(out)
+
+
+def stage_factors(snapshot) -> dict:
+    return {f.factor_id: f for f in _factors(snapshot, tuple(m.branch for m in snapshot.own.modes))}
 
 
 def _assignment(snapshot, slots, *, discrete: str, changed: bool) -> Assignment:

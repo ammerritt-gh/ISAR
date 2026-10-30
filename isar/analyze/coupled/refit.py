@@ -496,6 +496,13 @@ def assign_jobs(snapshot: Snapshot, *, cached: Mapping[str, Priced] = {}) -> tup
     return None, tuple(j for j in jobs if j.key not in cached)
 
 
+def stage_factors(snapshot: Snapshot) -> dict[str, Factor]:
+    """Every factor definition of the snapshot by id (spec 1), from its held values and frozen guards. The
+    runner rebuilds a stage's factors from its snapshots under the reconciled branch ids, so both endpoints of
+    one link carry one definition."""
+    return {f.factor_id: f for fs in _Spec(snapshot).factors.values() for f in fs}
+
+
 def _starts(spec: _Spec, k: int, slots) -> list:
     """Slot-ordered starts of one composition: its own (the base modes) and neighbour-placed (every
     matched slot at its branch's predicted energy)."""

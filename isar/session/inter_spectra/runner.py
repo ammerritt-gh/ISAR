@@ -238,6 +238,26 @@ def _renamed(h, rename: Mapping[str, str]):
     return replace(h, modes=tuple(replace(m, branch=rename.get(m.branch, m.branch)) for m in h.modes))
 
 
+def _renamed_snapshot(s, rename: Mapping[str, str]):
+    """A snapshot with its own and held fits under the stage's reconciled branch ids."""
+    if not rename:
+        return s
+    return replace(s, own=_renamed(s.own, rename),
+                   terms=tuple(replace(t, held=tuple(_renamed(h, rename) for h in t.held)) for t in s.terms))
+
+
+def rebuilt_factors(core, A: Mapping, snaps: Mapping, rename: Mapping[str, str]) -> dict:
+    """Each kept factor's definition built once more from its spectrum's stage snapshot under the reconciled ids
+    (``core.stage_factors``): before the ids met, an endpoint did not carry the other's branch and left its own
+    guard out of the scale, so the two endpoints of one link held two definitions. A factor the rebuilt snapshot
+    does not form keeps the one it has."""
+    out = {}
+    for k, a in A.items():
+        defs = core.stage_factors(_renamed_snapshot(snaps[k], rename)) if a.factors else {}
+        out[k] = replace(a, factors=tuple(defs.get(f.factor_id, f) for f in a.factors))
+    return out
+
+
 def canonical_factors(A: Mapping, ids, refs: Mapping, outside: Mapping) -> tuple[dict, dict]:
     """E18: one factor set for the stage. Each assignment's slot ids are mapped to the reconciled ids; a factor
     is kept only when every member of its term carries its (reconciled) branch, stage members by their
@@ -689,10 +709,7 @@ class _Run:
             previous = {**held_frozen, **{k: s.own for k, s in snaps.items()}}    # amendment 11: own Held too
             ids, refs = self.identity(A, snaps, previous, sid)
             A, rename = canonical_factors(A, ids, refs, held_frozen)
-            if rename:
-                snaps = {k: replace(s, own=_renamed(s.own, rename),
-                                    terms=tuple(TermInput(t.term, tuple(_renamed(h, rename) for h in t.held))
-                                                for t in s.terms)) for k, s in snaps.items()}
+            snaps = {k: _renamed_snapshot(s, rename) for k, s in snaps.items()}
             self.progress("refine")
             R = self.refits(snaps, A)
             # seams, judged on each spectrum's latest refit energies (after the ring's continuous refits)
@@ -807,6 +824,7 @@ class _Run:
             A = self.assign(snaps, cache)                # one frozen state for the whole round
             ids, refs = self.identity(A, snaps, dict(held), sid)
             A, rename = canonical_factors(A, ids, refs, {u: h for u, h in held.items() if u not in A})
+            A = rebuilt_factors(self.core, A, snaps, rename)     # one definition per link, both guards in it
             held = {u: _renamed(h, rename) for u, h in held.items()}
             self.stage_timing("round", self.rounds, t_round, len(snaps), 0)
             if self.rounds > 1 and not any(a.changed for a in A.values()):
@@ -921,12 +939,10 @@ class _Run:
     def total(self, A: dict, held: dict, data: dict, unary: dict) -> float | None:
         """The one shared objective over the stage's factor set at the held energies (spec 4). A factor whose
         member no longer carries its branch (its refit went back) is left out of this diagnostic sum."""
-        factors = {}
-        for a in A.values():
-            for f in a.factors:
-                factors.setdefault(f.factor_id, f)
+        factors = [f for a in A.values() for f in a.factors]    # every copy: two definitions under one id raise
         energies, kept = {}, []
-        for fid, f in factors.items():
+        for f in factors:
+            fid = f.factor_id
             vals = {}
             for m in f.members:
                 md = next((x for x in held[m].modes if x.branch == f.branch_id), None) if m in held else None

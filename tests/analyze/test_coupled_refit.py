@@ -288,6 +288,33 @@ def test_a_shared_factor_is_one_definition_counted_once():
         R.total_objective([factors[0], replace(factors[0], s=2.0)], E, {}, {})
 
 
+def test_a_link_between_two_fast_solos_is_one_definition_once_their_ids_are_reconciled():
+    # a first simultaneous batch: x and y carry their own fast ids, each assigns its mode to the other's branch;
+    # the stage reconciles both to "B". The link's scale holds both frozen guards, whichever end is read first.
+    from isar.session.inter_spectra import runner
+    true = [(8.0, 0.4, 40.0)]
+    term = Term("T-change", ("x", "y"), (100.0,), None, None)
+    own = {"x": held("x", true, ["fast:x#0"], guard=0.1, T=100.0), "y": held("y", true, ["fast:y#0"], guard=1.0, T=200.0)}
+    other = {"x": "y", "y": "x"}
+    snaps = {u: Snapshot("b:round1", "b:round1", u, f"f{u}", spectrum(true), own[u], record(true),
+                         (TermInput(term, (own[other[u]],)),), S, "simultaneous") for u in "xy"}
+    A = {}
+    for u, s in snaps.items():
+        spec, slots = R._Spec(s), (f"fast:{other[u]}#0",)
+        A[u] = replace(spec.skipped(), slots=slots, factors=spec.incident(slots))
+    ids = SimpleNamespace(ids={(u, f"f{u}", 0): "B" for u in "xy"},
+                          alternatives={"aliases": {"B": ["fast:x#0", "fast:y#0"]}})
+    refs = {u: [(u, f"f{u}", 0)] for u in "xy"}
+    A, rename = runner.canonical_factors(A, ids, refs, {})
+    A = runner.rebuilt_factors(R, A, snaps, rename)
+    (fx,), (fy,) = A["x"].factors, A["y"].factors
+    assert fx == fy and fx.branch_id == "B"
+    base = S.t_tolerance_meV * (100.0 / S.reference_T_K) ** S.step_exponent
+    assert fx.s == pytest.approx(math.sqrt(base ** 2 + 0.1 ** 2 + 1.0 ** 2))
+    E = {("x", fx.factor_id): 8.0, ("y", fx.factor_id): 8.5}
+    assert R.total_objective([fx, fy], E, {}, {}) == R.total_objective([fy, fx], E, {}, {})
+
+
 # 10 --------------------------------------------------------------------------------------------------------
 def test_identical_snapshots_reuse_prices_and_any_move_reprices():
     true = [(9.0, 0.5, 40.0)]
