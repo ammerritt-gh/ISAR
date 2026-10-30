@@ -56,7 +56,8 @@ def test_match_modes_takes_the_nearest_mode_within_tolerance_only():
 
 
 def test_b_flagged_is_ok_and_a_warn_flag_on_b_is_not_a_serious_one():
-    events = {302.0: flag(reason("identity_ambiguous", "serious", ["b1"])), 97.0: None}
+    both = flag(reason("identity_ambiguous", "serious", ["b1"]))
+    events = {302.0: both, 97.0: both}
     assert chk.moving_is_flagged(events, matches(FITTED), None).ok
     warn_only = {302.0: flag(reason("branch_lost_mid_window", "warn", ["b1"])), 97.0: None}
     assert not chk.moving_is_flagged(warn_only, matches(FITTED), None).ok
@@ -64,14 +65,14 @@ def test_b_flagged_is_ok_and_a_warn_flag_on_b_is_not_a_serious_one():
 
 def test_a_serious_score_flag_on_the_spectrum_holding_b_is_ok():
     # the spectrum is the unit of the flag: a score reason names the spectrum, and it flags B's spectrum
-    events = {302.0: flag(reason("score_over_threshold", "serious", ["E:1:a06"])), 97.0: None}
-    assert chk.moving_is_flagged(events, matches(FITTED), None).ok
+    spectrum = flag(reason("score_over_threshold", "serious", ["E:1:a06"]))
+    assert chk.moving_is_flagged({302.0: spectrum, 97.0: spectrum}, matches(FITTED), None).ok
 
 
 def test_b_unflagged_and_unmatched_is_not_ok():
     events = {302.0: None, 97.0: None}
     verdict = chk.moving_is_flagged(events, matches(MISSING_B), 0.5)
-    assert not verdict.ok and "matched at no temperature" in verdict.why
+    assert not verdict.ok and "nowhere" in verdict.why
 
 
 def test_b_held_by_its_neighbours_counts_only_within_the_stated_tolerance():
@@ -82,6 +83,18 @@ def test_b_held_by_its_neighbours_counts_only_within_the_stated_tolerance():
     assert not chk.moving_is_flagged(events, matches(HELD_B, tol=None), None).ok
     assert not chk.moving_is_flagged(events, matches(HELD_WRONG_B, tol=None), None).ok
     assert not chk.moving_is_flagged(events, matches(FITTED), None).ok
+
+
+def test_every_spectrum_holding_b_is_judged_not_just_the_first_that_passes():
+    # B fine at 302 K (held within tolerance), but missing or wrong and unflagged at 97 K: the proof must fail
+    for bad in (MISSING_B, HELD_WRONG_B):
+        mixed = {302.0: chk.match_modes(HELD_B, PAPER, 0.5), 97.0: chk.match_modes(bad, PAPER, 0.5)}
+        verdict = chk.moving_is_flagged({302.0: None, 97.0: None}, mixed, 0.5)
+        assert not verdict.ok and "97 K" in verdict.why
+    # ... and a serious flag on the 97 K spectrum covers it
+    mixed = {302.0: chk.match_modes(HELD_B, PAPER, 0.5), 97.0: chk.match_modes(MISSING_B, PAPER, 0.5)}
+    flags = {302.0: None, 97.0: flag(reason("identity_ambiguous", "serious", ["b1"]))}
+    assert chk.moving_is_flagged(flags, mixed, 0.5).ok
 
 
 def test_b_unflagged_but_refitted_within_tolerance_is_ok_only_when_tolerance_is_set():

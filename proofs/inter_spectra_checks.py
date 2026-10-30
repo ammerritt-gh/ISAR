@@ -57,26 +57,25 @@ def _codes(reasons) -> str:
 
 def moving_is_flagged(flags_by_T: Mapping[float, Flag | None], matches_by_T: Mapping[float, Mapping],
                       tol: float | None, *, moving: str = "B") -> Verdict:
-    """The moving phonon is fine when the spectrum that holds it is flagged at ``serious`` or above (the flag is per
-    spectrum: a score reason names the spectrum), or, only when ``tol`` is set, it is matched within ``tol`` and held
-    by its neighbours at a temperature, or it is refitted within ``tol`` at every temperature. ``flags_by_T``: the
-    holding spectrum's flag at each temperature."""
+    """Every spectrum holding the moving phonon must pass on its own: it is flagged at ``serious`` or above (the flag
+    is per spectrum: a score reason names the spectrum), or, only when ``tol`` is set, the phonon is matched within
+    ``tol`` (held by its neighbours or refitted). ``flags_by_T``: the holding spectrum's flag at each temperature."""
     floor = SEVERITIES.index("serious")
-    for T in sorted(flags_by_T):
-        flag = flags_by_T[T]
-        hits = [r for r in (flag.reasons if flag is not None else ()) if SEVERITIES.index(r["severity"]) >= floor]
-        if hits:
-            return Verdict(True, f"the spectrum holding {moving} is flagged at {T:g} K: {_codes(hits)}")
+    notes, bad = [], []
     for T in sorted(matches_by_T):
+        flag = flags_by_T.get(T)
+        hits = [r for r in (flag.reasons if flag is not None else ()) if SEVERITIES.index(r["severity"]) >= floor]
         mode = matches_by_T[T].get(moving)
-        if tol is not None and mode is not None and mode.get("mode_status") == "held_by_neighbours":
-            return Verdict(True, f"{moving} is held by its neighbours and matched within {tol:g} meV at {T:g} K")
-    if not any(matches_by_T[T].get(moving) for T in matches_by_T):
-        return Verdict(False, f"{moving} is matched at no temperature and its spectrum is not flagged")
-    if tol is not None and all(matches_by_T[T].get(moving) for T in matches_by_T):
-        return Verdict(True, f"{moving} refitted within {tol:g} meV at every temperature")
-    return Verdict(False, f"{moving} is not flagged on its spectrum, not held by its neighbours, and not refitted "
-                          f"within tolerance")
+        if hits:
+            notes.append(f"the spectrum holding {moving} is flagged at {T:g} K: {_codes(hits)}")
+        elif tol is not None and mode is not None:
+            how = "held by its neighbours" if mode.get("mode_status") == "held_by_neighbours" else "refitted"
+            notes.append(f"{moving} is {how} within {tol:g} meV at {T:g} K")
+        elif mode is None:
+            bad.append(f"{moving} is matched nowhere at {T:g} K and its spectrum is not flagged")
+        else:
+            bad.append(f"{moving} at {T:g} K is not flagged on its spectrum and no tolerance checks where it sits")
+    return Verdict(not bad, "; ".join(bad or notes))
 
 
 def flats_are_quiet(events_by_T: Mapping[float, Flag | None], matches_by_T: Mapping[float, Mapping],
