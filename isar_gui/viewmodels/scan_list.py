@@ -103,14 +103,14 @@ def _fact_text(fact: Fact, with_unit: bool = True) -> str | None:
     return f"{text} {fact.unit}" if with_unit and fact.unit else text
 
 
-def _fact_cell(fact: Fact, with_unit: bool = True) -> Cell:
+def fact_cell(fact: Fact, with_unit: bool = True) -> Cell:
     text = _fact_text(fact, with_unit)
     if text is None:                  # a missing value is a dash with its reason, never blank
         return Cell(_DASH, fact.reason or "not available")
     return Cell(text, f"{_fact_text(fact)} (from {fact.source})")
 
 
-def _hkl_cell(fact: Fact) -> Cell:
+def hkl_cell(fact: Fact) -> Cell:
     """The hkl in r.l.u. (the header says so); the tooltip names its source in the file's words."""
     text = _fact_text(fact, with_unit=False)
     if text is None:                  # no hkl is blank, the reason on the hover (the design's rule)
@@ -731,7 +731,7 @@ class ScanListViewModel(ViewModel):
             parsed_tones.append(Tone.ERR)             # an unread member is an ERR
         cells = {
             "scan": Cell(text, tip),
-            "T": _fact_cell(ss.temperature),
+            "T": fact_cell(ss.temperature),
             "hkl": Cell(""),
             "absq": Cell(""),
             "gpi": _mark_cell(ss.gpi),
@@ -740,7 +740,7 @@ class ScanListViewModel(ViewModel):
                                     "files received were read"),
             "fast": _coverage_cell(ss.spectra, FAST, self._current_map, self._marks, "analyzers"),
             "deep": _coverage_cell(ss.spectra, DEEP, self._current_map, self._marks, "analyzers"),
-            "slit": _fact_cell(ss.slit),
+            "slit": fact_cell(ss.slit),
             "file": Cell(""),
             **self._inter_counts(ss.spectra),
         }
@@ -757,9 +757,9 @@ class ScanListViewModel(ViewModel):
             scan = Cell(f"{scan.text} (removed)", REMOVED_TIP)
         cells = {
             "scan": scan,
-            "T": _fact_cell(ss.temperature) if ss is not None else Cell(""),
-            "hkl": _hkl_cell(sp.q),
-            "absq": _fact_cell(sp.q_abs, with_unit=False),
+            "T": fact_cell(ss.temperature) if ss is not None else Cell(""),
+            "hkl": hkl_cell(sp.q),
+            "absq": fact_cell(sp.q_abs, with_unit=False),
             "gpi": _mark_cell(sp.gpi),
             "rf": _mark_cell(sp.rf),
             "parsed": _status_cell(sp.parsed, PARSED),
@@ -828,7 +828,7 @@ class ScanListViewModel(ViewModel):
 
     @staticmethod
     def _pooled_node(p: PooledRow) -> Node:
-        cells = {"scan": Cell(p.label), "T": _fact_cell(p.temperature), "hkl": _hkl_cell(p.q),
+        cells = {"scan": Cell(p.label), "T": fact_cell(p.temperature), "hkl": hkl_cell(p.q),
                  "gpi": _mark_cell(p.gpi), "rf": _mark_cell(p.rf),
                  "fast": _status_cell(p.fast, FAST), "deep": _status_cell(p.deep, DEEP)}
         return Node(f"pool:{p.key}", "pooled", p.key, cells)
