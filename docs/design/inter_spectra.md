@@ -23,8 +23,8 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 |---|---|---|---|
 | Spectrum keys, series (one q setting, several temperatures), T order, eligibility | Implemented | `isar/session/inter_spectra/nodes.py` | `tests/session/inter_spectra/test_nodes.py` |
 | T-links between temperature neighbours of one series | Implemented | `isar/session/inter_spectra/graph.py`, `schedule.py` | `tests/session/inter_spectra/test_graph.py`, `test_groups.py` |
-| q-links from grid adjacency (4 × 7 grid, no diagonals) | Partial: built and tested on synthetic coordinates; coordinates come from accepted per-analyzer hkl; no real-data run has been made | `layout.py`, `graph.py`, `q_provider.py` | `tests/session/inter_spectra/test_graph_q.py`, `test_q_provider.py` |
-| Curvature terms (three collinear q points, simultaneous batches) | Partial: built and tested on synthetic coordinates; whether any form on real BL43 data is not established (the default collinearity tolerance is under review) | `graph.py`, `schedule.py` | `tests/session/inter_spectra/test_graph_q.py` |
+| q-links from grid adjacency (4 × 7 grid, no diagonals) | Implemented: built and tested; coordinates are each analyzer's accepted per-analyzer hkl, and a lattice epoch, where its scan has one, only refines the spacing metric; no real-data run has been made (section 9) | `layout.py`, `graph.py`, `q_provider.py` | `tests/session/inter_spectra/test_graph_q.py`, `test_q_provider.py` |
+| Curvature terms (three collinear q points, simultaneous batches) | Partial: built and tested; on the BL43LXU gpi triplets, measured in the hkl metric (where a scan has no lattice epoch), the triplets lie off the straight line by more than the default collinearity tolerance allows, and that default is under the operator's review, so with the default no curvature term forms (section 9) | `graph.py`, `schedule.py` | `tests/session/inter_spectra/test_graph_q.py` |
 | Coupled refit of one spectrum: count and assignment stage, continuous stage, one shared objective, release fit | Implemented | `isar/analyze/coupled/refit.py`, `engine.py`, `rules.py` | `tests/analyze/test_coupled_engine.py`, `test_coupled_refit.py`, `test_coupled_rules.py` |
 | Branch identity: persistent ids, loops, returns, cumulative T drift | Implemented | `isar/analyze/coupled/identity.py` | `tests/analyze/test_coupled_identity.py` |
 | Anchored batch: rings fixed by distance, seams, not reached | Implemented | `isar/session/inter_spectra/rings.py`, `runner.py` | `tests/session/inter_spectra/test_rings.py`, `tests/session/test_inter_spectra_runner.py` |
@@ -44,7 +44,7 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | Scan(s) view: Inter-spectra fitting menu, Make authoritative, Lock, reasons, error-bar label, waterfall | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/inter_fit_bar.py`, `isar_gui/viewmodels/scans_page.py`, `inter_fits.py` | `tests/gui/test_inter_fit_bar.py`, `test_inter_fits.py`, `test_scans_page_inter.py` |
 | Config > Inter-spectra fitting settings | Implemented | `isar_gui/main_window.py`, `isar_gui/views/inter_settings_dialog.py` | `tests/gui/test_inter_settings_dialog.py` |
 | Export and run report show the authoritative fit, labelled | Implemented | `isar/report/export.py`, `isar/report/run_report.py` | `tests/report/test_export_inter.py`, `tests/session/test_run_report_inter.py` |
-| Real-data proof and the timing record | Partial: written and gated (`ISAR_LETACON_INTER=1`), not yet run on the real set | `proofs/test_letacon_inter_spectra.py`, `proofs/inter_spectra_checks.py` | `tests/test_inter_spectra_proof_checks.py` |
+| Real-data proof and the timing record | Partial: written and gated (`ISAR_LETACON_INTER=1`), not yet run on the real set; the q side is its own module | `proofs/test_letacon_inter_spectra.py`, `proofs/inter_spectra_checks.py`, `proofs/test_letacon_inter_spectra_q.py`, `proofs/inter_spectra_q_checks.py` | `tests/test_inter_spectra_proof_checks.py`, `tests/test_inter_spectra_q_checks.py` |
 
 ## 2. Terms
 
@@ -368,7 +368,7 @@ entry points here.
 - *Branch identity through crossings.* An unresolved crossing stays ambiguous and is flagged. The identity lives in `isar/analyze/coupled/identity.py`; extending `isar/session/branch_tracking.py` (`track_path`) is not done.
 - *Reports and exports, plan decision D6.* The fast-pass projection of `results.csv`, `modes.csv` and `report.json` is the built reading of the design's default; the operator is to confirm it.
 - *Settling time.* Whether a simultaneous batch settles in useful time on a real row is not measured (section 10).
-- *q-links and curvature on real data.* Whether any curvature term forms on real BL43 data is not established. The default collinearity tolerance (`collinearity_tol`) is under review.
+- *q-links and curvature on real data.* On the BL43LXU gpi triplets, measured in the hkl metric, the triplets lie off the straight line by more than the default `collinearity_tol` allows, so with the default no curvature term forms and q-links act through anchored change terms only. The default is under the operator's review and is not changed here. The q proof (section 1) reports the curvature count when it is run.
 
 **Known effects, not fixed.**
 
