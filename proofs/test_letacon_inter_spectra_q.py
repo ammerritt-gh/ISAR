@@ -224,17 +224,18 @@ def test_fast_solo_and_results_csv_are_untouched(snapshot, qt_run, ws):
 def test_qT_batch_terms_are_structurally_right(ws, nodes, qt_run):
     """The recorded terms of the qT batch, read from its batch record, against the grid and the groups recomputed from
     the same graph. Vacuous on zero curvature terms; the precondition test names that case."""
-    terms = list(records.read_log(ws).batches[qt_run.spec.batch_id].terms)
+    batch = records.read_log(ws).batches[qt_run.spec.batch_id]
+    terms = list(batch.terms)                        # the batch's own terms, from its start line
     g = _graph_qT(ws, nodes)
-    plan = plan_simultaneous(g, set())
+    plan = plan_simultaneous(g, set())              # recomputed: the parallel groups and the q-linked set only
     grid = grid_for(load_policy(ws / POLICY_NAME).plugin)
     q_linked = {k for link in g.links if link.kind == "q" for k in (link.a, link.b)}
-    in_term = {m for t in plan.terms for m in t.members}
+    in_term = {m for t in terms for m in t["members"]}
     verdicts = {
         "curvature_structure": qc.curvature_structure_ok(terms, grid),
         "one_axis_per_link": qc.links_join_one_axis(terms),
         "groups_conflict_free": qc.groups_conflict_free(terms, [list(g_) for g_ in plan.groups]),
-        "q_linked_in_term_or_named": qc.q_linked_spectra_named(plan.not_coupled, q_linked, in_term),
+        "q_linked_in_term_or_named": qc.q_linked_spectra_named(batch.unreached, q_linked, in_term),  # the recorded reasons
     }
     for name, v in verdicts.items():
         print(f"{name}: {v.why}")
