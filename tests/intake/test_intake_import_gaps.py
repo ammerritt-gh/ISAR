@@ -183,3 +183,119 @@ def test_the_import_block_is_absent_for_a_record_that_carries_no_reader_keys(tmp
     row = scans.scan_row(rec, content_hash(rec))
     assert "import" not in row and sorted(row["analyzers"]) == list(ANALYZERS)
     assert all(a["exposure"] == "monitor" for a in row["analyzers"].values())
+
+
+# --- dropped files import like a folder (S1U1) --------------------------------------------------
+STEM_NAME = "CsV3Sb5_302K_0p5_0p5_3_sum"
+
+
+def _no_stamp(row: dict) -> dict:
+    return {k: v for k, v in row.items() if k != "imported_at"}
+
+
+def _files_only(ws, data):
+    return _ingest(ws, data / BL43_A03.name, data / BL43_A04.name)
+
+
+def test_files_only_and_folder_imports_give_the_same_row_and_ledger(tmp_path):
+    w1, w2 = workspace(tmp_path / "one"), workspace(tmp_path / "two")
+    data = _artificial_copy(tmp_path / "data")
+    r1 = _ingest(w1, data)
+    r2 = _files_only(w2, data)
+    row1, row2 = _only_row(w1), _only_row(w2)
+    assert _no_stamp(row1) == _no_stamp(row2)
+    assert row2["sidecar"] == BL43_VAR.name and row2["import"]["sidecar"]["state"] == "read"
+    assert not [f for f in row2["flags"] if f["type"] == "missing_sidecar"]
+    c1, _ = w1.load()
+    c2, s2 = w2.load()
+    h1 = {k: e.content_hash for k, e in w1.load()[1].scans.items()}
+    assert h1 and h1 == {k: e.content_hash for k, e in s2.scans.items()}
+    assert r2.companions == r1.companions
+    assert r2.companions["sidecar"] == {"read": [STEM_NAME], "missing": [], "unreadable": []}
+    g = r2.companions["gpi"]
+    assert g == {"folder": None, "found": [], "missing": [STEM_NAME], "not_used": [], "error": None}
+    c = r2.companions["curves"]
+    assert c["folder"] is None and c["problem"].startswith("no resolution folder is saved") and c["n_curves"] == 0
+
+
+def _mark_fitted(ws):
+    card, session = ws.load()
+    for e in session.scans.values():
+        e.status = "fitted"
+    session.save(ws.session_path)
+
+
+def _statuses(ws):
+    return {k: e.status for k, e in ws.load()[1].scans.items()}
+
+
+def test_importing_again_repairs_a_row_written_without_the_var_when_the_ledger_is_current(tmp_path):
+    ws = workspace(tmp_path / "w")
+    data = _artificial_copy(tmp_path / "data")
+    _ingest(ws, data)
+    good = _only_row(ws)
+    _mark_fitted(ws)
+    bare = _artificial_copy(tmp_path / "bare")                     # the stale state: a row from a no-.var parse
+    (bare / BL43_VAR.name).unlink()
+    other = workspace(tmp_path / "other")
+    _ingest(other, bare)
+    stale = _only_row(other)
+    assert stale["data_revision"] != good["data_revision"]
+    scans.record_import(ws.root, [stale])
+    assert _only_row(ws)["data_revision"] == stale["data_revision"]
+
+    report = _files_only(ws, data)
+
+    assert _no_stamp(_only_row(ws)) == _no_stamp(good)
+    assert report.unchanged == [good["scan"]] and report.updated == [] and report.added == []
+    assert set(_statuses(ws).values()) == {"fitted"}
+
+
+def test_importing_again_after_the_var_arrives_supersedes_the_fits_into_the_history(tmp_path):
+    ws = workspace(tmp_path / "w")
+    data = _artificial_copy(tmp_path / "data")
+    (data / BL43_VAR.name).unlink()
+    _files_only(ws, data)
+    assert _only_row(ws)["import"]["sidecar"]["state"] == "missing"
+    _mark_fitted(ws)
+    shutil.copy(BL43_VAR, data / BL43_VAR.name)
+
+    report = _files_only(ws, data)
+
+    assert report.updated and not report.unchanged
+    assert _only_row(ws)["import"]["sidecar"]["state"] == "read"
+    assert set(_statuses(ws).values()) == {"ingested"}
+    lines = (ws.root / "report" / "fit_history.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == len(_statuses(ws))
+
+
+def test_a_set_with_no_var_and_a_zero_byte_var_are_named_in_the_companions(tmp_path):
+    bare = _artificial_copy(tmp_path / "bare")
+    (bare / BL43_VAR.name).unlink()
+    report = _ingest(workspace(tmp_path / "a"), bare)
+    assert report.companions["sidecar"] == {"read": [], "missing": [STEM_NAME], "unreadable": []}
+    (bare / BL43_VAR.name).write_bytes(b"")
+    ws = workspace(tmp_path / "b")
+    report = _ingest(ws, bare)
+    assert report.companions["sidecar"]["unreadable"] == [STEM_NAME]
+    assert len([f for f in _only_row(ws)["flags"] if f["type"] == "missing_sidecar"]) == 1
+
+
+def test_the_gpi_lists_cover_only_this_import_and_a_non_bl43_card_has_no_companions(tmp_path):
+    from isar.intake import settings as intake_settings
+    ws = workspace(tmp_path / "w")
+    a = _artificial_copy(tmp_path / "a")
+    gdir = tmp_path / "gpi"
+    gdir.mkdir()
+    (gdir / f"gpi.{STEM_NAME}").write_text("not a gpi file\n", encoding="utf-8")
+    assert intake_settings.save_gpi_folder(ws.root, gdir).ok
+    first = _ingest(ws, a)
+    assert first.companions["gpi"]["found"] == [STEM_NAME] and first.companions["gpi"]["folder"] == str(gdir)
+    b = tmp_path / "b"
+    b.mkdir()
+    for src in (BL43_A03, BL43_A04, BL43_VAR):
+        shutil.copy(src, b / src.name.replace(STEM_NAME, "CsV3Sb5_303K_0p5_0p5_3_sum"))
+    second = _ingest(ws, b)
+    g = second.companions["gpi"]
+    assert g["found"] == [] and g["missing"] == ["CsV3Sb5_303K_0p5_0p5_3_sum"]
+    assert ingest.IngestReport().companions is None and ingest.IngestReport().to_jsonable()["companions"] is None
