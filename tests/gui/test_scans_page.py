@@ -41,7 +41,8 @@ def test_single_fit_uses_scaled_bundle_and_freezes_reference(page, qtbot):
     result = select(page, ONE_MODE)
     assert result.layout == 'single'
     assert page._resid_plot.isVisible()
-    assert {line.entry for line in result.legend} == {ONE_MODE, 'Total', 'Mode 1', 'Elastic', 'Background'}
+    assert {line.entry for line in result.legend} == {ONE_MODE, 'Total', 'Mode 1', 'Elastic'}
+    assert result.legend[0].text == 'a03 · 97 K'
     assert result.ylabel == 'Counts per 10⁵ monitor'
     reference = page.store.normalisation_reference()
     row = page.scan_list_vm.snapshot.spectrum(ONE_MODE)
@@ -80,10 +81,10 @@ def test_deep_missing_outdated_and_trust_are_visible(page):
     drawn = select(page, DEEP_TRUSTED, DEEP_OUTDATED)
     assert drawn.curves_header == 'Curves · Deep'
     assert 'currentness not recorded' in next(l.text for l in drawn.legend if l.entry == DEEP_TRUSTED)
-    assert 'outdated: values changed since fit' in next(l.text for l in drawn.legend if l.entry == DEEP_OUTDATED)
+    assert next(l.text for l in drawn.legend if l.entry == DEEP_OUTDATED) == 'a07 · 97 K'
     page.vm.set_fit('fast')
     drawn = select(page, OUTDATED)
-    assert 'outdated:' in drawn.legend[0].text
+    assert drawn.legend[0].text == 'a03 · 97 K'
     assert drawn.curves
 
 

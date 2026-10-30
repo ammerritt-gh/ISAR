@@ -361,7 +361,8 @@ def test_live_counts_mark_old_fits_and_keep_selection_zoom_and_list_state(qtbot,
     window._on_workspace_changed({"snapshot"})
     drawn = _wait_drawn(qtbot, page, lambda state: state.fit == "fast"
                         and any(line.entry == DEEP_TRUSTED
-                                and OUTDATED_TEXT in line.text for line in state.legend))
+                                and OUTDATED_TEXT not in line.text for line in state.legend)
+                        and np.all(page._drawn_state.traces[state.keys.index(DEEP_TRUSTED)].y > old_y))
     assert window.selection.keys == old_keys
     new_y = page._drawn_state.traces[drawn.keys.index(DEEP_TRUSTED)].y
     assert np.all(new_y > old_y), "the redrawn trace did not include the increased counts"
@@ -380,7 +381,7 @@ def test_live_counts_mark_old_fits_and_keep_selection_zoom_and_list_state(qtbot,
                         and len(state.keys) + len(state.not_drawn) == 2)
     assert set(drawn.keys) == {DEEP_OUTDATED, DEEP_TRUSTED}
     assert drawn.curves
-    assert OUTDATED_TEXT in _legend(page, DEEP_OUTDATED).text
+    assert OUTDATED_TEXT not in _legend(page, DEEP_OUTDATED).text
     assert "currentness not recorded" in _legend(page, DEEP_TRUSTED).text
     assert OUTDATED_TEXT in _fit_cell(window.scan_inspector, "fit_deep_inputs").text()
 

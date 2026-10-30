@@ -474,6 +474,12 @@ def save_widget_png(widget, path) -> bool:
 
 
 class _GroupedLegend(pg.LegendItem):
+    def _addItemToLayout(self, sample, label):  # noqa: N802
+        row, column, span = self.entry_position
+        self.layout.addItem(sample, row, column, alignment=QtCore.Qt.AlignmentFlag.AlignVCenter)
+        self.layout.addItem(label, row, column + 1, 1, span)
+        self.rowCount = max(self.rowCount, row + 1)
+
     def updateSize(self):  # noqa: N802 (Qt/pyqtgraph override)
         # LegendItem sums current cell widths, counting a spanning header twice.
         # The layout's natural hint handles spans without feeding stretch back into size.
@@ -495,16 +501,29 @@ def _populate_legend(legend, entries, names) -> None:
             blocks.append((group, groups[group]))
         else:
             groups[group].append((sample, name, bold))
+    row = 0
     for group, items in blocks:
+        columns = 2 if group is not None and group.startswith("Curves ·") else 1
         if group is not None:
             header = pg.LabelItem(escape(group), bold=True, justify="left", color=_GREY_025, size="9pt")
-            legend.layout.addItem(header, legend.layout.rowCount(), 0, 1, 2)
+            legend.layout.addItem(header, row, 0, 1, 4)
+            row += 1
         seen = set()
+        cell = 0
+        modes_started = False
         for sample, name, bold in items:
-            if group is not None and name in seen:
+            if group is not None and group != "Spectra" and name in seen:
                 continue
             seen.add(name)
             short = name if len(name) <= 48 else name[:23] + "…" + name[-24:]
+            if isinstance(legend, _GroupedLegend):
+                # Total gets a row; elastic/QE share the next. Modes start below them.
+                if columns == 2 and name.startswith("Mode ") and not modes_started:
+                    cell += cell % 2
+                    modes_started = True
+                span = 3 if columns == 1 or name == "Total" else 1
+                legend.entry_position = (row + cell // columns, 2 * (cell % columns), span)
+                cell += columns if span == 3 else 1
             legend.addItem(sample, escape(short) if group is not None else name)
             swatch, label = legend.items[-1]
             if group is not None:
@@ -513,6 +532,7 @@ def _populate_legend(legend, entries, names) -> None:
                 swatch.setToolTip(name)
                 swatch.setAcceptedMouseButtons(QtCore.Qt.MouseButton.NoButton)
             names.add(name)
+        row += (cell + columns - 1) // columns
     legend.updateSize()
 
 

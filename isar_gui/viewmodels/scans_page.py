@@ -14,7 +14,7 @@ from isar.workspace_api.spectra import (NotDrawn, ZERO_BEAMLINE, ZERO_NONE, norm
                                         spectrum_bundles)
 from isar.workspace_api.scan_list import PooledRow
 from isar_gui.inter_words import CONDITIONAL_ERRORS, ERRORS_UNAVAILABLE
-from isar_gui.selection import identity, unique_labels
+from isar_gui.selection import identity
 from isar_gui.viewmodels.base import ViewModel
 from isar_gui.viewmodels.inter_fits import NO_CURVE, NOT_ON_PLOT, NOT_ON_PLOT_OVERLAY, BarState, bar_state
 
@@ -277,7 +277,8 @@ class ScansPageViewModel(ViewModel):
                   "This spectrum has no inter-spectra fits yet. Fast solo is the only fit.")
         wf = self.waterfall and wf_off is None and body == PLOT and inter is not None
         view = ('offset' if wf else 'single' if n == 1 else self.layout) if body == PLOT else None
-        labels = unique_labels(snapshot, keys, lambda i: (i.scan, i.analyzer, i.q))
+        labels = {key: f'{info.analyzer} · {info.t}' for key in keys
+                  if (info := identity(snapshot, key)) is not None}
         read_s = 0.0
         reference = None
         choice = self._choice(keys) if body == PLOT else {}
@@ -419,7 +420,7 @@ class ScansPageViewModel(ViewModel):
                 else:
                     curves = (ScansCurve('Total', 'total', None, result.total),) + tuple(
                         ScansCurve(c.name, c.role, c.mode_number, c.values, c.centers) for c in result.components)
-                    note = summary.outdated_text or summary.unjudged_text
+                    note = summary.unjudged_text
                     residuals = result.residuals
                     if shown == 'deep':
                         deep_summaries.append(summary)

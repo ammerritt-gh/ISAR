@@ -62,12 +62,15 @@ def test_overlay_is_data_only_and_preserves_identity_symbols():
 
 def test_curve_roles_stay_in_order_and_background_is_dotted():
     plotted = build(deep_traces())
+    backgrounds = [s for s in plotted.series if s.style == 'dotted' and s.legend_group == 'Curves · Deep (untrusted)']
+    assert len(backgrounds) == 2
+    assert all(s.label is None for s in backgrounds)
     plotted.series = [s for s in plotted.series if s.label is not None]
-    assert [s.label for s in plotted.series] == ['A', 'B', 'Total', 'Total', 'Mode 1', 'Mode 1', 'Mode 2', 'Background', 'Background']
+    assert [s.label for s in plotted.series] == ['A', 'B', 'Total', 'Total', 'Mode 1', 'Mode 1', 'Mode 2']
     assert plotted.series[1].legend_bold
     assert all(s.legend_group == 'Spectra' for s in plotted.series[:2])
     assert all(s.legend_group == 'Curves · Deep (untrusted)' for s in plotted.series[2:])
-    assert [s.style for s in plotted.series[2:]] == ['heavy dashed', 'heavy dashed', 'heavy dashed', 'heavy dashed', 'heavy dashed', 'dotted', 'dotted']
+    assert [s.style for s in plotted.series[2:]] == ['heavy dashed', 'heavy dashed', 'heavy dashed', 'heavy dashed', 'heavy dashed']
     assert plotted.series[4].color == plotted.series[5].color
 
 

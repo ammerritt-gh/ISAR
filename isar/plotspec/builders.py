@@ -633,7 +633,7 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
                     x=np.array([x.min(), x.max()]), y=np.array([offset, offset]),
                     role=ps.Role.COMPONENT, color="#999999", style="dotted"))
     # Canonical role order is independent of what the first trace happens to contain.
-    rank = {"total": 0, "mode": 1, "elastic": 2, "quasielastic": 3, "background": 4}
+    rank = {"total": 0, "elastic": 1, "quasielastic": 2, "mode": 3, "background": 4}
     curves = [(curve, trace, offset) for trace, offset in zip(traces, offsets)
               for curve in trace.curves]
     curves.sort(key=lambda item: (rank[item[0].kind], item[0].number or 0))
@@ -651,7 +651,8 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
             style.append("dashed")
         spec.series.append(ps.Series(
             x=np.asarray(trace.curve_x), y=np.asarray(curve.values) + offset,
-            label=curve.name, role=ps.Role.FIT if curve.kind == "total" else ps.Role.COMPONENT,
+            label=None if curve.kind == "background" else curve.name,
+            role=ps.Role.FIT if curve.kind == "total" else ps.Role.COMPONENT,
             style=" ".join(style) or None, color=ps.CURVE_COLORS[color_key],
             legend_group=curves_header))
         if peak_lines and curve.kind == "mode":

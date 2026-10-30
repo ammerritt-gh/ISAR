@@ -383,14 +383,14 @@ class ScansPage(QWidget):
         if state.main_spec is not None:
             for key, trace in zip(state.keys, state.traces):
                 legend.append(LegendLine(key, trace.identity + (f' · {trace.note}' if trace.note else ''), trace.active))
-            rank = {'total': 0, 'mode': 1, 'elastic': 2, 'quasielastic': 3, 'background': 4}
+            rank = {'total': 0, 'elastic': 1, 'quasielastic': 2, 'mode': 3, 'background': 4}
             entries = [(key, trace, curve) for key, trace in zip(state.keys, state.traces) for curve in trace.curves]
             entries.sort(key=lambda item: (rank[item[2].kind], item[2].number or 0))
             names = set()
             for key, trace, curve in entries:
                 style = 'dotted' if curve.kind == 'background' else 'dashed' if trace.deep else 'solid'
                 curves.append(DrawnCurve(key, curve.kind, curve.name, style))
-                if curve.name not in names:
+                if curve.kind != 'background' and curve.name not in names:
                     legend.append(LegendLine(curve.name, curve.name, False))
                     names.add(curve.name)
         return Drawn(state.body, state.keys, state.not_drawn, state.not_drawn_text, state.view,

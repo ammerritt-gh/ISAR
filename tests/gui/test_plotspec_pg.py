@@ -352,3 +352,39 @@ def test_render_honours_the_spec_colour_levels(qtbot):
     spec.strip_levels = None
     rendered = render_into(plot, spec)
     assert rendered.strip_levels == (1.0, 5000.0)            # unset -> min..max as before
+
+
+def test_scans_legend_compacts_curves_and_keeps_duplicate_spectra(qtbot, tmp_path):
+    from PySide6.QtWidgets import QApplication
+    from isar.plotspec.builders import ScansCurve, ScansTrace, scans_spec
+
+    x = np.linspace(-5, 20, 51)
+    curves = (ScansCurve('Total', 'total', None, np.ones_like(x)),
+              ScansCurve('Elastic', 'elastic', None, np.ones_like(x)),
+              ScansCurve('QE', 'quasielastic', None, np.ones_like(x))) + tuple(
+        ScansCurve(f'Mode {n}', 'mode', n, np.ones_like(x)) for n in range(1, 6)) + (
+        ScansCurve('Background', 'background', None, np.ones_like(x)),)
+    trace = ScansTrace('a03 · 97 K', None, x, np.ones_like(x), np.ones_like(x),
+                       np.ones_like(x, dtype=bool), x, curves, False, True)
+    spec = scans_spec(traces=(trace, trace), view='offset', step=2,
+                      ylabel='Counts', curves_header='Curves · Fast')
+    glw, plot = _new_plot()
+    qtbot.addWidget(glw)
+    glw.setBackground('w')
+    glw.resize(600, 500)
+    rendered = render_into(plot, spec)
+    glw.show()
+    QApplication.processEvents()
+    legend = rendered.legend
+    labels = [label for _, label in legend.items]
+    assert [label.text for label in labels] == ['a03 · 97 K', 'a03 · 97 K', 'Total',
+        'Elastic', 'QE', 'Mode 1', 'Mode 2', 'Mode 3', 'Mode 4', 'Mode 5']
+    elastic, qe, mode1, mode2, mode3, mode4, mode5 = labels[3:]
+    assert elastic.pos().y() == qe.pos().y() < mode1.pos().y()
+    assert mode1.pos().y() == mode2.pos().y() < mode3.pos().y()
+    assert mode3.pos().y() == mode4.pos().y() < mode5.pos().y()
+    assert elastic.pos().x() == mode1.pos().x() < qe.pos().x() == mode2.pos().x()
+    for left, right in ((elastic, qe), (mode1, mode2), (mode3, mode4)):
+        assert not left.sceneBoundingRect().intersects(right.sceneBoundingRect())
+    assert plot.sceneBoundingRect().contains(legend.sceneBoundingRect())
+    assert glw.grab().save(str(tmp_path / 'legend.png'))
