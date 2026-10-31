@@ -92,7 +92,10 @@ class _Labelled(cc.CoupledEngine):
     def price(self, b):
         """The coupled price, except that a posterior optimiser that stops ABNORMAL is retried once with a 3-point
         gradient (the 2-point one cannot finish on some resolution-limited models). The reason is reset first, so a
-        stale 'ABNORMAL' never survives on a priced basin; a basin that still cannot converge stays no_evidence."""
+        stale 'ABNORMAL' never survives on a priced basin; a basin that still cannot converge stays no_evidence.
+        The retry's posterior is the finite-difference one whatever ``gradients`` says: ``objective_and_gradient``
+        returns None for that call, so the base engine passes no ``jac`` of its own (a split integral keeps its
+        gradient, so a not-converged split reruns to the same nodes)."""
         super().price(b)
         if b.status != "no_evidence" or "ABNORMAL" not in b.reason:
             return
@@ -103,10 +106,11 @@ class _Labelled(cc.CoupledEngine):
         # fast-pass results beyond change 8, so it is not done here). Safe: pool workers are separate processes
         # and price is single threaded.
         fast_pass.minimize = lambda *a, **k: orig(*a, jac="3-point", **k)
+        self.fd_posterior = True
         try:
             super().price(b)
         finally:
-            fast_pass.minimize = orig
+            fast_pass.minimize, self.fd_posterior = orig, False
 
     def _ln_exch(self, model) -> float:
         """ln of the k! of each group of exchangeable unmatched modes (spec 3): the base engine's groups
@@ -542,14 +546,16 @@ def _ceiling(fs, k: int):
     return fs if fs.mode_ceiling >= k else replace(fs, mode_ceiling=k)
 
 
-def price(snapshot: Snapshot, job: PricingJob) -> Priced:
+def price(snapshot: Snapshot, job: PricingJob, *, gradients: bool = True) -> Priced:
     """One labelling at one count from the job's starts: every start in every admissible variant (the base
     engine's TRF, twin resolution and delta alternatives, plus the constructed hidden start of ``seed_hidden``),
     each distinct basin priced by Laplace under the coupled prior, or for a basin with a hidden pair by the
     integral over the split (engine.CoupledEngine.price); ln Z sums the basins' masses with their variant/delta
     weights, then adds the labelling's composition weight (``rules.ln_w_label``) and, for a pinned unmatched
     energy, its entry charge outside the integral (spec 2). Every basin term also carries the candidate's loss
-    price (``_Spec.loss_terms``), once. The engine's ceiling is raised to the job's count."""
+    price (``_Spec.loss_terms``), once. The engine's ceiling is raised to the job's count. ``gradients``: the
+    posterior and split-node optimisers and their Laplace curvature run on the joint objective and gradient
+    (``CoupledEngine.objective_and_gradient``); False prices with finite differences, as before that existed."""
     t0 = time.perf_counter()
     k, slots = job.count, tuple(job.slots)
     if len(slots) != k:
@@ -567,7 +573,8 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
                       f"the neighbour density of {bad[0]} has no verified normaliser", 0, time.perf_counter() - t0,
                       loss=loss, depth=job.depth)
     u = sum(b is None for b in slots)
-    eng = _Labelled(spec.ctx, _ceiling(spec.fs, k), objs, structures=spec.structures, screen=job.depth == "screen")
+    eng = _Labelled(spec.ctx, _ceiling(spec.fs, k), objs, structures=spec.structures, screen=job.depth == "screen",
+                    gradients=gradients)
     if not eng.variants.get(k):
         return Priced(job.key, k, slots, None, "no_structure", None,
                       f"the card's structures hold no model with {k} modes", 0, time.perf_counter() - t0,
