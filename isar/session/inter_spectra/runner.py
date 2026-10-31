@@ -11,10 +11,10 @@ on the graph, and fits it with its own refit pool inside the item's cores:
   (continuous Gauss-Seidel sweeps over conflict-free groups) until a round changes nothing, or the sweep cap ends
   it as "did not settle".
 
-Stage 1 is search, price, resume: one core ``Search`` per spectrum of the ring or round, all driven together. Each
-iteration collects every live search's next jobs, sends the ones with no cached price to the pool in one map (the
-prices come back in job order and are fed to their searches) and repeats until every search is done. A pool
-exception becomes a recorded failure reason and is never cached; a search that raises fails only its spectrum.
+Stage 1 is search, price, resume: one core ``Search`` per spectrum of the ring or round, all driven together through
+one pool stream. Each search waits only for its own jobs: when the last job of its pass returns, it is fed that pass's
+prices in its own job order and sends its next jobs at once, so no spectrum waits for another. A pool exception
+becomes that job's failed price and is never cached; a search that raises fails only its spectrum.
 
 Every ring or sweep is handed over through ``emit`` and the runner waits on ``ack`` for the writer's verdict
 before the next stage: acceptance decides what the next stage conditions on, and a refused refit's held value
