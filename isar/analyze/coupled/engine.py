@@ -211,6 +211,15 @@ class SplitResult:
     theta: object = None   # kind == "ok" only: the representative point, full model coordinates
 
 
+def split_set(n: int, f_joint: float):
+    """One Gauss-Legendre set of n nodes on (0, 1): (f, weights summing to 1, (up chain, down chain)), each chain
+    the node indices in the order ``integrate_split`` reads them, outward from ``f_joint``."""
+    x, w = np.polynomial.legendre.leggauss(n)
+    f, w = (x + 1.0) / 2.0, w / 2.0
+    order = np.argsort(f)
+    return f, w, ([i for i in order if f[i] >= f_joint], [i for i in order[::-1] if f[i] < f_joint])
+
+
 def integrate_split(node, f_joint, *, sets=SPLIT_NODE_SETS, tol=SPLIT_TOL_NATS, bail=SPLIT_BAIL_NATS,
                     screen: bool = False) -> SplitResult:
     """ln of the integral over f in (0, 1) of exp(node(f, near)); node returns ln Z_f, or the reason its f failed:
@@ -222,11 +231,9 @@ def integrate_split(node, f_joint, *, sets=SPLIT_NODE_SETS, tol=SPLIT_TOL_NATS, 
     ``screen``: the first set alone, with no agreement test and no bail (a screen price; its ln Z is that set's)."""
     done, nodes, d = [], 0, math.nan
     for n in sets:
-        x, w = np.polynomial.legendre.leggauss(n)
-        f, w = (x + 1.0) / 2.0, w / 2.0                         # on (0, 1); the weights sum to 1
-        order = np.argsort(f)
+        f, w, chains = split_set(n, f_joint)
         lz = np.empty(n)
-        for chain in ([i for i in order if f[i] >= f_joint], [i for i in order[::-1] if f[i] < f_joint]):
+        for chain in chains:
             near = None
             for i in chain:
                 v = node(float(f[i]), near)
@@ -246,6 +253,18 @@ def integrate_split(node, f_joint, *, sets=SPLIT_NODE_SETS, tol=SPLIT_TOL_NATS, 
                 return SplitResult(None, "not_converged", f"node sets differ by {d:.2f} nats", tuple(done), nodes)
     return SplitResult(None, "not_converged", f"{done[-1][0]} nodes still differ by {d:.3f} nats",
                        tuple(done), nodes)
+
+
+def split_representative(res: SplitResult, problem, solved, lnz_at) -> SplitResult:
+    """An ``ok`` integral with its representative point: a solved node (not the TRF start) within the agreement
+    tolerance of the best, the nearest to the start's split. ``solved``/``lnz_at``: the nodes read, f -> solution
+    and f -> conditional ln Z."""
+    if res.kind != "ok":
+        return res
+    f_joint, theta_of = problem[2], problem[4]
+    top = max(lnz_at.values())
+    f_star = min((f for f, z in lnz_at.items() if z >= top - SPLIT_TOL_NATS), key=lambda f: abs(f - f_joint))
+    return replace(res, theta=theta_of(solved[f_star], f_star))
 
 
 def _polish(g, lo, hi, x, gv=None):
@@ -540,52 +559,57 @@ class CoupledEngine(fast_pass._Engine):
         The pair's free widths enter as u = ln(Gamma + knee) when their prior is 1/(Gamma + knee) (flat in u,
         Jacobian +u), with a small ridge so a likelihood-blind width is not numerically singular (``split_problem``).
         With gradients on, each node's optimiser, Laplace curvature and saddle escape run on g's joint gradient."""
-        objective, xi_joint, f_joint, lo, theta_of = self.split_problem(b.model, theta, pair)
+        problem = self.split_problem(b.model, theta, pair)
+        xi_joint, f_joint = problem[1], problem[2]
         solved, lnz_at = {}, {}                                  # f -> its solution; f -> its conditional ln Z
 
         def node(f, near):
-            g, gv, h2 = objective(f)
-            grad = None if gv is None else fast_pass._gradient_of(gv)
             # continuation from the previous node (a chain start: the nearest node solved so far), else the joint start
             key = near if near is not None else min(solved, key=lambda k: abs(k - f), default=None)
-            why = "non-finite objective at every start"
-            for start in ([solved[key]] if key is not None else []) + [xi_joint]:
-                v, x = _polish(g, lo, h2, start, gv)
-                for _ in range(SPLIT_ESCAPES):
-                    if not math.isfinite(v):
-                        break
-                    lap = prior.laplace_log_evidence(g, x, lo, h2, rel_step=SPLIT_FD_REL, grad=grad)
-                    if lap.status != "no_evidence":
-                        solved[f], lnz_at[f] = x, float(lap.ln_z)
-                        return float(lap.ln_z)
-                    why = lap.reason
-                    # a saddle escape: follow the negative direction of the Hessian both ways (needed at weak/strong ties)
-                    steps = np.minimum(SPLIT_FD_REL * np.maximum(np.abs(x), 1e-2 * (h2 - lo)), (h2 - lo) / 4.0)
-                    xc = np.clip(x, lo + 2 * steps, h2 - 2 * steps)
-                    ev, vec = np.linalg.eigh(prior.hessian_fd(g, xc, steps) if grad is None
-                                             else prior.hessian_from_grad(grad, xc, steps))
-                    if not np.all(np.isfinite(ev)):
-                        why = "non-finite Hessian (finite differences)"
-                        break
-                    if ev[0] >= 0:
-                        break
-                    n = int(np.argmax(np.abs(vec[:, 0])))
-                    d = 0.1 * (h2[n] - lo[n]) / abs(vec[n, 0])
-                    v, x = min((_polish(g, lo, h2, x + s * d * vec[:, 0], gv) for s in (1.0, -1.0)),
-                               key=lambda c: c[0])
-            return why                                       # integrate_split maps the reason to undetermined or no_evidence
+            out = self._split_node(problem, f, ([solved[key]] if key is not None else []) + [xi_joint])
+            if out[0] != "ok":
+                return out[1]                                # integrate_split maps the reason to undetermined or no_evidence
+            solved[f], lnz_at[f] = out[2], out[1]
+            return out[1]
 
         def counted(f, near):
             self.n_split_nodes += 1
             return node(f, near)
 
-        res = integrate_split(counted, f_joint, sets=sets, screen=screen)
-        if res.kind != "ok":
-            return res
-        # a solved node (not the TRF start) within the agreement tolerance of the best, the nearest to the start's split
-        top = max(lnz_at.values())
-        f_star = min((f for f, z in lnz_at.items() if z >= top - SPLIT_TOL_NATS), key=lambda f: abs(f - f_joint))
-        return replace(res, theta=theta_of(solved[f_star], f_star))
+        return split_representative(integrate_split(counted, f_joint, sets=sets, screen=screen), problem, solved,
+                                    lnz_at)
+
+    def _split_node(self, problem, f, starts):
+        """One node of the split integral at f: polish, Laplace and saddle escapes from each start in turn.
+        ("ok", ln Z_f, solution) at the first start that gives an evidence, else ("fail", the last reason)."""
+        objective, _xi_joint, _f_joint, lo, _theta_of = problem
+        g, gv, h2 = objective(f)
+        grad = None if gv is None else fast_pass._gradient_of(gv)
+        why = "non-finite objective at every start"
+        for start in starts:
+            v, x = _polish(g, lo, h2, start, gv)
+            for _ in range(SPLIT_ESCAPES):
+                if not math.isfinite(v):
+                    break
+                lap = prior.laplace_log_evidence(g, x, lo, h2, rel_step=SPLIT_FD_REL, grad=grad)
+                if lap.status != "no_evidence":
+                    return "ok", float(lap.ln_z), x
+                why = lap.reason
+                # a saddle escape: follow the negative direction of the Hessian both ways (needed at weak/strong ties)
+                steps = np.minimum(SPLIT_FD_REL * np.maximum(np.abs(x), 1e-2 * (h2 - lo)), (h2 - lo) / 4.0)
+                xc = np.clip(x, lo + 2 * steps, h2 - 2 * steps)
+                ev, vec = np.linalg.eigh(prior.hessian_fd(g, xc, steps) if grad is None
+                                         else prior.hessian_from_grad(grad, xc, steps))
+                if not np.all(np.isfinite(ev)):
+                    why = "non-finite Hessian (finite differences)"
+                    break
+                if ev[0] >= 0:
+                    break
+                n = int(np.argmax(np.abs(vec[:, 0])))
+                d = 0.1 * (h2[n] - lo[n]) / abs(vec[n, 0])
+                v, x = min((_polish(g, lo, h2, x + s * d * vec[:, 0], gv) for s in (1.0, -1.0)),
+                           key=lambda c: c[0])
+        return "fail", why
 
     def ln_prior(self, model, theta) -> float:
         sp, omit = self.sp, model.omit

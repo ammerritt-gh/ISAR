@@ -80,8 +80,9 @@ class _Labelled(cc.CoupledEngine):
     Task mode (``price(..., tasks=port)``): the three heavy primitives, a start's fit, the posterior optimiser and
     the Laplace evidence, each a function of its exact key alone, go through ``_prim``. A pool worker runs a whole
     sub-computation with ``record`` on and returns the primitive outcomes it met; the job's thread replays today's
-    code over its one ledger, answering each primitive from ``memo`` and sending a miss to the pool. Without a port
-    and a record, every primitive is computed in place: today's path."""
+    code over its one ledger, answering each primitive from ``memo`` and sending a miss to the pool. A split
+    integral's nodes are tasks of their own (``send_split``, ``split_evidence``). Without a port and a record, every
+    primitive is computed in place: today's path."""
 
     port = None                             # the job's task port (replay side); None: compute in place
     record = None                           # {key: outcome} of the primitives a worker task met; None: not recording
@@ -134,6 +135,7 @@ class _Labelled(cc.CoupledEngine):
     # -- task mode
     def open_port(self, port, ctx: bytes):
         self.port, self.task_ctx, self.memo, self.handles = port, ctx, {}, []
+        self.split_sent, self.splits = {}, {}   # integral key -> {f: node handle} not yet read; -> its SplitResult
 
     def submit(self, kind, args):
         """Queue one speculative task of this job; None without a port."""
@@ -159,16 +161,147 @@ class _Labelled(cc.CoupledEngine):
 
     def speculate_wave(self, pending) -> dict:
         """One ``"basin"`` task per pending basin with no hidden pair, {id(basin): handle}; {} without a port. A basin
-        with a hidden pair is priced in the replay: its split integral runs there as today."""
+        with one hidden pair whose pair point no other split basin of its model holds has its split integral's node
+        tasks sent (``send_split``); its price, and so its integral's reading, runs in the replay. A basin with more
+        than one pair gets no task: its price computes nothing."""
         out = {}
         if self.port is None:
             return out
         for b in pending:
-            if self.hidden_pairs(b.model, b.theta):
-                continue
-            out[id(b)] = self.submit("basin", (_vkey(b.model.variant), tuple(b.model.delta), b.index, b.theta.copy(),
-                                               b.cost, b.ln_like, b.ln_model_prior, b.family, b.nfev, b.message))
+            pairs = self.hidden_pairs(b.model, b.theta)
+            if not pairs:
+                out[id(b)] = self.submit("basin", (_vkey(b.model.variant), tuple(b.model.delta), b.index,
+                                                   b.theta.copy(), b.cost, b.ln_like, b.ln_model_prior, b.family,
+                                                   b.nfev, b.message))
+            elif len(pairs) == 1 and not self._seen_by_another(b, pairs[0]):
+                self.send_split(b.model, self._anchor(b.model, b.theta), pairs[0], cc.SPLIT_NODE_SETS, self.screen)
         return out
+
+    def _seen_by_another(self, b, pair) -> bool:
+        """``_seen_split`` of the basin's pair point without its own entry, which its reprice pops."""
+        done = self._split_done.get(b.model, {})
+        own = done.pop(b.index, None)
+        try:
+            return self._seen_split(b.model, self._pair_point(b.model, b.theta, pair))
+        finally:
+            if own is not None:
+                done[b.index] = own
+
+    def end_wave(self, wave):
+        """Drop a wave's unread tasks: basins merged or settled before their turn, integrals never read."""
+        if self.port is None:
+            return
+        stale = list(wave.values())
+        for sent in self.split_sent.values():
+            stale.extend(sent.values())
+        self.split_sent.clear()
+        if stale:
+            self.port.drop(stale)
+
+    @staticmethod
+    def _split_key(model, theta, pair, sets, screen) -> tuple:
+        return _vkey(model.variant), tuple(model.delta), theta.tobytes(), tuple(pair), tuple(sets), bool(screen)
+
+    def send_split(self, model, theta, pair, sets, screen) -> tuple:
+        """Every node task of one split integral, once per key: chain order, sets in order (the first set alone for
+        a screen), the first two sets at rank 0 (every agreement test reads them) and deeper ones at rank 1. A
+        node's ``prepare`` starts it from the nearest node of this integral already solved when it is sent, else
+        the joint solution (D1). Returns the integral's key."""
+        key = self._split_key(model, theta, pair, sets, screen)
+        if key in self.split_sent or key in self.splits:
+            return key
+        f_joint = self.split_problem(model, theta, pair)[2]
+        sent = self.split_sent[key] = {}
+        args = (_vkey(model.variant), tuple(model.delta), theta.copy(), tuple(pair))
+        port = self.port
+
+        def prepare(payload):
+            ctx, kind, a = payload
+            f, best = a[4], None
+            for g, h in tuple(sent.items()):     # one C-level copy: the job thread may still be adding nodes
+                if g == f:
+                    continue
+                done, got = port.peek(h)
+                if done and not isinstance(got, BaseException) and got[0][0] == "ok" \
+                        and (best is None or abs(g - f) < abs(best[0] - f)):
+                    best = (g, got[0][2])
+            return ctx, kind, a[:5] + (best,)
+
+        for n_set, n in enumerate(sets[:1] if screen else sets):
+            fs, _w, chains = cc.split_set(n, f_joint)
+            for i in chains[0] + chains[1]:
+                f = float(fs[i])
+                if f in sent:
+                    continue
+                h = port.submit((self.task_ctx, "node", args + (f, None)), prepare, 0 if n_set < 2 else 1)
+                self.handles.append(h)
+                sent[f] = h
+        return key
+
+    def split_evidence(self, b, theta, pair, *, sets=cc.SPLIT_NODE_SETS, screen=False):
+        """Without a port: today's serial integral. With one (D1): the nodes come from tasks (``send_split``) and
+        ``integrate_split`` reads them in today's order. A node that failed is retried once from today's serial
+        start (its solved neighbour) when its task started elsewhere; still failing, one ``"split_serial"`` task
+        reruns the whole integral serially and its result is final. ``n_split_nodes`` counts each node read and
+        each retry. An integral's result is kept per key, so the ABNORMAL retry's re-entry reads the same one."""
+        if self.port is None:
+            return super().split_evidence(b, theta, pair, sets=sets, screen=screen)
+        model = b.model
+        key = self.send_split(model, theta, pair, sets, screen)
+        if key in self.splits:
+            return self.splits[key]
+        sent = self.split_sent.pop(key)
+        problem = self.split_problem(model, theta, pair)
+        args = (_vkey(model.variant), tuple(model.delta), np.array(theta, dtype=float), tuple(pair))
+        solved, lnz_at, read = {}, {}, set()
+
+        def node(f, near):
+            self.n_split_nodes += 1
+            read.add(f)
+            out, f0 = self._node_result(sent[f])
+            if out[0] != "ok":
+                serial = near if near is not None else min(solved, key=lambda g: abs(g - f), default=None)
+                if serial is None or serial == f0:
+                    raise _SplitFallback
+                self.n_split_nodes += 1
+                h = self.port.submit((self.task_ctx, "node", args + (f, (serial, solved[serial]))))
+                self.handles.append(h)
+                out, _f0 = self._node_result(h)
+                if out[0] != "ok":
+                    raise _SplitFallback
+            solved[f], lnz_at[f] = out[2], out[1]
+            return out[1]
+
+        try:
+            res = cc.split_representative(cc.integrate_split(node, problem[2], sets=sets, screen=screen), problem,
+                                          solved, lnz_at)
+        except _SplitFallback:
+            res = None
+        finally:
+            self.port.drop([h for f, h in sent.items() if f not in read])
+        if res is None:                         # only the serial integral can promise what the serial path finds
+            h = self.port.submit((self.task_ctx, "split_serial", args + (tuple(sets), bool(screen))))
+            self.handles.append(h)
+            res = self.port.wait(h)
+            self.n_split_nodes += res.nodes
+        self.splits[key] = res
+        return res
+
+    def _node_result(self, h):
+        """A node task's (outcome, start f); a task that raised is a failed node from the joint start."""
+        try:
+            return self.port.wait(h)
+        except Exception:
+            log.warning("coupled refit: a split node task failed; treated as a failed node", exc_info=True)
+            return ("fail", "the node task failed"), None
+
+    def split_problem_of(self, vk, delta, theta, pair):
+        """A worker's ``split_problem`` for one integral, kept per integral (a pure function of its inputs)."""
+        memo = vars(self).setdefault("split_problems", {})
+        key = (vk, delta, theta.tobytes(), pair)
+        if key not in memo:
+            memo[key] = self.split_problem(self.model(self.variant_of(vk), delta), theta, pair)
+        return memo[key]
 
     def close_port(self):
         if self.port is not None:
@@ -315,6 +448,10 @@ class _Labelled(cc.CoupledEngine):
             if out[n][2] is None:
                 out[n] = (out[n][0], out[n][1], float(theta[model.modes[pos][2]]), out[n][3])
         return out
+
+
+class _SplitFallback(Exception):
+    """A split node failed after its retry (or with none possible): the parallel reading of that integral stops."""
 
 
 def _vkey(v) -> tuple:
@@ -712,7 +849,9 @@ def run_task(ctx: bytes, kind: str, args: tuple) -> object:
     """A pool worker's entry (C-core): one task of one job's price, run to completion on this worker's engine for
     the job (``tasks.worker_engine``) with a clean ledger. ``"fit"`` (variant index, start index), ``"seed"`` and
     ``"basin"`` run that piece of today's serial price with the recorder on and return {primitive key: outcome};
-    ``"prim"`` returns one primitive's outcome. Plain picklable values only."""
+    ``"prim"`` returns one primitive's outcome; ``"node"`` one split node from the given start (or the joint one),
+    (``_split_node`` outcome, start f); ``"split_serial"`` one whole split integral by today's serial path, its
+    ``SplitResult``. Plain picklable values only."""
     eng = _tasks.worker_engine(ctx, _worker_engine)
     eng.reset_ledger()
     job, k = eng.job, eng.job.count
@@ -731,6 +870,15 @@ def run_task(ctx: bytes, kind: str, args: tuple) -> object:
         eng.price(b)
     elif kind == "prim":
         return eng.run_prim(args[0])
+    elif kind == "node":
+        vk, delta, theta, pair, f, start = args
+        problem = eng.split_problem_of(vk, delta, theta, pair)
+        starts = [problem[1]] if start is None else [start[1], problem[1]]
+        return eng._split_node(problem, f, starts), None if start is None else start[0]
+    elif kind == "split_serial":
+        vk, delta, theta, pair, sets, screen = args
+        model = eng.model(eng.variant_of(vk), delta)
+        return eng.split_evidence(_BasinPoint(model, theta), theta, pair, sets=sets, screen=screen)
     else:
         raise ValueError(f"unknown task kind {kind!r}")
     return eng.record
@@ -749,7 +897,9 @@ def price(snapshot: Snapshot, job: PricingJob, *, gradients: bool = True,
     (``CoupledEngine.objective_and_gradient``); False prices with finite differences, as before that existed.
     ``tasks``: a task port (C-port). The fits, the seed and each wave's basins without a hidden pair go to its pool
     as tasks and this thread replays today's code from their outcomes, so the price equals the serial one in every
-    field but ``seconds``; a split integral still runs here. None: today's serial path."""
+    field but ``seconds`` for a job without a split basin; a split integral's nodes are tasks too, every node set
+    sent at once and read in today's order, so a split basin's ln Z and point may shift within D1. None: today's
+    serial path."""
     t0 = time.perf_counter()
     k, slots = job.count, tuple(job.slots)
     if len(slots) != k:
@@ -798,8 +948,7 @@ def price(snapshot: Snapshot, job: PricingJob, *, gradients: bool = True,
                 if b.status == "pending":
                     eng.absorb(wave.pop(id(b), None))
                     eng.price(b)
-            if wave:
-                tasks.drop(wave.values())       # basins merged or settled before their turn
+            eng.end_wave(wave)
     finally:
         eng.close_port()
     basins = [b for b in eng.basins() if b.count == k]

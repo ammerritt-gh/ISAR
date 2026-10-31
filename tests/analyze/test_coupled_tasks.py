@@ -1,4 +1,4 @@
-"""One candidate's price through the task port (plan S1U1, checks 1, 4 and 5) on synthetic spectra generated at test
+"""One candidate's price through the task port (plan S1U1, checks 1 to 5) on synthetic spectra generated at test
 time (no measured value).
 
 ``ThreadPort`` is a thread-backed test port (ThreadPoolExecutor(4)) honouring C-port: ``prepare`` runs when a task
@@ -13,6 +13,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
+from isar.analyze.coupled import engine as cc
 from isar.analyze.coupled import refit as R
 from isar.analyze.coupled.tasks import Abandoned
 from test_coupled_refit import _entry_snapshot, _job
@@ -51,9 +52,12 @@ class ThreadPort:
         fut.set_running_or_notify_cancel()
         try:
             payload = pickle.loads(pickle.dumps(prepare(payload) if prepare else payload))
-            fut.set_result(pickle.loads(pickle.dumps(R.run_task(*payload))))
+            fut.set_result(pickle.loads(pickle.dumps(self.execute(payload))))
         except BaseException as exc:        # the port hands run_task's exception to wait, whatever it is
             fut.set_exception(exc)
+
+    def execute(self, payload):
+        return R.run_task(*payload)
 
     def wait(self, handle):
         with self.lock:
@@ -168,18 +172,103 @@ def test_a_price_through_the_port_equals_the_serial_price_in_every_field_but_its
     assert {"fit", "seed", "basin"} <= set(port.kinds), port.kinds
 
 
-def test_a_hidden_pair_job_prices_equal_too_while_its_split_integral_runs_in_the_replay(port):
-    # packet P1: a split basin's integral runs in the job's thread as today, and its not-converged Laplace
-    # fallback's primitives go to the pool one at a time; P2 sends its nodes as tasks and bounds the shift (D1)
+# 2 and 3 split nodes as tasks (D1) -----------------------------------------------------------------------------
+def _hidden():
     from inter_hidden_case import hidden_snapshot
 
     from isar.analyze.coupled.types import PricingJob, Start
     snap = hidden_snapshot(3.0, asimov=True)
-    job = PricingJob("y", snap.snapshot_id, 2, ("b1", "b2"), "k",
-                     (Start("neighbour", ((8.0, 0.4, None), (7.2, 0.4, None))),))
+    return snap, PricingJob("y", snap.snapshot_id, 2, ("b1", "b2"), "k",
+                            (Start("neighbour", ((8.0, 0.4, None), (7.2, 0.4, None))),))
+
+
+def _best_label(p):
+    return max(p.basins, key=lambda b: b[0])[1]
+
+
+def test_a_hidden_pair_job_through_the_port_keeps_its_decision_and_its_ln_z_within_the_agreement_tolerance(port):
+    # D1: every node starts from the nearest node solved when it is sent, so the split basin's ln Z may shift; the
+    # bound is the integral's own agreement tolerance, and the decision (status, count, labelling, best model) holds
+    snap, job = _hidden()
     serial = R.price(snap, job)
-    assert any(b[1].endswith("|split") for b in serial.basins)
-    assert replace(R.price(snap, job, tasks=port), seconds=0.0) == replace(serial, seconds=0.0)
+    tasked = R.price(snap, job, tasks=port)
+    assert (tasked.status, tasked.count, tasked.slots) == (serial.status, serial.count, serial.slots)
+    assert _best_label(tasked) == _best_label(serial) and _best_label(serial).endswith("|split")
+    assert abs(tasked.ln_z - serial.ln_z) <= cc.SPLIT_TOL_NATS
+    assert any(b[1].endswith("|split") for b in tasked.basins)
+    assert "node" in port.kinds and "split_serial" not in port.kinds
+
+
+class FailingNodePort(ThreadPort):
+    """Fails each integral's second node in chain order (never the first read, which has no solved neighbour): the
+    tasks sent with ``prepare`` (the parallel ones), or with ``every`` also the retries. A forced failure reports
+    the joint start, so the retry rule always sends one from the neighbour."""
+
+    def __init__(self, every):
+        super().__init__(4)
+        self.every, self.retries = every, []
+        self.target, self.seen = {}, {}     # integral -> its failing f; integral -> nodes sent so far
+
+    def submit(self, payload, prepare=None, rank=0):
+        ctx, kind, args = payload
+        if kind == "node":
+            key = (args[0], args[1], args[2].tobytes(), args[3])
+            n = self.seen[key] = self.seen.get(key, 0) + 1
+            if n == 2:
+                self.target.setdefault(key, args[4])
+            if prepare is None:
+                self.retries.append((key, args[4]))
+            if args[4] == self.target.get(key) and (prepare is not None or self.every):
+                payload = (ctx, "forced", args)
+        return super().submit(payload, prepare, rank)
+
+    def execute(self, payload):
+        if payload[1] == "forced":
+            return ("fail", "forced"), None
+        return super().execute(payload)
+
+
+def _count_integrals(monkeypatch):
+    """The integrals the job's own thread reads (a worker's serial integral runs on another thread)."""
+    read, real, me = [], cc.integrate_split, threading.current_thread()
+
+    def counting(*a, **kw):
+        if threading.current_thread() is me:
+            read.append(1)
+        return real(*a, **kw)
+    monkeypatch.setattr(cc, "integrate_split", counting)
+    return read
+
+
+def test_a_node_failing_from_its_parallel_start_is_retried_once_from_its_serial_neighbour(monkeypatch):
+    snap, job = _hidden()
+    serial = R.price(snap, job)
+    read = _count_integrals(monkeypatch)
+    p = FailingNodePort(every=False)
+    try:
+        tasked = R.price(snap, job, tasks=p)
+    finally:
+        p.close()
+    # exactly one retry per integral read, each for that integral's failing f (speculation may send more integrals)
+    assert read and len(p.retries) == len({k for k, _f in p.retries}) == len(read)
+    assert all(p.target[k] == f for k, f in p.retries)
+    assert "split_serial" not in p.kinds
+    assert _best_label(tasked) == _best_label(serial) and abs(tasked.ln_z - serial.ln_z) <= cc.SPLIT_TOL_NATS
+
+
+def test_a_node_failing_after_its_retry_hands_the_integral_to_one_serial_task_whose_result_is_final(monkeypatch):
+    # every integral's second node fails in parallel and on its retry, so each integral is recomputed by today's serial path in a
+    # worker: the whole price then equals the serial one exactly
+    snap, job = _hidden()
+    serial = R.price(snap, job)
+    read = _count_integrals(monkeypatch)
+    p = FailingNodePort(every=True)
+    try:
+        tasked = R.price(snap, job, tasks=p)
+    finally:
+        p.close()
+    assert read and p.kinds.count("split_serial") == len(read)
+    assert replace(tasked, seconds=0.0) == replace(serial, seconds=0.0)
 
 
 # 5 Abandoned -------------------------------------------------------------------------------------------------
