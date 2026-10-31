@@ -1,6 +1,8 @@
 """The Scan(s) inter-spectra bar on real widgets (offscreen): the fit menu, the buttons' reasons and signals."""
 from __future__ import annotations
 
+from PySide6.QtCore import Qt
+
 from gui.inter_fakes import make_entry, make_history
 from gui.inter_helpers import assert_described
 from isar.workspace_api.inter_spectra import FlagInfo, FlagReason
@@ -28,14 +30,13 @@ def _bar(qtbot, state):
     return bar
 
 
-def test_menu_lists_fast_solo_then_batches_and_collapses_unchanged_refits(qtbot):
+def test_flat_dropdown_shows_every_fit_with_batch_names_and_unchanged_refits(qtbot):
     bar = _bar(qtbot, bar_state(_history(), "f1"))
-    top = bar.menu.actions()
-    assert [a.text() for a in top] == ["Fast solo", "Batch 1", "Batch 2"]
-    batch1 = top[1].menu()
-    assert [a.text() for a in batch1.actions()] == ["ring 1", "1 refit changed nothing"]
-    assert [a.text() for a in batch1.actions()[1].menu().actions()] == ["ring 2"]
-    assert [a.text() for a in top[2].menu().actions()] == ["sweep 3 · authoritative"]
+    actions = bar.menu.actions()
+    assert [a.text() for a in actions] == [
+        "Fast solo", "Batch 1 · ring 1", "Batch 1 · ring 2 · unchanged", "Batch 2 · sweep 3 · authoritative"]
+    assert all(a.menu() is None for a in actions)
+    assert [a.data() for a in actions if a.isChecked()] == ["f1"]
     assert_described(bar)
 
 
@@ -43,8 +44,51 @@ def test_choosing_an_entry_emits_its_fit_id(qtbot):
     bar = _bar(qtbot, bar_state(_history(), "f1"))
     chosen = []
     bar.fit_chosen.connect(chosen.append)
-    bar.menu.actions()[1].menu().actions()[0].trigger()
-    assert chosen == ["f1"]
+    bar.show()
+    bar.menu.popup(bar.menu_button.mapToGlobal(bar.menu_button.rect().bottomLeft()))
+    action = bar.menu.actions()[2]
+    qtbot.mouseClick(bar.menu, Qt.MouseButton.LeftButton, pos=bar.menu.actionGeometry(action).center())
+    assert chosen == ["f2"]
+
+
+def test_arrows_cross_batch_boundaries_and_refresh_does_not_emit(qtbot):
+    history = _history()
+    bar = _bar(qtbot, bar_state(history, "f1"))
+    bar.show()
+    chosen = []
+    bar.fit_chosen.connect(chosen.append)
+    bar.activateWindow()
+    bar.menu_button.setFocus()
+    qtbot.waitUntil(bar.menu_button.hasFocus)
+    for fit in ("f2", "f3"):
+        qtbot.keyClick(bar.menu_button, Qt.Key.Key_Down)
+        bar.show_state(bar_state(history, fit))
+    qtbot.keyClick(bar.menu_button, Qt.Key.Key_Down)  # last row stays put
+    qtbot.keyClick(bar.menu_button, Qt.Key.Key_Up)
+    assert chosen == ["f2", "f3", "f2"]
+    assert bar.menu_button.hasFocus()
+
+
+def test_open_menu_arrows_enter_escape_and_refresh_preserve_navigation(qtbot):
+    history = _history()
+    bar = _bar(qtbot, bar_state(history, "f1"))
+    bar.show()
+    chosen = []
+    bar.fit_chosen.connect(chosen.append)
+    bar.menu.popup(bar.menu_button.mapToGlobal(bar.menu_button.rect().bottomLeft()))
+    assert bar.menu.activeAction().data() == "f1"
+    qtbot.keyClick(bar.menu, Qt.Key.Key_Down)
+    assert bar.menu.activeAction().data() == "f2"
+    bar.show_state(bar_state(history, "f1"))
+    assert bar.menu.activeAction().data() == "f2"
+    qtbot.keyClick(bar.menu, Qt.Key.Key_Down)
+    qtbot.keyClick(bar.menu, Qt.Key.Key_Return)
+    assert chosen == ["f3"] and not bar.menu.isVisible()
+    bar.show_state(bar_state(history, "f3"))
+    bar.menu.popup(bar.menu_button.mapToGlobal(bar.menu_button.rect().bottomLeft()))
+    qtbot.keyClick(bar.menu, Qt.Key.Key_Up)
+    qtbot.keyClick(bar.menu, Qt.Key.Key_Escape)
+    assert chosen == ["f3"] and not bar.menu.isVisible()
 
 
 def test_make_authoritative_and_lock_emit_once_each(qtbot):
@@ -78,6 +122,7 @@ def test_loading_and_fast_only_states_are_disabled_with_a_reason(qtbot):
     bar.show_state(bar_state(make_history(), "fast"))
     assert not bar.menu_button.isEnabled()
     assert "Fast solo is the only fit" in bar.menu_button.toolTip()
+    assert bar.menu.actions()[0].text() == "Fast solo · authoritative"
 
 
 def test_info_line_is_elided_with_the_full_text_on_hover(qtbot):

@@ -49,7 +49,7 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | Read facade, Qt-free and read-only | Implemented | `isar/workspace_api/inter_spectra.py` | `tests/workspace_api/test_inter_facade.py` |
 | Scan list: Anchor, Flag, Lock and Inter-spectra fit columns; Set as anchor, Remove anchor | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/scan_list.py`, `isar_gui/viewmodels/scan_list.py` | `tests/gui/test_inter_scan_list.py` |
 | Processing dock: anchors list, direction, preview line, the two Start buttons | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/inter_batch_box.py`, `isar_gui/viewmodels/inter_batch.py` | `tests/gui/test_inter_batch_box.py` |
-| Scan(s) view: Inter-spectra fitting menu, Make authoritative, Lock, reasons, error-bar label, waterfall | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/inter_fit_bar.py`, `isar_gui/viewmodels/scans_page.py`, `inter_fits.py` | `tests/gui/test_inter_fit_bar.py`, `test_inter_fits.py`, `test_scans_page_inter.py` |
+| Scan(s) view: flat fit dropdown with Up/Down navigation, Make authoritative, Lock, reasons, error-bar label, waterfall | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/inter_fit_bar.py`, `isar_gui/viewmodels/scans_page.py`, `inter_fits.py` | `tests/gui/test_inter_fit_bar.py`, `test_inter_fits.py`, `test_scans_page_inter.py` |
 | Config > Inter-spectra fitting settings | Implemented | `isar_gui/main_window.py`, `isar_gui/views/inter_settings_dialog.py` | `tests/gui/test_inter_settings_dialog.py` |
 | Export and run report show the authoritative fit, labelled | Implemented | `isar/report/export.py`, `isar/report/run_report.py` | `tests/report/test_export_inter.py`, `tests/session/test_run_report_inter.py` |
 | Real-data proof and the timing record | Partial: the proof is written and gated (`ISAR_LETACON_INTER=1`) and not yet run on the real set; the q side is its own module. A finish-line timing run on a copy of the experiment is recorded in section 10; it is not the proof | `proofs/test_letacon_inter_spectra.py`, `proofs/inter_spectra_checks.py`, `proofs/test_letacon_inter_spectra_q.py`, `proofs/inter_spectra_q_checks.py` | `tests/test_inter_spectra_proof_checks.py`, `tests/test_inter_spectra_q_checks.py` |
@@ -134,6 +134,14 @@ Each line names the failure it prevents.
   names the GUI may import from this work.
 - **The fit chosen in the Scan(s) view is session-local and is not saved**, so a stored choice is never a
   second authority on which fit ISAR uses.
+
+**Browsing fits (2026-10-31).** The Inter-spectra fitting dropdown lists every completed fit of the active
+spectrum directly, oldest first: Fast solo, then refits with their batch and ring or sweep names. There
+are no batch submenus. Unchanged refits remain visible and labelled; authoritative and stale fits are
+marked, and the displayed fit is checked. In the open dropdown, Up/Down moves, Enter selects and Esc
+closes without selecting. With the dropdown button focused and its list closed, Up/Down shows the
+previous or next fit directly, including across batches, stopping at either end. Browsing only changes
+the displayed fit; Make authoritative and Lock this fit remain explicit actions in the existing bar.
 
 ## 4. How a batch fits
 
@@ -357,12 +365,12 @@ or older refit is drawn and exported in its own context, never in a later fast s
 | `isar_gui/queue_controller.py` | the GUI side of an `inter` queue item |
 | `isar_gui/viewmodels/inter_state.py` | the GUI thread's one holder of inter-spectra reads and writers |
 | `isar_gui/viewmodels/inter_batch.py` | the Processing box's state: what each control shows and why it is greyed |
-| `isar_gui/viewmodels/inter_fits.py` | the Scan(s) fit menu and bar: grouping, greyed-button rules, info line |
+| `isar_gui/viewmodels/inter_fits.py` | the Scan(s) fit bar: greyed-button rules, info line |
 | `isar_gui/viewmodels/inter_settings.py` | the rows and deltas of the settings dialog |
 | `isar_gui/viewmodels/scan_list.py` | the scan list's Anchor, Flag, Lock and Inter-spectra fit columns |
 | `isar_gui/viewmodels/scans_page.py` | the Scan(s) page's inter-spectra state |
 | `isar_gui/views/inter_batch_box.py` | the Processing dock's inter-spectra box |
-| `isar_gui/views/inter_fit_bar.py` | the Scan(s) fit menu, Make authoritative, Lock and Waterfall of fits |
+| `isar_gui/views/inter_fit_bar.py` | the Scan(s) flat fit dropdown, Make authoritative, Lock and Waterfall of fits |
 | `isar_gui/views/inter_settings_dialog.py` | Config > Inter-spectra fitting settings |
 | `isar_gui/main_window.py` | the Config menu entry and the window wiring |
 

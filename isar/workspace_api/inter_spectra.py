@@ -80,7 +80,7 @@ class InterOverview:
 class FitEntry:                           # completed fits only (rejected/failed are never offered)
     fit_id: str; label: str                                # "Fast solo" | "Batch 1 · ring 2" | "Batch 2 · sweep 3"
     batch_id: str | None; batch_label: str | None; stage_label: str | None    # "ring 2" | "sweep 3"
-    changed: bool                                          # False: an unchanged refit (collapsed in the menu)
+    changed: bool                                          # False: an unchanged refit (labelled in the flat dropdown)
     authoritative: bool; picked: bool; locked: bool; stale: bool; stale_text: str | None
     flag: FlagInfo | None; why_changed: tuple[FlagReason, ...]
     conditional_errors: bool                               # True for every refit; False for Fast solo

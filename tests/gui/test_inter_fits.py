@@ -1,10 +1,10 @@
-"""The inter-spectra fit menu's grouping and the bar's rules: pure, no Qt."""
+"""The inter-spectra fit bar's action rules: pure, no Qt."""
 from __future__ import annotations
 
 from gui.inter_fakes import make_entry, make_history
 from isar.workspace_api.inter_spectra import FlagInfo, FlagReason
 from isar_gui.inter_words import CONDITIONAL_ERRORS, ERRORS_UNAVAILABLE
-from isar_gui.viewmodels.inter_fits import bar_state, entry_tip, group_fits
+from isar_gui.viewmodels.inter_fits import bar_state, entry_tip
 
 B1 = ("b1", "Batch 1")
 B2 = ("b2", "Batch 2")
@@ -22,21 +22,6 @@ def _history():
     return make_history(_refit("f1", B1, "ring 1"),
                         _refit("f2", B1, "ring 2", changed=False),
                         _refit("f3", B2, "sweep 3", authoritative=True, flag=lost))
-
-
-def test_fast_solo_is_solo_and_each_batch_is_a_group_oldest_first():
-    solo, groups = group_fits(_history())
-    assert [e.fit_id for e in solo] == ["fast"]
-    assert [(g.label, [e.fit_id for e in g.changed], [e.fit_id for e in g.unchanged]) for g in groups] == [
-        ("Batch 1", ["f1"], ["f2"]),
-        ("Batch 2", ["f3"], []),
-    ]
-
-
-def test_a_spectrum_with_only_fast_solo_has_no_groups():
-    solo, groups = group_fits(make_history())
-    assert [e.fit_id for e in solo] == ["fast"]
-    assert groups == ()
 
 
 def test_the_tip_gives_the_reasons_for_a_change_and_for_a_flag():

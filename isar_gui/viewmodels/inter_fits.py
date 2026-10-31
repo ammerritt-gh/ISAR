@@ -1,6 +1,6 @@
-"""The Scan(s) inter-spectra fit menu and bar: grouping, the greyed-button rules and the info line.
+"""The Scan(s) inter-spectra fit history: the greyed-button rules and the info line.
 
-Qt-free and read-only: it turns the facade's ``FitEntry`` list into what the menu and bar show. The
+Qt-free and read-only: it turns the facade's ``FitEntry`` list into what the fit bar shows. The
 page's view model calls the writers on the user's clicks, never this module (AGENTS.md hard rule 7).
 """
 from __future__ import annotations
@@ -13,18 +13,11 @@ from isar_gui.inter_words import CONDITIONAL_ERRORS, ERRORS_UNAVAILABLE, SEVERIT
 
 
 @dataclass(frozen=True)
-class BatchGroup:
-    label: str                       # "Batch 1"
-    changed: tuple[FitEntry, ...]
-    unchanged: tuple[FitEntry, ...]  # refits that changed nothing: collapsed inside the batch's menu
-
-
-@dataclass(frozen=True)
 class BarState:
     entries: tuple[FitEntry, ...] | None      # None: the history is still being read
     viewed: str                               # the fit id on show
     locked: bool
-    menu_off: str | None                      # why the fit menu is disabled; None: enabled
+    menu_off: str | None                      # why the fit list is disabled; None: enabled
     authoritative_off: str | None             # why Make authoritative is disabled; None: enabled
     lock_text: str                            # "Lock this fit" | "Unlock"
     lock_off: str | None
@@ -34,20 +27,8 @@ class BarState:
     info_tip: str                             # the full text, with the reasons
 
 
-def group_fits(entries: Sequence[FitEntry]) -> tuple[tuple[FitEntry, ...], tuple[BatchGroup, ...]]:
-    """Fast solo entries, then one group per batch in the order the batches were run."""
-    solo = tuple(e for e in entries if e.batch_id is None)
-    batches: dict[str, tuple[str, list[FitEntry], list[FitEntry]]] = {}
-    for entry in entries:
-        if entry.batch_id is None:
-            continue
-        label, changed, unchanged = batches.setdefault(entry.batch_id, (entry.batch_label or entry.batch_id, [], []))
-        (changed if entry.changed else unchanged).append(entry)
-    return solo, tuple(BatchGroup(label, tuple(c), tuple(u)) for label, c, u in batches.values())
-
-
 def entry_tip(entry: FitEntry) -> str:
-    """Why the fit changed and why it is flagged, one sentence each (the menu tooltip)."""
+    """Why the fit changed and why it is flagged, one sentence each (the row tooltip)."""
     lines = [reason_sentence(r.code, r.detail) for r in entry.why_changed]
     if entry.flag is not None:
         lines += [reason_sentence(r.code, r.detail) for r in entry.flag.reasons]
