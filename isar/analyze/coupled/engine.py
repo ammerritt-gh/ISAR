@@ -34,6 +34,8 @@ SPLIT_RIDGE = 0.1                   # nats of curvature on the pair's free width
 SPLIT_FD_REL = 1e-2                 # rel_step of the conditional Hessian (the default 1e-4 is below FD noise)
 SPLIT_OUTSIDE = 1e7                 # finite stand-in for +inf inside L-BFGS-B only
 SPLIT_ESCAPES = 4                   # saddle-escape tries per node
+SPLIT_RETRY_GTOL = 10.0             # _polish retries a gradient pass whose projected gradient exceeds this x gtol
+COLUMN_FD_REL = 1e-5                # step of a column difference: COLUMN_FD_REL x max(|value|, FWHM) meV
 # prior.laplace_log_evidence's reasons for a fit whose parameters stay undetermined (pinned by a test)
 UNDETERMINED_REASONS = ("Hessian not positive definite", "box covariance numerically singular")
 
@@ -69,6 +71,22 @@ def potential(f: Factor, u: float) -> float:
         z2 = (t / f.s) ** 2
         p = -f.C * math.expm1(-0.5 * z2)
     return p / f.d if f.d > 0 else p
+
+
+def d_potential(f: Factor, u: float) -> float:
+    """dP/du of ``potential``: Welsch C (u / s^2) exp(-u^2/(2 s^2)); quartic 4 C z^3 / (1 + z^4)^2 x sign(u) / s
+    (in w = 1/z beyond z = 1: w^5 / (1 + w^4)^2); / d on the literal arm."""
+    if f.family == "quartic":
+        z = abs(u) / f.s
+        if z > 1.0:
+            w = 1.0 / z
+            dz = 4.0 * f.C * w ** 5 / (1.0 + w ** 4) ** 2
+        else:
+            dz = 4.0 * f.C * z ** 3 / (1.0 + z ** 4) ** 2
+        dp = math.copysign(dz / f.s, u)
+    else:
+        dp = f.C * (u / f.s ** 2) * math.exp(-0.5 * (u / f.s) ** 2)
+    return dp / f.d if f.d > 0 else dp
 
 
 def mismatch(f: Factor, u: float) -> float:
@@ -127,6 +145,12 @@ class MatchedDensity:
             return -math.inf
         return self._ln_unnorm(e) - self.ln_z
 
+    def d_ln_pdf(self, e: float) -> float:
+        """d ln_pdf / d e inside the support: -ramp'(e) - (1/2) sum_f a_me P_f'(u_f)."""
+        dv = sum(sum(a for k, a in zip(f.members, f.a) if k == self.me) * d_potential(f, self._u(f, e))
+                 for f in self.factors)
+        return -(self.ep.d_penalty(e) if self.keep_ramp else 0.0) - 0.5 * dv
+
     @cached_property
     def centre(self) -> float:
         """Where the density peaks (argmax on a 401-point grid): the energy of a mode too weak to have one."""
@@ -154,10 +178,27 @@ class Entry:
         x = min(max(min(d) / self.band, 0.0), 1.0)
         return self.b_mid * x ** 3 * (10.0 - 15.0 * x + 6.0 * x * x)
 
+    def dB(self, e: float) -> float:
+        """dB/dE: the smoothstep's derivative 30 x^2 (1 - x)^2 B_mid / band, signed by the nearer edge; 0 outside
+        the band and where no edge is physical."""
+        d = [(e - self.ep.lo, 1.0)] if self.physical_lo else []
+        d += [(self.ep.hi - e, -1.0)] if self.physical_hi else []
+        if not d:
+            return 0.0
+        dist, sign = min(d, key=lambda p: p[0])
+        x = dist / self.band
+        if not 0.0 < x < 1.0:
+            return 0.0
+        return sign * self.b_mid * 30.0 * x * x * (1.0 - x) ** 2 / self.band
+
     def ln_weight(self, e: float) -> float:
         """ln(q_U p_U(E)): the discrete entry mass and the energy density together (nats)."""
         lp = self.ep.log_pdf(e)
         return lp - 0.5 * (self.b_edge + self.B(e)) if math.isfinite(lp) else -math.inf
+
+    def d_ln_weight(self, e: float) -> float:
+        """d ln_weight / d E inside the support."""
+        return self.ep.d_log_pdf(e) - 0.5 * self.dB(e)
 
 
 # ---- the split integral -------------------------------------------------------------------------------
@@ -208,18 +249,55 @@ def integrate_split(node, f_joint, *, sets=SPLIT_NODE_SETS, tol=SPLIT_TOL_NATS, 
                        tuple(done), nodes)
 
 
-def _polish(g, lo, hi, x):
-    """Two L-BFGS-B passes of g (one fails at the first tie), scaled by max(|x|, 1); +inf is replaced by a
-    finite stand-in because the first projected step can land on the box corner, where scipy then reports
-    convergence at the start. Returns (g(x), x)."""
+def _polish(g, lo, hi, x, gv=None):
+    """L-BFGS-B of g, scaled by max(|x|, 1); +inf is replaced by a finite stand-in because the first projected
+    step can land on the box corner, where scipy then reports convergence at the start. Returns (g(x), x).
+    ``gv`` None (finite differences): two passes, the second from the first's result (one fails at the first tie).
+    ``gv(x) = (g, dg/dx)``: one pass with that gradient, and a retry from its result, the scaling recomputed, only
+    when the pass reports failure or its scaled projected gradient exceeds ``SPLIT_RETRY_GTOL x gtol``. Measured on
+    the hidden-pair cases (2026-10-31): the finite-difference single pass stops short at a weak/strong tie (up to
+    1e-2 nat, on ftol with a noisy gradient); the gradient pass alone reaches the two-pass value there, and the
+    projected-gradient signal fires at most nodes (L-BFGS-B stops on ftol near 1e-4), so the retry usually runs."""
     x = np.clip(x, lo, hi)
+    opts = {"maxiter": 500, "ftol": 1e-12, "gtol": 1e-6}
+    if gv is None:
+        for _ in range(2):
+            sc = np.maximum(np.abs(x), 1.0)
+            r = minimize(lambda u: (lambda v: v if math.isfinite(v) else SPLIT_OUTSIDE)(g(u * sc)), x / sc,
+                         method="L-BFGS-B", bounds=list(zip(lo / sc, hi / sc)), options=opts)
+            x = np.clip(r.x * sc, lo, hi)
+        return g(x), x
     for _ in range(2):
         sc = np.maximum(np.abs(x), 1.0)
-        r = minimize(lambda u: (lambda v: v if math.isfinite(v) else SPLIT_OUTSIDE)(g(u * sc)), x / sc,
-                     method="L-BFGS-B", bounds=list(zip(lo / sc, hi / sc)),
-                     options={"maxiter": 500, "ftol": 1e-12, "gtol": 1e-6})
+
+        def fun(u):
+            v, d = gv(u * sc)
+            return (v, d * sc) if math.isfinite(v) else (SPLIT_OUTSIDE, np.zeros(u.size))
+        lo_s, hi_s = lo / sc, hi / sc
+        r = minimize(fun, x / sc, jac=True, method="L-BFGS-B", bounds=list(zip(lo_s, hi_s)), options=opts)
         x = np.clip(r.x * sc, lo, hi)
+        pg = np.clip(r.x - r.jac, lo_s, hi_s) - r.x
+        if r.success and np.max(np.abs(pg), initial=0.0) <= SPLIT_RETRY_GTOL * opts["gtol"]:
+            break
     return g(x), x
+
+
+def _d_logpdf(p, v: float) -> float:
+    """d logpdf / d v of a soft coordinate's ``catalogue.ResolvedPrior`` inside [lo, hi], kind by kind as its
+    ``logpdf`` (kept here: the coupled objective is its only differentiating caller)."""
+    if p.kind == "gaussian":
+        return -(v - p.mu) / p.sigma ** 2
+    if p.kind == "lognormal":                    # scipy's lognorm(s=sigma, scale=mu)
+        return -1.0 / v - math.log(v / p.mu) / (p.sigma ** 2 * v)
+    if p.kind == "softlog":
+        return -1.0 / (v + p.mu)
+    if p.kind == "energy_ramp":
+        return p.energy.d_log_pdf(v)
+    if p.kind == "qe_width":
+        return p.qe_width.d_log_pdf(v)
+    if p.kind == "flat":
+        return 0.0
+    raise ValueError(f"no derivative for prior kind {p.kind!r}")
 
 
 # ---- the engine seam ----------------------------------------------------------------------------------
@@ -234,12 +312,18 @@ class CoupledEngine(fast_pass._Engine):
     unmatched modes with identical complete priors; ln(u!) of each is added once (one
     representative basin evaluated). Continuous stage: ``continuous=True`` makes TRF minimise
     J_i = D_i + sum_f P_f + sum_unmatched B + 2 penalty (ramp), each term once.
+    ``gradients`` (default on): the posterior optimiser, each split node's optimiser and every Laplace curvature they
+    take run on one joint evaluation of the objective and its gradient (``objective_and_gradient``); off, the base
+    engine's finite-difference calls exactly.
     """
 
-    def __init__(self, ctx, settings, slots, *, n_exchangeable=(), continuous=False, screen=False, **kw):
+    def __init__(self, ctx, settings, slots, *, n_exchangeable=(), continuous=False, screen=False, gradients=True,
+                 **kw):
         super().__init__(ctx, settings, **kw)
         self._s0 = self.s                      # the guard swaps self.s temporarily; the pair rule reads the original
         self.screen = screen                   # every split integral is a screen (its first node set): a screen price
+        self.gradients = gradients             # False: the finite-difference pricing (no joint objective and gradient)
+        self.fd_posterior = False              # True: the posterior alone on finite differences (refit's ABNORMAL retry)
         self._split_done = {}                  # model -> {basin index: [pair-canonical points of its split solutions]}
         self.n_split_nodes = 0
         self.slots = list(slots)
@@ -371,14 +455,14 @@ class CoupledEngine(fast_pass._Engine):
                    and all(abs(q[i] - point[i]) <= frac * max(q[i], point[i]) for i in amps)
                    for pts in self._split_done.get(model, {}).values() for q in pts)
 
-    def split_evidence(self, b, theta, pair, *, sets=SPLIT_NODE_SETS, screen=False) -> SplitResult:
-        """ln of the integral of exp(-g) over the basin, integrating the intensity split f of ``pair``
-        (h_i = f H, h_j = (1 - f) H, Jacobian H; the height prior as it is) with every other coordinate at its
-        conditional Laplace at each f, Gauss-Legendre in f. g = cost/2 - sat - ln_prior - Jacobians, in nats,
-        the normalisation of ``prior.laplace_log_evidence`` so split and Laplace basins sum in one logsumexp.
-        The pair's free widths enter as u = ln(Gamma + knee) when their prior is 1/(Gamma + knee) (flat in u,
-        Jacobian +u), with a small ridge so a likelihood-blind width is not numerically singular."""
-        model = b.model
+    def split_problem(self, model, theta, pair):
+        """The node problem of ``split_evidence``: (objective, xi_joint, f_joint, lo, theta_of). ``objective(f)``
+        is (g, gv, h2): the node objective g(xi), its joint value and gradient gv(xi) (None with gradients off) and
+        the coordinates' upper bounds at that f. g = cost/2 - sat - ln_prior - Jacobians + ridge, in nats.
+        The gradient by the chain rule: H (coordinate of h_i) f dF/dh_i + (1 - f) dF/dh_j - 1/H; a soft-log pair
+        width u = ln(Gamma + knee) (Gamma + knee) dF/dGamma - 1 (0 for the Gamma part where theta_of clips Gamma at
+        its lower bound); an untransformed one dF/dGamma; every pair width the ridge's own term on top; every other
+        coordinate its dF/dtheta."""
         (ai, gi, ci), (aj, gj, cj) = model.modes[pair[0]], model.modes[pair[1]]
         free = [int(x) for x in model.free]
         coords = [x for x in free if x != cj]                    # ci carries H = h_i + h_j
@@ -421,33 +505,67 @@ class CoupledEngine(fast_pass._Engine):
                 ridge = sum(0.5 * SPLIT_RIDGE * ((xi[n] - mid[n]) / span[n]) ** 2 for n in wn)
                 jac = math.log(max(xi[hp], 1e-300)) + (sum(xi[n] for n in wn) if softlog else 0.0)
                 return 0.5 * self.cost(model, t) - self.sat - lp - jac + ridge
-            return g, h2
+
+            def gv(xi):
+                xi = np.asarray(xi, dtype=float)
+                if np.any(xi < lo - 1e-10) or np.any(xi > h2 + 1e-10):
+                    return math.inf, np.zeros(xi.size)
+                xi = np.clip(xi, lo, h2)
+                t = theta_of(xi, f)
+                v, dF = self._value_and_grad(model, t)
+                if dF is None:
+                    return math.inf, np.zeros(xi.size)
+                ridge = sum(0.5 * SPLIT_RIDGE * ((xi[n] - mid[n]) / span[n]) ** 2 for n in wn)
+                jac = math.log(max(xi[hp], 1e-300)) + (sum(xi[n] for n in wn) if softlog else 0.0)
+                out = dF[coords]
+                out[hp] = f * dF[ci] + (1.0 - f) * dF[cj] - (1.0 / xi[hp] if xi[hp] > 1e-300 else 0.0)
+                for gw, n in zip(widths, wn):
+                    if softlog:                                  # d Gamma / du = Gamma + knee, unless theta_of clipped it
+                        e_u = math.exp(xi[n])
+                        out[n] = (e_u * dF[gw] if e_u - knee > float(model.lo[gw]) else 0.0) - 1.0
+                    out[n] += SPLIT_RIDGE * (xi[n] - mid[n]) / span[n] ** 2
+                return v - jac + ridge, out
+            return g, (gv if self.gradients else None), h2
 
         t0 = np.array(theta, dtype=float)
         xi_joint = np.clip(np.array([t0[ci] + t0[cj] if x == ci
                                      else math.log(max(t0[x], 0.0) + knee) if softlog and x in widths else t0[x]
                                      for x in coords]), lo, hi)
         f_joint = t0[ci] / (t0[ci] + t0[cj]) if t0[ci] + t0[cj] > 1e-12 else 0.5
+        return objective, xi_joint, f_joint, lo, theta_of
+
+    def split_evidence(self, b, theta, pair, *, sets=SPLIT_NODE_SETS, screen=False) -> SplitResult:
+        """ln of the integral of exp(-g) over the basin, integrating the intensity split f of ``pair``
+        (h_i = f H, h_j = (1 - f) H, Jacobian H; the height prior as it is) with every other coordinate at its
+        conditional Laplace at each f, Gauss-Legendre in f. g = cost/2 - sat - ln_prior - Jacobians, in nats,
+        the normalisation of ``prior.laplace_log_evidence`` so split and Laplace basins sum in one logsumexp.
+        The pair's free widths enter as u = ln(Gamma + knee) when their prior is 1/(Gamma + knee) (flat in u,
+        Jacobian +u), with a small ridge so a likelihood-blind width is not numerically singular (``split_problem``).
+        With gradients on, each node's optimiser, Laplace curvature and saddle escape run on g's joint gradient."""
+        objective, xi_joint, f_joint, lo, theta_of = self.split_problem(b.model, theta, pair)
         solved, lnz_at = {}, {}                                  # f -> its solution; f -> its conditional ln Z
 
         def node(f, near):
-            g, h2 = objective(f)
+            g, gv, h2 = objective(f)
+            grad = None if gv is None else fast_pass._gradient_of(gv)
             # continuation from the previous node (a chain start: the nearest node solved so far), else the joint start
             key = near if near is not None else min(solved, key=lambda k: abs(k - f), default=None)
             why = "non-finite objective at every start"
             for start in ([solved[key]] if key is not None else []) + [xi_joint]:
-                v, x = _polish(g, lo, h2, start)
+                v, x = _polish(g, lo, h2, start, gv)
                 for _ in range(SPLIT_ESCAPES):
                     if not math.isfinite(v):
                         break
-                    lap = prior.laplace_log_evidence(g, x, lo, h2, rel_step=SPLIT_FD_REL)
+                    lap = prior.laplace_log_evidence(g, x, lo, h2, rel_step=SPLIT_FD_REL, grad=grad)
                     if lap.status != "no_evidence":
                         solved[f], lnz_at[f] = x, float(lap.ln_z)
                         return float(lap.ln_z)
                     why = lap.reason
                     # a saddle escape: follow the negative direction of the Hessian both ways (needed at weak/strong ties)
                     steps = np.minimum(SPLIT_FD_REL * np.maximum(np.abs(x), 1e-2 * (h2 - lo)), (h2 - lo) / 4.0)
-                    ev, vec = np.linalg.eigh(prior.hessian_fd(g, np.clip(x, lo + 2 * steps, h2 - 2 * steps), steps))
+                    xc = np.clip(x, lo + 2 * steps, h2 - 2 * steps)
+                    ev, vec = np.linalg.eigh(prior.hessian_fd(g, xc, steps) if grad is None
+                                             else prior.hessian_from_grad(grad, xc, steps))
                     if not np.all(np.isfinite(ev)):
                         why = "non-finite Hessian (finite differences)"
                         break
@@ -455,7 +573,7 @@ class CoupledEngine(fast_pass._Engine):
                         break
                     n = int(np.argmax(np.abs(vec[:, 0])))
                     d = 0.1 * (h2[n] - lo[n]) / abs(vec[n, 0])
-                    v, x = min((_polish(g, lo, h2, x + s * d * vec[:, 0]) for s in (1.0, -1.0)),
+                    v, x = min((_polish(g, lo, h2, x + s * d * vec[:, 0], gv) for s in (1.0, -1.0)),
                                key=lambda c: c[0])
             return why                                       # integrate_split maps the reason to undetermined or no_evidence
 
@@ -495,6 +613,117 @@ class CoupledEngine(fast_pass._Engine):
         if model.qe_w is not None and model.qe_w not in omit:
             lp += sp.ln_qe_width(theta[model.qe_w])
         return lp + sum(p.logpdf(float(theta[i])) for i, p in model.soft_priors)
+
+    def d_ln_prior(self, model, theta) -> np.ndarray:
+        """d ln_prior / d theta over every coordinate, term by term as ``ln_prior`` (inside the support). The
+        coupling enters once, through each matched density's V; the heights' and background's densities and the
+        exchangeability count are constant."""
+        sp, omit = self.sp, model.omit
+        d = np.zeros(len(theta))
+        for (a, _g, _c), slot in zip(model.modes, self.slots):
+            if a not in omit:
+                d[a] += slot.d_ln_pdf(float(theta[a])) if isinstance(slot, MatchedDensity) \
+                    else slot.d_ln_weight(float(theta[a]))
+        for _a, g, _c in model.modes:
+            if g not in omit:
+                d[g] += sp.d_ln_width(float(theta[g]))
+        if model.qe_w is not None and model.qe_w not in omit:
+            d[model.qe_w] += sp.d_ln_qe_width(float(theta[model.qe_w]))
+        for i, p in model.soft_priors:
+            d[i] += _d_logpdf(p, float(theta[i]))
+        return d
+
+    def objective_and_gradient(self, model, theta):
+        """``objective``'s f with its gradient from one joint evaluation (``_value_and_grad``): (fg, lo, hi) with
+        fg(z) = (f, df/dz), (inf, 0) outside the box; None with gradients off (the finite-difference pricing) or
+        ``fd_posterior`` set."""
+        if not self.gradients or self.fd_posterior:
+            return None
+        free = model.free
+        lo, hi = model.lo[free], model.hi[free]
+        tol = 1e-10 * np.maximum(np.abs(lo) + np.abs(hi), 1.0)
+        template = np.array(theta, dtype=float)
+
+        def fg(z):
+            z = np.asarray(z, dtype=float)
+            if np.any(z < lo - tol) or np.any(z > hi + tol):
+                return math.inf, np.zeros(z.size)
+            t = template.copy()
+            t[free] = np.clip(z, lo, hi)
+            v, d = self._value_and_grad(model, t)
+            return (math.inf, np.zeros(z.size)) if d is None else (v, d[free])
+
+        return fg, lo, hi
+
+    def _value_and_grad(self, model, t):
+        """(F, dF/dtheta) at the full vector t, F = cost/2 - sat - ln_prior exactly as ``objective`` computes it
+        (the same mean, summed in the same order); (inf, None) where the prior has no support.
+        dF/dmu = 1 - y/mu (0 where mu is clipped at FMIN); a height's, the elastic's, the QE's and the background's
+        derivative from their columns; a free energy or width from the difference of its mode's complete
+        height-normalised convolved column (``units``, peak-height normalisation included) at +-COLUMN_FD_REL x
+        max(|value|, FWHM), one-sided inward within a step of a bound, every column in ONE ``units`` call; a free QE
+        width the same through ``qe_column``; minus ``d_ln_prior``."""
+        lp = self.ln_prior(model, t)
+        if not math.isfinite(lp):
+            return math.inf, None
+        free = set(int(i) for i in model.free)
+        peaks = model.variant.peaks
+
+        def shifted(pos):
+            v = float(t[pos])
+            h = COLUMN_FD_REL * max(abs(v), self.fwhm)
+            up, dn = v + h, v - h
+            if up > model.hi[pos]:
+                up = v
+            elif dn < model.lo[pos]:
+                dn = v
+            return up, dn
+
+        keys = [(t[a], t[g]) for a, g, _c in model.modes]
+        kp = list(peaks)
+        diffs = []                                   # (position, mode, index of the up column, of the down one, step)
+        for m, (a, g, _c) in enumerate(model.modes):
+            for pos in (a, g):
+                if pos not in free:
+                    continue
+                up, dn = shifted(pos)
+                for v in (up, dn):
+                    keys.append((v, t[g]) if pos == a else (t[a], v))
+                    kp.append(peaks[m])
+                diffs.append((pos, m, len(keys) - 2, len(keys) - 1, up - dn))
+        units = self.units(keys, kp) if keys else []
+        k = len(model.modes)
+        total = np.zeros_like(self.y)
+        for (_, _, c), (col, _up) in zip(model.modes, units[:k]):
+            total += t[c] * col
+        if model.el is not None:
+            total += t[model.el] * self.el_col
+        qcol = None
+        if model.qe_h is not None:
+            qcol = self.qe_column(model.qe_width(t))
+            total += t[model.qe_h] * qcol
+        if model.bg is not None:
+            total += t[model.bg]
+        mu = total * self.expo
+        r = fast_pass.poisson_residuals(self.y, mu)
+        F = 0.5 * float(r @ r) - self.sat - lp
+        clipped = mu <= fast_pass.FMIN
+        w = np.where(clipped, 0.0, 1.0 - self.y / np.where(clipped, 1.0, mu)) * self.expo   # dF/dmu x exposure
+        d = np.zeros(len(t))
+        for (_a, _g, c), (col, _up) in zip(model.modes, units[:k]):
+            d[c] = w @ col
+        for pos, m, iu, idn, step in diffs:
+            d[pos] = t[model.modes[m][2]] * (w @ (units[iu][0] - units[idn][0])) / step
+        if model.el is not None:
+            d[model.el] = w @ self.el_col
+        if model.qe_h is not None:
+            d[model.qe_h] = w @ qcol
+            if model.qe_w is not None and model.qe_w in free:
+                up, dn = shifted(model.qe_w)
+                d[model.qe_w] = t[model.qe_h] * (w @ (self.qe_column(up) - self.qe_column(dn))) / (up - dn)
+        if model.bg is not None:
+            d[model.bg] = float(np.sum(w))
+        return F, d - self.d_ln_prior(model, t)
 
     def _canonical(self, model, theta):
         return model, theta                    # labelled coordinates: never re-sort (spec 3)

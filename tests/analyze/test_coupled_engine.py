@@ -110,10 +110,14 @@ def test_zero_price_entries_reproduce_the_solo_evidence(k):
         slot = cc.Entry(sp.energy, band=1.0, b_edge=0.0, b_mid=0.0)
         return _priced(cc.CoupledEngine(ctx, s, [slot] * k, **kw), k, start)
 
-    same = coupled(n_exchangeable=(k,))
+    # the prior is the claim: on the solo engine's own (finite-difference) arithmetic it is exact
+    same = coupled(n_exchangeable=(k,), gradients=False)
     assert same.status == base.status
     assert same.ln_z == pytest.approx(base.ln_z, abs=1e-9)
-    bare = coupled()
+    # the joint gradient's arithmetic stops the optimiser elsewhere by ~1e-5 nats, the same scale as below
+    joint = coupled(n_exchangeable=(k,))
+    assert joint.status == base.status and joint.ln_z == pytest.approx(base.ln_z, abs=1e-4)
+    bare = coupled(gradients=False)
     # a constant shift of the objective moves L-BFGS-B's relative stop by ~1e-5 nats: not a prior difference
     assert bare.ln_z == pytest.approx(base.ln_z - math.lgamma(k + 1), abs=1e-4)
 

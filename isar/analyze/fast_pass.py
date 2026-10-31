@@ -243,6 +243,15 @@ def poisson_residuals(y, mu) -> np.ndarray:
     return out
 
 
+def _gradient_of(fg):
+    """The gradient alone of a joint evaluation ``fg(z) = (f, df/dz)``, NaN where f is not finite, so a Hessian
+    stencil that leaves the support reads "Hessian not finite" as the value's own stencil does."""
+    def grad(z):
+        v, g = fg(z)
+        return g if math.isfinite(v) else np.full(np.size(z), math.nan)
+    return grad
+
+
 def _ln_model_prior(n_variants: int, k: int) -> float:
     """ln of one (variant, delta mask) combination's weight within count k: 1/(V(k) 2^k)."""
     return -math.log(n_variants) - k * math.log(2.0)
@@ -1375,8 +1384,17 @@ class _Engine:
 
         return f, lo, hi
 
+    def objective_and_gradient(self, model, theta):
+        """``(fg, lo, hi)`` with ``fg(z) = (f(z), df/dz)`` from one joint evaluation of ``objective``'s f, or None:
+        the fast pass has none, so ``price`` and ``laplace`` keep their finite-difference calls exactly (a
+        subclass, the coupled engine, supplies one)."""
+        return None
+
     def laplace(self, b, f, z, lo, hi, rel_step=1e-4):
-        return prior.laplace_log_evidence(f, z, lo, hi, rel_step=rel_step)
+        fg = self.objective_and_gradient(b.model, b.theta)
+        if fg is None:
+            return prior.laplace_log_evidence(f, z, lo, hi, rel_step=rel_step)
+        return prior.laplace_log_evidence(f, z, lo, hi, rel_step=rel_step, grad=_gradient_of(fg[0]))
 
     def price_all(self):
         """Step 6 for every pending basin, until none is left (pricing can add basins)."""
@@ -1395,12 +1413,20 @@ class _Engine:
         box-rule Laplace evidence; a hit iteration limit is ``no_evidence``, never a failed model."""
         s, model = self.s, b.model
         f, lo, hi = self.objective(model, b.theta)
+        fg = self.objective_and_gradient(model, b.theta)
         z0 = b.theta[model.free]
         scale = np.maximum(np.abs(z0), 1.0)
-        res = minimize(lambda u: f(u * scale), z0 / scale, method="L-BFGS-B",
-                       bounds=list(zip(lo / scale, hi / scale)),
-                       options={"maxiter": s.posterior_maxiter, "ftol": 1e-11, "gtol": 1e-5,
-                                "maxfun": 20 * (z0.size + 1) * s.posterior_maxiter})
+        options = {"maxiter": s.posterior_maxiter, "ftol": 1e-11, "gtol": 1e-5,
+                   "maxfun": 20 * (z0.size + 1) * s.posterior_maxiter}
+        if fg is None:
+            res = minimize(lambda u: f(u * scale), z0 / scale, method="L-BFGS-B",
+                           bounds=list(zip(lo / scale, hi / scale)), options=options)
+        else:
+            def fun(u):
+                v, g = fg[0](u * scale)
+                return v, g * scale
+            res = minimize(fun, z0 / scale, method="L-BFGS-B", jac=True,
+                           bounds=list(zip(lo / scale, hi / scale)), options=options)
         b.posterior_iterations = int(res.nit)
         z = np.clip(res.x * scale, lo, hi)
         point = b.theta.copy()

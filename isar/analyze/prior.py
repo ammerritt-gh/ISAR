@@ -249,11 +249,23 @@ class SpectrumPrior:
         return -math.log(g + s.width_knee) - math.log(math.log((hi + s.width_knee)
                                                               / s.width_knee))
 
+    def d_ln_width(self, g: float) -> float:
+        """d ln_width / d Gamma inside the support (the heights' and background's densities are flat: no
+        derivative)."""
+        s = self.settings
+        return 0.0 if s.width_kind == "flat" or s.legacy_v4 else -1.0 / (g + s.width_knee)
+
     def ln_qe_width(self, w: float) -> float:
         """The central QE's intrinsic-width log density (:class:`QEWidthPrior`)."""
         if self.qe_width is None:
             raise ValueError("this spectrum has no central QE width prior (BL43LXU only)")
         return self.qe_width.log_pdf(w)
+
+    def d_ln_qe_width(self, w: float) -> float:
+        """d ln_qe_width / d w inside the support."""
+        if self.qe_width is None:
+            raise ValueError("this spectrum has no central QE width prior (BL43LXU only)")
+        return self.qe_width.d_log_pdf(w)
 
     def ln_energies(self, energies) -> float:
         """ln(k! prod g(E_i)) on the ordered region, g the penalised energy density
@@ -462,6 +474,13 @@ class EnergyPrior:
         return self._c * (_hinge(float(e), self.start, self.corner)
                           - _hinge(float(e), self.end, self.corner))
 
+    def d_penalty(self, e: float) -> float:
+        """d penalty / d e (nats per meV), any real ``e``."""
+        if self.ceiling <= 0:
+            return 0.0
+        return self._c * (_d_hinge(float(e), self.start, self.corner)
+                          - _d_hinge(float(e), self.end, self.corner))
+
     def log_pdf(self, e: float) -> float:
         """The normalised log density at ``e``; -inf outside ``[lo, hi]``. Scalar and cheap: it
         runs inside the fast pass's objective."""
@@ -469,6 +488,10 @@ class EnergyPrior:
         if not self.lo <= e <= self.hi:
             return -math.inf
         return -self.penalty(e) - self._ln_z
+
+    def d_log_pdf(self, e: float) -> float:
+        """d log_pdf / d e inside ``[lo, hi]``."""
+        return -self.d_penalty(e)
 
     def _mass_to(self, i: int, x: float) -> float:
         """Unnormalised mass of piece ``i`` from its left end to ``x`` (inside the piece)."""
@@ -545,6 +568,15 @@ def _hinge(x: float, k: float, d: float) -> float:
     if x <= k - d:
         return k - x
     return (k + d - x) ** 2 / (4.0 * d)
+
+
+def _d_hinge(x: float, k: float, d: float) -> float:
+    """d _hinge / d x."""
+    if x >= k + d:
+        return 0.0
+    if x <= k - d:
+        return -1.0
+    return -(k + d - x) / (2.0 * d)
 
 
 def energy_prior(lo: float, hi: float, fwhm: float, settings: PriorSettings) -> EnergyPrior:
@@ -660,12 +692,25 @@ class QEWidthPrior:
             return self.slope * t
         return self.slope * (t + self.corner) ** 2 / (4.0 * self.corner)
 
+    def d_penalty(self, w: float) -> float:
+        """d penalty / d w (nats per meV), any real ``w``."""
+        t = float(w) - self.knee
+        if t <= -self.corner:
+            return 0.0
+        if t >= self.corner:
+            return self.slope
+        return self.slope * (t + self.corner) / (2.0 * self.corner)
+
     def log_pdf(self, w: float) -> float:
         """The normalised log density at ``w``; -inf outside ``[lo, hi]``."""
         w = float(w)
         if not self.lo <= w <= self.hi:
             return -math.inf
         return -self.penalty(w) - self._ln_z
+
+    def d_log_pdf(self, w: float) -> float:
+        """d log_pdf / d w inside ``[lo, hi]``."""
+        return -self.d_penalty(w)
 
     def _cdf1(self, w: float) -> float:
         w = min(max(float(w), self.lo), self.hi)
@@ -759,6 +804,19 @@ def hessian_fd(f, x, steps):
     return H
 
 
+def hessian_from_grad(grad, x, steps):
+    """Central difference of the gradient ``grad`` at x, symmetrised: column i is
+    ``(grad(x + s_i e_i) - grad(x - s_i e_i)) / (2 s_i)``; 2n gradient calls. The full observed Hessian
+    of whatever ``grad`` differentiates (never a Gauss-Newton form)."""
+    x = np.asarray(x, float)
+    n = x.size
+    H = np.empty((n, n))
+    for i in range(n):
+        ei = np.zeros(n); ei[i] = steps[i]
+        H[:, i] = (np.asarray(grad(x + ei), float) - np.asarray(grad(x - ei), float)) / (2 * steps[i])
+    return 0.5 * (H + H.T)
+
+
 def _ln_interval_mass(a, b):
     """ln(Phi(b) - Phi(a)) for standardised limits, either of which may be +-inf."""
     from scipy.special import log_ndtr
@@ -802,7 +860,7 @@ def _ln_box_mass(mu, cov, lo, hi, sd):
     return float(sum(_ln_interval_mass(a[i], b[i]) for i in near))
 
 
-def laplace_log_evidence(neg_log_post, theta, lo, hi, *, rel_step=1e-4) -> LaplaceResult:
+def laplace_log_evidence(neg_log_post, theta, lo, hi, *, rel_step=1e-4, grad=None) -> LaplaceResult:
     """Posterior-mode Laplace evidence on the support box ``[lo, hi]`` (the box rule).
 
     neg_log_post(theta) = -(ln L + ln prior), finite inside the support. ``theta`` is the posterior
@@ -812,7 +870,10 @@ def laplace_log_evidence(neg_log_post, theta, lo, hi, *, rel_step=1e-4) -> Lapla
     With C = H^-1 and mu = theta - C g the quadratic's centre,
     ``ln Z = -f(theta) + g'Cg/2 + (d/2) ln 2pi - (1/2) ln det H + ln P_box``, P_box the mass of
     N(mu, C) inside the box. One railed coordinate reproduces the single-boundary correction
-    ``(g s)^2/2 + ln Phi(-g s)``. A Hessian that is not positive definite is ``no_evidence``."""
+    ``(g s)^2/2 + ln Phi(-g s)``. A Hessian that is not positive definite is ``no_evidence``.
+    ``grad`` (the gradient of neg_log_post, or None): the Hessian is the central difference of the gradient
+    (:func:`hessian_from_grad`) at the same nudged centre and steps, and a railed coordinate's inward
+    gradient is ``grad(theta)`` clipped the same way; the value still comes from neg_log_post."""
     theta = np.asarray(theta, float).copy()
     lo = np.asarray(lo, float)
     hi = np.asarray(hi, float)
@@ -826,7 +887,7 @@ def laplace_log_evidence(neg_log_post, theta, lo, hi, *, rel_step=1e-4) -> Lapla
     # the support. Keep central and mixed differences inside even just beyond that tolerance.
     x = np.clip(theta, lo + 2.0 * steps, hi - 2.0 * steps)
     f0 = float(neg_log_post(theta))
-    H = hessian_fd(neg_log_post, x, steps)
+    H = hessian_fd(neg_log_post, x, steps) if grad is None else hessian_from_grad(grad, x, steps)
     if not np.all(np.isfinite(H)):
         return LaplaceResult(math.nan, "no_evidence", "Hessian not finite", math.nan, None, "", 0.0)
     try:
@@ -837,12 +898,18 @@ def laplace_log_evidence(neg_log_post, theta, lo, hi, *, rel_step=1e-4) -> Lapla
     ln_det = 2.0 * float(np.sum(np.log(np.diag(L))))
     cov = np.linalg.inv(H)
     g = np.zeros(d)
-    for i in np.flatnonzero(at_lo):
-        e = np.zeros(d); e[i] = steps[i]
-        g[i] = max((float(neg_log_post(theta + e)) - f0) / steps[i], 0.0)
-    for i in np.flatnonzero(at_hi):
-        e = np.zeros(d); e[i] = steps[i]
-        g[i] = -max((float(neg_log_post(theta - e)) - f0) / steps[i], 0.0)
+    if grad is not None:
+        if at_lo.any() or at_hi.any():
+            g0 = np.asarray(grad(theta), float)
+            g[at_lo] = np.maximum(g0[at_lo], 0.0)
+            g[at_hi] = np.minimum(g0[at_hi], 0.0)
+    else:
+        for i in np.flatnonzero(at_lo):
+            e = np.zeros(d); e[i] = steps[i]
+            g[i] = max((float(neg_log_post(theta + e)) - f0) / steps[i], 0.0)
+        for i in np.flatnonzero(at_hi):
+            e = np.zeros(d); e[i] = steps[i]
+            g[i] = -max((float(neg_log_post(theta - e)) - f0) / steps[i], 0.0)
     mu = theta - cov @ g
     try:
         ln_box = _ln_box_mass(mu, cov, lo, hi, np.sqrt(np.diag(cov)))
