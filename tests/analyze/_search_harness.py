@@ -13,7 +13,7 @@ from __future__ import annotations
 from isar.analyze import fast_pass
 from isar.analyze.coupled import rules
 from isar.analyze.coupled.refit import open_search
-from isar.analyze.coupled.search import drive
+from isar.analyze.coupled.search import Search, drive
 from isar.analyze.coupled.types import Priced, Snapshot, Start, TermInput
 from isar.session.inter_spectra.graph import Term
 from test_coupled_refit import S, held, record, spectrum
@@ -23,15 +23,18 @@ NOQE = (True, True, False)
 
 class Scripted:
     def __init__(self, table=None, *, default=-120.0, peak=(20.0, 1.0), outcomes=None, crossed=None, at=None,
-                 variants=None, split=()):
+                 variants=None, split=(), screen=None):
         """table {(k, labels): mass}; default: a mass, or {k: mass} with -120 elsewhere; outcomes {k or (k, labels):
         (status, reason)}; crossed {(k, labels): (crossed labels, mass, also)}: a basin at the same energies under
         the crossed labels (``also`` False: the only basin); at {(k, labels): energies} pins the basin (default:
         where the labelling's first start was, so every start of one labelling reaches one basin); variants
-        {(k, labels): [(variant, mass), ...]}; split: labellings whose first two modes come back as a placed pair."""
+        {(k, labels): [(variant, mass), ...]}; split: labellings whose first two modes come back as a placed pair;
+        screen {(k, labels): offset}: a split labelling's screen term is its full term plus the offset (default 0). A
+        price echoes the job's depth and carries screen_terms (C-depth): a split basin's screen term, else None;
+        under a screen job the split basin's term is its screen term."""
         self.table, self.default, self.peak = dict(table or {}), default, peak
         self.outcomes, self.crossed, self.at = outcomes or {}, crossed or {}, at or {}
-        self.variants, self.split = variants or {}, set(split)
+        self.variants, self.split, self.screen = variants or {}, set(split), screen or {}
         self.M, self.asked = None, []
 
     def value(self, k, labels):
@@ -59,21 +62,26 @@ class Scripted:
         energies = self.at.setdefault((k, labels), tuple(st.modes[i][0] for i in order))
         out = self.outcomes.get((k, labels)) or self.outcomes.get(k)
         if out is not None:
-            return Priced(job.key, k, job.slots, None, out[0], None, out[1], len(job.starts), 0.001)
+            return Priced(job.key, k, job.slots, None, out[0], None, out[1], len(job.starts), 0.001, depth=job.depth)
         basins = [self.basin(k, labels, energies, m, v) for v, m in self.variants.get((k, labels), [])]
         basins = basins or [self.basin(k, labels, energies, self.value(k, labels))]
         if (k, labels) in self.crossed:
             other, mass, also = self.crossed[(k, labels)]
             basins = (basins if also else []) + [self.basin(k, other, energies, mass, tag="crossed")]
+        off, screen = self.screen.get((k, labels), 0.0), job.depth == "screen"
+        split = [b[1].endswith("|split") for b in basins]
+        if screen:
+            basins = [(b[0] + off, *b[1:]) if s else b for b, s in zip(basins, split)]
+        terms = tuple(b[0] + (0.0 if screen else off) if s else None for b, s in zip(basins, split))
         best = max(basins, key=lambda b: b[0])
         lnz = best[0] + rules.ln_w_label(k, sum(b is not None for b in labels), self.M)
         return Priced(job.key, k, job.slots, lnz, "ok", best[4], None, len(job.starts), 0.001, tuple(basins), (),
-                      self.peak)
+                      self.peak, depth=job.depth, screen_terms=terms)
 
 
-def run(snapshot, scripted):
-    """(Assignment, prices, the Search) of one scripted search."""
-    s = open_search(snapshot)
+def run(snapshot, scripted, *, screens=None):
+    """(Assignment, prices, the Search) of one scripted search; ``screens`` the search's mode (None: refit's entry)."""
+    s = open_search(snapshot) if screens is None else Search(snapshot, screens=screens)
     scripted.M = s.M
     a, used = drive(s, scripted)
     return a, used, s
@@ -124,7 +132,7 @@ def ledger(snapshot, priced):
     the decision weighs."""
     s = open_search(snapshot)
     for p in priced:
-        s.meta[p.key] = {"purpose": "seed", "source": "test", "new": ()}
-        for rec in p.basins:
-            s._file(rec, p, p)              # _file reads only the job's key
+        s.meta[p.key] = {"purpose": "seed", "source": "test"}
+        s.current[p.key] = (p, p)           # the ledger reads only the job's key, count and depth
+    s._rebuild()
     return s
