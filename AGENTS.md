@@ -353,4 +353,5 @@ review item.
 - 2026-10-31 · floor: operator: round numbers in discussion; two-decimal figures do not help him ("11.32 versus 11 is basically the same").
 - 2026-10-27 · floor: an acs-job --test-command with single quotes reaches pytest literally on Windows (every xdist worker exits 4, "no active workers"); use double quotes, passed via python.
 - 2026-10-31 · floor: operator: never re-run known-slow old code as a baseline ("we know it's unbearably slow"); check new arithmetic directly, time only new code.
+- 2026-11-01 · floor: operator: speed work is built and landed, not measured; no timing, calibration or before/after campaign as acceptance ("tired of measuring", IS26).
 - 2026-10-31 · floor: acs-job disposition of a P1 finding needs --evidence <artifact hex id, 8+ hex>, never a file path; it refuses otherwise.
