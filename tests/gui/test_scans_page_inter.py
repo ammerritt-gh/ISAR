@@ -9,7 +9,7 @@ import os
 from dataclasses import replace
 
 import pytest
-from PySide6.QtCore import QEvent
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import QApplication
 
 import isar
@@ -232,6 +232,25 @@ def test_bar_is_hidden_without_inter_state_and_loading_history_is_said(qtbot, sc
     assert not page.inter_mount.isHidden() and "reading" in page.inter_bar.menu_button.text()
 
 
+def test_fit_dropdown_arrows_change_the_plotted_fit_without_writing(setup, reads, qtbot):
+    page, inter = setup
+    last = make_entry("r3", "Batch 2 · sweep 1", batch_id="b2", batch_label="Batch 2", stage_label="sweep 1")
+    inter.histories[ONE_MODE] = make_history(_refit("r1", "ring 1"), _refit("r2", "ring 2", changed=False), last)
+    _select(page, ONE_MODE)
+    fits = page.inter_bar.menu_button
+    fits.setFocus()
+    for fit_id in ("r1", "r2", "r3"):
+        qtbot.keyClick(fits, Qt.Key.Key_Down)
+        page.flush_redraw()
+        assert reads[-1] == {ONE_MODE: fit_id}
+        assert page._drawn_state.inter.viewed == fit_id
+        assert [a.data() for a in page.inter_bar.menu.actions() if a.isChecked()] == [fit_id]
+    qtbot.keyClick(fits, Qt.Key.Key_Up)
+    page.flush_redraw()
+    assert reads[-1] == {ONE_MODE: "r2"}
+    assert not inter.calls
+
+
 def _fresh_page(qtbot, scans_view_ws_readonly):
     ws = Workspace.open(scans_view_ws_readonly)
     page = ScansPage(ScanListViewModel(ws), ws)
@@ -308,7 +327,7 @@ def test_choosing_a_refit_leaves_overlay_so_its_curve_shows(setup, reads):
     assert next(t for t in page._drawn_state.traces if t.active).curves
 
 
-def test_waterfall_marks_the_fit_chosen_in_the_menu(setup, reads):
+def test_waterfall_marks_the_fit_chosen_in_the_list(setup, reads):
     page, inter = setup
     inter.histories[ONE_MODE] = make_history(_refit("r1", "ring 1"), _refit("r2", "ring 2", authoritative=True))
     inter.overview = make_overview(by_key={ONE_MODE: _row(ONE_MODE, "r2")})
@@ -322,7 +341,7 @@ def test_waterfall_marks_the_fit_chosen_in_the_menu(setup, reads):
     assert labels == ["Batch 1 · ring 1"]
 
 
-def test_waterfall_cap_still_draws_the_fit_chosen_in_the_menu(setup, reads):
+def test_waterfall_cap_still_draws_the_fit_chosen_in_the_list(setup, reads):
     page, inter = setup
     refits = [_refit(f"r{i}", f"ring {i}", authoritative=i == 3, changed=i != 2) for i in range(1, 17)]
     inter.histories[ONE_MODE] = make_history(*refits)
@@ -330,7 +349,7 @@ def test_waterfall_cap_still_draws_the_fit_chosen_in_the_menu(setup, reads):
     _select(page, ONE_MODE)
     page.vm.set_waterfall(True)
     page.flush_redraw()
-    for fit_id, label in (("r5", "Batch 1 · ring 5"), ("r2", "Batch 1 · ring 2")):    # r2 is collapsed in the menu
+    for fit_id, label in (("r5", "Batch 1 · ring 5"), ("r2", "Batch 1 · ring 2")):    # r2 is unchanged
         page.vm.choose_fit(fit_id)
         page.flush_redraw()
         state = page._drawn_state
