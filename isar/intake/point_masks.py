@@ -31,6 +31,9 @@ def _stamp(path: Path) -> tuple:
     return (str(path), st.st_mtime_ns, st.st_size)
 
 
+_reported: set = set()     # shortcut: one entry per unit file state that failed to read; a session's worth, never trimmed
+
+
 # shortcut: 256 cached units (each a set of point hashes), oldest re-read first; upgrade past a few hundred masked units
 @functools.lru_cache(maxsize=256)
 def _ids(data_dir, key: str, files: tuple) -> frozenset[str]:
@@ -39,8 +42,10 @@ def _ids(data_dir, key: str, files: tuple) -> frozenset[str]:
     exp, scan, det = key.rsplit(":", 2)
     data = read_unit_data_for_unit(data_dir, exp, int(scan), det)
     if data is None:
-        log.warning("point masks of %s: its stored unit data is missing or unreadable under %s; its masks are held",
-                    key, data_dir)
+        if (key, files) not in _reported:       # a failure is never cached, so it is reported once per file state
+            _reported.add((key, files))
+            log.warning("point masks of %s: its stored unit data is missing or unreadable under %s; its masks are held",
+                        key, data_dir)
         raise UnreadableUnit(key)
     return frozenset(point_ids(data["x"], data["counts"], data["variance"]))
 

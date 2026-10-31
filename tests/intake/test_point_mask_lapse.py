@@ -163,6 +163,21 @@ def test_the_stored_answer_follows_the_unit_file_when_the_revision_does_not_chan
     assert _si(ws.root, key).lapsed_masks[det] == (point,)
 
 
+def test_an_unreadable_unit_file_is_reported_once_per_file_state(masked, caplog):
+    ws, _data, key, _point = masked
+    exp, n, det = key.rsplit(":", 2)
+    path = unit_data_path(ws.root / "data", exp, int(n), det)
+    path.write_text("{not json", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="isar.intake.point_masks"):
+        for _ in range(3):
+            _si(ws.root, key)
+    assert sum(f"point masks of {key}" in r.getMessage() for r in caplog.records) == 1
+    path.write_text("{still not json", encoding="utf-8")       # a changed file is a new state: reported again
+    with caplog.at_level(logging.WARNING, logger="isar.intake.point_masks"):
+        _si(ws.root, key)
+    assert sum(f"point masks of {key}" in r.getMessage() for r in caplog.records) == 2
+
+
 def test_the_identities_are_read_once_per_unit_file(masked, monkeypatch):
     ws, _data, key, point = masked
     det = _det(key)
