@@ -3,7 +3,10 @@
 A viewer. Its one interaction is selection, shared both ways with the scan list through the window's
 ``Selection``; it holds no selection, scale reference or fit of its own (hard rule 7). The header says which scan
 and layout are shown and carries the intensity scale, the y-axis mode and the typed shared limit, which affect
-every cell. Cells are built once per layout and updated in place; the dock does nothing while hidden.
+every cell. Cells are built once per layout and updated in place.
+
+The array's content is one widget that lives either in this dock or, popped out, in its own top-level
+``ArrayWindow`` (its own taskbar button). It does nothing while hidden, in either host.
 """
 from __future__ import annotations
 
@@ -11,10 +14,10 @@ import logging
 from dataclasses import replace
 from time import perf_counter
 
-from PySide6.QtCore import QSignalBlocker, QSize, Qt, QTimer
-from PySide6.QtGui import QPainter
-from PySide6.QtWidgets import (QButtonGroup, QDockWidget, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QScrollArea, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtCore import QByteArray, QEvent, QRect, QSignalBlocker, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QIcon, QPainter
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QDockWidget, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
+                               QPushButton, QScrollArea, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from isar_gui.viewmodels.analyzer_array import SCALES, Y_MODES, ArrayState, AnalyzerArrayViewModel
 from isar_gui.views.analyzer_cell import CELL_MIN, AnalyzerCell
@@ -22,7 +25,8 @@ from isar_gui.views.elided_label import ElidedLabel
 
 _log = logging.getLogger(__name__)
 
-DEFAULT_SIZE = (1060, 800)           # px: the floating window's first size, clamped to the screen by the window
+DEFAULT_SIZE = (1060, 800)           # px: the window's first size; the main window clamps it to the screen
+WINDOW_KEY = "analyzer_array_window"  # view_state: {"windowed", "open", "geometry"} of the array's own window
 AXIS_THICKNESS = 20
 RING_TICK_MS = 100
 RING_PERIOD_TICKS = 24               # a slow pulse: 2.4 s from dim to bright to dim
@@ -78,8 +82,48 @@ class AxisLabel(QWidget):
         painter.end()
 
 
+class ArrayWindow(QWidget):
+    """The Analyzer array in a window of its own: a top-level window, so it has a taskbar button and native
+    minimise and maximise. Its top bar brings the array back into the main window; the dock sets the content in."""
+
+    dock_requested = Signal()
+    moved_or_resized = Signal()
+
+    def __init__(self, title: str, icon: QIcon) -> None:
+        super().__init__(None, Qt.WindowType.Window)      # no parent: a window of its own
+        self.setWindowTitle(title)
+        if not icon.isNull():
+            self.setWindowIcon(icon)
+        self._outer = QVBoxLayout(self)
+        self._outer.setContentsMargins(0, 0, 0, 0)
+        self._outer.setSpacing(0)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(6, 4, 6, 0)
+        bar.addStretch(1)
+        self.dock_button = QPushButton("Dock in main window", self)
+        self.dock_button.setObjectName("array_dock_in")
+        self.dock_button.setToolTip("Puts the Analyzer array back into the main window, where it was docked.")
+        self.dock_button.clicked.connect(self.dock_requested)
+        bar.addWidget(self.dock_button)
+        self._outer.addLayout(bar)
+
+    def set_content(self, widget: QWidget) -> None:
+        self._outer.addWidget(widget, 1)
+
+    def moveEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().moveEvent(event)
+        self.moved_or_resized.emit()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().resizeEvent(event)
+        self.moved_or_resized.emit()
+
+
 class AnalyzerArrayDock(QDockWidget):
-    def __init__(self, vm: AnalyzerArrayViewModel, parent=None) -> None:
+    openChanged = Signal(bool)   # the array shown or hidden, in either host, or its window moved
+
+    def __init__(self, vm: AnalyzerArrayViewModel, parent=None, *, window_title: str = "Analyzer array",
+                 default_rect=None) -> None:
         super().__init__("Analyzer array", parent)
         self.setObjectName("analyzer_array_dock")
         self.vm = vm
@@ -94,6 +138,14 @@ class AnalyzerArrayDock(QDockWidget):
         self.ring_timer.setInterval(RING_TICK_MS)
         self.ring_timer.timeout.connect(self._ring_tick)
         self._ring_t = 0
+        self._windowed = False              # the content is in the array's window (else in this dock)
+        self._placed = False                # the window has a place: restored from the session, or placed on open
+        self._wanted_windowed = True        # the saved choice; settle() applies it once the layout is restored
+        self._reopen = False                # the window was open at the last save
+        self._disposed = False              # the binding has gone: its window is deleted
+        self._default_rect = default_rect or (lambda: QRect(0, 0, *DEFAULT_SIZE))
+        icon = parent.windowIcon() if isinstance(parent, QWidget) else QIcon()
+        self.array_window = ArrayWindow(window_title, icon)
 
         root = QWidget(self)
         outer = QVBoxLayout(root)
@@ -154,7 +206,12 @@ class AnalyzerArrayDock(QDockWidget):
         self.scroll.setWidget(self.grid_host)
         self.body.addWidget(self.scroll)
         outer.addWidget(self.body, 1)
+        self._root = root
         self.setWidget(root)
+        root.installEventFilter(self)       # its Show and Hide are the array's, in either host
+        self.array_window.dock_requested.connect(self.dock_in)
+        self.array_window.moved_or_resized.connect(lambda: self.openChanged.emit(self.is_open()))
+        self.topLevelChanged.connect(self._floated)
 
         vm.selection.changed.connect(self.refresh)
         vm.scan_list.snapshot_changed.connect(self.refresh)
@@ -200,16 +257,122 @@ class AnalyzerArrayDock(QDockWidget):
             self._timer.stop()
             self._redraw()
 
-    def showEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        super().showEvent(event)
-        self.vm.set_active(True)
-        self.refresh()
-        self._sync_ring()
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt override)
+        if obj is self._root and event.type() in (QEvent.Type.Show, QEvent.Type.Hide):
+            self._content_shown()
+        return super().eventFilter(obj, event)
 
-    def hideEvent(self, event) -> None:  # noqa: N802 (Qt override)
-        super().hideEvent(event)
-        self.vm.set_active(False)
+    def _content_shown(self) -> None:
+        """The array's visibility is its content's, in either host: the view model and the fitting ring follow it."""
+        shown = self._root.isVisible()
+        self.vm.set_active(shown)
+        if shown:
+            self.refresh()
         self._sync_ring()
+        self.openChanged.emit(shown)
+
+    def is_open(self) -> bool:
+        return self._root.isVisible()
+
+    # ---- where the array lives: this dock, or its own window -------------------------------------
+    def show_panel(self) -> None:
+        """View > Panels opens the array where it lives: its window (placed on the first open), or the dock."""
+        if self._windowed:
+            self._show_window()
+        else:
+            self.show()
+            self.raise_()
+
+    def hide_panel(self) -> None:
+        if self._windowed:
+            self.array_window.hide()
+        else:
+            self.hide()
+
+    def pop_out(self, rect: QRect | None = None, show: bool = True) -> None:
+        """Move the content into the array's window; the dock stays in its area, hidden. ``rect`` places the window."""
+        if not self._windowed:
+            self._windowed = True
+            if self.isFloating():
+                self.setFloating(False)
+            self.hide()
+            self.array_window.set_content(self._root)
+        if rect is not None:
+            self.array_window.setGeometry(rect)
+            self._placed = True
+        if show:
+            self._show_window()
+        else:
+            self.array_window.hide()
+
+    def dock_in(self) -> None:
+        """Back into the main window: the content returns to this dock, where the dock sits in the layout."""
+        if self._windowed:
+            self._windowed = False
+            self.array_window.hide()
+            self.setWidget(self._root)
+        self._root.show()
+        self.show()
+        self.raise_()
+
+    def reset(self) -> None:
+        """View > Reset layout: the window closes and forgets its place; the next open places it afresh."""
+        self._placed = False
+        self.pop_out(show=False)
+
+    def settle(self) -> None:
+        """After the main window restores its layout: the array's host, and whether its window reopens. A layout saved
+        before this window existed floated the array as a Qt dock; that dock becomes the window where it floated."""
+        if self.isFloating():
+            self.pop_out(self.geometry(), show=self.isVisible())
+        elif not self.isVisible() and self._wanted_windowed:
+            self.pop_out(show=self._reopen)
+
+    def _show_window(self) -> None:
+        if not self._placed:
+            self.array_window.setGeometry(self._default_rect())
+            self._placed = True
+        self._root.show()
+        self.array_window.show()
+        self.array_window.raise_()
+
+    def _floated(self, floating: bool) -> None:
+        """Floating the dock (its float button, or a drag out of the layout) pops the array out into its window."""
+        if floating:
+            QTimer.singleShot(0, self, self._pop_out_when_released)
+
+    def _pop_out_when_released(self) -> None:
+        if QApplication.mouseButtons():     # still being dragged: the window goes where the mouse is let go
+            QTimer.singleShot(50, self, self._pop_out_when_released)
+        elif self.isFloating():
+            self.pop_out(self.geometry(), show=True)
+
+    def save_view_state(self, session) -> None:
+        if self._disposed:                  # a snapshot after the close: the state saved before it stands
+            return
+        geometry = bytes(self.array_window.saveGeometry().toBase64().data()).decode("ascii") if self._placed else None
+        session.view_state[WINDOW_KEY] = {
+            "windowed": self._windowed, "open": self._windowed and self.array_window.isVisible(), "geometry": geometry}
+
+    def load_view_state(self, session) -> None:
+        saved = session.view_state.get(WINDOW_KEY)
+        if not isinstance(saved, dict):
+            return
+        self._wanted_windowed = saved.get("windowed") is not False
+        self._reopen = saved.get("open") is True
+        geometry = saved.get("geometry")
+        if isinstance(geometry, str):
+            restored = QByteArray.fromBase64(geometry.encode("ascii", "replace"))
+            self._placed = self.array_window.restoreGeometry(restored)
+
+    def dispose(self) -> None:
+        """The binding is going: the window closes and goes, and that closing is not saved as a choice."""
+        if self._disposed:                  # a second close of the main window
+            return
+        self.blockSignals(True)
+        self._disposed = True
+        self.array_window.close()
+        self.array_window.deleteLater()
 
     def _redraw(self) -> None:
         if not self.vm.active:
@@ -229,7 +392,7 @@ class AnalyzerArrayDock(QDockWidget):
 
     def _sync_ring(self) -> None:
         """Run the ring timer exactly while a visible cell is fitting; a stopped ring stays painted, still."""
-        want = self.isVisible() and any(c.ringing for c in self.cells.values())
+        want = self._root.isVisible() and any(c.ringing for c in self.cells.values())
         if want and not self.ring_timer.isActive():
             self.ring_timer.start()
         elif not want and self.ring_timer.isActive():

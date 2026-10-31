@@ -30,7 +30,7 @@ from types import SimpleNamespace
 from typing import NamedTuple
 from weakref import WeakSet
 
-from PySide6.QtCore import QByteArray, QEvent, QPoint, Qt, QTimer, QUrl
+from PySide6.QtCore import QByteArray, QEvent, QPoint, QRect, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -1052,14 +1052,19 @@ class MainWindow(QMainWindow):
             self._register_dock("Scan Table", self.scan_table_dock)
 
             # The Analyzer array: one scan's analyzers as a grid. It reads the Scan(s) page's normalisation
-            # reference, so both plots of one spectrum agree; it parks hidden and floating (see _place_docks).
+            # reference, so both plots of one spectrum agree; it parks hidden in the right area, and View > Panels
+            # opens it in its own window or in the dock, wherever it lives (see _place_docks).
             self.array_vm = AnalyzerArrayViewModel(self._ws, self.scan_list_vm, self.scans_page.vm.reference_for,
                                                    parent=self)
             self.array_vm.set_inter(self.inter)
             self.array_vm.follow_queue(self._queue)
             self.array_vm.load_view_state(self._session)
-            self.array_dock = AnalyzerArrayDock(self.array_vm, self)
+            self.array_dock = AnalyzerArrayDock(self.array_vm, self,
+                                                window_title=f"Analyzer array — {self._ws.root.name}",
+                                                default_rect=self._array_default_rect)
             self.array_dock.set_out_of_range(self.scans_page.vm.out_of_range)
+            self.array_dock.load_view_state(self._session)
+            self.array_dock.openChanged.connect(lambda _open: self._autosave())
             self._register_dock("Analyzer array", self.array_dock)
 
         # Scan(s), Plane, Dispersion and Sandbox are switchable pages of the central CenterHost,
@@ -1075,11 +1080,9 @@ class MainWindow(QMainWindow):
 
     def _show_panel(self, dock) -> None:
         """View > Panels shows ``dock``. A parked old panel joins the left column as a tab first. The Analyzer
-        array floats on its first open and is left where the user puts it after that."""
+        array opens wherever it lives: its own window (placed on its first open) or the dock."""
         if dock is self.array_dock and dock is not None:
-            self._place_array_dock_once()
-            dock.show()
-            dock.raise_()
+            dock.show_panel()
             return
         if dock in self._old_panels() and self.dockWidgetArea(dock) == Qt.NoDockWidgetArea:
             dock.setFloating(False)
@@ -1088,13 +1091,8 @@ class MainWindow(QMainWindow):
         dock.show()
         dock.raise_()
 
-    def _place_array_dock_once(self) -> None:
-        """First open: a floating window of the default size (clamped to the screen), centred over this window.
-        The placed flag is kept with the session, so a later open (or a restart) never moves it again."""
-        view_state = self._session.view_state
-        if view_state.get("array_dock_placed"):
-            return
-        dock = self.array_dock
+    def _array_default_rect(self) -> QRect:
+        """The Analyzer array window's first place: its default size, clamped to the screen, centred on this window."""
         width, height = self._available_size()
         screen = self.screen() or QGuiApplication.primaryScreen()
         origin = screen.availableGeometry().topLeft() if screen is not None else QPoint(0, 0)
@@ -1102,16 +1100,20 @@ class MainWindow(QMainWindow):
         centre = self.geometry().center()
         x = max(origin.x(), min(centre.x() - w // 2, origin.x() + width - w))
         y = max(origin.y(), min(centre.y() - h // 2, origin.y() + height - h))
-        dock.setFloating(True)
-        dock.resize(w, h)
-        dock.move(x, y)
-        view_state["array_dock_placed"] = True
+        return QRect(x, y, w, h)
+
+    def _settle_array_dock(self) -> None:
+        """Once a saved layout is restored: the array's host and whether its window reopens (see the dock)."""
+        if self.array_dock is not None:
+            self.array_dock.settle()
 
     def _hide_panel(self, dock) -> None:
         """View > Panels hides ``dock``. An old panel is parked again: a hidden tab left in the left
         column would keep its tab bar on screen."""
         if dock in self._old_panels():
             self.removeDockWidget(dock)         # hides it and takes it out of the layout
+        elif dock is self.array_dock:
+            dock.hide_panel()
         else:
             dock.hide()
 
@@ -1134,9 +1136,9 @@ class MainWindow(QMainWindow):
         self.splitDockWidget(self.log_dock, self.output_dock, Qt.Horizontal)
         for dock in self._old_panels():
             self._hide_panel(dock)
-        if self.array_dock is not None:         # parked: floating and hidden until View > Panels opens it
+        if self.array_dock is not None:         # parked hidden in the right area until View > Panels opens it
             self.addDockWidget(Qt.RightDockWidgetArea, self.array_dock)
-            self.array_dock.setFloating(True)
+            self.array_dock.setFloating(False)
             self.array_dock.hide()
         self.left_column_dock.raise_()
         self.processing_dock.raise_()
@@ -1157,7 +1159,8 @@ class MainWindow(QMainWindow):
         remembered width set to the kind's default."""
         sizes = _ARRANGEMENTS[kind]
         self._place_docks()
-        self._session.view_state.pop("array_dock_placed", None)     # the next open places the array dock afresh
+        if self.array_dock is not None:
+            self.array_dock.reset()             # the window closes and forgets its place: the next open places it
         self._close_scan_inspector()        # remembers the open width: reset the width after it
         self._inspector_width = sizes.inspector
         self.resizeDocks([self.left_column_dock], [sizes.left], Qt.Horizontal)
@@ -1267,10 +1270,13 @@ class MainWindow(QMainWindow):
             # back reopens the inspector, which widens the left panel again.
             inspector_was_open = not self.scan_inspector.isHidden()
             self._close_scan_inspector()
+            array_was_open = self.array_dock is not None and self.array_dock.is_open()
             self._compact_stash = (self.saveState(_LAYOUT_VERSION), self.saveGeometry(),
-                                   inspector_was_open)
+                                   inspector_was_open, array_was_open)
             for dock in self.findChildren(QDockWidget):
                 dock.hide()
+            if self.array_dock is not None:     # its window is no child of the main window: hide it too
+                self.array_dock.hide_panel()
             # The rail would pin the minimum width of the small card.
             self.processing_rail.hide()
             self._center_stack.setCurrentWidget(self._campaign_monitor)
@@ -1299,12 +1305,14 @@ class MainWindow(QMainWindow):
             else:
                 self._center_stack.setCurrentWidget(self._empty_hint)
             if self._compact_stash is not None:
-                state, geometry, inspector_was_open = self._compact_stash
+                state, geometry, inspector_was_open, array_was_open = self._compact_stash
                 self._compact_stash = None
                 self.restoreGeometry(geometry)
                 if not self.restoreState(state, _LAYOUT_VERSION):
                     # a stash can't be stale, but never half-apply
                     self._apply_default_arrangement(initial_arrangement(*self._available_size()))
+                elif array_was_open:
+                    self.array_dock.show_panel()
                 if inspector_was_open:
                     # The restored docks take their sizes on the next layout pass; the inspector is
                     # sized from them, so it opens after that pass.
@@ -2030,7 +2038,9 @@ class MainWindow(QMainWindow):
         self._bind_workspace(ws)
         self._bound = True
         if state is not None:
-            if not self.restoreState(state, _LAYOUT_VERSION):
+            if self.restoreState(state, _LAYOUT_VERSION):
+                self._settle_array_dock()
+            else:
                 self.log("Window layout: could not carry the arrangement across; using the default "
                          "for this screen.")
                 self._apply_default_arrangement(initial_arrangement(*self._available_size()))
@@ -2689,7 +2699,8 @@ class MainWindow(QMainWindow):
         for name, dock in self._docks.items():
             action = self._docks_menu.addAction(name)
             action.setCheckable(True)
-            action.setChecked(dock.isVisible())
+            is_array = dock is self.array_dock
+            action.setChecked(dock.is_open() if is_array else dock.isVisible())
 
             def _toggle(checked, d=dock):
                 if checked:
@@ -2707,7 +2718,8 @@ class MainWindow(QMainWindow):
             # Bind the action's own setChecked so Qt auto-drops the connection when the QAction is
             # destroyed (a Python closure capturing the action would outlive it and fire on a dead
             # C++ object during teardown). Same intent as PUFFIN's visibility handler, leak-safe.
-            dock.visibilityChanged.connect(action.setChecked)
+            # The array's check follows its content, which is hidden with its own window as well as with the dock.
+            (dock.openChanged if is_array else dock.visibilityChanged).connect(action.setChecked)
 
     # ---- open a different experiment ---------------------------------------
     def load_workspace(self, path) -> bool:
@@ -2787,6 +2799,9 @@ class MainWindow(QMainWindow):
         # capture the now-deleted docks) stay parented to the View menu. Delete it so repeated
         # rebinds don't leak one Panels menu per load.
         self._docks_menu.deleteLater()
+        if self.array_dock is not None:         # its own window goes with the binding; its state is kept first
+            self.array_dock.save_view_state(self._session)
+            self.array_dock.dispose()
         for dock in list(self._docks.values()):
             if dock is self.log_dock or dock is self.processing_dock:
                 continue  # persist across rebinds (created in __init__); keep the Log's scrollback
@@ -3045,6 +3060,8 @@ class MainWindow(QMainWindow):
             if open_extra:
                 layout["left_width"] = int(self._column_width())
             self._session.view_state["window_layout"] = layout
+            if self.array_dock is not None:     # compact mode hides the array's window: not its place to save
+                self.array_dock.save_view_state(self._session)
         # Every experiment is a real folder, a pending one included, so it belongs in the recents.
         if self._wsm.root() is not None:
             self._session.note_workspace(self._wsm.root())
@@ -3104,6 +3121,7 @@ class MainWindow(QMainWindow):
                 if isinstance(left, (int, float)) and not isinstance(left, bool):
                     self.resizeDocks([self.left_column_dock], [max(_LEFT_MIN, int(left))],
                                      Qt.Horizontal)
+                self._settle_array_dock()
                 self._sync_rail()
                 return
             message = (f"Window layout: the saved arrangement is from an older ISAR or unreadable. "
@@ -3178,4 +3196,6 @@ class MainWindow(QMainWindow):
         # Flush any pending debounced GUI-store write (watched folders / groups) before the window
         # goes. Every experiment is already a real folder, so closing asks nothing.
         self._flush_gui_store_if_pending()
+        if self.array_dock is not None:         # after the flush, which saved its state: the window goes now
+            self.array_dock.dispose()
         super().closeEvent(event)

@@ -14,8 +14,9 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect, Qt
 from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QToolButton
+from shiboken6 import isValid
 
 import bl43_fixture
 from bl43_fixture import KEY_A, KEY_B
@@ -25,6 +26,7 @@ from isar.workspace_api import Workspace
 from isar_gui import main_window as mw_mod
 from isar_gui.main_window import MainWindow
 from isar_gui.session import Session
+from isar_gui.views.analyzer_array_dock import ArrayWindow
 from isar_gui.views.analyzer_cell import CELL_MIN
 
 LAPTOP = (1108, 851)
@@ -87,55 +89,98 @@ def _geometry(dock):
 # ---------------------------------------------------------------------------
 # View > Panels, the first open, persistence
 # ---------------------------------------------------------------------------
-def test_panels_lists_it_and_the_first_open_floats_inside_the_screen(qtbot, monkeypatch, ws28):
+def test_panels_lists_it_and_the_first_open_is_its_own_window_inside_the_screen(qtbot, monkeypatch, ws28):
     w = _window(qtbot, monkeypatch, LAPTOP, ws28)
     assert "Analyzer array" in {a.text() for a in w._docks_menu.actions()}
     dock = w.array_dock
-    assert dock.isHidden() and dock.isFloating()                      # parked until opened
-    assert not w._session.view_state.get("array_dock_placed")
+    win = dock.array_window
+    assert dock.isHidden() and not win.isVisible() and not dock.is_open()   # parked until opened
     _open(w, qtbot)
-    assert dock.isVisible() and dock.isFloating() and _panels_action(w).isChecked()
-    assert QRect(0, 0, *LAPTOP).contains(dock.frameGeometry()) and dock.width() >= 800
-    assert w._session.view_state["array_dock_placed"] is True
-    placed = _geometry(dock)
+    assert win.isVisible() and dock.is_open() and _panels_action(w).isChecked()
+    assert dock.isHidden() and not dock.isFloating()                  # the dock itself stays in the main window
+    assert QRect(0, 0, *LAPTOP).contains(win.frameGeometry()) and win.width() >= 800
+    centre, placed = w.geometry().center(), win.geometry()
+    assert abs(placed.center().x() - centre.x()) <= 2 and abs(placed.center().y() - centre.y()) <= 2
     _panels_action(w).trigger()                                       # hide
     qtbot.wait(30)
-    assert dock.isHidden()
+    assert not win.isVisible() and not _panels_action(w).isChecked()
     _open(w, qtbot)                                                   # reopen: left where it was
-    assert dock.isVisible() and _geometry(dock) == placed
-    dock.move(placed.x() + 37, placed.y() + 21)                       # the operator moves it; a reopen keeps that
-    moved = _geometry(dock)
+    assert win.isVisible() and win.geometry() == placed
+    win.move(placed.x() + 37, placed.y() + 21)                        # the operator moves it; a reopen keeps that
+    moved = win.geometry()
     _panels_action(w).trigger()
     _open(w, qtbot)
-    assert _geometry(dock) == moved
+    assert win.geometry() == moved
 
 
-def test_a_restart_restores_it_visible_floating_and_in_place(qtbot, monkeypatch, ws28):
+def test_the_window_is_a_top_level_window_of_its_own(qtbot, monkeypatch, ws28):
+    w = _window(qtbot, monkeypatch, LAPTOP, ws28)
+    win = _open(w, qtbot).array_window
+    assert isinstance(win, ArrayWindow) and win.parent() is None
+    assert win.windowType() == Qt.WindowType.Window                  # its own taskbar button, not an owned dock frame
+    assert win.windowTitle() == f"Analyzer array — {w._ws.root.name}"
+    assert win.dock_button.toolTip() and win.dock_button.text() == "Dock in main window"
+
+
+def test_a_restart_reopens_the_window_open_where_it_was(qtbot, monkeypatch, ws28):
     w1 = _window(qtbot, monkeypatch, LAPTOP, ws28)
-    _open(w1, qtbot)
-    # Qt clamps a restored floating window into the real screen (the offscreen one is 800 x 600), so the
+    win1 = _open(w1, qtbot).array_window
+    # Qt clamps a restored window into the real screen (the offscreen one is 800 x 600), so the
     # operator's arrangement here is one that fits it.
-    w1.array_dock.resize(600, 450)
-    w1.array_dock.move(30, 20)
+    win1.resize(600, 450)
+    win1.move(30, 20)
     qtbot.wait(30)
     w1.array_vm.set_scale("raw")
     session = _saved(w1)
-    assert session.view_state["array_dock_placed"] is True and session.view_state["analyzer_array"]["scale"] == "raw"
+    saved = session.view_state["analyzer_array_window"]
+    assert saved["windowed"] is True and saved["open"] is True and saved["geometry"]
+    assert session.view_state["analyzer_array"]["scale"] == "raw"
     w2 = _window(qtbot, monkeypatch, LAPTOP, ws28, session=session)
     qtbot.wait(30)
-    assert w2.array_dock.isVisible() and w2.array_dock.isFloating()
-    assert _geometry(w2.array_dock).topLeft() == _geometry(w1.array_dock).topLeft()
+    win2 = w2.array_dock.array_window
+    assert win2.isVisible() and w2.array_dock.is_open() and w2.array_dock.isHidden()
+    assert win2.size() == win1.size()                                 # the frame margins move the origin by a few px
+    assert (win2.geometry().topLeft() - win1.geometry().topLeft()).manhattanLength() <= 4
     assert w2.array_vm.scale == "raw"
 
 
-def test_reset_layout_parks_it_and_clears_the_placed_flag(qtbot, monkeypatch, ws28):
+def test_a_window_closed_before_the_restart_stays_closed_and_windowed(qtbot, monkeypatch, ws28):
+    w1 = _window(qtbot, monkeypatch, LAPTOP, ws28)
+    _open(w1, qtbot)
+    w1.array_dock.array_window.close()
+    session = _saved(w1)
+    assert session.view_state["analyzer_array_window"]["open"] is False
+    w2 = _window(qtbot, monkeypatch, LAPTOP, ws28, session=session)
+    qtbot.wait(30)
+    assert not w2.array_dock.array_window.isVisible() and not w2.array_dock.is_open()
+    assert _panels_action(w2).isChecked() is False
+    _open(w2, qtbot)                                                 # and it opens in the window, as ever
+    assert w2.array_dock.array_window.isVisible()
+
+
+def test_docked_in_the_main_window_survives_a_restart(qtbot, monkeypatch, ws28):
+    w1 = _window(qtbot, monkeypatch, LAPTOP, ws28)
+    _open(w1, qtbot)
+    w1.array_dock.dock_in()
+    session = _saved(w1)
+    assert session.view_state["analyzer_array_window"]["windowed"] is False
+    w2 = _window(qtbot, monkeypatch, LAPTOP, ws28, session=session)
+    qtbot.wait(30)
+    assert w2.array_dock.isVisible() and not w2.array_dock.array_window.isVisible()
+    assert w2.array_dock._root.parentWidget() is w2.array_dock
+
+
+def test_reset_layout_closes_the_window_and_forgets_its_place(qtbot, monkeypatch, ws28):
     w = _window(qtbot, monkeypatch, LAPTOP, ws28)
-    _open(w, qtbot)
+    win = _open(w, qtbot).array_window
+    win.move(40, 30)
     w.reset_layout()
     qtbot.wait(30)
-    assert w.array_dock.isHidden() and not w._session.view_state.get("array_dock_placed")
-    _open(w, qtbot)
-    assert w.array_dock.isVisible() and w.array_dock.isFloating()
+    assert w.array_dock.isHidden() and not win.isVisible() and not w.array_dock.is_open()
+    assert _saved(w).view_state["analyzer_array_window"]["geometry"] is None
+    _open(w, qtbot)                                                  # the next open places it afresh, centred
+    assert win.isVisible() and abs(win.geometry().center().x() - w.geometry().center().x()) <= 2
+    assert win.geometry().topLeft() != QPoint(40, 30)
 
 
 def test_a_v4_blob_saved_without_the_dock_restores_and_leaves_it_hidden(qtbot, monkeypatch, ws28):
@@ -153,21 +198,50 @@ def test_a_v4_blob_saved_without_the_dock_restores_and_leaves_it_hidden(qtbot, m
     qtbot.wait(50)
     assert w2.array_dock.isHidden() and abs(w2.left_column_dock.width() - left) <= 4
     _open(w2, qtbot)                                                  # and it opens as ever
-    assert w2.array_dock.isVisible() and w2.array_dock.isFloating()
+    assert w2.array_dock.array_window.isVisible() and not w2.array_dock.isFloating()
 
 
-def test_a_rebind_keeps_it_shown_and_compact_mode_hides_and_restores_it(qtbot, monkeypatch, ws28):
+def _array_windows():
+    """The top-level ArrayWindows still alive (deleted ones are gone once their deferred delete has run)."""
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    return [x for x in QApplication.topLevelWidgets() if isinstance(x, ArrayWindow) and isValid(x)]
+
+
+def test_a_rebind_keeps_it_open_and_compact_mode_hides_and_restores_it(qtbot, monkeypatch, ws28):
     w = _window(qtbot, monkeypatch, LAPTOP, ws28)
-    _open(w, qtbot)
+    old = _open(w, qtbot).array_window
     w.array_vm.set_y_mode("shared")
     w._rebind(Workspace.open(ws28))
     qtbot.wait(50)
-    assert w.array_dock.isVisible() and w.array_dock.isFloating() and w.array_vm.y_mode == "shared"
+    assert _array_windows() == [w.array_dock.array_window] and not isValid(old)   # the old window went with its binding
+    assert w.array_dock.array_window.isVisible() and w.array_vm.y_mode == "shared"
+    w.toggle_compact_mode()
+    assert not w.array_dock.array_window.isVisible()
+    w.toggle_compact_mode()
+    qtbot.wait(50)
+    assert w.array_dock.array_window.isVisible()
+
+
+def test_a_docked_array_is_hidden_in_compact_mode_and_comes_back_docked(qtbot, monkeypatch, ws28):
+    w = _window(qtbot, monkeypatch, LAPTOP, ws28)
+    _open(w, qtbot)
+    w.array_dock.dock_in()
     w.toggle_compact_mode()
     assert w.array_dock.isHidden()
     w.toggle_compact_mode()
     qtbot.wait(50)
-    assert w.array_dock.isVisible()
+    assert w.array_dock.isVisible() and not w.array_dock.array_window.isVisible()
+
+
+def test_closing_the_main_window_leaves_no_array_window_alive(qtbot, monkeypatch, ws28):
+    w = _window(qtbot, monkeypatch, LAPTOP, ws28)
+    _open(w, qtbot)
+    assert len(_array_windows()) == 1
+    w.close()
+    qtbot.wait(30)
+    assert _array_windows() == []
+    w._snapshot_session()                                             # an autosave after the close must not touch it
+    assert w._session.view_state["analyzer_array_window"]["open"] is True
 
 
 def test_the_empty_state_has_no_dock(qtbot, monkeypatch):
@@ -196,8 +270,8 @@ def _children_inside(dock):
     """Every visible widget of the dock lies inside its parent; the scrolled grid host and pyqtgraph's own
     internals are the two things whose parent rectangle is not their bound."""
     bad = []
-    for child in dock.widget().findChildren(QLabel) + dock.widget().findChildren(QToolButton) + \
-            dock.widget().findChildren(QLineEdit):
+    for child in dock._root.findChildren(QLabel) + dock._root.findChildren(QToolButton) + \
+            dock._root.findChildren(QLineEdit):
         parent = child.parentWidget()
         if child.isVisible() and parent is not None and not parent.rect().contains(child.geometry()):
             bad.append((child.objectName() or type(child).__name__, child.geometry(), parent.rect()))
@@ -205,7 +279,7 @@ def _children_inside(dock):
 
 
 def _unclipped(dock):
-    for control in dock.widget().findChildren(QToolButton) + [dock.limit_box]:
+    for control in dock._root.findChildren(QToolButton) + [dock.limit_box]:
         if control.isVisible():
             assert control.visibleRegion().boundingRect().size() == control.size(), control.objectName() or control.text()
 
@@ -263,33 +337,122 @@ def _anchor_and_lock_something(w):
 
 
 @pytest.mark.parametrize("size", [LAPTOP, LARGE], ids=["laptop", "large"])
-def test_composed_in_the_real_window_floating_then_docked(qtbot, monkeypatch, ws28, size):
+def test_composed_in_its_own_window_then_docked_into_the_main_window(qtbot, monkeypatch, ws28, size):
     w = _window(qtbot, monkeypatch, size, ws28)
     _anchor_and_lock_something(w)
     dock = _open(w, qtbot)
     _select(w, analyzer(KEY_A, 6), analyzer(KEY_A, 9), clicked=analyzer(KEY_A, 6))
     assert len(dock.cells) == 28 and dock.cell_at("a41").key is not None      # all 28 analyzers have files here
-    assert_frame_geometry(w, size)
+    assert dock.array_window.isVisible() and dock._root.parentWidget() is dock.array_window
     assert_apart(dock, [dock.x_axis, dock.y_axis, *dock.cells.values()], "the grid and its axes")
     _check_cells_paint_inside(dock)
     assert dock.x_axis.mapTo(dock.grid_host, QPoint(0, 0)).y() >= max(
         c.mapTo(dock.grid_host, QPoint(0, 0)).y() + c.height() for c in dock.cells.values()) - 1
     _unclipped(dock)
     assert_elided_have_tooltips(dock)
-    _shot(dock, f"floating_{size[0]}x{size[1]}.png")
-    # docked into the window's right area
+    _shot(dock._root, f"window_{size[0]}x{size[1]}.png")
+    # the dock button puts it back into the main window's right area
     w.set_right_panel_collapsed(True)
-    dock.setFloating(False)
-    w.addDockWidget(Qt.RightDockWidgetArea, dock)
-    dock.show()
+    dock.array_window.dock_button.click()
     qtbot.wait(80)
-    assert not dock.isFloating() and dock.isVisible()
+    assert not dock.array_window.isVisible() and dock.isVisible() and not dock.isFloating()
     assert_frame_geometry(w, size)
     assert w.rect().contains(rect_in(w, dock))
     _check_cells_paint_inside(dock)
     _unclipped(dock)
     assert_elided_have_tooltips(dock)
     _shot(w, f"docked_{size[0]}x{size[1]}.png")
+
+
+# ---------------------------------------------------------------------------
+# its own window: the round trip, activity, the Panels check, floating, an older layout, the dock's area
+# ---------------------------------------------------------------------------
+def test_pop_out_and_dock_in_keep_one_content_and_the_same_cells(qtbot, monkeypatch, ws28):
+    w = _window(qtbot, monkeypatch, LAPTOP, ws28)
+    dock = _open(w, qtbot)
+    _select(w, analyzer(KEY_A, 6))
+    root, cells = dock._root, dict(dock.cells)
+    dock.array_window.dock_button.click()
+    qtbot.wait(30)
+    assert dock._root is root and root.parentWidget() is dock and dock.cells == cells
+    assert all(dock.cells[name] is cell for name, cell in cells.items())
+    dock.pop_out()
+    qtbot.wait(30)
+    assert dock._root is root and root.parentWidget() is dock.array_window and dock.cells == cells
+    assert dock.array_window.isVisible() and dock.isHidden()
+
+
+def test_the_array_is_inactive_while_hidden_in_either_host(qtbot, monkeypatch, ws28):
+    w = _window(qtbot, monkeypatch, LAPTOP, ws28)
+    dock = _open(w, qtbot)
+    assert w.array_vm.active
+    dock.array_window.hide()
+    assert not w.array_vm.active
+    _open(w, qtbot)
+    assert w.array_vm.active
+    dock.dock_in()
+    assert w.array_vm.active
+    dock.hide()
+    assert not w.array_vm.active
+    dock.show_panel()
+    assert w.array_vm.active
+
+
+def test_the_window_is_its_own_window_and_closing_it_unticks_panels(qtbot, monkeypatch, ws28):
+    w = _window(qtbot, monkeypatch, LAPTOP, ws28)
+    dock = _open(w, qtbot)
+    action = _panels_action(w)
+    assert action.isChecked()
+    dock.array_window.close()                                         # the window's own close button
+    assert not action.isChecked() and not dock.is_open()
+    _open(w, qtbot)
+    dock.array_window.dock_button.click()                             # the dock button leaves it checked
+    qtbot.wait(30)
+    assert action.isChecked() and dock.isVisible()
+
+
+def test_dock_in_returns_the_array_to_the_area_the_dock_sits_in(qtbot, monkeypatch, ws28):
+    w = _window(qtbot, monkeypatch, LAPTOP, ws28)
+    dock = w.array_dock
+    assert w.dockWidgetArea(dock) == Qt.RightDockWidgetArea          # never docked: the right area
+    w.addDockWidget(Qt.BottomDockWidgetArea, dock)                    # where the operator last left the dock
+    _open(w, qtbot)
+    dock.dock_in()
+    qtbot.wait(30)
+    assert w.dockWidgetArea(dock) == Qt.BottomDockWidgetArea and dock.isVisible()
+
+
+def test_floating_the_dock_pops_the_array_out_into_its_window(qtbot, monkeypatch, ws28):
+    w = _window(qtbot, monkeypatch, LAPTOP, ws28)
+    dock = _open(w, qtbot)
+    dock.dock_in()
+    qtbot.wait(30)
+    win = dock.array_window
+    dock.setFloating(True)
+    dock.setGeometry(QRect(30, 20, 600, 450))
+    floated = dock.geometry()
+    qtbot.waitUntil(lambda: win.isVisible(), timeout=2000)
+    assert not dock.isFloating() and dock.isHidden() and dock.is_open()
+    assert dock._root.parentWidget() is win and win.geometry() == floated
+
+
+def test_a_floating_array_from_an_older_layout_becomes_the_window(qtbot, monkeypatch, ws28):
+    """Layouts saved before the window existed float the array as a Qt dock; that floating dock becomes the window."""
+    w1 = _window(qtbot, monkeypatch, LAPTOP, ws28)
+    dock = w1.array_dock
+    dock.blockSignals(True)                                           # the older layout: a visible Qt floating dock
+    dock.dock_in()
+    dock.setFloating(True)
+    dock.setGeometry(QRect(30, 20, 600, 450))
+    dock.blockSignals(False)
+    floated = dock.geometry()
+    session = w1._snapshot_session()
+    session.view_state.pop("analyzer_array_window")                   # no window state: an existing user's session
+    w2 = _window(qtbot, monkeypatch, LAPTOP, ws28, session=session)
+    qtbot.wait(30)
+    win = w2.array_dock.array_window
+    assert win.isVisible() and w2.array_dock.isHidden() and not w2.array_dock.isFloating()
+    assert win.geometry() == floated and w2.array_dock.is_open()
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +468,7 @@ def test_scan_switch_time_is_measured(qtbot, monkeypatch, ws28, tmp_path):
         sel.set((key,), clicked=key)
         dock.flush_redraw()
         t1 = time.perf_counter()
-        dock.grab()                                                    # a full paint of the 28 plots
+        dock._root.grab()                                              # a full paint of the 28 plots
         return t1 - t0, time.perf_counter() - t1
 
     first = switch(analyzer(KEY_A, 6))            # first open: files read, 28 cells built
