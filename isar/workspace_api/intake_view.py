@@ -57,6 +57,7 @@ class PassInputs:
     result: Mapping | None
     changes: tuple[Change, ...]   # against the inputs in force now; () when the values are the same
     lapsed: int = 0               # of the masks it recorded, how many no longer match the data
+    unchecked: bool = False       # its masks cannot be checked now (the stored unit data are unreadable)
 
     @property
     def changed(self) -> bool:
@@ -157,7 +158,8 @@ def _now_args(used: dict, check, folder_now: str | None, named: Mapping[str, dic
     return args
 
 
-def _pass(p, current: dict | None, check, folder_now: str | None, named=None, lapsed_ids=()) -> PassInputs:
+def _pass(p, current: dict | None, check, folder_now: str | None, named=None, lapsed_ids=(),
+          unchecked=False) -> PassInputs:
     changed: tuple[Change, ...] = ()
     if current is not None:
         try:
@@ -168,7 +170,7 @@ def _pass(p, current: dict | None, check, folder_now: str | None, named=None, la
     return PassInputs(pass_name=p.pass_name, state=p.state, run=p.run, started_at=p.started_at,
                       finished_at=p.finished_at, status=p.status, inputs=p.inputs, fallbacks=p.fallbacks,
                       result=p.result, changes=changed,
-                      lapsed=len(set(p.inputs.get("point_masks") or ()) & set(lapsed_ids)))
+                      lapsed=len(set(p.inputs.get("point_masks") or ()) & set(lapsed_ids)), unchecked=unchecked)
 
 
 def fit_inputs(passes: Mapping[str, Mapping[str, object]], rows: Mapping[str, dict], index: inputs.EntryIndex,
@@ -192,10 +194,11 @@ def fit_inputs(passes: Mapping[str, Mapping[str, object]], rows: Mapping[str, di
         current = None if si is None else inputs.unit_inputs(rows[scan], si, det, calibration.get(scan))
         named = si.gpi.curves if si is not None and si.named is not None else None
         lapsed = () if si is None else si.lapsed_masks.get(det, ())
+        unchecked = si is not None and det in si.unchecked_masks
         out.append(UnitFitInputs(
             unit=unit, scan=any_pass.scan or scan, analyzer=det,
-            fast=_pass(by["fast"], current, check, folder_now, named, lapsed) if "fast" in by else None,
-            deep=_pass(by["deep"], current, check, folder_now, named, lapsed) if "deep" in by else None))
+            fast=_pass(by["fast"], current, check, folder_now, named, lapsed, unchecked) if "fast" in by else None,
+            deep=_pass(by["deep"], current, check, folder_now, named, lapsed, unchecked) if "deep" in by else None))
     return out
 
 

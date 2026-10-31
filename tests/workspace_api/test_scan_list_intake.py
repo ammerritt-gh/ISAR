@@ -177,6 +177,14 @@ def test_change_labels_and_values():
     assert _judged(stored, None) is stored
 
 
+def test_a_held_analyzers_masks_are_shown_unchecked_not_dropped():
+    from isar.intake.inputs import UNCHECKED_MASKS
+    from isar.workspace_api.scan_list import _change_line
+    p = PassInputs("fast", "finished", "r1", "t0", None, None, {"point_masks": ["x"]}, (), None,
+                   (Change("point_masks", ["x"], [], None),), unchecked=True)
+    assert _change_line(p, p.changes[0]) == ("manual point mask", "1 masked points", UNCHECKED_MASKS)
+
+
 def test_a_workspace_without_the_reads_never_raises():
     bare = SimpleNamespace(scans=[], files=[], card=None)
     assert scan_list(bare) == ScanListSnapshot()
