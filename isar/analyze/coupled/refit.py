@@ -101,10 +101,10 @@ class _Labelled(cc.CoupledEngine):
             return
         b.status, b.reason = "pending", ""
         orig = fast_pass.minimize
-        # shortcut: a module-level swap of fast_pass.minimize, because fast_pass.py gains no gradient option here;
-        # upgrade by passing the option through _Engine.price if the fast pass ever wants it too (that would change
-        # fast-pass results beyond change 8, so it is not done here). Safe: pool workers are separate processes
-        # and price is single threaded.
+        # shortcut: a module-level swap of fast_pass.minimize. The hook turns the gradient off (fd_posterior), and only
+        # the swap can pass jac="3-point"; upgrade by a jac option through _Engine.price if the fast pass ever wants one
+        # too (that changes fast-pass results beyond change 8, so it is not done here). Safe: pool workers are separate
+        # processes and price is single threaded.
         fast_pass.minimize = lambda *a, **k: orig(*a, jac="3-point", **k)
         self.fd_posterior = True
         try:
