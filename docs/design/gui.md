@@ -252,6 +252,12 @@ empty/ready layout pair, and amends G19 as stated below.
   section width and takes any spare width; narrowing the list clips columns from the right first.
   A container label elides from its right edge, preserving its scan number/name before its analyzer
   or selection count; the full label remains available on hover.
+  **Config → Scans list → Analyzer numbering** selects Facility (`a06`, the default), ISAR (`A4`),
+  or Both (`A4 • a06`). The choice is saved with the scan list's session view state and applies to
+  spectrum rows and analyzer-group headings. Names come from the card's analyzer layout through
+  `workspace_api.analyzer_array.layout_for`; missing or ambiguous mappings retain the facility name
+  with an explanation on hover. The filter accepts the displayed name and the facility name.
+  Relabelling preserves spectrum keys, selection, expansion and scroll.
 - **Scan inspector (G24, G27).** The inspector remains in the left panel and retains recorded scan/analyzer facts, QC flags, target Q, campaign-era command, counting mode, calibration and other unit metadata. G27 removes its former raw-counts plot and adds a Fit section for the stored pass summaries and mode values; the Scan(s) page owns spectrum plotting. Pooled-master numbers and tables remain inspectable even though Scan(s) does not draw pooled curves.
 
 - **Stage two (Implemented, 2026-10-27; job `ja0cd202ecb67`, on the intake backend of job

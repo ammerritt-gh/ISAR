@@ -31,7 +31,7 @@ from typing import NamedTuple
 from weakref import WeakSet
 
 from PySide6.QtCore import QByteArray, QEvent, QPoint, Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -492,6 +492,7 @@ class MainWindow(QMainWindow):
         # exists, so the saved layout (or the default for this screen) is applied once and nothing
         # re-arranges when the first data arrives.
         self.scan_list_vm.load_view_state(self._session)
+        self._sync_scan_numbering()
         self._restore_layout()
         self._sync_workspace_actions()
         QTimer.singleShot(0, self, self._surface_session_security_warnings)
@@ -2111,6 +2112,33 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda checked, option=name: self._set_scans_display(option, checked))
             self._scans_display_actions[name] = action
         scans_menu.aboutToShow.connect(self._sync_scans_display)
+        list_menu = menu.addMenu("Scans list")
+        numbering_menu = list_menu.addMenu("Analyzer numbering")
+        numbering_menu.setToolTipsVisible(True)
+        numbering_group = QActionGroup(numbering_menu)
+        numbering_group.setExclusive(True)
+        self._scan_numbering_actions = {}
+        for mode, label, tip in (
+            ("facility", "Facility (a06)", "Show each analyzer's facility name in the scans list, for example a06."),
+            ("isar", "ISAR (A4)", "Show the ISAR position from the instrument layout, for example A4. Use the facility name where no mapping is available."),
+            ("both", "Both (A4 • a06)", "Show the ISAR position, a dot, and the facility name. Use the facility name where no mapping is available."),
+        ):
+            action = numbering_menu.addAction(label)
+            action.setCheckable(True)
+            action.setActionGroup(numbering_group)
+            action.setToolTip(tip)
+            action.triggered.connect(lambda _checked, choice=mode: self._set_scan_numbering(choice))
+            self._scan_numbering_actions[mode] = action
+        numbering_menu.aboutToShow.connect(self._sync_scan_numbering)
+
+    def _sync_scan_numbering(self):
+        for mode, action in self._scan_numbering_actions.items():
+            action.setChecked(mode == self.scan_list_vm.analyzer_numbering)
+
+    def _set_scan_numbering(self, mode):
+        self.scan_list_vm.set_analyzer_numbering(mode)
+        self.scan_list_vm.save_view_state(self._session)
+        self._autosaver.request()
 
     def _sync_scans_display(self):
         for name, action in self._scans_display_actions.items():

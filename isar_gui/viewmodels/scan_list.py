@@ -13,6 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import Signal
 
 from isar.workspace_api import ImportSummary
+from isar.workspace_api.analyzer_array import layout_for
 from isar.workspace_api.spectra import NOT_JUDGED_TEXT, SpectraCache
 from isar.workspace_api.scan_list import (ATTENTION_NOT_READ, Fact, Mark, PooledRow, ScanListSnapshot, ScanSetRow,
                                           SpectrumRow, UnreadFile, natural_key, scan_list)
@@ -36,6 +37,7 @@ TITLES = {"scan": "Scan", "T": "T", "hkl": "hkl", "absq": "|Q| (nm⁻¹)", "gpi"
           "anchor": COLUMN_TITLES["anchor"], "flag": COLUMN_TITLES["flag"], "lock": COLUMN_TITLES["lock"],
           "inter": COLUMN_TITLES["fit"]}
 SORTS = ("set", "temperature", "analyzer")
+ANALYZER_NUMBERINGS = ("facility", "isar", "both")
 # What a column holds, as the header's hover (E1/E2: the result columns are another batch's).
 HEADER_TIPS = {
     "scan": "The scan set (one scan, one file per analyzer) and, under it, each analyzer's spectrum.",
@@ -273,6 +275,8 @@ class ScanListViewModel(ViewModel):
         self.spectra_cache = SpectraCache()
         self._anchor: str | None = None
         self._sort = "set"
+        self._analyzer_numbering = "facility"
+        self._layout_choice = layout_for(getattr(getattr(ws, "card", None), "policy", None))
         self._optional: set[str] = set()      # the optional columns the user switched on
         self._hidden: set[str] = set()        # auto columns the user switched off: the auto rule leaves them off
         self._auto: set[str] = set()          # auto columns on by themselves (a stored result, gpi or rf present)
@@ -438,6 +442,26 @@ class ScanListViewModel(ViewModel):
         return next(iter(units)) if len(units) == 1 else None
 
     # ---- the view settings ---------------------------------------------------------------
+    @property
+    def analyzer_numbering(self) -> str:
+        return self._analyzer_numbering
+
+    def set_analyzer_numbering(self, numbering: str) -> None:
+        if numbering in ANALYZER_NUMBERINGS and numbering != self._analyzer_numbering:
+            self._analyzer_numbering = numbering
+            self.snapshot_changed.emit()
+
+    def _analyzer_cell(self, analyzer: str | None) -> Cell:
+        if not analyzer:
+            return Cell(_DASH, "the analyzer is not known")
+        layout = self._layout_choice.layout
+        internal = layout.internal_name(analyzer) if layout is not None else None
+        if internal is None:
+            reason = self._layout_choice.how if layout is None else "analyzer is not in the instrument layout"
+            return Cell(analyzer, f"Facility: {analyzer}. ISAR numbering unavailable: {reason}.")
+        text = {"facility": analyzer, "isar": internal, "both": f"{internal} • {analyzer}"}
+        return Cell(text[self._analyzer_numbering], f"Facility: {analyzer}; ISAR: {internal}.")
+
     def set_sort(self, sort: str) -> None:
         if sort in SORTS and sort != self._sort:
             self._sort = sort
@@ -554,6 +578,7 @@ class ScanListViewModel(ViewModel):
             "import_summary": intake.summary or _NO_SUMMARY,      # None (not read yet): no marks, no lists
             "needs_attention": ATTENTION_NOT_READ if intake.attention is None else intake.attention}
         self._snapshot = scan_list(self._ws, **reads)
+        self._layout_choice = layout_for(getattr(getattr(self._ws, "card", None), "policy", None))
         self._auto = self._auto_columns()
         self.snapshot_changed.emit()
         self.selection.resync()
@@ -649,7 +674,9 @@ class ScanListViewModel(ViewModel):
                              if ss.scan_numbers else f"\nsummed set ({ss.n_merged} scans merged)"
                              if ss.n_merged else "\nsummed set")
         elif node_id.startswith("ana:"):
-            label, kind, noun = node_id[4:], "Analyzer", "scan sets"
+            cell = self._analyzer_cell(node_id[4:])
+            label, kind, noun = cell.text, "Analyzer", "scan sets"
+            tip_extra = f"\n{cell.tooltip}"
         else:
             label, kind, noun = "Pooled", "", "spectra"
         counted_noun = noun[:-1] if total == 1 and noun in ("analyzers", "scan sets") else noun
@@ -678,7 +705,8 @@ class ScanListViewModel(ViewModel):
         sets = []
         for ss in self._sorted_sets():
             listed = [sp for sp in ss.spectra if self._listed(sp.key)]
-            spectra = [sp for sp in listed if spectrum_matches(terms, ss, sp, self._inter_words(sp.key))]
+            spectra = [sp for sp in listed if spectrum_matches(
+                terms, ss, sp, (*self._inter_words(sp.key), self._analyzer_cell(sp.analyzer).text))]
             if spectra or (listed and not terms):
                 sets.append((ss, spectra))
         files = [f for f in self._snapshot.files_not_read if file_matches(terms, f)]
@@ -707,7 +735,7 @@ class ScanListViewModel(ViewModel):
             name = row.label
         else:
             ss = self._snapshot.scan_set(row.set_key)
-            name = f"{row.analyzer or _DASH}, {ss.label if ss else row.set_key}"
+            name = f"{self._analyzer_cell(row.analyzer).text}, {ss.label if ss else row.set_key}"
         return f"The selected spectrum ({name}) is outside the filter"
 
     # ---- the tree ------------------------------------------------------------------------
@@ -752,8 +780,7 @@ class ScanListViewModel(ViewModel):
         """A spectrum row under its set (``ss`` is ``None``) or under its analyzer (``ss`` given)."""
         mine = self._marks.get(sp.key, {})
         removed = sp.key in self._removed
-        scan = (Cell(ss.label) if ss is not None else
-                Cell(sp.analyzer or _DASH, None if sp.analyzer else "the analyzer is not known"))
+        scan = Cell(ss.label) if ss is not None else self._analyzer_cell(sp.analyzer)
         if removed:
             scan = Cell(f"{scan.text} (removed)", REMOVED_TIP)
         cells = {
@@ -839,7 +866,7 @@ class ScanListViewModel(ViewModel):
         session.view_state[_STATE_KEY] = {
             "columns": [c for c in OPTIONAL_COLUMNS if c in self._optional], "sort": self._sort,
             "hidden": [c for c in AUTO_COLUMNS if c in self._hidden],      # not the auto-on ones: per experiment
-            "show_removed": self._show_removed}
+            "show_removed": self._show_removed, "analyzer_numbering": self._analyzer_numbering}
 
     def load_view_state(self, session) -> None:
         st = (getattr(session, "view_state", None) or {}).get(_STATE_KEY)
@@ -852,8 +879,12 @@ class ScanListViewModel(ViewModel):
         hidden = {c for c in off if c in AUTO_COLUMNS} if isinstance(off, list) else self._hidden
         show = st.get("show_removed")
         show_removed = show if isinstance(show, bool) else self._show_removed
-        if optional != self._optional or sort != self._sort or hidden != self._hidden or show_removed != self._show_removed:
+        numbering = st.get("analyzer_numbering")
+        numbering = numbering if numbering in ANALYZER_NUMBERINGS else self._analyzer_numbering
+        if (optional != self._optional or sort != self._sort or hidden != self._hidden
+                or show_removed != self._show_removed or numbering != self._analyzer_numbering):
             self._optional, self._sort, self._hidden, self._show_removed = optional, sort, hidden, show_removed
+            self._analyzer_numbering = numbering
             self._auto = self._auto_columns()
             self.snapshot_changed.emit()
             self.selection.resync()
