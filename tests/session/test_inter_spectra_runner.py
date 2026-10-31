@@ -1528,7 +1528,7 @@ def test_a_dead_pool_fails_the_jobs_in_flight_and_raises_from_the_stream_for_cal
 def test_a_spare_worker_run_and_a_one_worker_run_reach_the_same_decision(tmp_path, monkeypatch):
     from test_inter_service_e2e import _fast_solos
     monkeypatch.setenv("ISAR_WORKERS", "4")
-    seen = {}
+    seen, models = {}, {}
     for cores in (1, 4):
         root = _fast_solos(tmp_path / f"cores{cores}")           # the same generated batch, in a workspace of its own
         k = _keys(root)
@@ -1536,9 +1536,16 @@ def test_a_spare_worker_run_and_a_one_worker_run_reach_the_same_decision(tmp_pat
         log = Bench(root).run(spec, core=None, cores=cores)
         end = log.batches[spec.batch_id].end
         assert end["state"] == "completed" and end["timing"]["pool"]["workers"] == cores
+        lines = _lines(root, spec.batch_id)
+        # the search's own decision: Assignment.selected_model (elastic, background, qe, delta, theta) as saved in came_out
+        models[cores] = {r.unit: p["came_out"]["assignment"]["selected_model"] for r, p in lines}
         seen[cores] = {r.unit: (r.status, r.accept.decision, p["came_out"]["assignment"]["slots"],
                                 p["came_out"]["assignment"]["count"], p["came_out"]["status"],
-                                p["overlay"]["fast_pass"]["selected_model_id"])
-                       for r, p in _lines(root, spec.batch_id)}
+                                None if models[cores][r.unit] is None else tuple(models[cores][r.unit][:4]))
+                       for r, p in lines}
     assert len(seen[1]) == 2 and seen[1].keys() == seen[4].keys()
     assert seen[1] == seen[4]
+    # theta is compared to a tolerance, not exactly: D1 lets a split basin's theta_map shift slightly in a parallel run
+    for unit, m1 in models[1].items():
+        if m1 is not None:
+            assert models[4][unit][4] == pytest.approx(m1[4], abs=1e-6)
