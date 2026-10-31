@@ -97,6 +97,11 @@ def codes(r):
     return [x["code"] for x in r.flag["reasons"]]
 
 
+def _kept(snap):
+    """The continuous stage on the incoming composition: a flag, status or acceptance test needs no search (D15)."""
+    return R.refit(snap, stage="continuous", assignment=R._Spec(snap).skipped())
+
+
 def test_runs_from_the_worktree():
     import isar
     here = __file__.replace("\\", "/").rsplit("/tests/", 1)[0]
@@ -105,6 +110,7 @@ def test_runs_from_the_worktree():
 
 
 # 1 ---------------------------------------------------------------------------------------------------------
+@pytest.mark.slow       # a search on the real engine (about 50 s)
 def test_overlap_is_recovered_without_a_birth_charge():
     # Two branches at 8 and 10 meV in both T-neighbours; the centre's fast solo holds one broad mode at 9 meV
     # on counts too weak for the data alone to prefer two (solo: (None,) beats (None, None)).
@@ -112,13 +118,13 @@ def test_overlap_is_recovered_without_a_birth_charge():
     snap = t_pair(spectrum(true, scale=0.08, seed=5), [(9.0, 1.0, 4.0)], ["fast:y#0"], true, ["b1", "b2"])
     r = R.refit(snap, stage="both")
     a = r.assignment
-    assert "a:missing_branch" in a.triggers
     assert (a.count, a.slots, a.changed, r.status) == (2, ("b1", "b2"), True, "accepted")
     assert not any(k.startswith("q_U") for k in r.normalisers)
     assert "neighbour_supported_split" in codes(r)
     split = next(x for x in r.flag["reasons"] if x["code"] == "neighbour_supported_split")
     assert split["severity"] == "info"
-    solo = {tuple(c["slots"]): c["ln_z"] for c in a.candidates}
+    from _search_harness import job_for          # the premise: without the neighbours one mode beats two
+    solo = {s: R.price(snap, job_for(snap, len(s), s)).ln_z for s in ((None,), (None, None))}
     assert solo[(None,)] > solo[(None, None)]
 
 
@@ -161,6 +167,7 @@ def _entry_snapshot(settings=S):
     return t_pair(spectrum(true, seed=8), true, ["b1", "fast:y#1"], [(8.0, 0.4, 40.0)], ["b1"], settings=settings)
 
 
+@pytest.mark.slow       # a search on the real engine (about 35 s)
 def test_a_strong_unmatched_peak_mid_window_is_kept_and_flagged():
     r = R.refit(_entry_snapshot(), stage="both")
     assert r.assignment.slots == ("b1", None) and r.status in ("accepted", "unchanged")
@@ -182,47 +189,46 @@ def test_the_entry_price_stays_in_the_composition_log_mass():
     assert (at[15.0] - at[edge]) - solo == pytest.approx(-(B(15.0) - B(edge)) / 2, abs=1e-6)
 
     # a constant entry price lowers a one-unmatched composition's log mass by B_edge/2 exactly once
-    job = PricingJob("y", snap.snapshot_id, 2, ("b1", None), "k")
+    from _search_harness import job_for
+    job = job_for(snap, 2, ("b1", None))
     free = R.price(_entry_snapshot(replace(S, birth_edge=0.0, birth_mid=0.0)), job)
     priced = R.price(_entry_snapshot(replace(S, birth_edge=4.0, birth_mid=0.0)), job)
     assert priced.ln_z - free.ln_z == pytest.approx(-2.0, abs=1e-4)
 
 
 # 3 ---------------------------------------------------------------------------------------------------------
+@pytest.mark.slow       # a search on the real engine (about 80 s)
 def test_a_lost_branch_is_a_price_and_a_flag():
     one = [(8.0, 0.4, 40.0)]
     both = one + [(15.0, 0.4, 40.0)]
     prep = spectrum(one, scale=64.0, seed=9)       # statistics strong enough that a phantom b2 does not pay for itself
     snap = t_pair(prep, one, ["b1"], both, ["b1", "b2"])
     r = R.refit(snap, stage="both")
-    assert "a:missing_branch" in r.assignment.triggers
     assert r.assignment.slots == ("b1",) and "branch_lost_mid_window" in codes(r)
     # the kept composition's log mass differs from the same fit without b2 in the pool by ln w0 (M = 2 vs 1) and by
     # the loss price of the b2 it does not name, mid-window: -(birth_edge + birth_mid) / 2 (tests/analyze/test_coupled_loss.py)
-    job = PricingJob("y", snap.snapshot_id, 1, ("b1",), "k")
+    from _search_harness import job_for
+    job = job_for(snap, 1, ("b1",))
     with_b2 = R.price(snap, job)
     without = R.price(t_pair(prep, one, ["b1"], one, ["b1"]), job)
     assert with_b2.ln_z - without.ln_z == pytest.approx(
-        rules.ln_w0(1, 1, 2, 3) - rules.ln_w0(1, 1, 1, 3) - (S.birth_edge + S.birth_mid) / 2, abs=1e-9)
+        rules.ln_w0(1, 1, 2) - rules.ln_w0(1, 1, 1) - (S.birth_edge + S.birth_mid) / 2, abs=1e-9)
 
 
 # 4 ---------------------------------------------------------------------------------------------------------
 def test_a_broad_ridge_is_held_by_neighbours_until_the_counts_pin_it():
     true = [(6.0, 6.0, 10.0)]
-    weak = R.refit(t_pair(spectrum(true, scale=0.5, seed=2), true, ["b1"], true, ["b1"]), stage="both")
-    strong = R.refit(t_pair(spectrum(true, scale=5.0, seed=2), true, ["b1"], true, ["b1"]), stage="both")
+    weak = _kept(t_pair(spectrum(true, scale=0.5, seed=2), true, ["b1"], true, ["b1"]))
+    strong = _kept(t_pair(spectrum(true, scale=5.0, seed=2), true, ["b1"], true, ["b1"]))
     assert weak.modes[0].status == "held_by_neighbours"
     assert strong.modes[0].status == "determined_by_own_data"
 
 
 # 5 ---------------------------------------------------------------------------------------------------------
 def test_a_width_change_is_reported_without_an_energy_score():
-    r = R.refit(t_pair(spectrum([(8.0, 1.0, 40.0)], seed=10), [(8.0, 0.4, 40.0)], ["b1"], [(8.0, 0.4, 40.0)],
-                       ["b1"]), stage="both")
-    assert r.assignment.discrete == "skipped"
+    r = _kept(t_pair(spectrum([(8.0, 1.0, 40.0)], seed=10), [(8.0, 0.4, 40.0)], ["b1"], [(8.0, 0.4, 40.0)], ["b1"]))
     assert "linewidth_change" in codes(r) and r.F < S.flag_threshold
-    r = R.refit(t_pair(spectrum([(5.0, 7.0, 60.0)], seed=10), [(5.0, 1.0, 60.0)], ["b1"], [(5.0, 1.0, 60.0)],
-                       ["b1"]), stage="both")
+    r = _kept(t_pair(spectrum([(5.0, 7.0, 60.0)], seed=10), [(5.0, 1.0, 60.0)], ["b1"], [(5.0, 1.0, 60.0)], ["b1"]))
     assert "overdamped_entry" in codes(r)
 
 
@@ -235,10 +241,10 @@ def test_a_bounded_jump_flags_without_being_dragged():
     assert r.F > S.flag_threshold and "score_over_threshold" in codes(r)
     assert max(r.U.values()) > max(r.P.values())          # U unlevelled, P saturated at the cap
     flat = t_pair(spectrum([(8.3, 0.4, 40.0)], seed=4), [(8.3, 0.4, 40.0)], ["b1"], [(8.0, 0.4, 40.0)], ["b1"])
-    assert R.refit(flat, stage="both").F < S.flag_threshold
-    # the trigger filter prices the unmatched alternative, which wins: still flagged, by its own reasons
+    assert _kept(flat).F < S.flag_threshold
+    # the search prices the unmatched alternative, which wins: still flagged, by its own reasons
     r = R.refit(snap, stage="both")
-    assert "b:large_mismatch" in r.assignment.triggers and r.flag["flagged"]
+    assert r.flag["flagged"]
 
 
 # 7 ---------------------------------------------------------------------------------------------------------
@@ -270,10 +276,10 @@ def test_spacing_widens_the_tolerance_and_every_factor_caps():
 def test_acceptance_order(monkeypatch):
     prep = spectrum([(9.0, 0.5, 40.0)], seed=6)
     snap = t_pair(prep, [(9.3, 0.5, 40.0)], ["b1"], [(9.0, 0.5, 40.0)], ["b1"])
-    first = R.refit(snap, stage="both")
+    first = _kept(snap)
     assert (first.status, first.reason) == ("accepted", "objective")       # J fell by more than epsilon_J
     own = R.held_from_fit(first.fit, unit="y", fit="f00000000000a", inputs=None, context=prep, T=200.0)
-    again = R.refit(replace(snap, own=own, own_record=first.fit), stage="both")
+    again = _kept(replace(snap, own=own, own_record=first.fit))
     assert again.status == "unchanged"
     assert again.fit["models"][0]["params"] == first.fit["models"][0]["params"]   # the incoming numbers exactly
 
@@ -285,7 +291,7 @@ def test_acceptance_order(monkeypatch):
     assert (r.status, r.reason) == ("rejected", "no_supported_improvement")
 
     monkeypatch.setattr(R._Labelled, "_trf", lambda self, model, theta0, family: None)
-    r = R.refit(snap, stage="both")
+    r = _kept(snap)
     assert (r.status, r.reason, r.fit, r.F) == ("failed", "no_finite_candidate", None, None)
 
 
@@ -359,19 +365,20 @@ def test_every_kept_factor_sits_in_every_stage_block_it_couples():
 def test_identical_snapshots_reuse_prices_and_any_move_reprices():
     true = [(9.0, 0.5, 40.0)]
     snap = t_pair(spectrum(true, seed=11), true, ["b1"], true, ["b1"], rec=record(true, probs={"1": 0.6, "2": 0.4}))
+    from isar.analyze.coupled.search import drive
     a, priced = R.assign(snap)
     assert a.discrete == "priced" and priced
     cache = {p.key: p for p in priced}
     later = replace(snap, snapshot_id="b1:round2", stage_id="b1:round2")
-    none, jobs = R.assign_jobs(later, cached=cache)
-    assert none is None and jobs == ()
-    decided = R.assign_decide(later, list(cache.values()))
+    # every job the later search asks is a cache hit (a miss would price, and fail here), and it decides alike
+    decided, used = drive(R.open_search(later), lambda j: cache.get(j.key) or pytest.fail(f"re-priced {j.slots}"))
+    assert len(used) == len(priced)
     assert (decided.count, decided.slots, decided.candidates) == (a.count, a.slots, a.candidates)
     x = snap.terms[0].held[0]
     nudged = replace(x, modes=(replace(x.modes[0], omega0=x.modes[0].omega0 + 1e-9),))
     moved = replace(later, terms=(replace(snap.terms[0], held=(nudged,)), snap.terms[1]))
-    _none, jobs = R.assign_jobs(moved, cached=cache)
-    assert len(jobs) == len(priced)
+    seeds = R.open_search(moved).next_jobs()
+    assert seeds and not any(j.key in cache for j in seeds)          # any moved value re-prices
 
 
 # 11 --------------------------------------------------------------------------------------------------------
@@ -389,23 +396,21 @@ def test_a_seam_reports_unlevelled_mismatch_that_grows_with_the_shift():
     assert 0.0 < near["max_U"] < S.flag_threshold and not near["over"]   # no flat zone: a 1.5 meV shift costs
 
 
+@pytest.mark.slow       # a search on the real engine (about 50 s)
 def test_a_label_swap_of_two_close_modes_loses_by_a_clear_margin():
     # two modes 2.4 meV apart (made-up energies); swapping their branches shifts each one by 2.4 meV across the link
-    from scipy.special import logsumexp
     modes = [(3.0, 0.3, 40.0), (5.4, 0.3, 40.0)]
     spacing = 2.0 / S.q_slope_meV_per_rlu                     # a 2 meV tolerance at this spacing
     own = held("y", modes, ["fast:y#0", "fast:y#1"])
     term = TermInput(Term("q-change", ("x", "y"), (spacing,), None, None, "hkl"), (held("x", modes, ["b1", "b2"]),))
     snap = Snapshot("s", "s", "y", "f1", spectrum(modes, seed=21), own, record(modes), (term,), S, "anchored")
+    from _search_harness import ledger
     a, _priced = R.assign(snap)
     assert a.slots == ("b1", "b2")
-    # the swapped order can be pruned from the candidates, so price both orders and read the basin ledger: the
+    # price both labellings from the incoming modes (the swap move's own start) and read the basin ledger: the
     # swapped basin (mode at 3.0 on b2) files under (b2, b1); the straight basin one order finds is counted once
-    spec = R._Spec(snap)
-    jobs = [R.PricingJob("y", "s", 2, s, spec.key(2, s)) for s in (("b1", "b2"), ("b2", "b1"))]
-    priced = {j.key: R.price(snap, j) for j in jobs}
-    rows, _modes = R._basin_rows(spec, jobs, priced)
-    mass = {s: logsumexp([z for _c, s_, _d, z in rows if tuple(s_) == s]) for s in (("b1", "b2"), ("b2", "b1"))}
+    s = ledger(snap, [R.price(snap, _job(snap, o, ("own", modes))) for o in (("b1", "b2"), ("b2", "b1"))])
+    mass = {o: s._mass((2, o)) for o in (("b1", "b2"), ("b2", "b1"))}
     assert mass[("b1", "b2")] - mass[("b2", "b1")] > 3.0
 
 
@@ -415,7 +420,7 @@ def test_raw_poisson_counts_and_a_derived_anti_stokes_amplitude():
     prep = spectrum(true, scale=0.2, seed=12)
     y = prep.ctx.counts
     assert np.any(y == 0)
-    r = R.refit(t_pair(prep, true, ["b1"], true, ["b1"]), stage="both")
+    r = _kept(t_pair(prep, true, ["b1"], true, ["b1"]))
     model = r.fit["models"][0]
     hyp = next(h for h in catalogue.enumerate_count_structures(prep.ctx, 1) if h.label == model["label"])
     names = hyp.build().param_names()
@@ -434,14 +439,61 @@ def test_a_pinned_unmatched_energy_pays_its_entry_price_once():
     zero = replace(S, birth_edge=0.0, birth_mid=0.0)
 
     def ln_z(settings, slots, nb):
+        from _search_harness import job_for
         snap = t_pair(prep, [(12.0, 0.4, 40.0)], ["fast:y#0"], nb, ["b1"], settings=settings)
-        return R.price(snap, PricingJob("y", "s", 1, slots, "k")).ln_z
+        return R.price(snap, job_for(snap, 1, slots)).ln_z
 
     nb = [(12.0, 0.4, 40.0)]
     # the pinned entry charge, once, plus the loss price of the b1 the unmatched candidate does not name (b1 at the
     # same 12 meV, so the same price): -(birth_edge + birth_mid) / 2 each
     assert ln_z(S, (None,), nb) - ln_z(zero, (None,), nb) == pytest.approx(-(S.birth_edge + S.birth_mid), abs=1e-9)
     assert ln_z(S, ("b1",), nb) - ln_z(zero, ("b1",), nb) == pytest.approx(0.0, abs=1e-9)
+
+
+# price without a search (S3U2 test 12) ---------------------------------------------------------------------
+def test_price_takes_its_starts_from_the_job_and_has_no_ceiling_of_its_own():
+    snap = _entry_snapshot()
+    spec = R._Spec(snap)
+    seven = R._Labelled(spec.ctx, replace(spec.fs, mode_ceiling=7), [spec.entry] * 7)     # every structure
+    assert seven.variants.get(7) and seven.model(seven.variants[7][0], ()) is not None
+    # STRUCT holds nothing with four modes: a card choice, not a failure
+    four = R.price(snap, _job(snap, ("b1", None, None, None), ("own", [(5.0 + i, 0.4, 10.0) for i in range(4)])))
+    assert (four.status, four.ln_z) == ("no_structure", None) and "4 modes" in four.reason
+    with pytest.raises(ValueError, match="no starts"):
+        R.price(snap, PricingJob("y", "s", 1, ("b1",), "k"))
+    one = R.price(snap, _job(snap, ("b1", None), ("own", [(8.0, 0.4, 40.0), (15.0, 0.4, 60.0)])))
+    assert one.residual_peak is not None and all(abs(one.residual_peak[0] - m[1]) > 0.4 * spec.fwhm
+                                                  for m in max(one.basins, key=lambda b: b[0])[2])
+    assert all(len(m) == 6 for b in one.basins for m in b[2])             # each mode carries its sigma_omega0
+
+
+def test_the_hidden_seed_fills_a_neighbour_start_s_missing_heights_by_the_engine_s_own_start(monkeypatch):
+    # S1's seed adds the pair's two heights: a neighbour start leaves them to the optimizer (None), so they are
+    # solved per variant first (NNLS, energies and widths held) and the merged seed carries their sum
+    from inter_hidden_case import hidden_snapshot
+
+    from isar.analyze.coupled.types import Start
+    snap = hidden_snapshot(3.0, asimov=True)
+    solved, merged = [], []
+    heights, fit = R._Labelled._heights, R._Labelled.fit
+
+    def spy_heights(self, v, modes):
+        out = heights(self, v, modes)
+        solved.append(out)
+        return out
+
+    def spy_fit(self, variant, modes, family, linear=None):
+        if family == "hidden_low":
+            merged.append(modes[-1][2])
+        return fit(self, variant, modes, family, linear)
+    monkeypatch.setattr(R._Labelled, "_heights", spy_heights)
+    monkeypatch.setattr(R._Labelled, "fit", spy_fit)
+    job = PricingJob("y", snap.snapshot_id, 2, ("b1", "b2"), "k",
+                     (Start("neighbour", ((8.0, 0.4, None), (7.2, 0.4, None))),))
+    p = R.price(snap, job)
+    assert p.ln_z is not None and merged and len(merged) == len(solved)
+    for out, h in zip(solved, merged):
+        assert all(m[2] is not None for m in out) and h == pytest.approx(out[0][2] + out[1][2])
 
 
 # repair batch 1 -------------------------------------------------------------------------------------------
@@ -464,103 +516,106 @@ def test_the_prior_cap_is_an_entry_edge_only_where_it_is_the_observation_edge():
     assert edge.entry.B(edge.hi) == 0.0 and edge.d_edge(edge.hi) == 0.0
 
 
-def test_a_near_tied_exchange_prices_but_a_clear_association_stays_skipped():
-    own = [(9.0, 0.4, 40.0), (9.4, 0.4, 40.0)]
-    near = t_pair(spectrum(own, seed=3), own, ["b1", "b2"], [(9.1, 0.4, 40.0), (9.3, 0.4, 40.0)], ["b1", "b2"])
-    spec = R._Spec(near)                              # the incoming association is the cheapest; the exchange is not far
-    assert spec.triggers == ("c:close_association",) and spec.counts == (2,)
-    assert R.assign_jobs(near)[0] is None
-    apart = [(9.0, 0.4, 40.0), (14.0, 0.4, 40.0)]
-    clear = t_pair(spectrum(apart, seed=3), apart, ["b1", "b2"], [(9.1, 0.4, 40.0), (13.9, 0.4, 40.0)], ["b1", "b2"])
-    assert R._Spec(clear).triggers == () and R.assign_jobs(clear)[0].discrete == "skipped"
+def _converge():
+    """Two modes, two close neighbour branches (b1 at 8.45, b2 at 8.55): both slot orders converge to one basin."""
+    true = [(8.0, 0.3, 30.0), (9.0, 0.3, 30.0)]
+    return t_pair(spectrum(true, scale=0.3, seed=3), true, ["fast:y#0", "fast:y#1"],
+                  [(8.45, 0.3, 30.0), (8.55, 0.3, 30.0)], ["b1", "b2"], kind="simultaneous", guard=0.5)
+
+
+OWN2 = ((8.0, 0.3, 30.0), (9.0, 0.3, 30.0))          # the incoming modes, ascending
+AT = {"b1": (8.45, 0.3, 30.0), "b2": (8.55, 0.3, 30.0)}   # where the neighbours carry the two branches
+
+
+def _job(snap, slots, *starts):
+    """A pricing job with explicit (family, modes) starts, modes in slot order, as the search would hand it."""
+    from isar.analyze.coupled.types import Start
+    return PricingJob("y", snap.snapshot_id, len(slots), tuple(slots), f"{slots}:{starts}",
+                      tuple(Start(f, tuple(m)) for f, m in starts))
+
+
+def _order_jobs(snap, order):
+    """A slot order of (b1, b2) from the incoming modes in that order and from the neighbours' energies."""
+    return _job(snap, order, ("own", OWN2), ("neighbour", tuple(AT[b] for b in order)))
 
 
 def test_two_slot_orders_that_converge_to_one_basin_count_its_evidence_once():
-    # two modes, two close neighbour branches: the trigger filter prices both slot orders (b1, b2) and (b2, b1),
-    # and both converge to one physical basin (b1 low, b2 high). That basin's mass enters once.
+    # two modes, two close neighbour branches: both slot orders (b1, b2) and (b2, b1) are priced, and both converge
+    # to one physical basin (b1 low, b2 high). That basin's mass enters the ledger once.
+    from _search_harness import ledger
     from scipy.special import logsumexp
-    true = [(8.0, 0.3, 30.0), (9.0, 0.3, 30.0)]
-    snap = t_pair(spectrum(true, scale=0.3, seed=3), true, ["fast:y#0", "fast:y#1"],
-                  [(8.45, 0.3, 30.0), (8.55, 0.3, 30.0)], ["b1", "b2"], kind="simultaneous", guard=0.5)
-    spec = R._Spec(snap)
-    jobs, _coverage, _limited = spec.jobs()
-    priced = {j.slots: R.price(snap, j) for j in jobs}
-    p12, p21, pnn = priced[("b1", "b2")], priced[("b2", "b1")], priced[(None, None)]
+    snap = _converge()
+    p12, p21 = (R.price(snap, _order_jobs(snap, o)) for o in (("b1", "b2"), ("b2", "b1")))
 
     def physical(rec):                 # branch -> energy of one basin record
         return {b: e for b, e, *_ in rec[2]}
     best12, best21 = (max(p.basins, key=lambda r: r[0]) for p in (p12, p21))
     assert all(abs(physical(best12)[b] - physical(best21)[b]) < 0.01 for b in ("b1", "b2"))   # one basin, twice
-    terms = []                         # the engine's own basin rule (as _basin_rows files them), not an energy-only test
+    terms = []                         # the engine's own basin rule (as the ledger files them), not an energy-only test
     for rec in (*p12.basins, *p21.basins):
         rec = (rec[0], rec[1], tuple(sorted(rec[2], key=lambda m: (m[1], str(m[0])))), rec[3], rec[4])
-        dup = next((i for i, t in enumerate(terms) if R._same_basin(spec, t, rec)), None)
+        dup = next((i for i, t in enumerate(terms) if R._same_basin(R._Spec(snap), t, rec)), None)
         if dup is None:
             terms.append(rec)
         elif rec[0] > terms[dup][0]:
             terms[dup] = rec
-    w0 = rules.ln_w0(2, 2, len(spec.pool), spec.ceiling + 1)
-    a = R.assign_decide(snap, list(priced.values()))
-    w = {tuple(c["slots"]): c["weight"] for c in a.candidates}
-    assert math.log(w[("b1", "b2")] + w[("b2", "b1")]) - math.log(w[(None, None)]) == pytest.approx(
-        logsumexp([t[0] for t in terms]) + w0 - pnn.ln_z, abs=1e-6)
+    s = ledger(snap, [p12, p21])
+    keys = [k for k in s.ledger if k[0] == 2 and set(k[1]) == {"b1", "b2"}]
+    assert logsumexp([s._mass(k) for k in keys]) == pytest.approx(
+        logsumexp([t[0] for t in terms]) + rules.ln_w_label(2, 2, s.M), abs=1e-6)
+
+
+def _converging(snap, terms, modes):
+    """The decision of a search on ``snap`` whose made-up pricer returns, for a job naming b1 and b2 at count 2, one
+    basin with b1 at 8.45 and b2 at 8.55 whatever its slot order (term ``terms[slots]``, mode ``modes[slots]``), and
+    for any other job one basin where its first start is, 50 nats behind."""
+    from _search_harness import Scripted
+
+    from isar.analyze.coupled.search import drive
+    s = R.open_search(snap)
+    sc = Scripted(default=-50.0)
+    sc.M = s.M
+
+    def price_one(j):
+        if j.count != 2 or set(j.slots) != {"b1", "b2"}:
+            return sc(j)
+        t, mode = terms[tuple(j.slots)], modes[tuple(j.slots)]
+        rec = (t, "m", tuple((b, *AT[b], False) for b in j.slots), (None, None), mode)
+        return R.Priced(j.key, 2, j.slots, t + rules.ln_w_label(2, 2, s.M), "ok", mode, None, 1, 0.0, (rec,))
+    return drive(s, price_one)[0]
+
+
+MODE = (True, True, False, (), (8.45, 0.3, 30.0, 8.55, 0.3, 30.0, 100.0, 2.0))
 
 
 def test_identity_confidence_reads_the_deduplicated_masses_the_decision_used():
     # both slot orders of one composition converge to one basin (b1 at 8.45, b2 at 8.55): the decision counts it
     # once, under (b1, b2); the candidates the identity reads must not keep the swapped order as an equal rival
     from isar.analyze.coupled import identity
-    true = [(8.0, 0.3, 30.0), (9.0, 0.3, 30.0)]
-    snap = t_pair(spectrum(true, scale=0.3, seed=3), true, ["fast:y#0", "fast:y#1"],
-                  [(8.45, 0.3, 30.0), (8.55, 0.3, 30.0)], ["b1", "b2"], kind="simultaneous", guard=0.5)
-    jobs = R._Spec(snap).jobs()[0]
-    basin = {"b1": (8.45, 0.3, 30.0, False), "b2": (8.55, 0.3, 30.0, False)}
-
-    def priced(j):
-        if j.count == 2 and set(j.slots) == {"b1", "b2"}:
-            rec = (0.0, "m", tuple((b, *basin[b]) for b in j.slots), (None, None), None)
-            return R.Priced(j.key, 2, j.slots, 0.0, "ok", None, None, 1, 0.0, (rec,))
-        return R.Priced(j.key, j.count, j.slots, -50.0, "ok", None, None, 1, 0.0)
-    a = R.assign_decide(snap, [priced(j) for j in jobs])
+    both = {("b1", "b2"): MODE, ("b2", "b1"): MODE}
+    a = _converging(_converge(), {("b1", "b2"): 0.0, ("b2", "b1"): 0.0}, both)
     assert (a.count, a.slots, a.coverage["decision"]["ambiguous"]) == (2, ("b1", "b2"), False)
     assert [identity._slot_support(a, m, S)[0] for m in range(2)] == [True, True]
-    swapped = next(c for c in a.candidates if tuple(c["slots"]) == ("b2", "b1"))
-    assert swapped["ln_z"] is None and swapped["weight"] == 0.0
+    assert not [c for c in a.candidates if tuple(c["slots"]) == ("b2", "b1") and c["ln_z"] is not None]
     # and two genuine rivals of near-equal mass still leave the slot unconfident
-    win = next(c["ln_z"] for c in a.candidates if tuple(c["slots"]) == ("b1", "b2"))
-    rival = replace(a, candidates=tuple({**c, "ln_z": win - 0.2} if tuple(c["slots"]) == ("b2", "b1") else c
-                                        for c in a.candidates))
+    win = next(c for c in a.candidates if tuple(c["slots"]) == ("b1", "b2"))
+    rival = replace(a, candidates=a.candidates + ({**win, "slots": ("b2", "b1"), "ln_z": win["ln_z"] - 0.2},))
     assert identity._slot_support(rival, 0, S)[0] is False
 
 
 def test_the_refinement_fits_the_mask_of_the_basin_the_decision_selected_from_another_order():
     # both slot orders converge to one basin, but only the swapped job (b2, b1) holds its best price, with a delta
-    # mask: the decision files that mass under (b1, b2), so the refinement must start from that basin's own model,
+    # mask: the ledger files that mass under (b1, b2), so the refinement must start from that basin's own model,
     # permuted into (b1, b2)'s order, not from the (b1, b2) job's lesser basin
-    true = [(8.0, 0.3, 30.0), (9.0, 0.3, 30.0)]
-    snap = t_pair(spectrum(true, scale=0.3, seed=3), true, ["fast:y#0", "fast:y#1"],
-                  [(8.45, 0.3, 30.0), (8.55, 0.3, 30.0)], ["b1", "b2"], kind="simultaneous", guard=0.5)
-    jobs = R._Spec(snap).jobs()[0]
-    basin = {"b1": (8.45, 0.3, 30.0, False), "b2": (8.55, 0.3, 30.0, False)}
-    own, swapped = ("own", "mode"), ("swapped", "mode")      # stand-ins for Priced.mode, in energy order
-
-    def priced(j):
-        if j.count == 2 and set(j.slots) == {"b1", "b2"}:
-            first = j.slots == ("b1", "b2")
-            rec = (0.0 if first else 3.0, "m", tuple((b, *basin[b]) for b in j.slots), (None, None),
-                   own if first else swapped)
-            return R.Priced(j.key, 2, j.slots, rec[0], "ok", own if first else swapped, None, 1, 0.0, (rec,))
-        return R.Priced(j.key, j.count, j.slots, -50.0, "ok", None, None, 1, 0.0)
-    a = R.assign_decide(snap, [priced(j) for j in jobs])
+    swapped = (True, True, False, (0,), MODE[4])                 # a stand-in for the swapped job's Priced.mode
+    a = _converging(_converge(), {("b1", "b2"): 0.0, ("b2", "b1"): 3.0}, {("b1", "b2"): MODE, ("b2", "b1"): swapped})
     assert (a.count, a.slots) == (2, ("b1", "b2"))
     assert a.selected_model == swapped
 
 
 def test_a_swapped_order_basin_records_its_mode_in_energy_order():
-    true = [(8.0, 0.3, 30.0), (9.0, 0.3, 30.0)]
-    snap = t_pair(spectrum(true, scale=0.3, seed=3), true, ["fast:y#0", "fast:y#1"],
-                  [(8.45, 0.3, 30.0), (8.55, 0.3, 30.0)], ["b1", "b2"], kind="simultaneous", guard=0.5)
-    job = next(j for j in R._Spec(snap).jobs()[0] if j.slots == ("b2", "b1"))
+    snap = _converge()
+    job = _order_jobs(snap, ("b2", "b1"))
     # a basin the swapped job found with its modes crossed (b2 above b1) and exactly one of them at delta width
     crossed = [r for r in R.price(snap, job).basins if r[2][0][1] > r[2][1][1] and r[2][0][4] != r[2][1][4]]
     assert crossed
@@ -576,7 +631,7 @@ def test_a_poorly_pinned_unmatched_mode_is_not_held_by_neighbours():
     weak = t_pair(spectrum(true, scale=0.5, seed=2), true, ["fast:y#0"], true, ["b1"])
     r = R.refit(weak, stage="continuous", assignment=R._Spec(weak).skipped())       # slot None: no neighbour factor
     assert r.assignment.slots == (None,) and r.modes[0].status == "poorly_determined"
-    held = R.refit(t_pair(spectrum(true, scale=0.5, seed=2), true, ["b1"], true, ["b1"]), stage="both")
+    held = _kept(t_pair(spectrum(true, scale=0.5, seed=2), true, ["b1"], true, ["b1"]))
     assert held.modes[0].status == "held_by_neighbours"                              # a matched slot still reads it
 
 
@@ -614,7 +669,7 @@ def test_a_missing_seam_guard_widens_the_tolerance_instead_of_vanishing():
     assert unknown["pairs"][0]["guard_unavailable"] and unknown["pairs"][0]["U"] < known["pairs"][0]["U"]
     # a real refit's record carries the window it was fitted in
     snap = t_pair(spectrum([(8.0, 0.4, 40.0)], seed=1), [(8.0, 0.4, 40.0)], ["b1"], [(8.0, 0.4, 40.0)], ["b1"])
-    assert R._ell(R.refit(snap, stage="both")) == pytest.approx(R._Spec(snap).ell)
+    assert R._ell(_kept(snap)) == pytest.approx(R._Spec(snap).ell)
 
 
 def _q_factor(metric, spacing, *, x_guard=0.0, own_guard=0.0, kind="anchored", settings=S):
@@ -668,6 +723,7 @@ def test_a_resolution_limited_mode_stays_delta_through_the_continuous_stage(seed
     assert R._selected_model(r.fit)["delta_modes"] == [0] and r.fit["peaks"][0]["delta"]
 
 
+@pytest.mark.slow       # a search on the real engine (about 45 s)
 def test_the_evidence_selected_delta_mask_reaches_the_runner_refinement_and_stays():
     # the split of test 1: pricing selects the two-mode composition with both widths at delta. The runner refines
     # with the Assignment alone (no prices passed): the mask must come with it, and stay through a later sweep.
@@ -687,11 +743,21 @@ def test_the_evidence_selected_delta_mask_reaches_the_runner_refinement_and_stay
 def test_a_continuing_unmatched_mode_keeps_its_id_across_sweeps():
     snap = _entry_snapshot()
     for sweep in range(3):
-        r = R.refit(snap, stage="both")
+        r = _kept(snap)
         assert r.status in ("accepted", "unchanged") and r.assignment.slots == ("b1", None)
         assert [m.branch for m in r.modes] == ["b1", "fast:y#1"]
         own = R.held_from_fit(r.fit, unit="y", fit=f"f0000000000{sweep}", inputs=None, context=snap.context, T=200.0)
         snap = replace(snap, own=own, own_record=r.fit, fit_id=f"f0000000001{sweep}")
+
+
+def test_why_names_the_components_when_the_evidence_changed_the_variant_and_the_mask_otherwise():
+    same = ("b1",)
+    assert "quasi-elastic" in R._why("accepted", "evidence", 1, 1, same, same, None, 0.0, True)
+    assert "resolution limited" in R._why("accepted", "evidence", 1, 1, same, same, None, 0.0, False)
+
+
+@pytest.mark.slow       # a search on the real engine (about 40 s); the id rule itself is the routine test above
+def test_a_mode_born_by_the_search_gets_a_new_id():
     born = R.refit(t_pair(spectrum([(8.0, 0.4, 40.0), (15.0, 0.4, 60.0)], seed=8), [(8.0, 0.4, 40.0)], ["b1"],
                           [(8.0, 0.4, 40.0)], ["b1"], rec=record([(8.0, 0.4, 40.0)], probs={"1": 0.5, "2": 0.5})),
                    stage="both")
@@ -703,14 +769,14 @@ def test_widths_and_shifts_are_compared_with_the_fast_solo_not_the_last_sweep():
     # data 3x the fast solo's width; the incoming refit (sweep 2) already sits at 2x, so only 1.5x per sweep
     own, fast = [(8.0, 0.8, 40.0)], [(8.5, 0.4, 40.0)]
     snap = t_pair(spectrum([(8.0, 1.2, 40.0)], seed=10), own, ["b1"], [(8.0, 0.4, 40.0)], ["b1"])
-    vs_own = R.refit(snap, stage="both")
+    vs_own = _kept(snap)
     assert "linewidth_change" not in codes(vs_own)
-    r = R.refit(replace(snap, fast=held("y", fast, ["b1"], T=200.0)), stage="both")
+    r = _kept(replace(snap, fast=held("y", fast, ["b1"], T=200.0)))
     assert "linewidth_change" in codes(r)
     assert r.delta_fast["omega0"]["b1"] == pytest.approx(r.energies["b1"] - 8.5)       # change since the fast solo
     assert r.delta_fast["count"] == 0
     # a fast solo carrying other ids is paired by energy
-    other = R.refit(replace(snap, fast=held("y", fast, ["fast:y#0"], T=200.0)), stage="both")
+    other = _kept(replace(snap, fast=held("y", fast, ["fast:y#0"], T=200.0)))
     assert "linewidth_change" in codes(other) and other.delta_fast["omega0"]["b1"] == r.delta_fast["omega0"]["b1"]
 
 
@@ -725,6 +791,7 @@ def test_only_exchangeable_unmatched_modes_get_the_factorial():
     assert one._ln_exch(one.model(variant, ())) == 0.0                                 # one unmatched: none
 
 
+@pytest.mark.slow       # a search on the real engine (about 45 s)
 def test_a_split_has_no_fast_comparison_without_a_one_to_one_partner():
     true = [(8.0, 0.3, 30.0), (10.0, 0.3, 30.0)]
     solo = [(9.0, 1.0, 4.0)]
@@ -738,7 +805,7 @@ def test_a_split_has_no_fast_comparison_without_a_one_to_one_partner():
 def test_the_objective_reported_includes_the_soft_constraint_once():
     soft = ParamConstraints(soft={"phonon.omega0": (8.6, 0.1)})
     modes = [(8.0, 0.4, 40.0)]
-    r = R.refit(t_pair(spectrum(modes, seed=8, constraints=soft), modes, ["b1"], modes, ["b1"]), stage="both")
+    r = _kept(t_pair(spectrum(modes, seed=8, constraints=soft), modes, ["b1"], modes, ["b1"]))
     assert r.status in ("accepted", "unchanged")
     z = ((r.energies["b1"] - 8.6) / 0.1) ** 2
     assert z > 1.0                                              # the pull is live

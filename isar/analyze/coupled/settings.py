@@ -76,8 +76,6 @@ SETTING_DEFS: tuple[SettingDef, ...] = (
          "A sweep whose total cost improves by less than this relative amount is not improving.", strict=True),
     _row("collinearity_tol", "hidden", "float", 0.01, None, 0, 1,
          "How far, relative to its length, the middle of three q points may sit off the straight line through the outer two."),
-    _row("composition_limit", "hidden", "int", 4, None, 0, 100,
-         "How many ranked alternative compositions are priced per mode count, beyond the incoming and all-unmatched ones."),
     _row("confidence", "hidden", "float", 0.80, None, 0.5, 1,
          "A mode count or assignment whose probability is below this is reported as ambiguous."),
     _row("close_call_nats", "hidden", "float", 2.0, "nats", 0, 20,
@@ -98,7 +96,8 @@ SETTING_DEFS: tuple[SettingDef, ...] = (
 )
 
 _BY_NAME = {d.name: d for d in SETTING_DEFS}
-RETIRED_SETTINGS = frozenset({"q_tolerance_meV", "q_change_scale_meV"})   # saved values are ignored (intake fold)
+RETIRED_SETTINGS = frozenset({"q_tolerance_meV", "q_change_scale_meV",   # saved values are ignored (intake fold)
+                              "composition_limit"})
 
 
 def _expect(d: SettingDef) -> str:
@@ -146,7 +145,6 @@ class InterSettings:
     birth_mid: float = 12.0
     cost_rel_tol: float = 1e-5
     collinearity_tol: float = 0.01
-    composition_limit: int = 4
     confidence: float = 0.80
     close_call_nats: float = 2.0
     evidence_hysteresis_nats: float = 0.1

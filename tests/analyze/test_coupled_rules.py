@@ -7,11 +7,24 @@ from isar.analyze.coupled import engine as cc
 from isar.analyze.coupled import rules as rr
 
 
-def test_composition_weight_is_normalised_once_without_q_u():
-    M, counts = 3, (1, 2, 3, 4)
-    tot = sum(math.comb(M, r) * math.exp(rr.ln_w0(k, r, M, len(counts)))
-              for k in counts for r in range(min(k, M) + 1))
-    assert abs(tot - 1.0) < 1e-12, tot
+def test_composition_weight_is_normalised_once_per_count_over_its_labellings():
+    # S3U2 test 2: no ceiling constant; every count's labellings sum to 1 on their own, so no count's weight
+    # depends on which other counts a search visited
+    for M in range(6):
+        for k in range(21):
+            subsets = sum(math.comb(M, r) * math.exp(rr.ln_w0(k, r, M)) for r in range(min(k, M) + 1))
+            labellings = sum(math.comb(M, r) * math.comb(k, r) * math.factorial(r) * math.exp(rr.ln_w_label(k, r, M))
+                             for r in range(min(k, M) + 1))
+            assert subsets == pytest.approx(1.0, abs=1e-12) and labellings == pytest.approx(1.0, abs=1e-12), (k, M)
+    with pytest.raises(TypeError):                 # the count argument is gone
+        rr.ln_w0(2, 1, 3, 4)
+
+
+def test_two_equally_supported_orders_of_one_subset_carry_the_subset_prior_once():
+    # lead correction (1): finding both orders of {b1, b2} cannot grow the count's mass past the subset's prior
+    lnL = -100.0
+    both = rr._lse([lnL + rr.ln_w_label(2, 2, 2)] * 2)
+    assert both == pytest.approx(lnL + rr.ln_w0(2, 2, 2), abs=1e-12)
 
 
 def test_pinned_unmatched_entry_pays_once():
@@ -119,6 +132,77 @@ def test_summing_the_masks_out_gives_the_old_function():
             for key in ("weights", "count_p", "close_calls"):
                 assert new[key] == pytest.approx(old[key]) if key != "close_calls" else new[key] == old[key]
             assert new["ambiguous"] == old["ambiguous"]
+
+
+# S3U2 test 3: the count first, then the labelling within it -------------------------------------------------
+def test_a_count_whose_labellings_together_win_beats_a_single_better_labelling():
+    rows = [(2, B12, (), -100.0)] + [(3, s, (), -101.5) for s in
+                                    [("b1", "b2", None), ("b1", None, "b2"), (None, "b1", "b2"),
+                                     ("b2", "b1", None), ("b1", "b2", "b3")]]
+    d = rr.decide(rows, (2, B12, ()))
+    assert max(rows, key=lambda r: r[3])[0] == 2                     # the old single-best rule picks count 2
+    assert d["winner"][0] == 3 and d["changed"] and not d["mask_only"]
+    assert rr._lse([-101.5] * 5) == pytest.approx(-99.89, abs=0.01)
+    assert d["count_p"][3] == pytest.approx(1 / (1 + math.exp(-100.0 - rr._lse([-101.5] * 5))), abs=1e-9)
+    assert not d["label_confident"] and d["label_p"] == pytest.approx(0.2)   # five equal labellings: labels uncertain
+
+
+def test_a_count_ahead_by_less_than_the_hysteresis_keeps_the_incoming_count():
+    rows = [(2, B12, (), -100.0), (3, ("b1", "b2", None), (), -100.0), (3, ("b1", None, "b2"), (), -102.84)]
+    d = rr.decide(rows, (2, B12, ()))
+    assert rr._lse([-100.0, -102.84]) - (-100.0) < 0.1
+    assert d["winner"] == (2, B12) and not d["changed"]
+
+
+def test_count_and_label_confidence_are_reported_separately():
+    rows = [(1, B1, (), -110.0), (2, B12, (), -100.0), (2, ("b1", None), (), -100.1)]
+    d = rr.decide(rows, (2, B12, ()))
+    assert d["winner"] == (2, B12) and d["count_confident"] and not d["label_confident"]
+    assert d["count_p"][2] > 0.99 and d["label_p"] == pytest.approx(1 / (1 + math.exp(-0.1)))
+    assert d["ambiguous"] and d["close_calls"] == [(2, ("b1", None))]
+
+
+def test_a_labelling_change_at_the_incoming_count_needs_the_hysteresis():
+    d = rr.decide([(2, B12, (), -100.0), (2, ("b2", "b1"), (), -99.95)], (2, B12, ()))
+    assert d["winner"] == (2, B12) and not d["changed"]
+    d = rr.decide([(2, B12, (), -100.0), (2, ("b2", "b1"), (), -99.5)], (2, B12, ()))
+    assert d["winner"] == (2, ("b2", "b1")) and d["changed"]
+
+
+# S3U2 test 19 (D16): the model variant is decided beside the mask -------------------------------------------
+QE, NOQE = (True, True, True), (True, True, False)
+
+
+def test_d16_a_variant_ahead_beyond_the_hysteresis_replaces_the_incoming_one():
+    d = rr.decide([(1, B1, (), -100.0, QE), (1, B1, (), -99.5, NOQE)], (1, B1, (), QE))
+    assert (d["winner"], d["variant"], d["changed"], d["mask_only"]) == ((1, B1), NOQE, True, True)
+    assert d["weights"] == {(1, B1): 1.0} and d["count_p"] == {1: 1.0}
+    assert sum(d["mask_weights"].values()) == pytest.approx(1.0) and set(d["mask_weights"]) == {(1, B1, ())}
+
+
+def test_d16_a_variant_ahead_by_less_than_the_hysteresis_leaves_the_incoming_one():
+    d = rr.decide([(1, B1, (), -100.0, QE), (1, B1, (), -99.95, NOQE)], (1, B1, (), QE))
+    assert (d["variant"], d["changed"], d["mask_only"]) == (QE, False, False)
+
+
+def test_d16_an_unpriced_incoming_variant_is_replaced_with_a_record():
+    d = rr.decide([(1, B1, (), -100.0, NOQE)], (1, B1, (), QE))
+    assert (d["variant"], d["changed"], d["mask_only"]) == (NOQE, True, True)
+    assert d["reasons"] == ["mask_unpriced:1:('b1',):():(True, True, True)"] and not d["ambiguous"]
+
+
+def test_d16_another_labelling_takes_its_best_variant_and_ties_go_to_the_incoming():
+    rows = [(1, B1, (), -100.0, QE), (1, ("b2",), (), -90.0, QE), (1, ("b2",), (), -89.0, NOQE)]
+    d = rr.decide(rows, (1, B1, (), QE))
+    assert d["winner"] == (1, ("b2",)) and d["variant"] == NOQE and not d["mask_only"]
+    d = rr.decide([(1, B1, (), -100.0, NOQE), (1, B1, (), -100.0, QE)], (1, B1, (), QE))
+    assert d["variant"] == QE and not d["changed"]
+
+
+def test_d16_rows_without_a_variant_decide_as_before():
+    rows = [(1, B1, (), -100.0), (1, ("b2",), (), -102.0), (1, ("b2",), (0,), -99.0)]
+    plain, untracked = rr.decide(rows, (1, B1, ())), rr.decide(rows, (1, B1, (), None))
+    assert plain == untracked and plain["variant"] is None
 
 
 def test_acceptance_order():

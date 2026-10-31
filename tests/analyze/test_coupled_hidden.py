@@ -14,11 +14,12 @@ import pytest
 from scipy.integrate import quad
 from scipy.special import logsumexp
 
+from _search_harness import ledger
 from inter_hidden_case import STRUCT, Prepared, _ctx, _expected, hidden_snapshot
 from isar.analyze import fast_pass, prior
 from isar.analyze.coupled import engine as cc
 from isar.analyze.coupled import refit as R
-from isar.analyze.coupled.types import PricingJob
+from isar.analyze.coupled.types import PricingJob, Start
 
 SLOTS = ("b1", "b2")
 
@@ -31,8 +32,18 @@ def _engines(snap, slots=SLOTS):
             R._Labelled(spec.ctx, spec.fs, [spec.entry] * len(slots), **kw))
 
 
-def _placed(spec, k=2, slots=SLOTS):
-    return R._starts(spec, k, slots)[-1][1]
+def _start(snap, slots=SLOTS):
+    """S1's start of a job on this case, in slot order: b1 at the incoming mode, b2 at the mean of the neighbours'
+    predictions with their height (S1's ``_starts``, whose neighbour-placed start coincides with it here)."""
+    spec = R._Spec(snap)
+    own = spec.own.modes[0]
+    nb = next(m for m in spec.held_all["x"].modes if m.branch == "b2")
+    at = {"b1": (own.omega0, own.gamma, own.height), "b2": (float(np.mean(spec.pred["b2"])), nb.gamma, nb.height)}
+    return tuple(at[b] for b in slots)
+
+
+def _placed(spec, slots=SLOTS):
+    return [(*m, False) for m in _start(spec.snap, slots)]
 
 
 # ---- T-integrate ------------------------------------------------------------------------------------------
@@ -319,9 +330,11 @@ JOB1, JOB12, JOB21 = ("b1",), ("b1", "b2"), ("b2", "b1")
 _RUNS = {}
 
 
-def _job(snap, slots):
-    spec = R._Spec(snap)
-    return PricingJob(snap.unit, snap.snapshot_id, len(slots), slots, spec.key(len(slots), slots))
+def _job(snap, slots, starts=None):
+    """The job of S1's proof: one start, S1's own (``_start``), unless ``starts`` [(family, modes)] are given."""
+    starts = starts or [("own", _start(snap, slots))]
+    return PricingJob(snap.unit, snap.snapshot_id, len(slots), slots, f"{R._Spec(snap).content_key()}:{slots}",
+                      tuple(Start(f, tuple(m)) for f, m in starts))
 
 
 def _price(snap, slots):
@@ -417,16 +430,13 @@ def test_proof_r2_the_node_sets_agree_and_an_independent_set_lands_on_them():
 
 
 # ---- R3 start independence ----------------------------------------------------------------------------------
-def _alt_starts(spec, k, slots):
-    return [("own", [(7.6, 0.9, 12.0, False), (8.4, 0.9, 30.0, False)]),
-            ("neighbour", [(8.3, 0.2, 30.0, False), (7.9, 0.2, 12.0, False)])]
+ALT_STARTS = [("own", [(7.6, 0.9, 12.0), (8.4, 0.9, 30.0)]), ("neighbour", [(8.3, 0.2, 30.0), (7.9, 0.2, 12.0)])]
 
 
-def test_proof_r3_other_starts_reach_the_same_split_basin(monkeypatch):
+def test_proof_r3_other_starts_reach_the_same_split_basin():
     snap = hidden_snapshot(3.0, asimov=True)
     base = _run(3.0)[0]
-    monkeypatch.setattr(R, "_starts", _alt_starts)
-    alt = _price(snap, JOB12)
+    alt = R.price(snap, _job(snap, JOB12, ALT_STARTS))
     t0, t1 = _split_terms(base), _split_terms(alt)
     _say(f"R3 model level: {t0} vs {t1}; composition {base.ln_z:.3f} vs {alt.ln_z:.3f} "
          f"({alt.ln_z - base.ln_z:+.3f})")
@@ -479,12 +489,12 @@ def test_proof_r5_the_two_slot_orders_of_a_hidden_pair_count_once():
     a, b = _run(3.0)[0], _run(3.0, slots=JOB21)[0]
     _say(f"R5 orders: {a.ln_z:.4f} vs {b.ln_z:.4f} ({a.ln_z - b.ln_z:+.4f})")
     assert abs(a.ln_z - b.ln_z) <= 0.15
-    dec = R.assign_decide(snap, [_price(snap, JOB1), a, b])
-    lz = {tuple(c["slots"]): c["ln_z"] for c in dec.candidates if tuple(c["slots"]) in (JOB12, JOB21)}
-    assert set(lz) == {JOB12, JOB21}, lz
-    both = float(logsumexp([v for v in lz.values() if v is not None]))
-    one = max(v for v in lz.values() if v is not None)
-    _say(f"R5 decision: candidates {lz}, lse(both) - one = {both - one:.4f}")
+    s = ledger(snap, [_price(snap, JOB1), a, b])          # the search's one ledger: each basin filed once
+    lz = {key[1]: s._mass(key) for key in s.ledger if key[1] in (JOB12, JOB21)}
+    assert JOB12 in lz, lz
+    both = float(logsumexp(list(lz.values())))
+    one = max(lz.values())
+    _say(f"R5 decision: ledger masses {lz}, lse(both) - one = {both - one:.4f}")
     assert both - one <= 0.05
 
 
@@ -517,8 +527,7 @@ def test_a_job_whose_only_basins_are_undetermined_says_so(monkeypatch):
     assert (p.status, p.ln_z, p.mode) == ("undetermined", None, None)
     assert p.reason.startswith("Hessian not positive definite")
     spec = R._Spec(snap)
-    jobs, _cov, _lim = spec.jobs()
-    dec = R.assign_decide(snap, [R.price(snap, j) for j in jobs])
+    dec, _priced = R.assign(snap)
     assert dec.candidates and all(c["ln_z"] is None and c["status"] == "undetermined" for c in dec.candidates)
     assert (dec.count, dec.slots) == (spec.n0, spec.incoming) and not dec.changed        # nothing priced: incoming stays
 
@@ -543,10 +552,11 @@ def test_the_hidden_basin_is_one_record_under_either_slot_order():
     for rec in (a, b):                                       # the pair at its mean energy, H/2 each
         assert rec[2][0][1] == rec[2][1][1] and rec[2][0][3] == rec[2][1][3]
     assert a[1] == b[1] and sorted(m[0] for m in a[2]) == sorted(m[0] for m in b[2])
-    jobs = [_job(snap, JOB12), _job(snap, JOB21)]
-    rows = R._basin_rows(spec, jobs, {j.key: priced[j.slots] for j in jobs})[0]
-    top = sorted((z for _c, _s, _d, z in rows if z is not None), reverse=True)
-    assert top[0] - top[1] > 5.0                             # the hidden basin is one row, not one per slot order
+    # filed through the search's ledger, the two prices give the hidden basin one key and one basin
+    s = ledger(snap, priced.values())
+    split = [key for key, e in s.ledger.items() if any(x[1].endswith("|split") for x in e["basins"])]
+    assert len(split) == 1 and sum(x[1].endswith("|split") for x in s.ledger[split[0]]["basins"]) == 1
+    assert abs(s._mass(split[0]) - max(p.ln_z for p in priced.values())) <= 0.05
     canon = lambda r: (*r[:2], tuple(sorted(r[2], key=lambda m: (m[1], str(m[0])))), *r[3:])      # noqa: E731
     assert R._same_basin(spec, canon(a), canon(b))           # the base rule's closeness: the same physical basin
 
@@ -594,9 +604,11 @@ def test_other_starts_record_the_pair_in_the_same_order():
 # ---- T-continuous ------------------------------------------------------------------------------------------
 def test_the_weaker_of_two_overlapped_modes_is_held_by_neighbours():
     snap = hidden_snapshot(6.0, asimov=True)
-    a, _ = R.assign(snap)
     spec = R._Spec(snap)
-    forced = replace(a, count=2, slots=JOB12, factors=spec.incident(JOB12), changed=True, selected_model=None)
+    # the pair's assignment as the search hands it over: with the winner's best basin, which refinement starts from
+    best = max(_run(6.0)[0].basins, key=lambda b: b[0])
+    forced = replace(spec.skipped(), count=2, slots=JOB12, factors=spec.incident(JOB12), changed=True,
+                     selected_model=best[4])
     res = R.refit(snap, stage="continuous", assignment=forced)
     assert len(res.modes) == 2
     e = [m.omega0 for m in res.modes]
@@ -604,3 +616,32 @@ def test_the_weaker_of_two_overlapped_modes_is_held_by_neighbours():
     by = {m.branch: m for m in res.modes}                                       # b1 is the strong branch, b2 the hidden one
     assert by["b1"].height > by["b2"].height, (by["b1"].height, by["b2"].height)
     assert by["b2"].status == "held_by_neighbours" and by["b1"].status != "held_by_neighbours"
+
+
+# ---- D17: a branch a neighbour carries with no coupling term ----------------------------------------------------
+def _factorless(z_carries_b2):
+    """A curvature triple x-y-z: x carries b1 at 8.0 and b2 at 8.5; z carries b1, and b2 too when asked (then b2
+    has a coupling term). y's data hold a strong mode at 8.0 and a weak one at 8.5, its incoming fit both."""
+    from _search_harness import snapshot_for
+    modes = [(8.0, 0.4, 40.0), (8.5, 0.4, 8.0)]
+    z = (modes, ["b1", "b2"]) if z_carries_b2 else ([modes[0]], ["b1"])
+    return snapshot_for(modes, ["b1", "b2"], None, curvature=((modes, ["b1", "b2"]), z))
+
+
+@pytest.mark.parametrize("coupled", [False, True])
+def test_a_branch_without_a_coupling_term_is_assignable_but_never_held_by_neighbours(coupled):
+    from _search_harness import job_for
+    snap = _factorless(coupled)
+    spec = R._Spec(snap)
+    assert "b2" in spec.pool and "b2" in spec.expected and ("b2" in spec.factors) is coupled
+    p = R.price(snap, job_for(snap, 2, JOB12))
+    split = any(b[1].endswith("|split") for b in p.basins)
+    _say(f"D17 coupled={coupled}: {p.status} ln_z={p.ln_z} split basin recorded: {split} reason={p.reason}")
+    assert p.status in ("ok", "ok_boundary", "undetermined"), (p.status, p.reason)
+    res = R.refit(snap, stage="continuous", assignment=spec.skipped())     # no KeyError in held_value
+    by = {m.branch: m for m in res.modes}
+    e = [m.omega0 for m in res.modes]
+    assert abs(e[0] - e[1]) < spec.fs.twin_coincide_fwhm * spec.fwhm            # the premise: the pair overlaps
+    assert by["b1"].height > by["b2"].height
+    # nothing couples a factorless mode's height to a neighbour, so "sized by the neighbours" would be false
+    assert (by["b2"].status == "held_by_neighbours") is coupled, by["b2"].status

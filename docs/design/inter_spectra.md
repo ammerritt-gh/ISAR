@@ -281,7 +281,6 @@ dialog*. `tests/docs/test_inter_spectra_docs.py` keeps the names, marks and help
 | `birth_mid` | not in the dialog | 12 deviance | 0 to 1000 | uncalibrated | The extra entry price of such a branch when it appears in the middle of the window. |
 | `cost_rel_tol` | not in the dialog | 1e-05 | > 0 to 1 | uncalibrated | A sweep whose total cost improves by less than this relative amount is not improving. |
 | `collinearity_tol` | not in the dialog | 0.01 | 0 to 1 | uncalibrated | How far, relative to its length, the middle of three q points may sit off the straight line through the outer two. |
-| `composition_limit` | not in the dialog | 4 | 0 to 100 | uncalibrated | How many ranked alternative compositions are priced per mode count, beyond the incoming and all-unmatched ones. |
 | `confidence` | not in the dialog | 0.8 | 0.5 to 1 | uncalibrated | A mode count or assignment whose probability is below this is reported as ambiguous. |
 | `close_call_nats` | not in the dialog | 2 nats | 0 to 20 | uncalibrated | Alternatives within this much log evidence of the winner are kept for review. |
 | `evidence_hysteresis_nats` | not in the dialog | 0.1 nats | 0 to 5 | uncalibrated | A count or assignment change must win the evidence by this margin, or the incoming one stays. |
@@ -290,7 +289,7 @@ dialog*. `tests/docs/test_inter_spectra_docs.py` keeps the names, marks and help
 | `full_search` | not in the dialog | false |  | uncalibrated | Price every mode count up to the full-search count and every labelling of each, with no pruning (slow; a check for calibration and proofs). |
 | `full_search_max_count` | not in the dialog | 4 modes | 0 to 12 | uncalibrated | With the full search on: the largest mode count it prices (every count from none up to this). The number of labellings grows factorially with it and nothing else limits the run. |
 
-A saved value of `q_tolerance_meV` or `q_change_scale_meV` is logged and ignored, never reported as damaged, and has no effect; the two q slopes start at their defaults. The two q slopes are provisional until sample handling is written out. The rows marked calibrated were calibrated before the propagation of section 4 existed. That propagation also widens the temperature and curvature penalties, so for the same neighbour uncertainty those penalties, and the flag statistic they feed, are lower. Their marks stand and the calibration is not redone.
+A saved value of `q_tolerance_meV`, `q_change_scale_meV` or `composition_limit` is logged and ignored, never reported as damaged, and has no effect; the two q slopes start at their defaults, and the stopping margin does the work of the composition limit. The two q slopes are provisional until sample handling is written out. The rows marked calibrated were calibrated before the propagation of section 4 existed. That propagation also widens the temperature and curvature penalties, so for the same neighbour uncertainty those penalties, and the flag statistic they feed, are lower. Their marks stand and the calibration is not redone.
 
 ## 6. Storage
 
