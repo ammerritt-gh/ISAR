@@ -887,7 +887,7 @@ class _Run:
                         tl.cached += 1
                         continue
                     p = got[k, j.key]
-                    if isinstance(p, Exception):              # not a price: never cached, a later pass asks again
+                    if isinstance(p, Exception):              # not a price: never cached, a later stage prices it afresh
                         p = Priced(key=j.key, count=j.count, slots=tuple(j.slots), ln_z=None, status="no_evidence",
                                    mode=None, reason=f"pricing failed ({type(p).__name__}: {p})", starts=0,
                                    seconds=0.0)
