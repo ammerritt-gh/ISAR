@@ -5,11 +5,13 @@ scripted offset. Mode "on" asks steps and moves as screens and promotes them onl
 "shadow" prices everything in full and records where the screened search would have decided otherwise.
 """
 import math
+from dataclasses import replace
 
 import pytest
 from _search_harness import Scripted, run, snapshot_for
 from test_coupled_search import B12, EX1, OWN, SIX, TABLE9, X12, happy
 
+from isar.analyze.coupled import rules
 from isar.analyze.coupled import search as SE
 from isar.analyze.coupled.types import Priced, PricingJob
 
@@ -182,3 +184,34 @@ def test_a_screen_underrated_past_the_allowance_on_the_winner_is_a_recorded_dive
     assert first["screen"] is not None and first["screen"] != first["full"]
     assert any(d["kind"] == "final" and d["screen"] is False for d in sh["decisions"])
     assert a.search["screens"]["mode"] == "shadow" and a.search["version"] == 2
+
+
+# 8 the shadow's final choice is the whole choice: a mask change is a divergence ----------------------------------------
+class Held(Scripted):
+    """NB2's price holds two basins of one labelling: the width free (mask ()), a split basin a screen moves by ``off``,
+    and the width held at the floor (mask (0, 1)), exact under either price."""
+
+    def __init__(self, *, free, held, off):
+        super().__init__({(2, NB2): free}, split={(2, NB2)}, screen={(2, NB2): off})
+        self.held = held
+
+    def __call__(self, job):
+        p = super().__call__(job)
+        if tuple(p.slots) != NB2:
+            return p
+        term, _label, modes, qq, mode, _ = p.basins[0]
+        w = rules.ln_w_label(2, 1, self.M)
+        held = (self.held - w, f"held{mode[:3]}", tuple((b, e, g, h, True) for b, e, g, h, _d in modes), qq, mode, mode)
+        return replace(p, ln_z=max(term, self.held - w) + w, basins=(p.basins[0], held),
+                       screen_terms=(p.screen_terms[0], None))
+
+
+def test_the_shadow_final_choice_is_the_whole_choice_so_a_mask_change_is_a_divergence():
+    # the free-width basin wins under full prices (-98.5 against -99.0); a screen 17 nats low leaves it at most -110.5
+    # in the shadow, so the screened search settles on the held width: same winner and labelling, another mask
+    a, _u, _s = run(happy(), Held(free=-98.5, held=-99.0, off=-17.0), screens="shadow")
+    assert a.slots == NB2 and a.coverage["decision"]["mask"]["chosen"] == []
+    sh = a.search["shadow"]
+    assert sh["first_divergence"] is not None
+    assert [d for d in sh["decisions"] if d["kind"] == "final"] == [
+        {"kind": "final", "at": "decision", "full": True, "screen": False}]

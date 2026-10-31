@@ -784,6 +784,16 @@ class Search:
         out["requests"], view.requests = view.requests, saved | view.requests
         return out
 
+    def _same_choice(self, sf, f):
+        """Whether a shadow's final choice is the actual one: its winner, variant, mask and selected basin (the one
+        handed to the continuous stage as selected_model)."""
+        (sd, sc), (ad, ac) = (sf["d"], sf["chosen"]), (f["d"], f["chosen"])
+        if (sd["winner"], sd["variant"], sd["delta"]) != (ad["winner"], ad["variant"], ad["delta"]):
+            return False
+        if sc is None or ac is None:
+            return sc is ac
+        return R._same_basin(self.spec, sc, ac)
+
     def _decide(self) -> Assignment:
         spec, V, S = self.spec, self.view, self.sview
         inc_v = spec.inc_variant
@@ -794,7 +804,7 @@ class Search:
         shadow = None
         if S is not None:
             sf = self._final(S)
-            self._shadow("final", "decision", True, (sf["d"]["winner"] == d["winner"]) if sf["settled"] else None)
+            self._shadow("final", "decision", True, self._same_choice(sf, f) if sf["settled"] else None)
             shadow = {"basins": self._shadow_basins(), "decisions": list(self.decisions),
                       "first_divergence": self.first_divergence}
         walks = [self._walk(w) for w in self.walks]
