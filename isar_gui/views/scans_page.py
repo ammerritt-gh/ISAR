@@ -311,7 +311,11 @@ class ScansPage(QWidget):
                     button.setChecked(value == current)
                 button.setEnabled(control is None or control.enabled)
                 suffix = f'. {control.reason}' if control and control.reason else ''
-                button.setToolTip(tip + suffix)
+                button_tip = tip
+                if buttons is self.layout_buttons:
+                    button_tip = ('Waterfall: each curve offset' if value == 'offset' else
+                                  'Curves plotted with no offset, no fits.')
+                button.setToolTip(button_tip + suffix)
         self.fit_buttons['deep'].setToolTip(self.fit_buttons['deep'].toolTip() + '. ' + state.deep_tooltip)
         self.offset_box.setEnabled(state.offset.enabled)
         self.auto_button.setEnabled(state.offset.enabled)
