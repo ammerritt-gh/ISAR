@@ -447,11 +447,12 @@ class Search:
 
     def likely_next(self, n: int) -> tuple[PricingJob, ...]:
         """Up to n full-depth jobs a later pass may ask as promotions: the screened candidates not promoted or
-        promoting, in _rank's order, each as _promote builds it. Pure; () once done."""
+        promoting that feed can promote (a quiet status never is) and _rank can reach (a screened basin in the
+        view), in _rank's order, each as _promote builds it. Pure; () once done."""
         if self.done:
             return ()
-        cands = [c for c, (j, _p) in self.current.items()
-                 if j.depth == "screen" and c not in self.promoted and c not in self.promoting]
+        cands = [c for c, (j, p) in self.current.items() if j.depth == "screen" and p.status not in _QUIET
+                 and c in self.view.opt and c not in self.promoted and c not in self.promoting]
         order = sorted(cands, key=lambda c: _contribution(self.view, c))[:n]
         return tuple(replace(self.current[c][0], key=c, depth="full") for c in order)
 

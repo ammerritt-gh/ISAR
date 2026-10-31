@@ -265,11 +265,14 @@ def test_the_shadow_count_total_includes_a_basin_only_a_screen_filed():
 
 # S1U2 check 1: likely_next changes no pass and no result; () once done ------------------------------------------------
 def test_likely_next_before_every_feed_changes_no_pass_and_no_result():
-    T = {(2, B12): -100.0, (2, NB2): -101.0}
+    rng = random.Random(1)               # made-up prices whose screens wait for a later feed (as check 2's seeds)
+    keys = [(3, lab) for lab in SIX] + [(2, B12), (2, NB2)]
+    T = {k: rng.uniform(-106.0, -96.0) for k in keys}
+    offsets = {k: rng.uniform(-8.0, 0.0) for k in keys}
 
     def walk(probe):
         s = SE.Search(happy(), screens="on")
-        sc = Scripted(T, split={(2, NB2)}, screen={(2, NB2): -1.0})
+        sc = Scripted(T, split=set(offsets), screen=offsets)
         sc.M = s.M
         passes, named = [], 0
         while not s.done:
@@ -336,3 +339,21 @@ def test_likely_next_lists_screened_candidates_in_rank_order():
     s.promoted.add("c0")
     assert [j.key for j in s.likely_next(10)] == ["c2", "c1"]
     assert s._rank(s.view, ["c0", "c1", "c2"]) == ["c2", "c1"]
+
+
+# S1U3 (amendment 2): likely_next names only promotions a later pass can ask -------------------------------------------
+def test_likely_next_leaves_out_a_quiet_screen_and_one_with_no_screened_basin():
+    s, sc = SE.Search(happy(), screens="on"), Scripted()
+    s.M = sc.M = 200
+    labels = ("b1", "b2", "q")
+    job = PricingJob("y", "b:ring1", 3, labels, "ok1", (), "screen")
+    b = sc.basin(3, labels, (5.0, 10.0, 15.0), -10.0)
+    s.meta["ok1"] = {"purpose": "move", "source": "test"}
+    s.current["ok1"] = (job, Priced("ok1", 3, labels, -10.0, "ok", b[4], None, 1, 0.0, (b,), (), None,
+                                    depth="screen", screen_terms=(b[0],)))
+    for key, status in (("quiet", "degenerate_twin"), ("bare", "no_evidence")):   # no price, no screened basin
+        s.meta[key] = {"purpose": "move", "source": "test"}
+        s.current[key] = (replace(job, key=key), Priced(key, 3, labels, None, status, None, "x", 1, 0.0, depth="screen"))
+    s._rebuild()
+    assert "quiet" not in s.view.opt and "bare" not in s.view.opt
+    assert [j.key for j in s.likely_next(10)] == ["ok1"]
