@@ -455,6 +455,30 @@ def test_a_floating_array_from_an_older_layout_becomes_the_window(qtbot, monkeyp
     assert win.geometry() == floated and w2.array_dock.is_open()
 
 
+def test_a_docked_array_from_an_older_layout_stays_docked(qtbot, monkeypatch, ws28):
+    """Only a floating array converts; one docked in the main window before the upgrade stays where it was."""
+    w1 = _window(qtbot, monkeypatch, LAPTOP, ws28)
+    _open(w1, qtbot)
+    w1.array_dock.dock_in()
+    session = w1._snapshot_session()
+    session.view_state.pop("analyzer_array_window")                   # no window state: an existing user's session
+    w2 = _window(qtbot, monkeypatch, LAPTOP, ws28, session=session)
+    qtbot.wait(30)
+    assert w2.array_dock.isVisible() and not w2.array_dock.array_window.isVisible()
+    assert w2.array_dock._root.parentWidget() is w2.array_dock and _panels_action(w2).isChecked()
+
+
+def test_a_reopened_window_is_shown_after_the_main_window(qtbot, monkeypatch, ws28):
+    w1 = _window(qtbot, monkeypatch, LAPTOP, ws28)
+    _open(w1, qtbot)
+    session = _saved(w1)
+    monkeypatch.setattr(MainWindow, "_available_size", lambda self: LAPTOP)
+    w2 = MainWindow(Workspace.open(ws28), session=session, watch=False)
+    qtbot.addWidget(w2)
+    assert not w2.array_dock.array_window.isVisible()                 # not during construction, before the main window
+    w2.show()
+    qtbot.waitUntil(lambda: w2.array_dock.array_window.isVisible())
+
 # ---------------------------------------------------------------------------
 # responsiveness (a target, my estimate: measured and reported, not a gate)
 # ---------------------------------------------------------------------------

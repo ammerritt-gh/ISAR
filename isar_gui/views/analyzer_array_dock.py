@@ -323,12 +323,25 @@ class AnalyzerArrayDock(QDockWidget):
     def settle(self) -> None:
         """After the main window restores its layout: the array's host, and whether its window reopens. A layout saved
         before this window existed floated the array as a Qt dock; that dock becomes the window where it floated."""
+        # isHidden, not isVisible: at startup this runs before the main window's first show, when nothing is visible.
+        shown = not self.isHidden()
         if self.isFloating():
-            self.pop_out(self.geometry(), show=self.isVisible())
-        elif not self.isVisible() and self._wanted_windowed:
-            self.pop_out(show=self._reopen)
+            self.pop_out(self.geometry(), show=False)
+        elif not shown and self._wanted_windowed:
+            self.pop_out(show=False)
+            shown = self._reopen
+        else:
+            return                          # docked and in the layout (shown or tabbed): it stays docked
+        if shown:
+            # after the main window's first show, so the window is not left behind it
+            QTimer.singleShot(0, self, self._show_window)
 
     def _show_window(self) -> None:
+        if self._disposed:
+            return
+        owner = self.parentWidget()
+        if owner is not None and owner.testAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen):
+            self.array_window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)    # the self-test's hidden run
         if not self._placed:
             self.array_window.setGeometry(self._default_rect())
             self._placed = True
