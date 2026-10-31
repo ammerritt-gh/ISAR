@@ -129,7 +129,7 @@ SETTING_TABLE = (
     ("q_curvature_scale_meV", "hidden", 1.0),
     ("reference_T_K", "hidden", 100.0), ("t_spacing_form", "hidden", "widen"), ("penalty_cap", "hidden", 12.0),
     ("birth_edge", "hidden", 2.0), ("birth_mid", "hidden", 12.0), ("cost_rel_tol", "hidden", 1e-5),
-    ("collinearity_tol", "hidden", 0.01), ("composition_limit", "hidden", 4), ("confidence", "hidden", 0.80),
+    ("collinearity_tol", "hidden", 0.01), ("confidence", "hidden", 0.80),
     ("close_call_nats", "hidden", 2.0), ("evidence_hysteresis_nats", "hidden", 0.1),
     ("stop_margin_nats", "hidden", 5.0), ("linewidth_ratio", "hidden", 2.0), ("full_search", "hidden", False),
     ("full_search_max_count", "hidden", 4),
@@ -205,8 +205,10 @@ def test_the_q_tolerance_is_a_slope_times_the_spacing_in_its_own_metric():
 
 
 def test_the_retired_settings_are_gone_from_the_table():
-    assert RETIRED_SETTINGS == {"q_tolerance_meV", "q_change_scale_meV"}
+    assert RETIRED_SETTINGS == {"q_tolerance_meV", "q_change_scale_meV", "composition_limit"}
     assert not RETIRED_SETTINGS & {d.name for d in SETTING_DEFS}
+    with pytest.raises(ValueError, match="composition_limit"):     # the checked reader refuses it; the intake fold ignores it
+        InterSettings.from_values({"composition_limit": 4})
 
 
 def test_severity_table_covers_every_flag_code():
