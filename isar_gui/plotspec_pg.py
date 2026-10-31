@@ -332,7 +332,7 @@ def _draw_band(rs: RenderedSpec, b, legend_entries: list) -> None:
 # choices: UNRELIABLE/WARNING = hollow red diamond; verdict glyphs get distinct symbols.
 def _marker_style(kind: MarkerKind):
     if kind is MarkerKind.MASKED:
-        return "o", "#808080", None, 10
+        return "x", "#808080", None, 10
     if kind is MarkerKind.COSMIC_RAY:
         return "o", "darkorange", None, 14
     if kind is MarkerKind.WARNING:

@@ -61,6 +61,19 @@ def test_marker_labels_reach_the_legend_once_per_group():
     assert "kept" in labels
 
 
+def test_masked_point_is_a_grey_x():
+    from matplotlib.markers import MarkerStyle
+    from isar.plotspec.backends.mpl import _draw_marker
+    fig, ax = plt.subplots()
+    try:
+        _draw_marker(ax, ps.Marker(x=1.0, y=2.0, kind=ps.MarkerKind.MASKED))
+        coll = ax.collections[-1]
+        assert np.array_equal(coll.get_paths()[0].codes, MarkerStyle("x").get_path().codes)
+        assert np.allclose(coll.get_edgecolor()[0][:3], 0.5)
+    finally:
+        plt.close(fig)
+
+
 def test_strips_render_as_separate_rectangles_with_a_gap():
     # Two measured columns at H=2.0 and H=2.4 (a gap between 2.04 and 2.36); each is its own
     # AxesImage over its own E extent, and NO artist spans the gap (gaps stay gaps, no interpolation).

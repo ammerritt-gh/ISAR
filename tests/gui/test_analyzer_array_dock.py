@@ -235,6 +235,16 @@ def test_a_drawn_solo_curve_is_cleared_when_its_fit_becomes_no_curve(qtbot, scan
     assert _curve_points(cell._total) == 0 and cell.absence_label.text() == "no curve"
 
 
+def test_a_masked_point_in_a_cell_is_a_grey_x(qtbot):
+    import numpy as np
+    from isar_gui.viewmodels.analyzer_array import CellPlot
+    cell = AnalyzerCell("a06", "A4", True)
+    qtbot.addWidget(cell)
+    cell._draw(CellPlot(token=(), x=np.array([1.0, 2.0]), y=np.array([1.0, 2.0]), kept=np.array([True, False]),
+                        fit_x=None, total=None, components=()))
+    assert cell._masked.opts["symbol"] == "x" and cell._masked.opts["pen"].color().name() == "#808080"
+
+
 def test_switching_scans_keeps_the_widgets_and_redraws_only_what_changed(env):
     _show(env, A6)
     d = env.dock

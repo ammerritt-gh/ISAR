@@ -319,6 +319,17 @@ def test_unanchored_corner_notes_are_stacked_not_overlapping(qtbot):
     assert offsets == [(-8, -8), (-8, -22)]
 
 
+def test_masked_point_is_a_grey_x(qtbot):
+    """A masked point is a grey X, as PUFFIN draws it (operator ruling 2026-10-31)."""
+    glw, plot = _new_plot()
+    qtbot.addWidget(glw)
+    spec = PlotSpec(title="t", xlabel="x", ylabel="y", markers=[Marker(x=1.0, y=2.0, kind=MarkerKind.MASKED)])
+    rs = render_into(plot, spec)
+    (masked,) = [it for it in rs.items if isinstance(it, pg.ScatterPlotItem)]
+    assert masked.opts["symbol"] == "x"
+    assert masked.opts["pen"].color().name() == "#808080"
+
+
 def test_unreliable_marker_has_no_errorbar(qtbot):
     """An UNRELIABLE point is a warning marker with NO whiskers; the backend must emit no
     ErrorBarItem for a spec whose only content is the unreliable marker + annotation."""

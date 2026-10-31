@@ -179,7 +179,7 @@ class AnalyzerCell(QFrame):
         item.getAxis("bottom").setStyle(showValues=show_x_ticks)
         data, fit = QColor(ROLE_COLOR[Role.DATA]), QColor(ROLE_COLOR[Role.FIT])
         self._kept = pg.ScatterPlotItem(size=4, pen=None, brush=pg.mkBrush(data))
-        self._masked = pg.ScatterPlotItem(size=4, pen=pg.mkPen(data), brush=None)    # masked points stay, hollow
+        self._masked = pg.ScatterPlotItem(size=6, pen=pg.mkPen("#808080"), brush=None, symbol="x")    # masked: grey X
         self._total = pg.PlotDataItem(pen=pg.mkPen(fit, width=1.4, style=Qt.PenStyle.DashLine))
         self._parts: list = []
         self._component_pen = pg.mkPen(QColor(ROLE_COLOR[Role.COMPONENT]), width=1)

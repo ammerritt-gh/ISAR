@@ -479,7 +479,7 @@ when several scans are selected. Rulings that bind it:
 - Identity is the spectrum key; internal names (A4) and positions are labels from the layout (`workspace_api.analyzer_array`,
   one resolver `layout_for`) and are never stored against data. The Delta-hkl axis words come from the read layer, never the GUI.
 - Each cell draws the authoritative fit only (`row.fit_id`); a fit picked in the Scan(s) menu does not move it. Linear y, no error bars,
-  no peak values, masked points hollow. Absences are words: "no file", "no fit", "not zeroed" (plus "not read", "no monitor",
+  no peak values, masked points a small grey X (operator ruling 2026-10-31; it replaces "hollow", as in the Scan(s) plot). Absences are words: "no file", "no fit", "not zeroed" (plus "not read", "no monitor",
   "no curve" for the other not-drawn codes, and for an authoritative fit the read cannot draw: the read falls back to the
   solo's data, and the cell then shows "no curve", never the solo's curve), never a flat line. The word sits in a strip
   under the plot, never over the data.
