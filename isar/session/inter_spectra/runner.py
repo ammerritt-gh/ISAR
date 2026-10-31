@@ -232,58 +232,82 @@ class _Pool:
     def map(self, fn: str, calls: list) -> dict:
         """``{key: result or the exception it raised}`` of ``core.<fn>(*args, **kwargs)`` per ``(key, args, kwargs)``."""
         out: dict = {}
-        if self.workers <= 1 or len(calls) <= 1:
-            for i, (key, args, kwargs) in enumerate(calls):
+
+        def keep(key, result):
+            out[key] = result
+            return ()
+        self._run(fn, calls, keep, inline=self.workers <= 1 or len(calls) <= 1)
+        return {key: out[key] for key, _a, _k in calls}      # the order of calls, as before
+
+    def stream(self, fn: str, calls: list, more) -> None:
+        """Run ``core.<fn>(*args, **kwargs)`` for each ``(key, args, kwargs)`` of ``calls``, at most ``workers`` in
+        flight; as each finishes, call ``more(key, result or the exception it raised)`` in this process, which returns
+        the further calls to queue (FIFO, after those queued). Returns when nothing is queued or in flight. A dead
+        pool: before anything was sent it raises; mid-stream every unsent call is reported to ``more`` as the
+        ``BrokenProcessPool``, the flying ones as they come back, and a call queued after that raises it here."""
+        self._run(fn, calls, more, inline=self.workers <= 1)
+
+    def _run(self, fn: str, calls: list, more, inline: bool) -> None:
+        queue = deque(calls)
+        if inline:
+            while queue:
+                key, args, kwargs = queue.popleft()
                 self._note(key, True)
                 self._tick(True)                  # this job may run for minutes: show it now
                 try:
-                    out[key] = getattr(self.core, fn)(*args, **kwargs)
+                    result = getattr(self.core, fn)(*args, **kwargs)
                 except Exception as exc:  # noqa: BLE001 — one spectrum's failure is its result
                     log.exception("%s of %s failed", fn, key)
-                    out[key] = exc
+                    result = exc
                 finally:
                     self._note(key, False)
-                    self._tick(i == len(calls) - 1)   # the last job is back: publish it before the save waits on the ack
-            return out
+                queue.extend(more(key, result))
+                self._tick(not queue)             # the last job is back: publish it before the save waits on the ack
+            return
         if self.broken is not None:
             raise self.broken
         if self.ex is None:
             for name in _THREAD_ENV:          # one BLAS thread per process, as _deep_stage pins it
                 os.environ.setdefault(name, "1")
             self.ex = ProcessPoolExecutor(max_workers=self.workers)
-        pending, flying, blob, sent = deque(calls), {}, None, 0      # blob: the pickle of pending[0], made while workers run
-        while pending or flying:
-            while pending and len(flying) < self.workers:
-                key, args, kwargs = pending.popleft()
+        flying, blob, sent = {}, None, 0      # blob: the pickle of queue[0], made while workers run
+        while queue or flying:
+            if self.broken is not None and not flying:
+                raise self.broken             # calls queued after the pool died: they reach it as the next map would
+            while queue and len(flying) < self.workers and self.broken is None:
+                key, args, kwargs = queue.popleft()
                 blob = blob or self._pickle(args, kwargs)
                 try:
                     flying[self.ex.submit(_work, self.core.__name__, fn, blob)] = key
                 except BrokenProcessPool as exc:
                     if not sent:                          # the pool was dead before this stage sent anything: raise, as before
                         raise
-                    log.error("%s: the worker pool broke (%s); %d jobs not sent", fn, exc, len(pending) + 1)
+                    log.error("%s: the worker pool broke (%s); %d jobs not sent", fn, exc, len(queue) + 1)
                     self.broken = exc                     # a dead worker mid-stage: the unsent jobs fail as the flying ones do
-                    for k in [key, *(p[0] for p in pending)]:
-                        out[k] = exc
-                    pending.clear()
+                    lost, blob = [key, *(q[0] for q in queue)], None
+                    queue.clear()
+                    for k in lost:
+                        queue.extend(more(k, exc))
                     break
                 blob = None
                 sent += 1
                 self._note(key, True)
-                if pending:
-                    blob = self._pickle(pending[0][1], pending[0][2])
+                if queue:
+                    blob = self._pickle(queue[0][1], queue[0][2])
+            if not flying:
+                continue
             done, _ = wait(flying, timeout=MEMBERS_GAP_S, return_when=FIRST_COMPLETED)
             for fut in done:
                 key = flying.pop(fut)
                 try:
-                    out[key] = fut.result()
+                    result = fut.result()
                 except Exception as exc:  # noqa: BLE001 — one spectrum's failure is its result
                     log.exception("%s of %s failed in the pool", fn, key)
-                    out[key] = exc
+                    result = exc
                 self._note(key, False)
+                queue.extend(more(key, result))
             self._tick(False)                 # flushes a throttled transition
         self._tick(True)                      # and the last one, which a throttle could have held back
-        return {key: out[key] for key, _a, _k in calls}      # the order of calls, as before
 
     def close(self) -> None:
         if self.ex is not None:
@@ -799,11 +823,12 @@ class _Run:
         return self.tallies.setdefault((label, k), _Tally(label, k))
 
     def assign(self, snaps: dict, cache: dict) -> tuple[dict, dict]:
-        """Stage 1 of every snapshot: one core ``Search`` per spectrum, all driven together. Each pass takes every
-        live search's next jobs, sends the ones with no cached price to the pool in one map and feeds each search
-        its prices in job order, until every search is done. ``cache``: unit -> {job key: Priced}, whose keys
-        hash every value a price depends on (fit ids included), so a changed snapshot never reuses one. Returns
-        ``(A, errors)``: the assignments, and the exception that failed each spectrum whose search raised (a
+        """Stage 1 of every snapshot: one core ``Search`` per spectrum, all driven together through one pool stream.
+        Each search waits only for its own jobs: when the last job of its pass is back it is fed that pass's prices
+        in job order (cache hits included), and its next pass's uncached jobs join the stream at once, while other
+        spectra's jobs still run. A pass the cache answers alone is fed inline. ``cache``: unit -> {job key:
+        Priced}, whose keys hash every value a price depends on (fit ids included), so a changed snapshot never
+        reuses one. Returns ``(A, errors)``: the assignments, and the exception that failed each spectrum whose search raised (a
         pool exception is only that job's failed price; a dead pool raises out of here and ends the batch)."""
         from isar.analyze.coupled.types import Priced
         t0 = time.perf_counter()
@@ -846,72 +871,80 @@ class _Run:
                 tallies[k].cached += len(keys)
                 timed(live[k].feed, [have[key] for key in keys])
 
+        passes: dict = {}            # k -> (its pass's jobs, the keys of that pass still in the pool)
+        got: dict = {}               # (k, job key) -> what the pool returned for it
+
+        def advance(k) -> list:
+            """``k``'s next pass as pool calls, or [] once its search is done or failed."""
+            try:
+                jobs = next_fresh(k)
+                if not jobs:
+                    a = timed(live[k].result)
+                    tallies[k].stopped = _stopped(a)
+                    A[k] = a
+                    del live[k]
+                    return []
+            except Exception as exc:  # noqa: BLE001
+                fail(k, exc)
+                return []
+            calls = [((k, j.key), (snaps[k], j), {}) for j in jobs if j.key not in cache[k]]
+            passes[k] = (jobs, {c[0] for c in calls})
+            self.timing["pool"]["iterations"] += 1
+            return calls
+
+        def back(key, result) -> list:
+            """``_Pool.stream``'s ``more``: once the last job of ``k``'s pass is back, feed it in job order."""
+            k = key[0]
+            got[key] = result
+            jobs, waiting = passes[k]
+            waiting.discard(key)
+            if waiting:
+                return []
+            del passes[k]
+            out, tl, hits = [], tallies[k], 0
+            for j in jobs:
+                if (k, j.key) not in got:
+                    out.append(cache[k][j.key])
+                    hits += 1
+                    continue
+                p = got.pop((k, j.key))
+                if isinstance(p, Exception):              # not a price: never cached, a later stage prices it afresh
+                    p = Priced(key=j.key, count=j.count, slots=tuple(j.slots), ln_z=None, status="no_evidence",
+                               mode=None, reason=f"pricing failed ({type(p).__name__}: {p})", starts=0,
+                               seconds=0.0, depth=j.depth)
+                else:
+                    cache[k][j.key] = p
+                tl.candidates += 1
+                tl.starts += len(j.starts)
+                tl.fits += p.starts
+                tl.evidence_s += p.seconds
+                if p.ln_z is None:
+                    tl.failures += 1
+                    tl.reasons[p.reason or p.status] += 1
+                self.timing["likelihood_s"] += p.seconds
+                self.timing["pool"]["busy_s"] += p.seconds
+                out.append(p)
+            tl.iterations += 1
+            tl.cached += hits
+            log.info("batch %s %s %s pass %d: %d jobs sent, %d cached, %d searches live, %.1fs", self.batch, label, k,
+                     tl.iterations, len(jobs) - hits, hits, len(live), time.perf_counter() - t0)
+            try:
+                timed(live[k].feed, out)
+            except Exception as exc:  # noqa: BLE001
+                fail(k, exc)
+                return []
+            return advance(k)
+
         for k, s in snaps.items():
             try:
                 live[k] = timed(self.core.open_search, s)
             except Exception as exc:  # noqa: BLE001 — one spectrum's failure is its result
                 fail(k, exc)
-        passes = 0
-        while live:
-            wants = {}
-            for k in list(live):
-                try:
-                    jobs = next_fresh(k)
-                    if jobs:
-                        wants[k] = jobs
-                    else:
-                        a = timed(live[k].result)
-                        tallies[k].stopped = _stopped(a)
-                        A[k] = a
-                        del live[k]
-                except Exception as exc:  # noqa: BLE001
-                    fail(k, exc)
-            if not wants:
-                continue
-            calls = [((k, j.key), (snaps[k], j), {}) for k, jobs in wants.items() for j in jobs
-                     if j.key not in cache[k]]
-            # shortcut: one barrier per pass, so a slow job idles the other workers; upgrade to feeding each
-            # spectrum as its own jobs return when pool.busy_s / (map_wall_s * workers) reads under about 0.5
-            got = {}
-            if calls:
-                t = time.perf_counter()
-                got = self.pool.map("price", calls)                  # a dead pool raises here, uncaught
-                self.timing["pool"]["iterations"] += 1
-                self.timing["pool"]["map_wall_s"] += time.perf_counter() - t
-            passes += 1
-            for k, jobs in wants.items():
-                out, sent, tl = [], False, tallies[k]
-                for j in jobs:
-                    if (k, j.key) not in got:
-                        out.append(cache[k][j.key])
-                        tl.cached += 1
-                        continue
-                    p = got[k, j.key]
-                    if isinstance(p, Exception):              # not a price: never cached, a later stage prices it afresh
-                        p = Priced(key=j.key, count=j.count, slots=tuple(j.slots), ln_z=None, status="no_evidence",
-                                   mode=None, reason=f"pricing failed ({type(p).__name__}: {p})", starts=0,
-                                   seconds=0.0)
-                    else:
-                        cache[k][j.key] = p
-                    sent = True
-                    tl.candidates += 1
-                    tl.starts += len(j.starts)
-                    tl.fits += p.starts
-                    tl.evidence_s += p.seconds
-                    if p.ln_z is None:
-                        tl.failures += 1
-                        tl.reasons[p.reason or p.status] += 1
-                    self.timing["likelihood_s"] += p.seconds
-                    self.timing["pool"]["busy_s"] += p.seconds
-                    out.append(p)
-                tl.iterations += sent
-                try:
-                    timed(live[k].feed, out)
-                except Exception as exc:  # noqa: BLE001
-                    fail(k, exc)
-            log.info("batch %s %s pass %d: %d searches live, %d jobs sent, %d cached, %.1fs", self.batch, label,
-                     passes, len(wants), len(calls), sum(len(j) for j in wants.values()) - len(calls),
-                     time.perf_counter() - t0)
+        calls = [c for k in list(live) for c in advance(k)]          # every spectrum's first pass, in snaps order
+        if calls:
+            t = time.perf_counter()
+            self.pool.stream("price", calls, back)                   # a dead pool raises here, uncaught
+            self.timing["pool"]["map_wall_s"] += time.perf_counter() - t
         self.timing["assign_s"] += time.perf_counter() - t0
         return {k: A[k] for k in snaps if k in A}, errors
 
