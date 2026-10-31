@@ -108,13 +108,20 @@ def _spectrum(stage, options, qe, name, snapshot):
     exposure = getattr(unit, "exposure", None)
     reference = getattr(exposure, "reference", None)
     exposure_source = getattr(exposure, "source", None)
+    # The model sits at its own fit's reference exposure, which a manual mask can move off the
+    # unit's; the Scan(s) display rescales by the same stored basis.
+    basis = fit.fast_pass.get("exposure_basis") or {}
+    if basis:
+        reference = (_finite_number(basis.get("reference"))
+                     if basis.get("source") == exposure_source else None)
     if data_changed:
         reference = None  # the current unit's monitor cannot identify the older fit's scale
     record["reference_exposure"] = {"value": reference, "source": exposure_source}
     factor = 1.0
     intensity_unit = "counts"
+    model_unit = "counts at reference exposure"  # raw data carry each point's own exposure
     if options.scale == "normalised":
-        intensity_unit = "counts/monitor"
+        intensity_unit = model_unit = "counts/monitor"
         if (data_changed or exposure_source != "monitor" or reference is None
                 or not np.isfinite(reference) or reference <= 0):
             factor = None
@@ -166,7 +173,7 @@ def _spectrum(stage, options, qe, name, snapshot):
                 problems.append("Fit cannot be monitor-normalized: no reference monitor for its data revision")
             if options.parameters_separate or options.parameters_combined:
                 parameter_rows = tables.parameter_rows(
-                    fit, manifest, context, factor=factor, intensity_unit=intensity_unit,
+                    fit, manifest, context, factor=factor, intensity_unit=model_unit,
                     conditional=ent is not None and ent.line is not None)
                 if options.parameters_separate:
                     record["files"] += tables.write_formats(
@@ -184,7 +191,7 @@ def _spectrum(stage, options, qe, name, snapshot):
                     values = [total * factor, *[v * factor for _, v in parts]]
                     record["files"] += tables.write_formats(
                         stage, "fits", name, options, names,
-                        ["meV", *[intensity_unit] * len(values)], ["X", *["Y"] * len(values)],
+                        ["meV", *[model_unit] * len(values)], ["X", *["Y"] * len(values)],
                         comment, zip(grid - shift, *values))
     return record, parameter_rows
 

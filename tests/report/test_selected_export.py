@@ -81,6 +81,25 @@ def test_formats_scales_components_and_whole_model(export_ws):
     assert width[9] == "0.2"
 
 
+def test_model_uses_its_own_fit_reference_exposure(export_ws):
+    """A manual mask can move the fit's median monitor off the unit's; the model keeps the fit's scale."""
+    from isar.session.state import SessionState
+    state = SessionState.load(export_ws / "session.json")
+    for entry in state.scans.values():
+        entry.detectors["a"]["fast_pass"]["exposure_basis"] = {"source": "monitor", "reference": 50}
+    state.save(export_ws / "session.json")
+    raw = export_workspace(export_ws, options=ExportOptions(origin=True)).folder
+    normalized = export_workspace(export_ws, options=ExportOptions(scale="normalised")).folder
+    curves = np.array(read_csv(raw / "csv/fits/1__a.csv")[1:], dtype=float)
+    norm = np.array(read_csv(normalized / "csv/fits/1__a.csv")[1:], dtype=float)
+    np.testing.assert_allclose(norm[:, 1:], curves[:, 1:] / 50, rtol=1e-10)
+    units = read_csv(raw / "origin/fits/1__a.csv")[1]
+    assert units[1:] == ["counts at reference exposure"] * (len(units) - 1)
+    assert read_csv(raw / "origin/spectra/1__a.csv")[1][1] == "counts"
+    spectrum = json.loads((raw / "export.json").read_text(encoding="utf-8"))["spectra"][0]
+    assert spectrum["reference_exposure"]["value"] == 50
+
+
 def test_data_only_and_authoritative_parameters(export_ws, monkeypatch):
     data = export_workspace(export_ws, options=ExportOptions(curves=False, parameters_combined=False,
                                                             csv=False, origin=True)).folder

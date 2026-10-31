@@ -711,8 +711,9 @@ Each selected format has its own `csv/` or `origin/` directory, containing `spec
 one row per parameter, including elastic/background terms and recorded uncertainties, with clear
 labels and units. This is the readable whole-model counterpart of the audit export's technical
 `modes.csv`. Zero and missing values are distinct, and conditional errors are labelled as such.
-Raw fit curves use a reference exposure, recorded in `export.json` and Origin comments: measured
-points can have different exposures. Missing monitor values give blank normalized values, never
+Raw fit curves and intensity parameters are at the fit's own reference exposure (unit `counts at
+reference exposure`), recorded in `export.json` and Origin comments: measured points can have
+different exposures, and a manual mask can move a fit's reference off the data's. Missing monitor values give blank normalized values, never
 raw-count substitutes. Excluded data points remain in the files with `Included=0`.
 
 Origin CSV files have four header rows: **Long Name**, **Units**, **Comments**, **column designation**.
