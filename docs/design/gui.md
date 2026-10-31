@@ -211,6 +211,10 @@ empty/ready layout pair, and amends G19 as stated below.
   reopens visibly in its previous normal/maximized state. Qt brings geometry from a removed or
   resized screen back onto an available screen. Moves, resizes and window-state changes use the
   existing debounced autosave; Mini monitor geometry never replaces the full window's saved state.
+  Floating panels use normal window title bars with minimize, maximize/restore and their existing
+  close control. The controls are reapplied after undocking or restoring a floating layout, without
+  changing the panel's ownership or visibility. View → Panels restores a minimized panel, retaining
+  its maximized state when applicable; docking back into the main window still works normally.
   **Known limit, accepted (2026-10-27; superseded by G27).** The earlier 86 px plot measurement applied to the former fit page while its side tables shared the centre column. G27 moves stored fit tables to the left inspector and gives Scan(s) the plot area. No new narrow-screen plot width is claimed here; the laptop-size human walkthrough remains unrun.
 
 - **G25 — the experiment is a real folder.** With no experiment open, a drop, *Add files…* or

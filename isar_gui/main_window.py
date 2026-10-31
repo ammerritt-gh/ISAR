@@ -347,6 +347,22 @@ class _WindowQueue(QueueController):
         self._show_scan()
 
 
+def _floating_dock_controls(dock: QDockWidget, floating: bool) -> None:
+    """Qt resets a dock to a tool window on every undock; give it normal window controls."""
+    if not floating:
+        return
+    flags = ((dock.windowFlags() & ~Qt.WindowType.WindowType_Mask) | Qt.WindowType.Window
+             | Qt.WindowType.WindowSystemMenuHint | Qt.WindowType.WindowMinMaxButtonsHint)
+    if flags == dock.windowFlags():
+        return
+    visible, geometry, state = dock.isVisible(), dock.geometry(), dock.windowState()
+    dock.setWindowFlags(flags)       # recreating the native frame hides the widget
+    dock.setGeometry(geometry)
+    dock.setWindowState(state)
+    if visible:
+        dock.show()
+
+
 class MainWindow(QMainWindow):
     """The shell window over one :class:`~isar.workspace_api.Workspace`."""
 
@@ -1070,8 +1086,11 @@ class MainWindow(QMainWindow):
     def _show_panel(self, dock) -> None:
         """View > Panels shows ``dock``. A parked old panel joins the left column as a tab first. The Analyzer
         array floats on its first open and is left where the user puts it after that."""
+        if dock.isMinimized():
+            dock.setWindowState(dock.windowState() & ~Qt.WindowState.WindowMinimized)
         if dock is self.array_dock and dock is not None:
             self._place_array_dock_once()
+            _floating_dock_controls(dock, dock.isFloating())
             dock.show()
             dock.raise_()
             return
@@ -1296,7 +1315,7 @@ class MainWindow(QMainWindow):
                 state, geometry, inspector_was_open = self._compact_stash
                 self._compact_stash = None
                 self.restoreGeometry(geometry)
-                if not self.restoreState(state, _LAYOUT_VERSION):
+                if not self._restore_dock_state(state):
                     # a stash can't be stale, but never half-apply
                     self._apply_default_arrangement(initial_arrangement(*self._available_size()))
                 if inspector_was_open:
@@ -1353,6 +1372,8 @@ class MainWindow(QMainWindow):
         # a second connection would fire _autosave twice per move.
         if dock not in self._loc_wired:
             dock.dockLocationChanged.connect(lambda _area: self._autosave())
+            dock.topLevelChanged.connect(lambda floating, d=dock: _floating_dock_controls(d, floating))
+            _floating_dock_controls(dock, dock.isFloating())
             self._loc_wired.add(dock)
 
     # ---- File menu (built once; actions persist across workspace reloads) --
@@ -2015,7 +2036,7 @@ class MainWindow(QMainWindow):
         self._bind_workspace(ws)
         self._bound = True
         if state is not None:
-            if not self.restoreState(state, _LAYOUT_VERSION):
+            if not self._restore_dock_state(state):
                 self.log("Window layout: could not carry the arrangement across; using the default "
                          "for this screen.")
                 self._apply_default_arrangement(initial_arrangement(*self._available_size()))
@@ -2672,9 +2693,10 @@ class MainWindow(QMainWindow):
             action.setCheckable(True)
             action.setChecked(dock.isVisible())
 
-            def _toggle(checked, d=dock):
-                if checked:
+            def _toggle(checked, d=dock, a=action):
+                if checked or d.isMinimized():
                     self._show_panel(d)
+                    a.setChecked(True)
                 else:
                     self._hide_panel(d)
                 self._autosave()
@@ -3045,6 +3067,14 @@ class MainWindow(QMainWindow):
             self._session.view_state["center_auto_follow"] = self._center_host.auto_follow
         return self._session
 
+    def _restore_dock_state(self, state: QByteArray) -> bool:
+        """Qt also resets flags when restoring an already-floating panel, without a float signal."""
+        restored = self.restoreState(state, _LAYOUT_VERSION)
+        if restored:
+            for dock in self._docks.values():
+                _floating_dock_controls(dock, dock.isFloating())
+        return restored
+
     def _restore_layout(self) -> None:
         """Apply the saved arrangement, or the default for this screen.
 
@@ -3074,7 +3104,7 @@ class MainWindow(QMainWindow):
             ok = False
             if needs is not None:
                 try:
-                    ok = self.restoreState(QByteArray.fromBase64(b64.encode("ascii")), _LAYOUT_VERSION)
+                    ok = self._restore_dock_state(QByteArray.fromBase64(b64.encode("ascii")))
                 except Exception as exc:  # noqa: BLE001 — a bad saved layout must never block the window
                     log.warning("could not restore the saved window layout: %s", exc)
             if ok:
