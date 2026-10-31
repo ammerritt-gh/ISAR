@@ -81,7 +81,7 @@ class MarkerKind(str, Enum):
     POOLED_UNCERTIFIED = "pooled_uncertified"  # neutral hollow square: no certifying interval
     POOLED_WARNING = "pooled_warning"  # red hollow square: explicitly unreliable pooled result
     AMBIGUOUS_CANDIDATE = "ambiguous_candidate"  # open mode candidate; never target delivery
-    MASKED = "masked"                  # QC-masked point, shown not deleted (red x)
+    MASKED = "masked"                  # masked point (QC or manual), shown not deleted (grey x)
     COSMIC_RAY = "cosmic_ray"          # cosmic-ray-cleaned point, ringed
     VERDICT_RESOLVED = "verdict_resolved"
     VERDICT_FLAGGED = "verdict_flagged"
