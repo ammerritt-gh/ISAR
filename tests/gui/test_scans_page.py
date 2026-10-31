@@ -240,7 +240,7 @@ def test_view_state_and_control_widths(page):
     page.save_view_state(session)
     assert session.view_state['scans_page'] == {'fit': 'deep', 'layout': 'overlay', 'scale': 'raw',
         'zero_lines': True, 'energy_zero_line': False, 'peak_lines': True, 'filled_symbols': False,
-        'out_of_range': True, 'offset_ratio': 1.1, 'offset_absolute': None}
+        'out_of_range': True, 'offset_ratio': 1.1}
     session.view_state['scans_page'] = {'fit': 'x', 'layout': 3}
     page.load_view_state(session)
     page.flush_redraw()

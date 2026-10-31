@@ -309,10 +309,10 @@ class ScansPage(QWidget):
             self._redraw()
 
     def load_view_state(self, session):
-        self.vm.load_view_state(session)
+        self.vm.load_view_state(session, getattr(self.ws, 'root', None))
 
     def save_view_state(self, session):
-        self.vm.save_view_state(session)
+        self.vm.save_view_state(session, getattr(self.ws, 'root', None))
 
     def _on_selection_changed(self, change):
         self.refresh()

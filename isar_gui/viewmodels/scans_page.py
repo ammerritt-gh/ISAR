@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 import math
+from pathlib import Path
 from time import perf_counter
 
 from PySide6.QtCore import Signal
@@ -24,6 +25,7 @@ PASSES = ('none', 'fast', 'deep')
 LAYOUTS = ('offset', 'overlay')
 SCALES = ('raw', 'normalised')
 STATE_KEY = 'scans_page'
+OFFSETS_KEY = 'scans_page_offsets'  # absolute offset per experiment: data units differ between them
 EMPTY, PLOT, LIST = range(3)
 DEEP_TOOLTIP = 'Deep pass: the slow nested-sampling refit.'
 ENERGY_LABEL = 'Energy transfer (meV)'
@@ -224,17 +226,24 @@ class ScansPageViewModel(ViewModel):
         self._signature = None
         self.refreshed.emit()
 
-    def save_view_state(self, session):
+    def save_view_state(self, session, root=None):
         session.view_state[STATE_KEY] = {'fit': self.fit, 'layout': self.layout, 'scale': self.scale,
             'zero_lines': self.zero_lines, 'energy_zero_line': self.energy_zero_line,
             'peak_lines': self.peak_lines,
             'filled_symbols': self.filled_symbols, 'out_of_range': self.out_of_range,
-            'offset_ratio': self.offset_ratio, 'offset_absolute': self.hand_step}
+            'offset_ratio': self.offset_ratio}
+        if root is not None:
+            offsets = session.view_state.get(OFFSETS_KEY)
+            if not isinstance(offsets, dict):
+                offsets = session.view_state[OFFSETS_KEY] = {}
+            # shortcut: one small entry per experiment ever opened, prune if session view_state grows
+            offsets[str(Path(root).resolve())] = self.hand_step
 
-    def load_view_state(self, session):
+    def load_view_state(self, session, root=None):
         outer = getattr(session, 'view_state', None)
         saved = outer.get(STATE_KEY) if isinstance(outer, dict) else None
         saved = saved if isinstance(saved, dict) else {}
+        offsets = outer.get(OFFSETS_KEY) if isinstance(outer, dict) else None
         for name, default in (("zero_lines", True), ("energy_zero_line", False),
                               ("peak_lines", True), ("filled_symbols", False),
                               ("out_of_range", True)):
@@ -247,7 +256,8 @@ class ScansPageViewModel(ViewModel):
         ratio = saved.get('offset_ratio', DEFAULT_STACK_RATIO)
         self.offset_ratio = (float(ratio) if isinstance(ratio, (int, float))
                              and math.isfinite(ratio) and ratio >= 0 else DEFAULT_STACK_RATIO)
-        absolute = saved.get('offset_absolute')
+        absolute = (offsets.get(str(Path(root).resolve()))
+                    if root is not None and isinstance(offsets, dict) else None)
         self.hand_step = (float(absolute) if isinstance(absolute, (int, float))
                           and math.isfinite(absolute) and absolute >= 0 else None)
         self.refreshed.emit()

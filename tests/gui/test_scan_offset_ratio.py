@@ -88,7 +88,7 @@ def test_relative_and_absolute_modes_follow_their_own_values_on_selection_and_sc
     assert page._drawn_state.step == pytest.approx(_range(page) * ratio)
 
 
-def test_ratio_and_absolute_choice_roundtrip_and_older_sessions_start_at_one_point_one(page):
+def test_ratio_and_absolute_choice_roundtrip_and_older_sessions_start_at_one_point_one(page, tmp_path):
     session = Session()
     page.ratio_box.setValue(1.35)
     page.flush_redraw()
@@ -101,6 +101,14 @@ def test_ratio_and_absolute_choice_roundtrip_and_older_sessions_start_at_one_poi
     page.flush_redraw()
     page.save_view_state(session)
     page.vm.set_ratio(2)
+    page.load_view_state(session)
+    page.flush_redraw()
+    assert page.offset_box.value() == 75 and not page._drawn_state.step_auto
+    linked_ratio = page.ratio_box.value()
+    # The absolute offset is in this experiment's data units: another experiment starts on the ratio.
+    page.vm.load_view_state(session, tmp_path / 'other-experiment')
+    page.flush_redraw()
+    assert page.ratio_box.value() == linked_ratio and page._drawn_state.step_auto
     page.load_view_state(session)
     page.flush_redraw()
     assert page.offset_box.value() == 75 and not page._drawn_state.step_auto
