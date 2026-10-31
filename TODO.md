@@ -711,7 +711,7 @@ conditions — these are wants, not commitments.
 
 ## Notes
 
-routine suite 2.4 min, over its 1-min budget
+routine suite 2.5 min, over its 1-min budget
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test
