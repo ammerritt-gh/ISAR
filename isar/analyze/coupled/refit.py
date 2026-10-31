@@ -286,7 +286,6 @@ class _Spec:
         self.factors, self.frozen = self._build_factors()
         dormant = {d.branch for h in self.held_all.values() for d in h.dormant}
         dormant |= {d.branch for d in self.own.dormant}
-        self.pred = {b: [self._centre(f) for f in fs_] for b, fs_ in self.factors.items()}
         self.expected = self._expected()
         # the assignable pool (D9): every branch with a coupling term, every branch a neighbour predicts in the
         # window and every dormant one, one name per canonical branch, spelled by its first raw id with a factor
@@ -296,6 +295,12 @@ class _Spec:
         for c in sorted({self.canon(b) for b in dormant} | set(self.expected)):
             self.names.setdefault(c, c)
         self.pool = tuple(sorted(self.names.values()))
+        # every alias's factors go under the pool name, so a slot naming the branch carries every neighbour's term (D9)
+        grouped: dict[str, list] = {}
+        for b, fs_ in self.factors.items():
+            grouped.setdefault(self.names[self.canon(b)], []).extend(fs_)
+        self.factors = grouped
+        self.pred = {b: [self._centre(f) for f in fs_] for b, fs_ in self.factors.items()}
         dormant_c = {self.canon(b) for b in dormant}
         self.returning = frozenset(n for c, n in self.names.items() if c in dormant_c and n not in self.factors)
         inc, used = [], set()
@@ -341,7 +346,7 @@ class _Spec:
 
     # -- factors (spec 1)
     def _guard(self, held: Held, branch: str) -> float:
-        md = next((m for m in held.modes if m.branch == branch), None)
+        md = next((m for m in held.modes if self.canon(m.branch) == self.canon(branch)), None)
         if md is None:
             return 0.0                    # a branch this end does not carry yet: no recorded guard
         if md.guard is not None:
@@ -361,9 +366,10 @@ class _Spec:
             members = tuple(term.members)
             if me not in members or set(members) - {me} != set(held):
                 raise ValueError(f"{me}: term {term.kind} {members} does not hold this spectrum and its neighbours")
-            common = set.intersection(*({m.branch for m in h.modes} for h in held.values()))
-            for b in sorted(common):
-                energy = {u: next(m.omega0 for m in h.modes if m.branch == b) for u, h in held.items()}
+            common = set.intersection(*({self.canon(m.branch) for m in h.modes} for h in held.values()))
+            for c in sorted(common):              # aliases are one branch: each energy is read by canonical name
+                b = next(m.branch for u in members if u in held for m in held[u].modes if self.canon(m.branch) == c)
+                energy = {u: next(m.omega0 for m in h.modes if self.canon(m.branch) == c) for u, h in held.items()}
                 guards = {u: self._guard(h, b) for u, h in held.items()}
                 # anchored: the held end's guard only; simultaneous: both ends (symmetric, spec 1)
                 guards[me] = 0.0 if anchored else self._guard(self.own, b)
@@ -480,7 +486,7 @@ class _Spec:
     # -- the slot densities of one composition
     def held_value(self, unit: str, branch: str) -> float:
         h = self.held_all.get(unit)
-        md = None if h is None else next((m for m in h.modes if m.branch == branch), None)
+        md = None if h is None else next((m for m in h.modes if self.canon(m.branch) == self.canon(branch)), None)
         if md is None:
             raise KeyError(f"{unit} carries no branch {branch} in this snapshot")
         return md.omega0
@@ -838,7 +844,7 @@ def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
         except KeyError as exc:
             dropped.append(str(exc))
             continue
-        by_branch.setdefault(f.branch_id, []).append(f)
+        by_branch.setdefault(spec.names[spec.canon(f.branch_id)], []).append(f)
     notes = [_reason(n["code"], "a neighbour's precision is unavailable; its guard is the window width / sqrt(12)",
                      n["ids"], **n["values"]) for n in spec.notes]
     objs = spec.slot_objects(slots, by_branch)

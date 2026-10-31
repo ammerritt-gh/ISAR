@@ -306,3 +306,17 @@ def test_a_branch_without_a_coupling_term_is_charged_when_lost_and_free_when_nam
     assert c["loss"] == [["b2", 14.0, L]]
     # b2 is assignable (D9): naming it pays nothing for it, and the b1 it leaves out is charged instead
     assert [t[0] for t in spec.loss_terms(("b2",))] == ["b1"]
+
+
+def test_a_branch_two_neighbours_spell_differently_keeps_both_couplings():
+    # x spells b1 as the batch has it, z under an alias the batch merged into it: the slot prices both terms, as if
+    # both spelled it b1
+    prep = spectrum(ONE, seed=9)
+    base = t_pair(prep, ONE, ["b1"], ONE, ["b1"])
+    x, z = (BOTH, ["b1", "b2"]), (BOTH, ["b1x", "b2"])
+    alias = replace(_with_neighbours(base, x, z), aliases={"b1x": "b1"})
+    plain = _with_neighbours(base, x, (BOTH, ["b1", "b2"]))
+    n_factors = lambda s: len(R._Spec(s).slot_objects(("b1",))[0].factors)     # the matched slot's MatchedDensity
+    assert n_factors(alias) == n_factors(plain) == 2
+    alias_p, plain_p = R.price(alias, _job(alias, ("b1",))), R.price(plain, _job(plain, ("b1",)))
+    assert alias_p.ln_z == pytest.approx(plain_p.ln_z, abs=1e-9)
