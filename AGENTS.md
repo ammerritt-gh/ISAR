@@ -350,4 +350,5 @@ review item.
 - 2026-10-27 · pytest-qt closes leftover windows after per-test monkeypatches are undone; never let a GUI path read the profile lazily. The root conftest now walls the session off from %APPDATA%.
 - 2026-10-29 · floor: operator: never budget build scope or trim a design to fit a deadline yourself; agents routinely underestimate how much gets done.
 - 2026-10-30 · floor: operator: land and let him see results; never hold a landing for agent-run diagnostics he did not ask to judge.
+- 2026-10-31 · floor: operator: round numbers in discussion; two-decimal figures do not help him ("11.32 versus 11 is basically the same").
 - 2026-10-27 · floor: an acs-job --test-command with single quotes reaches pytest literally on Windows (every xdist worker exits 4, "no active workers"); use double quotes, passed via python.

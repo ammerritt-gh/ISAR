@@ -703,12 +703,15 @@ conditions — these are wants, not commitments.
 - `isar/session/file_fit.py:300` — `_gpi_entry` re-reads `intake_scans.json` per unit beside the rows frozen
   once at `freeze`, so a fit's file list and gpi check can come from two reads; pass `frozen.rows`. Revisit
   when batch preparation is next profiled or a gpi/row mismatch appears.
+- `isar/analyze/coupled/identity.py:80` — `match_link` survives the seeded search only for its
+  pre-pricing pruning; the search's own labelling moves now propose candidates. Delete it, or fold its prune
+  into the search. Revisit the next time `identity.py` is touched.
 
 ---
 
 ## Notes
 
-routine suite 3.1 min, over its 1-min budget
+routine suite 2.4 min, over its 1-min budget
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test
