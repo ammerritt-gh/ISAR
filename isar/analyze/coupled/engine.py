@@ -34,7 +34,6 @@ SPLIT_RIDGE = 0.1                   # nats of curvature on the pair's free width
 SPLIT_FD_REL = 1e-2                 # rel_step of the conditional Hessian (the default 1e-4 is below FD noise)
 SPLIT_OUTSIDE = 1e7                 # finite stand-in for +inf inside L-BFGS-B only
 SPLIT_ESCAPES = 4                   # saddle-escape tries per node
-SPLIT_RETRY_GTOL = 10.0             # _polish retries a gradient pass whose projected gradient exceeds this x gtol
 COLUMN_FD_REL = 1e-5                # step of a column difference: COLUMN_FD_REL x max(|value|, FWHM) meV
 # prior.laplace_log_evidence's reasons for a fit whose parameters stay undetermined (pinned by a test)
 UNDETERMINED_REASONS = ("Hessian not positive definite", "box covariance numerically singular")
@@ -254,10 +253,10 @@ def _polish(g, lo, hi, x, gv=None):
     step can land on the box corner, where scipy then reports convergence at the start. Returns (g(x), x).
     ``gv`` None (finite differences): two passes, the second from the first's result (one fails at the first tie).
     ``gv(x) = (g, dg/dx)``: one pass with that gradient, and a retry from its result, the scaling recomputed, only
-    when the pass reports failure or its scaled projected gradient exceeds ``SPLIT_RETRY_GTOL x gtol``. Measured on
-    the hidden-pair cases (2026-10-31): the finite-difference single pass stops short at a weak/strong tie (up to
-    1e-2 nat, on ftol with a noisy gradient); the gradient pass alone reaches the two-pass value there, and the
-    projected-gradient signal fires at most nodes (L-BFGS-B stops on ftol near 1e-4), so the retry usually runs."""
+    when the pass reports failure or ends on a non-finite value. The finite-difference single pass stops short at a
+    weak/strong tie (up to 1e-2 nat, on ftol with a noisy gradient); the gradient pass alone reaches the two-pass
+    value there (test_coupled_gradient.py, check 4). A projected-gradient trigger was dropped: L-BFGS-B stops on ftol
+    near 1e-4 at nearly every node, so it retried almost always, about 12% of each hidden-pair job, at the same ln Z."""
     x = np.clip(x, lo, hi)
     opts = {"maxiter": 500, "ftol": 1e-12, "gtol": 1e-6}
     if gv is None:
@@ -276,10 +275,10 @@ def _polish(g, lo, hi, x, gv=None):
         lo_s, hi_s = lo / sc, hi / sc
         r = minimize(fun, x / sc, jac=True, method="L-BFGS-B", bounds=list(zip(lo_s, hi_s)), options=opts)
         x = np.clip(r.x * sc, lo, hi)
-        pg = np.clip(r.x - r.jac, lo_s, hi_s) - r.x
-        if r.success and np.max(np.abs(pg), initial=0.0) <= SPLIT_RETRY_GTOL * opts["gtol"]:
+        v = g(x)
+        if r.success and math.isfinite(v):
             break
-    return g(x), x
+    return v, x
 
 
 def _d_logpdf(p, v: float) -> float:

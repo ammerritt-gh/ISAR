@@ -308,3 +308,19 @@ def test_the_one_pass_polish_reaches_the_two_pass_value_at_a_weak_strong_tie(mon
           f"the gradient polish by up to {worst_new:+.2e} nat")
     assert worst_fd1 > 1e-6                                  # the failure the second pass exists for
     assert worst_new <= 1e-6                                 # the gradient polish reaches the two-pass value
+
+
+def test_the_polish_retries_only_when_a_pass_fails(monkeypatch):
+    """A retry costs a second pass: at the tie's nodes every first pass succeeds, so none may retry."""
+    snap = hidden_snapshot(0.5, seed=2, asimov=False)
+    eng = _engine(snap, ("b1", "b2"))
+    model = eng.model(eng.variant(2, True, True), ())
+    theta = eng._start(model, [(8.0, 0.4, 40.0, False), (8.0, 0.4, 3.0, False)], {"elastic": 100.0, "bg": 2.0})
+    b = eng._place(model, theta, eng.cost(model, theta), "x", 0, "")
+    anchor = eng._anchor(model, b.theta)
+    passes, polishes = [], []
+    real_min, real_pol = cc.minimize, cc._polish
+    monkeypatch.setattr(cc, "minimize", lambda *a, **k: (passes.append(1), real_min(*a, **k))[1])
+    monkeypatch.setattr(cc, "_polish", lambda *a: (polishes.append(1), real_pol(*a))[1])
+    eng.split_evidence(b, anchor, (0, 1), sets=(6, 12))
+    assert polishes and len(passes) == len(polishes)
