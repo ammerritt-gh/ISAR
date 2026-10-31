@@ -3,6 +3,7 @@
 Lapsed masks stay in the intake log and are never applied; an analyzer whose stored data cannot be read has its
 masks in neither list. Generated data only (hard rule 10); a re-import is simulated by rewriting the unit file.
 """
+import dataclasses
 import json
 import logging
 from types import SimpleNamespace
@@ -50,13 +51,18 @@ def _si(root, key, row=None):
     return inputs.scan_inputs(row, inputs.index_entries(read.entries, lines=read.lines), data_dir=root / "data")
 
 
-def _rerun(root, key):
-    """What a re-import of a changed file does: every counts value moves and the row takes a new revision."""
+def _rewrite_counts(root, key):
+    """The unit file once the counts under it have moved: every value changes, the revision is left alone."""
     exp, n, det = key.rsplit(":", 2)
     path = unit_data_path(root / "data", exp, int(n), det)
     doc = json.loads(path.read_text(encoding="utf-8"))
     doc["counts"] = [c + 1.0 for c in doc["counts"]]
     path.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def _rerun(root, key):
+    """What a re-import of a changed file does: the unit file and the row's data revision change together."""
+    _rewrite_counts(root, key)
     scans.record_import(root, [{**scans.read_scans(root)[_scan(key)], "data_revision": "rev-2"}])
 
 
@@ -131,7 +137,33 @@ def test_unreadable_unit_data_holds_the_masks_neither_applied_nor_lapsed(masked,
     assert f"point masks of {key}" in caplog.text
 
 
-def test_the_identities_are_read_once_per_data_revision(masked, monkeypatch):
+def test_a_parsed_record_decides_the_applied_masks_while_the_unit_file_is_still_the_old_one(masked):
+    """The run's window: the row has the new revision and the parsed record the new counts, but the unit file on
+    disk is still the last import's. The split follows the record, the arrays apply() masks against."""
+    ws, data, key, point = masked
+    det = _det(key)
+    rec = fx.records_for(ws, data)[0]
+    sp = rec.spectra[det]
+    new = dataclasses.replace(rec, spectra={**rec.spectra, det: dataclasses.replace(sp, intensity=sp.intensity + 1.0)})
+    read = store.read_all(ws.root, store.ENTRIES)
+    index = inputs.index_entries(read.entries, lines=read.lines)
+    si = inputs.scan_inputs(scans.scan_row(new, "rev-2"), index, data_dir=ws.root / "data", record=new)
+    assert si.point_masks[det] == () and si.lapsed_masks[det] == (point,)
+    assert "point_masks" not in apply(new, si).facts
+    same = inputs.scan_inputs(scans.scan_row(rec, "rev-1"), index, data_dir=ws.root / "data", record=rec)
+    assert same.point_masks[det] == (point,)
+    assert apply(rec, same).facts["point_masks"]["value"] == {det: [point]}
+
+
+def test_the_stored_answer_follows_the_unit_file_when_the_revision_does_not_change(masked):
+    ws, _data, key, point = masked
+    det = _det(key)
+    assert _si(ws.root, key).lapsed_masks[det] == ()
+    _rewrite_counts(ws.root, key)                   # the same revision, a different file
+    assert _si(ws.root, key).lapsed_masks[det] == (point,)
+
+
+def test_the_identities_are_read_once_per_unit_file(masked, monkeypatch):
     ws, _data, key, point = masked
     det = _det(key)
     real, calls = unit_data.read_unit_data_for_unit, []

@@ -106,7 +106,7 @@ class StartPoint:
         key = group[0][5].rsplit(":", 1)[0]
         read = store.read_all(self.root, store.ENTRIES)            # the freeze: the saves on disk now
         si = inputs.scan_inputs(self.rows[key], inputs.index_entries(read.entries, lines=read.lines),
-                                self.gpi.get(key), data_dir=self.root / "data")
+                                self.gpi.get(key), data_dir=self.root / "data", record=self.parsed[key])
         eff = inputs.apply(self.parsed[key], si)
         state, view = self._calibration(key, eff, si)
         chash = self.data_revision[key]
