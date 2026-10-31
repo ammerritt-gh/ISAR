@@ -503,7 +503,7 @@ The second pass that couples neighbouring spectra. Its status, invariants and ru
   (`git log --all -- docs/DECISIONS.md`). A few IDs also survive as code vocabulary — e.g.
   **H1**, the SCENE program's
   constitution (`design/scene.md`); **S10**, evidence freezes only at owner-named milestones;
-  **O44**, the acoustic zone-centre exclusion (`ARCHITECTURE.md` §15); **IS1**–**IS15**, the inter-spectra
+  **O44**, the acoustic zone-centre exclusion (`ARCHITECTURE.md` §15); **IS1**–**IS23**, the inter-spectra
   rulings, quoted with their dates in `design/inter_spectra.md` §8.
 
   **Retired 2026-09-02, kept here so a citation in git history resolves:** **O11** (decline
