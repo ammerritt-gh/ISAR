@@ -236,6 +236,8 @@ def test_the_gradient_path_prices_as_the_finite_difference_path(name):
              if x.model.hyp.label == y.model.hyp.label and x.index == y.index and x.cov_free is not None
              and y.cov_free is not None]
     assert pairs
+    if name == "bound":                                      # else an interior fit passes this case
+        assert any(y.status == "ok_boundary" for _x, y in pairs), [y.status for _x, y in pairs]
     for x, y in pairs:
         assert x.status == y.status
         free = x.model.free
