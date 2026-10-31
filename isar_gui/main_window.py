@@ -624,6 +624,8 @@ class MainWindow(QMainWindow):
         self.scans_page.view_state_changed.connect(self._autosave)
         self.scan_list_vm.set_store(self._gui_store)      # the scans this experiment's list has removed
         self.scans_page.load_view_state(self._session)
+        if getattr(self, "array_dock", None) is not None:
+            self.array_dock.set_out_of_range(self.scans_page.vm.out_of_range)
         self._seed_folder_watcher()
 
         # Watch bridge: refresh + fan out on the Qt thread. Optional (tests may disable it). Never
@@ -700,6 +702,7 @@ class MainWindow(QMainWindow):
         host = CenterHost(self)
         self.scans_page = ScansPage(self.scan_list_vm, self._ws, parent=self)
         self.scans_page.set_inter(self.inter)
+        self.scans_page.masks.saved.connect(lambda: self._on_workspace_changed({"intake_entries"}))
         host.add_page("scan", "Scan(s)", self.scans_page)
         host.add_page(
             "plane", "Plane (q, E)",
@@ -1072,6 +1075,7 @@ class MainWindow(QMainWindow):
             self.array_vm.follow_queue(self._queue)
             self.array_vm.load_view_state(self._session)
             self.array_dock = AnalyzerArrayDock(self.array_vm, self)
+            self.array_dock.set_out_of_range(self.scans_page.vm.out_of_range)
             self._register_dock("Analyzer array", self.array_dock)
 
         # Scan(s), Plane, Dispersion and Sandbox are switchable pages of the central CenterHost,
@@ -2149,6 +2153,7 @@ class MainWindow(QMainWindow):
             ("zero_lines", "Show scan zero lines", "Dotted grey zero-intensity lines across the full plot width for offset scans."),
             ("energy_zero_line", "Show energy zero line", "A dotted grey line at energy-axis zero across the full plot height, including the residual panel."),
             ("peak_lines", "Show mode centre lines", "Lines from each stored mode centre to its scan zero, on both energy sides, in the mode colour."),
+            ("out_of_range", "Show out-of-range indicators", "Black bars and outward arrows mark measured data beyond the visible axes, including masked points. Applies to Scan(s) and the analyzer array."),
             ("filled_symbols", "Filled data symbols", "Fill data symbols; turn off for empty symbols that reveal curves behind them."),
         ):
             action = scans_menu.addAction(label)
@@ -2194,6 +2199,8 @@ class MainWindow(QMainWindow):
     def _set_scans_display(self, name, checked):
         if self.scans_page is not None:
             self.scans_page.vm.set_display_option(name, checked)
+            if name == "out_of_range" and self.array_dock is not None:
+                self.array_dock.set_out_of_range(checked)
             self.scans_page.save_view_state(self._session)
             self._autosaver.request()
 

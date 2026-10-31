@@ -130,7 +130,10 @@ class RenderedSpec:
         self.strip_levels: tuple[float, float] | None = None
         self.strip_colormap: str | None = None
 
-    def _add_data(self, item, *, ignore_bounds=False) -> None:
+    def _add_data(self, item, *, ignore_bounds=None) -> None:
+        # None: the spec decides (data_bounds_only); a guide passes its own include_in_bounds.
+        if ignore_bounds is None:
+            ignore_bounds = getattr(self, "data_bounds_only", False)
         self._plot_item.addItem(item, ignoreBounds=ignore_bounds)
         self._data_items.append(item)
 
@@ -425,7 +428,10 @@ def _draw_annotation(rs: RenderedSpec, a) -> None:
         if a.tooltip is not None:
             text.setToolTip(a.tooltip)
         text.setPos(float(a.xy[0]), float(a.xy[1]))
-        rs._add_data(text)
+        # End labels are anchored to retained data. Reserve their text extent without
+        # allowing masked points or old fit grids to stretch the axes.
+        rs._plot_item.addItem(text)
+        rs._data_items.append(text)
     else:
         # Un-anchored notes (exclusion counts, etc.) -> ViewBox bottom-right corner, stacked upward
         # so multiple notes don't all land on the same point and overlap.
@@ -549,6 +555,7 @@ def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
         previous.remove()
 
     rs = RenderedSpec(plot_item)
+    rs.data_bounds_only = bool(spec.meta.get("data_bounds_only"))
     legend_entries: list = []
 
     if spec.strips:  # measured columns underneath everything (the plane background)
@@ -593,6 +600,12 @@ def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
         legend.anchor(itemPos=(1, 0), parentPos=(1, 0), offset=(-8, 8))
         _populate_legend(legend, legend_entries, rs.legend_names)
         rs.legend = legend
+        tips = {s.label: s.tooltip for s in spec.series if s.tooltip}
+        for sample, label in legend.items:
+            tip = tips.get(label.toolTip())
+            if tip:
+                label.setToolTip(tip)
+                sample.setToolTip(tip)
 
     plot_item.setLabel("bottom", spec.xlabel)
     plot_item.setLabel("left", spec.ylabel)

@@ -562,6 +562,9 @@ class ScansTrace:
     curves: tuple[ScansCurve, ...]
     deep: bool
     active: bool
+    point_ids: tuple[str, ...] = ()
+    manual_mask: np.ndarray | None = None
+    tooltip: str | None = None
 
 
 DEFAULT_STACK_RATIO = 1.1
@@ -574,7 +577,7 @@ def stack_step(traces: Sequence[ScansTrace], ratio: float = DEFAULT_STACK_RATIO)
         y = np.asarray(trace.y, dtype=float)
         finite = np.isfinite(y)
         shown = finite & np.asarray(trace.kept, dtype=bool)
-        values = y[shown if shown.any() else finite]
+        values = y[shown]
         if values.size:
             ranges.append(float(np.ptp(values)))
     return ratio * max(ranges) if ranges else 1.0
@@ -597,7 +600,7 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
     if not np.isfinite(step) or step < 0:
         raise ValueError("trace offset must be finite and non-negative")
     spec = ps.PlotSpec(title="", xlabel=xlabel, ylabel=ylabel,
-                       meta={"view": view, "step": float(step), "n": len(traces)})
+                       meta={"view": view, "step": float(step), "n": len(traces), "data_bounds_only": True})
     if not traces:
         spec.annotations.append(ps.Annotation("Nothing drawn — see the line above"))
         return spec
@@ -616,12 +619,12 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
             role=ps.Role.DATA, symbol=ps.SYMBOLS[i],
             style=None if filled_symbols else "hollow",
             color=ps.TRACE_COLORS[i] if view == "overlay" else ps.DATA_NEUTRAL,
-            legend_group="Spectra", legend_bold=trace.active))
+            legend_group="Spectra", legend_bold=trace.active, tooltip=trace.tooltip))
         for px, py in zip(x[~kept & finite], y[~kept & finite]):
             spec.markers.append(ps.Marker(float(px), float(py + offset), ps.MarkerKind.MASKED,
                                           "masked (shown, not used in fit)"))
-        if view == "offset" and finite.any():
-            last = np.flatnonzero(finite)[-1]
+        if view == "offset" and shown.any():
+            last = np.flatnonzero(shown)[-1]
             label = trace.identity
             short = label if len(label) <= 28 else label[:13] + "…" + label[-14:]
             spec.annotations.append(ps.Annotation(

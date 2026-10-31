@@ -33,6 +33,8 @@ GUI_ALLOWED = {
     # The inter-spectra user values: the GUI saves them in process through the checked writers, and reads the
     # read-side module (the anchors, picks, locks and settings it shows).
     "isar.intake.inter_values", "isar.intake.inter_spectra",
+    # Manual point selection is a user edit through the checked, append-only intake writer.
+    "isar.intake.point_masks.save_selection",
     # The inter-spectra settings table (C-settings): the dialog builds its rows from it. Stdlib only, Qt-free.
     "isar.analyze.coupled.settings",
     # C-schedule: the analysis queue's bookkeeping, which the design gives to the GUI ("the GUI keeps the
@@ -126,6 +128,8 @@ WORKSPACE_API_ALLOWED = {
     "isar.intake.curves",
     "isar.intake.gpi",
     "isar.intake.inputs",
+    # Pure point identity and mask reads only: the facade cannot import the selection writer.
+    "isar.intake.point_masks.point_ids", "isar.intake.point_masks.selected_mask",
     "isar.intake.scans",
     "isar.intake.fit_inputs",
     "isar.intake.readiness",
@@ -235,6 +239,9 @@ def test_allowlist_logic_flags_a_known_violation():
     assert _allowed("isar.reduce.collate", WORKSPACE_API_ALLOWED)
     assert not _allowed("isar.intake.values", WORKSPACE_API_ALLOWED)  # the read facade never writes
     assert _allowed("isar.intake.values", GUI_ALLOWED)
+    assert _allowed("isar.intake.point_masks.save_selection", GUI_ALLOWED)
+    assert not _allowed("isar.intake.point_masks.save_selection", WORKSPACE_API_ALLOWED)
+    assert _allowed("isar.intake.point_masks.point_ids", WORKSPACE_API_ALLOWED)
     assert not _constrained("isar_gui.viewmodels.base")  # sibling package is not constrained
 
 

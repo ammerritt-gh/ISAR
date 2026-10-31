@@ -100,6 +100,7 @@ class ScansPageViewModel(ViewModel):
         self.energy_zero_line = False
         self.peak_lines = True
         self.filled_symbols = False
+        self.out_of_range = True
         self._store = None
         self._reference = None
         self._reference_snapshot = None
@@ -129,7 +130,8 @@ class ScansPageViewModel(ViewModel):
             self.refreshed.emit()
 
     def set_display_option(self, name, value):
-        if name not in ("zero_lines", "energy_zero_line", "peak_lines", "filled_symbols"):
+        if name not in ("zero_lines", "energy_zero_line", "peak_lines", "filled_symbols",
+                        "out_of_range"):
             raise ValueError(f"unknown display option: {name}")
         self._set(name, value, (True, False))
 
@@ -226,7 +228,7 @@ class ScansPageViewModel(ViewModel):
         session.view_state[STATE_KEY] = {'fit': self.fit, 'layout': self.layout, 'scale': self.scale,
             'zero_lines': self.zero_lines, 'energy_zero_line': self.energy_zero_line,
             'peak_lines': self.peak_lines,
-            'filled_symbols': self.filled_symbols,
+            'filled_symbols': self.filled_symbols, 'out_of_range': self.out_of_range,
             'offset_ratio': self.offset_ratio, 'offset_absolute': self.hand_step}
 
     def load_view_state(self, session):
@@ -234,7 +236,8 @@ class ScansPageViewModel(ViewModel):
         saved = outer.get(STATE_KEY) if isinstance(outer, dict) else None
         saved = saved if isinstance(saved, dict) else {}
         for name, default in (("zero_lines", True), ("energy_zero_line", False),
-                              ("peak_lines", True), ("filled_symbols", False)):
+                              ("peak_lines", True), ("filled_symbols", False),
+                              ("out_of_range", True)):
             value = saved.get(name, default)
             setattr(self, name, value if isinstance(value, bool) else default)
         for name, choices, default in (('fit', PASSES, 'fast'), ('layout', LAYOUTS, 'offset'),
@@ -340,6 +343,7 @@ class ScansPageViewModel(ViewModel):
         signature = (keys, revisions, tuple(labels.items()), self.selection.active,
                      self.fit, self.layout, self.scale, self.hand_step, self.offset_ratio, reference,
                      self.zero_lines, self.energy_zero_line, self.peak_lines, self.filled_symbols,
+                     self.out_of_range,
                      inter.revision if inter else '', tuple(self.chosen.items()), wf, history, wf_off,
                      row,
                      self._groups(snapshot, keys) if body == LIST else ())
@@ -399,7 +403,7 @@ class ScansPageViewModel(ViewModel):
         if entry is not None:
             return (fit_id, entry.label, entry.stale, entry.errors_available)
         row = self.inter.row(key)
-        return (fit_id, row.label if row and row.fit_id == fit_id else fit_id, bool(row and row.stale), True)
+        return (fit_id, row.label if row and row.fit_id == fit_id else fit_id, bool(row and (row.stale or row.lock_stale)), True)
 
     def _waterfall_entries(self, history, viewed):
         """Fast solo, every changed refit, the authoritative one and the viewed fit, oldest first; capped at
@@ -436,6 +440,7 @@ class ScansPageViewModel(ViewModel):
                 continue
             y_unit = scaled.y_unit
             curves, note = (), None
+            stale_tip = None
             shown = fit_pass
             refit = fit_id != 'fast' and shown == 'fast'    # Deep draws the solo deep fit, never the refit
             if shown != 'none' and common['view'] != 'overlay':
@@ -447,11 +452,17 @@ class ScansPageViewModel(ViewModel):
                     curves = (ScansCurve('Total', 'total', None, result.total),) + tuple(
                         ScansCurve(c.name, c.role, c.mode_number, c.values, c.centers) for c in result.components)
                     note = summary.unjudged_text
+                    if summary.current is False and not refit:
+                        note = "stale"
+                        stale_tip = "Stale: inputs changed since this fit was completed.\n" + "\n".join(
+                            f"{name}: {old} → {new}" for name, old, new in summary.changed)
                     residuals = result.residuals
                     if shown == 'deep':
                         deep_summaries.append(summary)
                     refit_flags.append(refit)
                     if refit:
+                        if stale:
+                            stale_tip = "Stale: this spectrum or a neighbour used by this fit has changed inputs."
                         parts = ([] if wf else [fit_label]) + (['stale'] if stale else []) + [
                             CONDITIONAL_ERRORS if errors_ok else ERRORS_UNAVAILABLE]
                         note = ' · '.join(parts + ([note] if note else []))
@@ -461,7 +472,8 @@ class ScansPageViewModel(ViewModel):
             if curves and (fit_id == viewed if wf else bundle.key == self._active):
                 self._drawn = 'deep' if shown == 'deep' else fit_id    # what the bar names on show
             traces.append(ScansTrace(identity, note, scaled.x, scaled.y, scaled.yerr,
-                                     scaled.kept, scaled.fine_x, curves, fit_pass == 'deep', active))
+                                     scaled.kept, scaled.fine_x, curves, fit_pass == 'deep', active,
+                                     scaled.point_ids, scaled.manual_mask, stale_tip))
             drawn_keys.append(bundle.key)
         header = None
         if any(t.curves for t in traces):
@@ -484,6 +496,7 @@ class ScansPageViewModel(ViewModel):
         step = self.offset_ratio * self._step_range if self.hand_step is None else self.hand_step
         step_ratio = step / self._step_range if self._step_range > 0 else None
         if wf:
+            drawn_keys.reverse()
             traces.reverse()      # the first trace is drawn on top; the oldest fit goes at the bottom
         ylabel = y_unit + (', traces offset' if common['view'] == 'offset' and len(traces) >= 2 else '')
         # A selected but unavailable single spectrum uses the builder's honest empty-plot state.

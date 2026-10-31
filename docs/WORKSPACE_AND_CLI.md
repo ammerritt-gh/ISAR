@@ -34,7 +34,7 @@ One directory per experiment (`isar/session/workspace.py`):
                       # (append-only; written before the index lines that point into it)
     scene/            # scene revisions: <digest>.json blobs + current.json pointer
   intake/             # BL43 intake records, ISAR-written only: settings.jsonl (experiment
-                      # settings), entries.jsonl (user values and conditions; experiment-critical like
+                      # settings), entries.jsonl (user values, conditions and manual point masks; experiment-critical like
                       # card.state.json, not deletable), inter_spectra.jsonl (the user's anchors, picks,
                       # locks and inter-spectra settings; append-only deltas, latest wins), .lock
                       # (held for one append)
@@ -52,6 +52,19 @@ starts write it; nothing else does. The experiment's gpi folder is the latest `g
 `report/gpi.json` records what the last check found: the folder in force and, for each `gpi.<set>` file,
 its content hash, whether it was accepted (and why not) and the values it gives. Imports, run starts and
 queued single-file fits write it; nothing else does, and no gpi value is ever written to `entries.jsonl`.
+
+**Manual point masks.** `kind="point_mask"` entries in `intake/entries.jsonl` contain
+`targets`, a `points` mapping from unit key to source-point identities, and `masked` (true
+to exclude, false to restore). Entries are replayed in sequence order. Source identities
+are derived from raw x/counts/variance and duplicate occurrence, independently of display
+normalization or energy zero. The effective record intersects these with the existing QC
+mask; measured arrays are never deleted or overwritten. Per-unit fit inputs and calibration
+identities include the manual mask, so changing it invalidates reuse and marks affected
+completed fits stale. The GUI calls the checked intake writer, and the facade only reads.
+Fast, Deep and inter-spectra fit records also retain `exposure_basis` (source and reference).
+Masking can change the fit's median monitor; the curve reader uses the recorded basis to
+keep old and new curves correctly scaled without rewriting their amplitudes.
+The selection and restoration controls are described in [the GUI design](design/gui.md).
 
 **Writers and the write lock.** The writers that run beside the GUI's analysis queue hold
 `.isar-write.lock` at the workspace root for their whole read-modify-write: the queue's writer

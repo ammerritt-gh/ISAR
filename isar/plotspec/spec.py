@@ -192,6 +192,7 @@ class Series:
     symbol: str | None = None
     legend_group: str | None = None
     legend_bold: bool = False
+    tooltip: str | None = None
 
     def __post_init__(self):
         if self.symbol is not None and self.symbol not in SYMBOLS:

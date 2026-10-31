@@ -179,7 +179,7 @@ _DIGITS = re.compile(r"(\d+)")
 
 # ---- what a pass's changed inputs are called (one table, so a notebook reads the same words) ----
 _CHANGE_LABELS = {
-    "data": "data revision", "temperature": "temperature", "slit": "slit", "q": "Q",
+    "point_masks": "manual point mask", "data": "data revision", "temperature": "temperature", "slit": "slit", "q": "Q",
     "excluded": "scan excluded", "dead": "declared dead", "dead_in_scan": "dead analyzers in the scan",
     "counts_accepted": "counts accepted", "resolution_folder": "resolution folder",
     "curve": "resolution curve", "resolution_library": "resolution library",
@@ -193,6 +193,8 @@ _SOURCE_WORDS = {"user": "yours"}
 
 
 def _change_value(field_name: str, value) -> str:
+    if field_name == "point_masks":
+        return f"{len(value or ())} masked points"
     if value is None:
         return "none"
     if isinstance(value, bool):

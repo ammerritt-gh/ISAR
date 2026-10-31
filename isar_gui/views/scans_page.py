@@ -19,6 +19,8 @@ from isar_gui.viewmodels.scans_page import (
 from isar_gui.views.elided_label import ElidedLabel
 from isar_gui.views.group_chips import GroupChips
 from isar_gui.views.inter_fit_bar import InterFitBar
+from isar_gui.views.mask_viewbox import MaskViewBox
+from isar_gui.views.scan_mask_controls import ScanMaskControls
 
 EMPTY_TEXT = 'No spectra selected. Select them in the scan list.'
 _log = logging.getLogger(__name__)
@@ -201,7 +203,9 @@ class ScansPage(QWidget):
         self._glw.setBackground('white')
         self._glw.setObjectName('scansPageGraphics')
         disable_view_drops(self._glw)
-        self._main_plot = self._glw.addPlot(row=0, col=0)
+        self._main_plot = self._glw.addPlot(row=0, col=0, viewBox=MaskViewBox())
+        self.masks = ScanMaskControls(self)
+        outer.addWidget(self.masks)
         self._resid_plot = self._glw.addPlot(row=1, col=0)
         self._resid_plot.setXLink(self._main_plot)
         for plot in (self._main_plot, self._resid_plot):
@@ -420,6 +424,7 @@ class ScansPage(QWidget):
                 clear_render(plot)
             else:
                 render_into(plot, spec)
+        self.masks.apply(state)
         self._resid_plot.setVisible(state.residual_spec is not None)
         if state.reset_range:
             self._main_plot.enableAutoRange()

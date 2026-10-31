@@ -452,6 +452,7 @@ def _scan(scan: str, row: dict, pos: int, index: inputs.EntryIndex, state: dict,
     key = None if check is None else inputs.calibration_inputs_key(
         data_revision=row["data_revision"], folder=check.folder, pattern=check.pattern, library=check.library,
         declared_slit=cal_slit, analyzers=live, counts_accepted=[a for a in live if a in si.counts_accepted],
+        point_masks={d: si.point_masks.get(d, ()) for d in live},
         named=inputs.named_key(si.named, si.gpi.curves if si.gpi else {}))
     current = not stale and key is not None and tabulated.calibration_reusable(
         prev, content_hash=row["data_revision"], library=check.library, inputs_key=key)

@@ -116,6 +116,8 @@ class ScaledSpectrum:
     kept: np.ndarray
     fine_x: np.ndarray
     passes: Mapping[PassName, PassCurves | NotDrawn]
+    point_ids: tuple[str, ...] = ()
+    manual_mask: np.ndarray | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)
@@ -134,6 +136,8 @@ class SpectrumBundle:
     exposure_scale: np.ndarray | None
     m_ref: float | None
     fine_energy: np.ndarray
+    point_ids: tuple[str, ...] = ()
+    manual_mask: np.ndarray | None = field(default=None, compare=False)
     zero: str = ZERO_NONE
     fit_id: str = "fast"                 # the fit the fast slot draws: "fast" or a refit's id
     fit_label: str = "Fast solo"
@@ -162,7 +166,7 @@ class SpectrumBundle:
                         residuals=value.residuals)
             return ScaledSpectrum(
                 self.key, scale, None, "Counts", None, self.energy, y, yerr, self.kept,
-                self.fine_energy, MappingProxyType(curves))
+                self.fine_energy, MappingProxyType(curves), self.point_ids, self.manual_mask)
 
         monitor = self.monitor
         if not self.exposure_stored:
@@ -178,7 +182,7 @@ class SpectrumBundle:
                 NO_MONITOR, "no usable monitor (no kept point has a positive monitor)")
             return _empty_view(self, scale, ref, reason, _blocked_passes(self, reason))
         drawable = np.isfinite(monitor) & (monitor > 0)
-        if (not np.any(drawable & self.kept) or self.m_ref is None
+        if (not np.any(drawable) or self.m_ref is None
                 or not math.isfinite(self.m_ref) or self.m_ref <= 0):
             reason = NotDrawn(
                 NO_MONITOR, "no usable monitor (no kept point has a positive monitor)")
@@ -205,7 +209,9 @@ class SpectrumBundle:
             self.key, scale, reference, _normalised_unit(reference), None,
             _readonly(self.energy[drawable]), _readonly(values[drawable]),
             _readonly(errors[drawable]), _readonly(self.kept[drawable]),
-            self.fine_energy, MappingProxyType(curves))
+            self.fine_energy, MappingProxyType(curves),
+            tuple(p for p, draw in zip(self.point_ids, drawable) if draw),
+            None if self.manual_mask is None else _readonly(self.manual_mask[drawable], bool))
 
 
 class SpectraCache:
@@ -515,7 +521,7 @@ def _resolution_token(fit):
 def _revision(row, unit, zero_fallback, fit_id="fast"):
     digest = hashlib.sha256()
     digest.update(str(row.key).encode("utf-8"))
-    for name in ("x", "counts", "variance", "mask", "monitor"):
+    for name in ("x", "counts", "variance", "mask", "monitor", "manual_mask"):
         value = getattr(unit, name, None)
         if value is None:
             digest.update(b"-")
@@ -576,7 +582,7 @@ def _not_drawn_bundle(key, revision, reason, summaries, *, unit=None, passes=Non
 
 
 def _pass_not_drawn(row, pass_name, fit, resolution, resolution_error, fine_raw, raw_x,
-                    counts, exposure_scale, qe, shift):
+                    counts, exposure_scale, qe, shift, exposure_source=None, exposure_reference=None):
     if fit is None:
         return NotDrawn(NO_PASS, "no fast pass" if pass_name == "fast" else "no deep pass")
     status = row.fast if pass_name == "fast" else row.deep
@@ -615,6 +621,22 @@ def _pass_not_drawn(row, pass_name, fit, resolution, resolution_error, fine_raw,
     try:
         total_fine, parts_fine = evaluate_manifest(manifest, resolution, fine_raw, qe)
         total_points, _parts_points = evaluate_manifest(manifest, resolution, raw_x, qe)
+        # A manual mask can change the median monitor used for the fit. Bring each stored
+        # pass back to the unit's display reference before applying its point exposures.
+        record = fit.fast_pass if pass_name == "fast" else fit.deep_pass
+        basis = (record or {}).get("exposure_basis")
+        if basis is not None and basis.get("source") != exposure_source:
+            raise UnsupportedFitView("fit and displayed data use different exposure sources")
+        if basis is not None and exposure_source is not None:
+            if exposure_reference is None:
+                raise UnsupportedFitView("displayed data have no exposure reference")
+            reference = _numeric(basis.get("reference"))
+            if reference is None or reference <= 0:
+                raise UnsupportedFitView("stored fit exposure reference is invalid")
+            ratio = exposure_reference / reference
+            total_fine = total_fine * ratio
+            total_points = total_points * ratio
+            parts_fine = [(prefix, values * ratio) for prefix, values in parts_fine]
         parameters = manifest.get("parameters") or {}
         if not isinstance(parameters, Mapping):
             raise UnsupportedFitView("stored model parameters are not an object")
@@ -761,13 +783,15 @@ def _bundle(ws, row, qe, cache, zero_fallback, fit_id="fast"):
         else:
             passes[pass_name] = _pass_not_drawn(
                 row, pass_name, fit, resolution, resolution_error, fine_raw, raw_x,
-                counts, exposure_scale, qe, shift)
+                counts, exposure_scale, qe, shift, source, getattr(exposure, "reference", None))
     bundle = SpectrumBundle(
         key=row.key, revision=revision, not_drawn=None, summaries=summaries,
         energy=energy, counts=_readonly(counts), variance=_readonly(variance),
         kept=_readonly(kept, bool), monitor=monitor, exposure_stored=stored,
         exposure_source=source, exposure_scale=exposure_scale, m_ref=m_ref,
-        fine_energy=fine_energy, zero=zero_kind, _passes=MappingProxyType(passes))
+        fine_energy=fine_energy, zero=zero_kind, _passes=MappingProxyType(passes),
+        point_ids=getattr(unit, "point_ids", ()),
+        manual_mask=getattr(unit, "manual_mask", None))
     if cache is not None:
         cache._put(revision, bundle)
     return bundle

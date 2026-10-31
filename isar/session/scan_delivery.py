@@ -1994,7 +1994,8 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         "errors_attach_seconds": errors_attach_seconds,
         # The fast pass's result (C-fastpass-record; no wall time) and its timing (C-timing,
         # provenance only).
-        "fast_pass": _fast_pass_record(res),
+        "fast_pass": {**_fast_pass_record(res), "exposure_basis": {
+            "source": ctx.exposure_source, "reference": ctx.exposure_reference}},
         "fast_pass_timing": _fast_pass_timing(res),
         # Bayes-errors tier diagnostics (None/False/0.0 on the other tiers).
         "bayes_interval": (tuple(bayes_interval) if bayes_interval is not None else None),

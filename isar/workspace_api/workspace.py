@@ -917,9 +917,15 @@ class Workspace:
                     else:
                         self.warnings.append(
                             f"unit_data {scan_id!r}: malformed exposure; ignored")
+                from isar.intake.point_masks import point_ids, selected_mask
+                x = np.asarray(rec.get("x") or [], dtype=float)
+                ids = point_ids(x, counts, variance)
+                excluded = self._intake_index().point_masks.get(f"{exp}:{scan_number}:{det}", ())
+                manual_mask = selected_mask(ids, excluded)
                 return SimpleNamespace(
-                    x=np.asarray(rec.get("x") or [], dtype=float), counts=counts,
-                    variance=variance, yerr=yerr, mask=mask, axis=dict(rec.get("axis") or {}),
+                    x=x, counts=counts, point_ids=ids, manual_mask=manual_mask,
+                    qc_mask=mask.copy(),
+                    variance=variance, yerr=yerr, mask=mask & ~manual_mask, axis=dict(rec.get("axis") or {}),
                     monitor=monitor, exposure=exposure, exposure_stored=exposure_stored)
             if unit_data_artifact_exists(self._data_dir, exp, scan_number, det):
                 return None

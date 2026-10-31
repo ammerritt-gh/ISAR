@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from isar.intake import settings, store
+from isar.intake import settings, store, point_masks
 
 if TYPE_CHECKING:
     from isar.intake.gpi import GpiScan
@@ -49,6 +49,7 @@ class EntryIndex:
     facts: Mapping[tuple[str, str], dict]               # (scan key, fact) -> in-force value/file_value entry
     conditions: Mapping[tuple[str, str], dict]          # (target, condition) -> latest condition entry
     units: Mapping[tuple[str, str], Mapping[str, dict]]  # (scan key, condition) -> analyzer -> latest entry
+    point_masks: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     damaged: tuple[store.Damaged, ...] = ()             # entries that break the entry format, skipped
 
 
@@ -64,6 +65,10 @@ def _entry_problem(e: dict) -> str | None:
                 if fact == "temperature" else isinstance(v, str)
             if not ok:
                 return f"{v!r} is not a {fact} value"
+    elif kind == "point_mask":
+        problem = point_masks.entry_problem(e)
+        if problem:
+            return problem
     elif kind == "condition":
         if e.get("condition") not in CONDITIONS:
             return f"unknown condition {e.get('condition')!r}"
@@ -87,12 +92,17 @@ def index_entries(entries: list[dict], *, lines: Sequence[int]) -> EntryIndex:
     conditions: dict = {}
     units: dict = {}
     damaged = []
-    for i, e in enumerate(entries):
+    masks = {}
+    for i, e in sorted(enumerate(entries), key=lambda pair: pair[1]["seq"]):
         why = _entry_problem(e)
         if why is not None:
             damaged.append(store.Damaged(store.ENTRIES, lines[i], why))
             continue
-        if e["kind"] == "condition":
+        if e["kind"] == "point_mask":
+            for key, ids in e["points"].items():
+                current = masks.setdefault(key, set())
+                (current.update if e["masked"] else current.difference_update)(ids)
+        elif e["kind"] == "condition":
             cond = e["condition"]
             for t in e["targets"]:
                 prev = conditions.get((t, cond))
@@ -106,7 +116,8 @@ def index_entries(entries: list[dict], *, lines: Sequence[int]) -> EntryIndex:
                 prev = facts.get((t, e["fact"]))
                 if prev is None or e["seq"] > prev["seq"]:
                     facts[(t, e["fact"])] = e
-    return EntryIndex(facts, conditions, units, tuple(damaged))
+    return EntryIndex(facts, conditions, units,
+                      point_masks={k: tuple(sorted(v)) for k, v in masks.items()}, damaged=tuple(damaged))
 
 
 def damage_lines(root, *, read: store.StoreRead | None = None, index: EntryIndex | None = None) -> list[str]:
@@ -150,6 +161,7 @@ class ScanInputs:
     counts_accepted: Mapping[str, Condition] = field(default_factory=dict)  # analyzer -> declaration
     gpi: "GpiScan | None" = None          # the latest gpi check's entry for this scan, accepted or not
     named: str | None = None              # the gpi file's sarf_name in force; None: none, rejected or dropped
+    point_masks: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     named_dropped: str | None = None      # why the named set was set aside (a user slit, ruling F), else None
 
 
@@ -209,7 +221,9 @@ def scan_inputs(row: dict, index: EntryIndex, gpi: "GpiScan | None" = None) -> S
                 if (c := _condition(e)) is not None}
     return ScanInputs(scan=scan, facts=facts, excluded=_condition(index.conditions.get((scan, "excluded"))),
                       dead=held("dead"), counts_accepted=held("counts_accepted"),
-                      gpi=gpi, named=named, named_dropped=dropped)
+                      gpi=gpi, named=named, named_dropped=dropped,
+                      point_masks={det: index.point_masks.get(f"{scan}:{det}", ())
+                                   for det in row.get("analyzers", {})})
 
 
 def analyzer_q(row: dict, si: ScanInputs, det: str) -> tuple[list[float] | None, str]:
@@ -257,6 +271,18 @@ def apply(record, si: ScanInputs):
     spectra = {det: (dataclasses.replace(sp, q=list(gpi_q[det]), q_source="gpi") if det in gpi_q else sp)
                for det, sp in record.spectra.items() if det not in si.dead}
     changed = changed or len(spectra) != len(record.spectra) or any(det in gpi_q for det in spectra)
+    active_masks = {det: list(ids) for det, ids in si.point_masks.items() if ids and det in spectra}
+    if active_masks:
+        from isar.schema.axes import scanned_axes
+        axes = scanned_axes(record) if record.scan_axes else []
+        for det, excluded in active_masks.items():
+            sp = spectra[det]
+            x = axes[0].values if axes else np.arange(len(sp.intensity))
+            ids = point_masks.point_ids(x, sp.intensity, sp.variance)
+            spectra[det] = dataclasses.replace(sp, mask=np.asarray(sp.mask, dtype=bool)
+                                              & ~point_masks.selected_mask(ids, excluded))
+        facts["point_masks"] = {"value": active_masks, "source": "user"}
+        changed = True
     if si.named is not None:
         facts["resolution_set"] = {"value": si.named, "setting": si.gpi.sarf_setting, "source": "gpi",
                                    "file": si.gpi.file, "curves": copy.deepcopy(si.gpi.curves)}
@@ -285,13 +311,15 @@ def _canonical_hash(obj) -> str:
 def calibration_inputs_key(*, data_revision: str, folder: str | None, pattern: str | None,
                            library: str | None, declared_slit: str | None,
                            analyzers: Sequence[str], counts_accepted: Sequence[str],
-                           named: dict | None = None) -> str:
+                           named: dict | None = None, point_masks: dict | None = None) -> str:
     """The identity of what a scan's tabulated calibration is computed from (values, never entry ids).
     ``named`` (``named_key``) enters only when a gpi file's curve set is in force, so without one the key
     is what it always was."""
     key = {"data_revision": data_revision, "folder": folder, "pattern": pattern,
            "library": library, "declared_slit": declared_slit,
            "analyzers": sorted(analyzers), "counts_accepted": sorted(counts_accepted)}
+    if point_masks and any(point_masks.values()):
+        key["point_masks"] = {k: sorted(v) for k, v in point_masks.items() if v}
     if named is not None:
         key["named"] = named
     return _canonical_hash(key)
@@ -344,6 +372,7 @@ def unit_inputs(row: dict, si: ScanInputs, det: str, calibration: dict | None) -
                   and acc is not None}
     return _finite({
         "data": row.get("data_revision"),
+        "point_masks": list(si.point_masks.get(det, ())),
         "temperature": fact("temperature"),
         "slit": fact("slit"),
         "q": dict(zip(("value", "source"), analyzer_q(row, si, det))),
@@ -369,8 +398,9 @@ def inputs_hash(unit: dict) -> str:
         c = {k: cal.get(k) for k in ("folder", "setting", "basis", "zero", "zero_source", "held_reason", "curve")}
         if cal.get("basis") in _LIBRARY_BASES:
             c["library"] = cal.get("library")
+    mask_key = {"point_masks": unit["point_masks"]} if unit.get("point_masks") else {}
     return _canonical_hash({
-        "data": unit.get("data"), "temperature": unit["temperature"]["value"], "slit": unit["slit"]["value"],
+        **mask_key, "data": unit.get("data"), "temperature": unit["temperature"]["value"], "slit": unit["slit"]["value"],
         "q": unit["q"]["value"], "excluded": unit["excluded"]["value"], "dead": unit["dead"]["value"],
         "dead_in_scan": unit["dead_in_scan"], "counts_override": _override(unit), "calibration": c})
 
@@ -406,6 +436,7 @@ def changes(used: dict, current: dict, *, folder_now: str | None = None,
         if u != n:
             out.append(Change(name, u, n, src))
     differ("data", used.get("data"), current.get("data"))
+    differ("point_masks", used.get("point_masks", []), current.get("point_masks", []))
     for f in ("temperature", "slit"):
         differ(f, used[f]["value"], current[f]["value"], current[f]["source"])
     differ("q", used["q"]["value"], current["q"]["value"])

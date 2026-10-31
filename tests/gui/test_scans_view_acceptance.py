@@ -361,7 +361,7 @@ def test_live_counts_mark_old_fits_and_keep_selection_zoom_and_list_state(qtbot,
     window._on_workspace_changed({"snapshot"})
     drawn = _wait_drawn(qtbot, page, lambda state: state.fit == "fast"
                         and any(line.entry == DEEP_TRUSTED
-                                and OUTDATED_TEXT not in line.text for line in state.legend)
+                                and "stale" in line.text for line in state.legend)
                         and np.all(page._drawn_state.traces[state.keys.index(DEEP_TRUSTED)].y > old_y))
     assert window.selection.keys == old_keys
     new_y = page._drawn_state.traces[drawn.keys.index(DEEP_TRUSTED)].y

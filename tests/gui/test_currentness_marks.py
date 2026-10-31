@@ -114,7 +114,7 @@ def test_a_changed_input_draws_the_stored_word_in_the_warning_colour(qtbot, ws_r
     _save(qtbot, intake, 100)
     for unit, word in ((A03, "clear"), (A04, "close call"), (A06, "search limit reached")):
         cell = _cell(panel, f"spec:{unit}", "fast")
-        assert cell.text() == word and _marked(panel, f"spec:{unit}", "fast")          # the word is unchanged
+        assert cell.text() == f"{word} · stale" and _marked(panel, f"spec:{unit}", "fast")
         assert cell.toolTip().startswith("Inputs changed since this fast pass:")
         assert "temperature: 97 K (file) → 100 K (yours)" in cell.toolTip()
     assert not _marked(panel, f"spec:{A04}", "deep")            # the deep pass never ran on other inputs: not judged

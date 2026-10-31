@@ -1179,6 +1179,7 @@ def _record(eng, spec, a, model, theta, cov, sd, rel_sd, modes, ids, D, status):
     fit = _finite({
         "schema": RECORD_SCHEMA, "source": "inter_refit", "status": status,
         "state": "close_call" if p_k is not None and p_k < spec.snap.settings.confidence else "resolved",
+        "exposure_basis": {"source": eng.ctx.exposure_source, "reference": eng.ctx.exposure_reference},
         "energy_support_meV": [spec.lo, spec.hi],
         "preferred_count": a.count, "count_probabilities": dict(cp),
         "count_probabilities_partial": bool(dec.get("partial")), "count_p_range": dec.get("count_p_range"),

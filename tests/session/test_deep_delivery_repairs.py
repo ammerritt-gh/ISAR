@@ -20,7 +20,9 @@ def test_a_deep_winner_at_the_count_ceiling_is_search_limited(monkeypatch, best_
     monkeypatch.setattr(deep_pass, "deep_pass", lambda *args, **kwargs: res)
     monkeypatch.setattr(deep_delivery, "_chosen", lambda *args: {"errors": {"method_seconds": {"bootstrap": 1.0}}})
     fit = {"fast_pass": {"settings": {"mode_ceiling": 2}, "search_limit_reason": ""}}
-    record, timing = deep_delivery.deliver(fit, None, deep_delivery.DeepRequest(workers=8))
+    context = SimpleNamespace(exposure_source="monitor", exposure_reference=1234.0)
+    record, timing = deep_delivery.deliver(fit, context, deep_delivery.DeepRequest(workers=8))
+    assert record["exposure_basis"] == {"source": "monitor", "reference": 1234.0}
     assert record["state"] == ("search_limited" if limited else "resolved")
     assert record["complete"] is not limited
     assert record["comparison_scope"] == ("partial (search limited)" if limited else "full")

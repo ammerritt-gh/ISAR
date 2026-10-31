@@ -84,6 +84,7 @@ def _slit_fallback(row: dict, si: inputs.ScanInputs, state: dict | None, check, 
         declared_slit=None,      # only asked for when no slit is in force
         analyzers=dets,
         counts_accepted=[d for d in dets if d in si.counts_accepted],
+        point_masks={d: si.point_masks.get(d, ()) for d in dets},
         named=inputs.named_key(si.named, si.gpi.curves if si.gpi else {}))
     if state.get("inputs_key") != key:
         return "slit_pending"

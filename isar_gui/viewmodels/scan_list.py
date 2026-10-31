@@ -133,6 +133,7 @@ def _status_cell(status, column: str, mark: str | None = None) -> Cell:
     tip = status_words.tooltip(column, status.word, reason, status.provisional)
     stale = status.current is False
     if stale:
+        plain += " · stale"
         lines = "\n".join(f"{name}: {used} → {now}" for name, used, now in status.changed)
         tip = f"Inputs changed since this {column} pass:\n{lines}" + (f"\n{tip}")
     if column == DEEP and status.stored and status.current is None:

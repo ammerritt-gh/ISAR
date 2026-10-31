@@ -226,7 +226,8 @@ def deliver(fit: dict, ctx, request: DeepRequest, *, executor=None, refuse=None,
                           "winner_flip_fraction": cc.get("winner_flip_fraction"),
                           "p_best_band_5_95": cc.get("p_best_band_5_95")},
            "exploratory_only": list(res.exploratory_only), "models": models, "chosen": chosen,
-           "arena_fingerprint": record.get("arena_fingerprint")}
+           "arena_fingerprint": record.get("arena_fingerprint"),
+           "exposure_basis": {"source": ctx.exposure_source, "reference": ctx.exposure_reference}}
     timing = {"total_seconds": time.perf_counter() - t0, "sampling_seconds": res.wall_s,
               "errors_seconds": errors_s, "budget_s": _budget(request.budget_s),
               "errors_method_seconds": error_methods,

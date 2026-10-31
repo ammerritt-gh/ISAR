@@ -99,6 +99,7 @@ class CellState:
     x_range: tuple[float, float] | None
     fit_label: str | None                # "Fast solo", "Batch 2 · sweep 3", "No fit in use"
     beamline_zero: bool = False          # the energy axis is the beamline's file axis, not a fitted zero
+    stale_tip: str | None = None
     batch: BatchMark | None = None       # C-cell-marks
 
 
@@ -155,6 +156,7 @@ class Drawn(NamedTuple):
     unit: str | None = None
     beamline_zero: bool = False
     fit_label: str | None = None
+    stale_tip: str | None = None
 
 
 _NO_FILE = Drawn("no_file", None)
@@ -180,10 +182,14 @@ def _step_label(head: str, per: str, steps: StepSummary) -> tuple[str, str]:
 
 
 def _auto_range(plot: CellPlot) -> tuple[float, float] | None:
-    y = plot.y[np.isfinite(plot.y)]
-    tops = [plot.y[plot.kept & np.isfinite(plot.y)]] if plot.kept.any() else [y]
+    y = plot.y[plot.kept & np.isfinite(plot.y)]
+    if not y.size:
+        return None
+    tops = [y]
     if plot.total is not None:
-        total = plot.total[np.isfinite(plot.total)]
+        extent = plot.x[plot.kept & np.isfinite(plot.x)]
+        inside = ((plot.fit_x >= extent.min()) & (plot.fit_x <= extent.max())) if extent.size else np.zeros_like(plot.total, dtype=bool)
+        total = plot.total[inside & np.isfinite(plot.total)]
         tops.append(total)
         y = np.concatenate([y, total])
     tops = [t for t in tops if t.size]
@@ -428,6 +434,7 @@ class AnalyzerArrayViewModel(ViewModel):
                 absence_tip=(tip or ABSENCE_WORDS[absence][1]) if absence else None,
                 plot=plot, y_range=y_range, x_range=x_range,
                 fit_label=d.fit_label if plot is not None else None, beamline_zero=d.beamline_zero,
+                stale_tip=d.stale_tip or (inter.stale_text if inter and inter.lock_stale else None),
                 batch=marks.get(key) if key else None))
 
         x_label, x_tip = _step_label("In plane — 2θ increases ←", "analyzer", view.in_plane)
@@ -486,12 +493,19 @@ class AnalyzerArrayViewModel(ViewModel):
                         scaled.x, scaled.y, scaled.kept,
                         None if fitted is None else scaled.fine_x, None if fitted is None else fitted.total,
                         () if fitted is None else tuple(c.values for c in fitted.components))
-        return Drawn(absence, tip, plot, unit, bzero, None if fitted is None else bundle.fit_label)
+        summary = bundle.summaries.get("fast")
+        stale_tip = None
+        label = None if fitted is None else bundle.fit_label
+        if summary is not None and summary.current is False and fitted is not None and bundle.fit_id == "fast":
+            label += " · stale"
+            stale_tip = "Stale: inputs changed since this fit was completed.\n" + "\n".join(
+                f"{name}: {old} → {new}" for name, old, new in summary.changed)
+        return Drawn(absence, tip, plot, unit, bzero, label, stale_tip)
 
     @staticmethod
     def _x_range(plots) -> tuple[float, float] | None:
         """The union of the cells' energy extents, padded: every cell has the same energy axis."""
-        spans = [v for p in plots if p is not None for v in (p.x, p.fit_x) if v is not None and v.size]
+        spans = [p.x[p.kept] for p in plots if p is not None]
         spans = [v[np.isfinite(v)] for v in spans]
         spans = [v for v in spans if v.size]
         if not spans:

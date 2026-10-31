@@ -243,6 +243,12 @@ class AnalyzerArrayDock(QDockWidget):
             if cell.ringing:
                 cell.set_ring_phase(phase)
 
+    def set_out_of_range(self, enabled):
+        self.out_of_range = bool(enabled)
+        for cell in self.cells.values():
+            cell.edges.enabled = self.out_of_range
+            cell.edges.refresh()
+
     def apply(self, state: ArrayState) -> None:
         self._header(state)
         self.body.setCurrentIndex(1 if state.body == "grid" else 0)
@@ -254,7 +260,10 @@ class AnalyzerArrayDock(QDockWidget):
             return
         self._ensure_cells(state)
         for cell_state in state.cells:
-            self.cells[cell_state.beamline].apply(cell_state)
+            cell = self.cells[cell_state.beamline]
+            cell.edges.enabled = getattr(self, "out_of_range", True)
+            cell.apply(cell_state)
+            cell.edges.refresh()
         self.x_axis.set_full_text(state.x_label, state.x_tip)
         self.y_axis.set_full_text(state.y_label, state.y_tip)
         self._sync_ring()

@@ -13,6 +13,7 @@ from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPalette, QPen
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QStackedLayout, QVBoxLayout, QWidget
 import pyqtgraph as pg
+from isar_gui.views.edge_indicators import EdgeIndicators
 
 from isar.plotspec.spec import Role
 from isar_gui.inter_words import BATCH_TIPS, BATCH_WORDS
@@ -107,6 +108,10 @@ class AnalyzerCell(QFrame):
                                        f"position {internal[1:]} (1 is the lowest 2θ)")
         row.addWidget(self.internal_label)
         row.addWidget(self.beamline_label)
+        self.stale_label = QLabel("stale", self.name_row)
+        _small(self.stale_label)
+        self.stale_label.hide()
+        row.addWidget(self.stale_label)
         row.addStretch(1)
         self.state_dot = QLabel(self.name_row)       # the batch word's tone, so colour never stands alone
         self.state_dot.setObjectName("state_dot")
@@ -160,6 +165,7 @@ class AnalyzerCell(QFrame):
         item = pw.getPlotItem()
         item.setContentsMargins(0, 0, 0, 0)
         item.vb.enableAutoRange(False)
+        self.edges = EdgeIndicators(item.vb)
         font = self.font()
         font.setPointSizeF(max(6.5, font.pointSizeF() - 2))
         for name in ("left", "bottom"):
@@ -183,6 +189,7 @@ class AnalyzerCell(QFrame):
     def _draw(self, plot) -> None:
         self.redraws += 1
         if plot is None:
+            self.edges.set_points((), self.edges.enabled)
             for scatter in (self._kept, self._masked):
                 scatter.setData([], [])
             self._total.setData([], [])
@@ -190,6 +197,7 @@ class AnalyzerCell(QFrame):
                 part.setData([], [])
             return
         x, y, kept = plot.x, plot.y, plot.kept
+        self.edges.set_points(((x, y, kept),), self.edges.enabled)
         self._kept.setData(x[kept], y[kept])
         self._masked.setData(x[~kept], y[~kept])
         if plot.total is None:
@@ -211,6 +219,8 @@ class AnalyzerCell(QFrame):
         """Draw ``cell``; the plot items are refilled only when its data token changed."""
         self.cell, self.key = cell, cell.key
         self.selected = cell.selected
+        self.stale_label.setVisible(bool(cell.stale_tip))
+        self.stale_label.setToolTip(cell.stale_tip or "")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus if cell.key else Qt.FocusPolicy.NoFocus)
         self.outline_kind = ("both" if cell.anchor and cell.lock else "anchor" if cell.anchor
                              else "lock" if cell.lock else "none")
@@ -290,6 +300,8 @@ class AnalyzerCell(QFrame):
                          + ("; energy axis is the beamline's zero" if cell.beamline_zero else ""))
         if cell.absence and cell.absence_tip:
             lines.append(f"{cell.absence}: {cell.absence_tip}")
+        if cell.stale_tip:
+            lines.append(cell.stale_tip)
         if cell.anchor:
             lines.append(MARKERS["anchor"])
         if cell.lock:

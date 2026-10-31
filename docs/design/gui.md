@@ -23,7 +23,7 @@ preserved as the design record.
 | **Desktop window** — one arrangement in every state: scan list on the left, Scan(s)/Plane/Dispersion/Sandbox in the centre, Processing and Campaign on the right, Log and Output below (G24, G27) | **Implemented** (2026-10-28); laptop human walkthrough remains unrun | `main_window.py`, `views/experiment_strip.py`, `views/output_bar.py`, `views/processing_panel.py`, `tests/gui/test_window_frame.py` |
 | **Experiment as a real folder** — drop-to-create, Rename, Save experiment copy…, Export results… (G25) | **Implemented** (2026-10-27) | `workspace_manager.py`, `views/files_strip.py`, `export_action.py`, `isar/report/export.py` |
 | **Scan list and scan inspector** — BL43 scan-set tree, shared multi-selection, status words, hkl, |Q|, gpi and rf columns (§0nonies), filter and sort, Fit section and stored tables in the left inspector (G24, G27); right-click Remove from list / Restore to list, Show removed, Read source file again (§0octies) | **Implemented** (2026-10-28; generated-data widget tests; no person acceptance claimed); removal and read-again built 2026-10-29 | isar/workspace_api/scan_list.py, viewmodels/scan_list.py, views/scan_list.py, views/scan_inspector.py, theme.py, tests/gui/test_scan_list_selection.py, tests/gui/test_scan_list_hide.py, tests/gui/test_scan_list_read_again.py, tests/gui/test_inspector_fit_section.py |
-| **Scan(s) spectrum view** — shared selection, up to ten spectra, stored Fast/Deep curves, explicit not-drawn reasons, raw and monitor-normalised scales (G27) | **Implemented** (2026-10-28; generated-data widget coverage; person walkthrough not yet run) | `workspace_api/spectra.py`, `workspace_api/evaluate.py`, `session/deep_delivery.py`, `plotspec/builders.py`, `viewmodels/scans_page.py`, `views/scans_page.py`, `tests/gui/test_scans_page.py` |
+| **Scan(s) spectrum view** — shared selection, up to ten spectra, stored Fast/Deep curves, manual point masks, stale-fit explanations, clipped-data indicators, explicit not-drawn reasons, raw and monitor-normalised scales (G27) | **Implemented** (2026-10-28; generated-data widget coverage; person walkthrough not yet run) | `workspace_api/spectra.py`, `workspace_api/evaluate.py`, `session/deep_delivery.py`, `plotspec/builders.py`, `viewmodels/scans_page.py`, `views/scans_page.py`, `tests/gui/test_scans_page.py` |
 | **Analyzer array dock** (BL43LXU) — one scan's analyzers as a grid, a03 bottom right, a09 bottom left, a41 top left, cell names, hkl, |Q|, the authoritative fit, anchor and lock outlines, "no file" / "no fit" / "not zeroed" words, Normalised/Raw and a shared typed y limit; selection shared with the scan list; opens floating from View > Panels (§0decies) | **Implemented** (2026-10-30, grid, scale controls, anchors/locks, absences, per-cell batch states and the header batch line); offscreen-tested, no person has run the walk-through | isar_gui/viewmodels/analyzer_array.py, views/analyzer_cell.py, views/analyzer_array_dock.py, main_window.py, tests/gui/test_analyzer_array_*.py |
 | **Left side, stage two** — setup section (the *Resolution curves (rf)…* and *gpi files…* folder buttons, §0nonies), *Experiment info…*, needs-attention list, fact table, out-of-date marks, readiness line (G24, G25) | **Implemented** (2026-10-27; job `ja0cd202ecb67`, on the intake backend of job `jfada74237892`); user values for Q and other facts stay pinned, and one layout limit is open (§0quinquies) | `viewmodels/intake.py`, `views/setup_section.py`, `workspace_api/intake_view.py`, `views/details_dialog.py`, `views/attention_list.py`, `views/value_entry.py`, `views/fact_table.py`, `views/readiness_line.py`, `tests/gui/test_stage2_walkthrough.py` |
 | **Analysis queue** — the Processing panel's queue: analyzer files queued by hand or as they arrive, fast before deep, continuous on the cores ISAR is given, one writer per experiment; BL43LXU only (G26, §0sexies) | **Implemented** (2026-10-28), tested offscreen and at the engine. The walk-through at the GUI threshold by a person is **not yet run**. Open: a queued fit does not refresh the curves check the setup section shows (§0sexies) | `isar_gui/queue_controller.py`, `isar_gui/views/queue_panel.py`, `isar/session/analysis_queue.py`, `isar/session/analysis_service.py`, `isar/session/file_fit.py`, `isar/session/writer.py`, `isar/session/currentness.py`; `tests/gui/test_window_queue.py`, `test_queue_panel.py`, `test_queue_controller.py` |
@@ -418,6 +418,43 @@ G27 replaces the old Waterfall central page with a four-page centre: Scan(s), Pl
 - **Known limits.** Pooled masters are not plotted in Scan(s); their recorded numbers and tables remain in the inspector. Normalised display needs stored monitor exposure and a calibrated energy axis. A Deep curve from an older chosen record with no recoverable model manifest is unavailable even though its tables remain. An outdated stored curve is displayed with its warning; in Normalised scale it is placed in the current unit's recorded exposure frame and the experiment's frozen R, without a refit. The G27 widget tests use generated workspaces; a human walkthrough at the GUI threshold has not been run. At ten traces on the 1108 × 851 laptop layout, the approved top-right legend overlaps much of the plot; the bounds and controls are usable, but this crowded view still needs the human walkthrough.
 
 **Offscreen acceptance and redraw measurements (2026-10-28).** The real MainWindow passed the generated-data A1–A7 checks at 1108 × 851 and 1920 × 1040 with Segoe UI 9, including keyboard group recall/save, active-only inspector stepping, live-update zoom/selection preservation, nine group slots and legend/end-label bounds (`tests/gui/test_scans_view_acceptance.py`). After the initial ten-spectrum draw, selection replacement / Deep-to-Fast / Offset-to-Overlay redraws, including synchronous viewport painting, measured 0.100 / 0.157 / 0.102 s with Voigt resolution and 0.045 / 0.052 / 0.040 s with the committed tabulated resolution curves. These are build-machine diagnostics against the roughly 0.5 s target, not timing gates or a human acceptance claim.
+
+### Manual point masks and clipped-data indicators (2026-10-31)
+
+Implemented for imported BL43 analyzer spectra (`isar/intake/point_masks.py`,
+`views/mask_viewbox.py`, `views/scan_mask_controls.py`, `views/masked_points.py`).
+Operator ruling: selection acts on **all displayed spectra**, including overlaps;
+waterfall selection uses the points' displayed positions, including their offsets.
+
+- **Mask points** switches left-click to point selection and left-drag to an E/I rectangle.
+  A click uses an 8-pixel hit tolerance; coincident points are selected together. Dragging
+  previews the affected points and the action/count. A mixed selection masks every selected
+  point; an entirely manually masked selection restores them. Empty selections do nothing.
+  Only visible points participate. Escape exits the mode; ordinary navigation remains available
+  outside masking mode. Repeated copies of one point in a fit waterfall are one saved exclusion.
+- **Masked (N)** opens a sortable E/I list for the displayed spectra. Values are in the current
+  intensity scale and energy zero, without waterfall offsets. **Restore selected** and
+  **Clear masks** withdraw manual exclusions; independent QC exclusions remain. **Show all**
+  reveals masked outliers; **Auto range** returns to the retained-data bounds.
+- Masks are saved immediately in the experiment's append-only intake entries. Raw abscissa,
+  measured counts and variance plus duplicate occurrence identify each source point; changing
+  display zero, normalization or offset never changes identity. Reordering distinct points or
+  appending data preserves masks. A replaced measurement does not inherit the old exclusion.
+- The effective record combines manual and QC masks before calibration and fitting. Fast,
+  Deep and inter-spectra preparation share this record. Each fit records its mask inputs;
+  changes mark completed fits **stale**, including refits conditioned on a changed neighbour.
+  The scan list, spectrum legend and analyzer cells expose stale status with hover explanations.
+  Stored results stay inspectable; masking does not enqueue a refit or rewrite an old result.
+- Both plot axes size from retained data; masked points and fit tails cannot enlarge
+  the automatic energy range. Padding leaves room for labels anchored to retained points.
+  Masked points remain drawn and inspectable.
+  **Config → Scan(s) → Show out-of-range indicators**, on by default and saved with the view,
+  draws a thin black bar and outward arrow at each edge with measured points outside it.
+  It applies to Scan(s) and the analyzer array, includes masked points, follows pan/zoom,
+  and never changes the limits. Hover distinguishes masked and unmasked point counts.
+
+Generated-data checks: `tests/gui/test_point_masks.py`, `tests/session/test_point_masks.py`.
+The GUI checks use real offscreen widgets; a person's walkthrough remains unrun.
 
 ### 0octies. Scan list: remove, read again, and raw before the fast pass (2026-10-29)
 
@@ -1104,12 +1141,10 @@ journey (§1.3) against TAVI-as-backend.
 
 Each item was designed far enough to be picked up cold; none is implemented.
 
-1. **PUFFIN masking port.** Port `PUFFIN/view/view_box.py` (`CustomViewBox`: click-to-toggle
-   point exclusion, drag-box exclusion with visual feedback, exclude-mode signals) as
-   `isar_gui/views/mask_viewbox.py`. First consumer: the Sandbox pane — masks feed the
-   in-process preview refit (ephemeral, SANDBOX-marked); a "commit" of a mask waits for the
-   Phase-C `fit_correction` directive. **Hard Rule 3 restated as binding:** this is a view-layer
-   lift only — PUFFIN's σ≥1 variance floor must never cross into ISAR (σ=√N, σ=0 legal).
+1. **Sandbox masking reuse.** Persistent manual masking in Scan(s) is implemented above
+   (2026-10-31); the Sandbox remains a separate, ephemeral consumer to add later. Reuse
+   `views/mask_viewbox.py` for its gestures. PUFFIN's σ≥1 variance floor never crosses into
+   ISAR: σ=√N, including σ=0, remains binding.
 2. **PUFFIN handoff contract.** For close-inspection fitting in PUFFIN itself: request
    `{scan: {x[], y[], sigma[], meta{unit_key, q, E, T}}}` → response
    `{mask: bool[], components: [{type, params}], provenance}`; file-pair or local-HTTP

@@ -282,6 +282,7 @@ def _inputs_key(record, data_hash: str, loaded: LoadedCurves) -> str:
         data_revision=data_hash, folder=None if loaded.folder is None else str(loaded.folder),
         pattern=loaded.pattern, library=loaded.fingerprint, declared_slit=_declared_slit(record),
         analyzers=sorted(record.spectra), counts_accepted=_accepted(record),
+        point_masks=(record.facts.get("point_masks") or {}).get("value"),
         named=named_key(_named_set(record).get("value"), _named_set(record).get("curves") or {}))
 
 
