@@ -116,3 +116,15 @@ def job_for(snapshot, k, slots):
             modes.append((e, g, None))
         start = Start("neighbour", tuple(modes))
     return s._job(k, slots, [start], "seed", "test")
+
+
+def ledger(snapshot, priced):
+    """A fresh ``Search`` whose ledger has filed every basin of ``priced`` (real or scripted prices) as ``feed``
+    files them: under the labelling of its fitted energies, a repeated basin once. ``s._mass(key)`` is then the mass
+    the decision weighs."""
+    s = open_search(snapshot)
+    for p in priced:
+        s.meta[p.key] = {"purpose": "seed", "source": "test", "new": ()}
+        for rec in p.basins:
+            s._file(rec, p, p)              # _file reads only the job's key
+    return s

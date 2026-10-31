@@ -36,20 +36,6 @@ _QUIET = ("degenerate_twin", "no_structure")     # no price, and no reason in th
 _PURPOSE = {"seed": 0, "step_down": 1, "step_up": 2, "move": 3, "full": 4}
 
 
-def _pool(spec) -> dict[str, str]:
-    """canonical branch -> its assignable pool name (D9): every branch with a coupling term, every branch a
-    neighbour predicts in the window (``spec.expected``) and every dormant one, one name per canonical branch,
-    spelled by its first raw id with a factor, else its canonical name."""
-    raw = set(spec.factors) | {d.branch for h in spec.held_all.values() for d in h.dormant}
-    raw |= {d.branch for d in spec.own.dormant}
-    names: dict[str, str] = {}
-    for b in sorted(spec.factors):
-        names.setdefault(spec.canon(b), b)
-    for c in sorted({spec.canon(b) for b in raw} | set(spec.expected)):
-        names.setdefault(c, c)
-    return names
-
-
 def _labels(k, slots, modes):
     """(labels, energies) of a start or basin, both in ascending energy (ties by label)."""
     order = sorted(range(k), key=lambda i: (modes[i][0], str(slots[i])))
@@ -72,8 +58,7 @@ class Search:
     def __init__(self, snapshot: Snapshot) -> None:
         self.snap, self.s = snapshot, snapshot.settings
         self.spec = spec = R._Spec(snapshot)
-        self.names = _pool(spec)
-        self.pool = tuple(sorted(self.names.values()))
+        self.names, self.pool = spec.names, spec.pool        # the assignable pool (D9), one name per canonical branch
         self.M = len(self.pool)
         self.margin = float(self.s.stop_margin_nats)
         self.tol = SAME_START_FWHM * spec.fwhm
@@ -96,12 +81,7 @@ class Search:
         self.tried = {"jobs": 0, "starts": 0, "fits": 0, "failed": 0, "rounds": 0, "evidence_s": 0.0,
                       "repeated_basins": 0}
         self._result: Assignment | None = None
-        used, inc = set(), []
-        for md in spec.own.modes:                                 # a second mode naming one branch is new
-            b = self.names.get(spec.canon(md.branch))
-            inc.append(b if b not in used else None)
-            used.add(b)
-        self.n0, self.inc = len(spec.own.modes), tuple(inc)
+        self.n0, self.inc = spec.n0, spec.incoming
         seeds = self._seeds()
         self.seeds = [{"source": src, "count": k, "slots": list(slots)}
                       for (k, slots), (_st, sources) in seeds.items() for src in sources]

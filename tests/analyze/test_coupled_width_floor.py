@@ -20,7 +20,7 @@ from test_coupled_refit import t_pair  # noqa: E402
 from isar.analyze import fast_pass, loop
 from isar.analyze.components import CentralQE, CompositeModel, ConstantBackground, Elastic, PhononDHO
 from isar.analyze.coupled import refit as R
-from isar.analyze.coupled.types import PricingJob
+from isar.analyze.coupled.types import PricingJob, Start
 from isar.analyze.phonon import GAMMA_FLOOR
 
 TOL = loop.DEGENERATE_LIMIT_TOL * max(GAMMA_FLOOR, 1.0)
@@ -40,7 +40,11 @@ def snapshot(ctx, modes, *, ceiling=None):
 
 
 def job(snap, slots):
-    return PricingJob("y", snap.snapshot_id, len(slots), tuple(slots), R._Spec(snap).key(len(slots), slots))
+    """One labelling started at the incoming fit's values (every case here starts from its truth), the one start
+    S2's measurements were made from."""
+    own = Start("own", tuple((m.omega0, m.gamma, m.height) for m in snap.own.modes))
+    return PricingJob("y", snap.snapshot_id, len(slots), tuple(slots), f"{R._Spec(snap).content_key()}:{slots}",
+                      (own,))
 
 
 def free_at_floor(rec):
@@ -128,6 +132,7 @@ def test_a_split_basin_exempts_only_its_hidden_pair():
 
 
 # W5 --------------------------------------------------------------------------------------------------------
+@pytest.mark.slow       # a search on the real engine (about 100 s)
 def test_a_broad_mode_keeps_its_free_width_and_the_mask_prior_sits_in_the_basin_term():
     truth = [(5.0, 0.8, 60.0), (11.0, 0.8, 40.0)]
     ctx = recipe.widened(1, wide=1.0, gamma1=0.8)
@@ -149,6 +154,7 @@ def test_a_broad_mode_keeps_its_free_width_and_the_mask_prior_sits_in_the_basin_
 
 
 # W6 --------------------------------------------------------------------------------------------------------
+@pytest.mark.slow       # a search on the real engine per seed (about 20 s each)
 @pytest.mark.parametrize("seed", [2, 6])
 def test_a_mask_change_alone_becomes_the_saved_fit_and_stays(seed):
     from dataclasses import replace
@@ -166,9 +172,11 @@ def test_a_mask_change_alone_becomes_the_saved_fit_and_stays(seed):
                    own=own, own_record=r0.fit, fit_id="f00000000000b")
     r = R.refit(snap, stage="both")
     a = r.assignment
-    # measured: the free mask of the incoming fit is priced here (far behind), so the eps comparison carries the
-    # change; the unpriced-incoming clause of decide is pinned by R4/R5
-    assert not any(x.startswith("mask_unpriced") for x in a.reasons)
+    # measured: under the search's starts the free mask of the incoming fit is priced (far behind) for seed 6, so the
+    # eps comparison carries the change, and is not priced for seed 2, so the unpriced-incoming clause does (both
+    # clauses are pinned at rule level by R1-R5); either way the evidence-chosen mask becomes the saved fit
+    unpriced = any(x.startswith("mask_unpriced") for x in a.reasons)
+    assert unpriced is (seed == 2), a.reasons
     assert (a.count, a.slots) == (1, ("b1",)) and a.changed and a.mask_only
     assert r.status == "accepted" and r.reason == "evidence"
     assert R._selected_model(r.fit)["delta_modes"] == [0]
@@ -180,6 +188,7 @@ def test_a_mask_change_alone_becomes_the_saved_fit_and_stays(seed):
 
 
 # W7 --------------------------------------------------------------------------------------------------------
+@pytest.mark.slow       # a search on the real engine per seed (about 45 s each)
 @pytest.mark.parametrize("seed", [2, 6])
 def test_an_incoming_resolution_limited_mode_keeps_its_mask_without_a_start_of_its_own(seed):
     from test_coupled_refit import _names, record, spectrum
@@ -198,6 +207,7 @@ def test_an_incoming_resolution_limited_mode_keeps_its_mask_without_a_start_of_i
 
 
 # W8 --------------------------------------------------------------------------------------------------------
+@pytest.mark.slow       # a search on the real engine per seed (20 to 85 s)
 @pytest.mark.parametrize("seed", [1, 2])
 def test_a_qe_line_the_decision_prices_away_is_not_restored(seed):
     # the incoming fit carries a central QE pegged at its lower width bound; the truth has none, the decision prices

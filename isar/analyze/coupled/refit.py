@@ -1,6 +1,6 @@
 """The coupled refit (C-refit): one spectrum's two-stage refit against a frozen neighbour snapshot.
 
-Stage 1 (``assign_jobs``, ``price``, ``assign_decide``; ``assign`` runs the three inline) compares counts
+Stage 1 (``open_search``, ``price``; ``assign`` drives the search inline, ``search.drive``) compares counts
 and branch associations by evidence under one normalised neighbour density per matched mode (the
 hand-over ``engine``), with the unmatched entry price kept inside the odds and the loss price of each neighbour branch a candidate
 does not name (the entry price's mirror, charged once per spectrum outside the normalised densities). Stage 2 (``refit(stage=
@@ -8,8 +8,9 @@ does not name (the entry price's mirror, charged once per spectrum outside the n
 frozen factor definitions, then reports the acceptance status (spec 5), conditional error bars, a
 release fit, the flag score F = R + max U, every flag reason, one sentence why and a drawable overlay.
 The decision rules are ``rules`` (installed verbatim); thresholds always come from ``InterSettings``. The
-decision carries the width mask: the (count, labelling) is chosen with the mask summed out, then the winner's
-mask (which widths are held at the floor) is chosen, and a mask change alone is a discrete change.
+decision is count first, then the labelling within the count, then the model (the width mask and the
+variant), and a model change alone is a discrete change. The coupled pass has no mode ceiling: every engine
+built here raises the fast-pass settings' ceiling to the count it fits.
 
 ``Snapshot.context`` is the spectrum's own prepared fast-pass context: a ``ScanContext``, or an object
 carrying it as ``ctx`` with optional ``settings`` (its ``FastPassSettings``: mode ceiling and prior
@@ -24,8 +25,8 @@ import hashlib
 import json
 import math
 import time
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, astuple
+from collections.abc import Iterable, Mapping
+from dataclasses import asdict, astuple, replace
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -37,7 +38,7 @@ from isar.analyze.components import (QE_WEIGHT_CONVENTION, CentralQE, ConstantBa
                                      QuasiElastic)
 from isar.analyze.coupled import engine as cc
 from isar.analyze.coupled import rules
-from isar.analyze.coupled.identity import ModeObs, _carried_ids, match_link, new_branch_id
+from isar.analyze.coupled.identity import _carried_ids, new_branch_id
 from isar.analyze.coupled.settings import InterSettings
 from isar.analyze.coupled.types import (SEVERITY_OF, Assignment, Dormant, Held, HeldMode, Priced, PricingJob,
                                         RefitResult, Snapshot)
@@ -125,10 +126,10 @@ class _Labelled(cc.CoupledEngine):
         one merged mode, fitted at count k-1 in each variant, then expanded back into the pair at an even-ish
         split. The TRF drifts a very weak mode away in about one draw in twelve, so the hidden candidate would
         otherwise depend on luck; one cheap TRF per variant covers it. The seed is placed, not fitted: the split
-        integral prices it."""
-        placed = starts[-1][1]
+        integral prices it. A ``None`` height of the start is filled per variant by the engine's own NNLS start."""
+        start = starts[-1][1]
         matched = [isinstance(sl, cc.MatchedDensity) for sl in self.slots]
-        pos = [sl.centre if m else placed[n][0] for n, (sl, m) in enumerate(zip(self.slots, matched))]
+        pos = [sl.centre if m else start[n][0] for n, (sl, m) in enumerate(zip(self.slots, matched))]
         reach = self._s0.twin_coincide_fwhm * self.fwhm
         pairs = [(i, j) for i in range(k) for j in range(i + 1, k)
                  if abs(pos[i] - pos[j]) < reach and (matched[i] or matched[j])]
@@ -138,6 +139,9 @@ class _Labelled(cc.CoupledEngine):
         for v in self.variants.get(k, ()):
             low = self.variant(k - 1, v.elastic, v.background, v.qe)
             if low is None:
+                continue
+            placed = self._heights(v, start)
+            if placed is None:
                 continue
             h = placed[i][2] + placed[j][2]
             big = i if placed[i][2] >= placed[j][2] else j
@@ -161,6 +165,22 @@ class _Labelled(cc.CoupledEngine):
             cost = self.cost(model, theta)
             if math.isfinite(cost):
                 self._place(model, theta, cost, "hidden", 0, "seed")
+
+    def _heights(self, v, modes):
+        """``modes`` (slot order) with each ``None`` height solved by the engine's own start in variant v (Poisson
+        NNLS, energies and widths held, the modes in energy order), or as given when every height is set."""
+        if all(m[2] is not None for m in modes):
+            return list(modes)
+        model = self.model(v, ())
+        if model is None:
+            return None
+        order = sorted(range(len(modes)), key=lambda n: modes[n][0])
+        theta = self._start(model, [modes[n] for n in order], None)
+        out = list(modes)
+        for pos, n in enumerate(order):
+            if out[n][2] is None:
+                out[n] = (out[n][0], out[n][1], float(theta[model.modes[pos][2]]), out[n][3])
+        return out
 
 
 def _parts(context):
@@ -242,8 +262,8 @@ def held_from_fit(record: dict, *, unit: str, fit: str, inputs: str | None, cont
 
 # ---- the frozen problem of one snapshot -----------------------------------------------------------------
 class _Spec:
-    """Everything stage 1 derives from a snapshot: the support, the entry price, the branch pool, one
-    factor definition per (term, branch), the trigger filter, the candidate counts and the jobs."""
+    """Everything stage 1 derives from a snapshot: the support, the entry price, the assignable branch pool, one
+    factor definition per (term, branch), the loss price's expected branches and the content key of a price."""
 
     def __init__(self, snap: Snapshot):
         self.snap = snap
@@ -259,21 +279,31 @@ class _Spec:
         self.physical_hi = self.hi >= float(np.max(self.ctx.x_used))
         self.entry = cc.Entry(self.ep, self.band, b_edge=snap.settings.birth_edge, b_mid=snap.settings.birth_mid,
                               physical_hi=self.physical_hi)
-        self.ceiling = int(self.fs.mode_ceiling)
         self.own = snap.own
         self.n0 = len(self.own.modes)
         self.held_all = {h.unit: h for ti in snap.terms for h in ti.held}
         self.notes: list[dict] = []
         self.factors, self.frozen = self._build_factors()
-        pool = set(self.factors)
         dormant = {d.branch for h in self.held_all.values() for d in h.dormant}
         dormant |= {d.branch for d in self.own.dormant}
-        self.returning = frozenset(dormant - pool)
-        self.pool = tuple(sorted(pool | dormant))
         self.pred = {b: [self._centre(f) for f in fs_] for b, fs_ in self.factors.items()}
         self.expected = self._expected()
-        self.incoming = tuple(md.branch if md.branch in self.pool else None for md in self.own.modes)
-        self.triggers, self.counts, self.missing_history = self._trigger_filter()
+        # the assignable pool (D9): every branch with a coupling term, every branch a neighbour predicts in the
+        # window and every dormant one, one name per canonical branch, spelled by its first raw id with a factor
+        self.names: dict[str, str] = {}
+        for b in sorted(self.factors):
+            self.names.setdefault(self.canon(b), b)
+        for c in sorted({self.canon(b) for b in dormant} | set(self.expected)):
+            self.names.setdefault(c, c)
+        self.pool = tuple(sorted(self.names.values()))
+        dormant_c = {self.canon(b) for b in dormant}
+        self.returning = frozenset(n for c, n in self.names.items() if c in dormant_c and n not in self.factors)
+        inc, used = [], set()
+        for md in self.own.modes:                  # a second mode naming one canonical branch is new
+            b = self.names.get(self.canon(md.branch))
+            inc.append(b if b not in used else None)
+            used.add(b)
+        self.incoming = tuple(inc)
 
     # -- the loss price: the mirror of the entry price (a branch that disappears pays what one that appears pays)
     def canon(self, b: str) -> str:
@@ -284,8 +314,8 @@ class _Spec:
         mean over the neighbours of their own prediction when it lies in the window (the centres of the factors
         it belongs to, else its own energy; one vote per neighbour, never per factor) and L the entry price
         ``b_edge + B(E_exp)`` of the same Entry, so births and deaths mirror. A branch no neighbour predicts
-        inside the window is not eligible. The branches without a coupling term are eligible too: they are not
-        in ``pool``, so today every candidate pays them alike (a constant of the decision, shown in the record)."""
+        inside the window is not eligible. The branches without a coupling term are eligible too, and assignable
+        (D9): a candidate naming one does not pay for it."""
         votes: dict[str, list[float]] = {}
         for u, h in self.held_all.items():
             own: dict[str, list[float]] = {}
@@ -380,80 +410,6 @@ class _Spec:
             return self.entry.b_edge + self.entry.B(e)
         return sum(cc.potential(f, self.u(f, e)) for f in self.factors.get(b, ()))
 
-    # -- the trigger filter and the counts it proposes (spec 3)
-    def _record_probs(self):
-        probs = self.snap.own_record.get("count_probabilities")
-        if not probs:
-            return None
-        return {int(k): float(v) for k, v in probs.items() if v is not None}
-
-    def _association_gap(self) -> float:
-        """Cheapest other association's cost minus the incoming one's (deviance): negative when another is
-        cheaper, within ``2 * close_call_nats`` when it is a close call (match_link's orders carry the
-        exchanged ones), -inf when the incoming identity is invalid (ambiguous)."""
-        s = self.snap.settings
-        local = self._obs([(m.omega0, m.gamma, m.height) for m in self.own.modes])
-        out = match_link(local, self.pool, lambda m, b: self.cost(local[m].omega0, b), incoming=self.incoming,
-                         keep=s.composition_limit, close=s.close_call_nats)
-        inc = next((p for p in out["proposals"] if p["source"] == "incoming"), None)
-        if inc is None:
-            return -math.inf
-        others = [o["cost"] for p in out["proposals"] for o in p["orders"] if tuple(o["slots"]) != self.incoming]
-        return min(others, default=math.inf) - inc["cost"]
-
-    def _trigger_filter(self):
-        s, trig, counts = self.snap.settings, [], {self.n0}
-        missing = [b for b in self.pool if b in self.factors and self.inside(b) and b not in self.incoming]
-        if missing:
-            trig.append("a:missing_branch")
-            counts |= {self.n0 + len(missing), len([b for b in self.pool if self.inside(b)])}
-        unsupported = [m for m, b in enumerate(self.incoming) if b is None]
-        b_fired = False
-        if any(self.d_edge(self.own.modes[m].omega0) >= self.band for m in unsupported):
-            trig.append("b:unmatched_mid_window")
-            b_fired = True
-        gap = self._association_gap() if self.pool and self.n0 else math.inf
-        if gap < 0:
-            trig.append("b:association_differs")
-            b_fired = True
-        elif gap <= 2.0 * s.close_call_nats:          # deviance window of identity.match_link
-            trig.append("c:close_association")
-        U = [cc.mismatch(f, self.u(f, md.omega0)) for md, b in zip(self.own.modes, self.incoming) if b
-             for f in self.factors.get(b, ())]
-        if max(U, default=0.0) >= s.flag_threshold:
-            trig.append("b:large_mismatch")
-            b_fired = True
-        if b_fired:
-            counts |= {self.n0 - j for j in range(1, len(unsupported) + 1)}
-        probs, missing_history = self._record_probs(), False
-        if probs is None or probs.get(self.n0, 0.0) <= 0:
-            trig.append("c:no_count_evidence")
-            missing_history = True
-            counts |= set(range(self.ceiling + 1))
-        else:
-            close = {k for k, p in probs.items() if k != self.n0 and p > 0
-                     and math.log(p) >= math.log(probs[self.n0]) - s.close_call_nats}
-            if probs[self.n0] < s.confidence:
-                trig.append("c:low_count_probability")
-            if close:
-                trig.append("c:close_alternative")
-                counts |= close
-        other = {len(h.modes) for h in self.held_all.values()} - {self.n0}
-        if other:
-            trig.append("d:neighbour_count")
-            counts |= other
-        if s.full_search:
-            trig.append("e:full_search")
-            counts |= set(range(self.ceiling + 1))
-        counts = tuple(sorted(k for k in counts if 0 <= k <= self.ceiling)) if trig else ()
-        return tuple(trig), counts, missing_history
-
-    # -- starts and compositions
-    def _obs(self, modes) -> list:
-        return [ModeObs(ref=(self.snap.unit, self.snap.fit_id, m), omega0=float(e), gamma=float(g),
-                        height=float(h), sigma_guard=None, sigma_provenance={}, branch=None)
-                for m, (e, g, h) in enumerate(modes)]
-
     def _record_modes(self, k: int):
         """The modes of the incoming record's best saved model at count k, ascending, or None."""
         models = [m for m in self.snap.own_record.get("models") or () if m.get("n_peaks") == k
@@ -468,70 +424,11 @@ class _Spec:
         except KeyError:
             return None
 
-    def base_modes(self, k: int) -> list:
-        """The start modes (omega0, Gamma, h) at count k, ascending: the incoming modes at its own count,
-        else the record's saved model at k, else the incoming modes with neighbour-predicted branches
-        added (then splits) above, or the least supported modes deleted below."""
-        inc = [(m.omega0, m.gamma, m.height) for m in self.own.modes]
-        if k == self.n0:
-            return inc
-        rec = self._record_modes(k)
-        if rec is not None:
-            return rec
-        modes = list(inc)
-        if k > self.n0:
-            for b in [b for b in self.pool if b in self.factors and self.inside(b) and b not in self.incoming]:
-                if len(modes) == k:
-                    break
-                md = next(m for h in self.held_all.values() for m in h.modes if m.branch == b)
-                e = float(np.mean([c for c in self.pred[b] if self.lo <= c <= self.hi]))
-                modes.append((e, md.gamma, md.height))
-            while len(modes) < k:          # split the highest mode (the ladder's split rule)
-                if not modes:
-                    modes.append((0.5 * (self.lo + self.hi), fast_pass.LADDER_GAMMA, 1.0))
-                    continue
-                e, g, h = modes.pop(max(range(len(modes)), key=lambda i: modes[i][2]))
-                lo_f, hi_f = fast_pass.LADDER_SPLIT_HEIGHTS
-                dw = fast_pass.LADDER_SPLIT_FWHM * self.fwhm
-                modes += [(max(self.lo, e - dw), g, h * lo_f), (min(self.hi, e + dw), g, h * hi_f)]
-        else:
-            order = sorted(range(len(modes)), key=lambda m: (self.incoming[m] is not None,
-                                                             -self.cost(modes[m][0], None), modes[m][2]))
-            drop = set(order[:self.n0 - k])
-            modes = [md for m, md in enumerate(modes) if m not in drop]
-        return sorted(modes)
-
-    def compositions(self):
-        """[(count, slots)] to price and the merged coverage: every slot order match_link returns
-        within the close window, for every candidate count."""
-        s = self.snap.settings
-        out, truncated, limited = [], False, False
-        for k in self.counts:
-            local = self._obs(self.base_modes(k))
-            got = match_link(local, self.pool, lambda m, b, local=local: self.cost(local[m].omega0, b),
-                             incoming=self.incoming if k == self.n0 else None,
-                             keep=None if s.full_search else s.composition_limit, close=s.close_call_nats)
-            truncated |= got["coverage"]["enumeration_truncated"]
-            limited |= got["coverage"]["search_limited"]
-            for p in got["proposals"]:
-                for o in p["orders"]:
-                    if (k, tuple(o["slots"])) not in out:
-                        out.append((k, tuple(o["slots"])))
-        untried = [k for k in range(self.ceiling + 1) if k not in self.counts]
-        coverage = {"counts_tried": list(self.counts), "counts_untried": untried,
-                    "enumeration_truncated": truncated, "missing_candidate_history": self.missing_history,
-                    "full_search": bool(s.full_search)}
-        return out, coverage, bool(limited or truncated or untried)
-
-    def key(self, k: int, slots) -> str:
-        """Everything a price depends on (remedy 1): the spectrum, its fit and inputs, the count and slots,
-        every held fit, mode value and guard of its terms, and the full settings. Never the snapshot id, so
-        an identical snapshot in a later round reuses the price; any moved value re-prices."""
-        payload = {**self._payload(), "count": k, "slots": list(slots)}
-        return hashlib.sha256(json.dumps(payload, sort_keys=True, default=repr).encode("utf-8")).hexdigest()
-
     def content_key(self) -> str:
-        """``key`` without the count and slots: everything a price depends on apart from the job (D21)."""
+        """Everything a price depends on apart from the job (D21; a job key hashes it with the count, slots and
+        starts): the spectrum, its fit and inputs, every held fit, mode value and guard of its terms, the aliases
+        and the full settings. Never the snapshot id, so an identical snapshot in a later round reuses the price;
+        any moved value re-prices."""
         return hashlib.sha256(json.dumps(self._payload(), sort_keys=True, default=repr).encode("utf-8")).hexdigest()
 
     def _payload(self) -> dict:
@@ -547,11 +444,6 @@ class _Spec:
                 "settings": snap.settings.to_values(), "aliases": sorted(snap.aliases.items()),
                 "terms": [[astuple(ti.term), [held(h) for h in ti.held]] for ti in snap.terms]}
 
-    def jobs(self):
-        comps, coverage, limited = self.compositions()
-        return [PricingJob(self.snap.unit, self.snap.snapshot_id, k, slots, self.key(k, slots))
-                for k, slots in comps], coverage, limited
-
     def origins(self, slots) -> tuple[str, ...]:
         return tuple("new_branch" if b is None else "returning" if b in self.returning else "matched"
                      for b in slots)
@@ -562,7 +454,7 @@ class _Spec:
     @property
     def inc_delta(self) -> tuple:
         """The incoming fit's width mask (slot positions, ascending), as ``_incoming_state`` reads it; () when its
-        selected model has another count. Pricing does not depend on it, so ``key`` does not hash it."""
+        selected model has another count. Pricing does not depend on it, so ``content_key`` does not hash it."""
         sel = _selected_model(self.snap.own_record)
         return () if sel is None or sel.get("n_peaks") != self.n0 else tuple(sorted(sel.get("delta_modes") or ()))
 
@@ -576,13 +468,13 @@ class _Spec:
         return bool(sel.get("elastic")), bool(sel.get("background")), bool(sel.get("qe", False))
 
     def skipped(self) -> Assignment:
+        """The incoming fit as an Assignment with no search (a test helper: production always searches)."""
         return Assignment(
             unit=self.snap.unit, snapshot_id=self.snap.stage_id, count=self.n0, slots=self.incoming,
             origins=self.origins(self.incoming), factors=self.incident(self.incoming), discrete="skipped",
             triggers=(), candidates=(),
-            coverage={"counts_tried": [], "counts_untried": list(range(self.ceiling + 1)),
-                      "enumeration_truncated": False, "missing_candidate_history": False,
-                      "full_search": False, "discrete_skipped": "no_proposed_change"},
+            coverage={"counts_priced": [], "counts_unresolved": {}, "stopped": {}, "full_search": False,
+                      "enumeration_truncated": False, "discrete_skipped": "no_proposed_change"},
             search_limited=True, changed=False, reasons=())
 
     # -- the slot densities of one composition
@@ -608,49 +500,11 @@ class _Spec:
 
 
 # ---- stage 1 ---------------------------------------------------------------------------------------------
-def assign_jobs(snapshot: Snapshot, *, cached: Mapping[str, Priced] = {}) -> tuple[Assignment | None, tuple[PricingJob, ...]]:
-    """The trigger filter on the frozen snapshot. Untriggered: the incoming composition as a skipped
-    Assignment and no jobs. Triggered: None and every pricing job whose key is not in ``cached``."""
-    spec = _Spec(snapshot)
-    if not spec.triggers:
-        return spec.skipped(), ()
-    jobs, _coverage, _limited = spec.jobs()
-    return None, tuple(j for j in jobs if j.key not in cached)
-
-
 def stage_factors(snapshot: Snapshot) -> dict[str, Factor]:
     """Every factor definition of the snapshot by id (spec 1), from its held values and frozen guards. The
     runner rebuilds a stage's factors from its snapshots under the reconciled branch ids, so both endpoints of
     one link carry one definition."""
     return {f.factor_id: f for fs in _Spec(snapshot).factors.values() for f in fs}
-
-
-def _own_by_slot(spec: _Spec, k: int, slots) -> list:
-    """The base modes at count k in slot order. An incoming mode matched to a slot's branch takes that slot
-    (base_modes keeps the incoming values as they are); the rest fill the free slots in base order. Pairing by
-    position alone gave the incoming mode's branch to a neighbour-added mode that sorted before it."""
-    out, rest = [None] * k, []
-    matched = {(m.omega0, m.gamma, m.height): b for m, b in zip(spec.own.modes, spec.incoming) if b is not None}
-    for md in spec.base_modes(k):
-        s = slots.index(matched[md]) if md in matched and matched[md] in slots else None
-        if s is not None and out[s] is None:
-            out[s] = md
-        else:
-            rest.append(md)
-    for s, md in zip([s for s in range(k) if out[s] is None], rest):
-        out[s] = md
-    return out
-
-
-def _starts(spec: _Spec, k: int, slots) -> list:
-    """Slot-ordered starts of one composition: its own (the base modes) and neighbour-placed (every
-    matched slot at its branch's predicted energy)."""
-    own = [(e, g, h, False) for e, g, h in _own_by_slot(spec, k, slots)]
-    placed = []
-    for (e, g, h, d), b in zip(own, slots):
-        cs = [c for c in spec.pred.get(b, ()) if spec.lo <= c <= spec.hi] if b is not None else []
-        placed.append((float(np.mean(cs)) if cs else e, g, h, d))
-    return [("own", own)] + ([("neighbour", placed)] if placed != own else [])
 
 
 def _free_width_at_floor(b) -> bool:
@@ -675,18 +529,26 @@ def _failure_reason(basins, *, floored: bool) -> str:
     return next((b.reason for b in basins if b.reason), "no start converged")
 
 
+def _ceiling(fs, k: int):
+    """The fast-pass settings with a mode ceiling of at least k: the coupled pass has no ceiling of its own."""
+    return fs if fs.mode_ceiling >= k else replace(fs, mode_ceiling=k)
+
+
 def price(snapshot: Snapshot, job: PricingJob) -> Priced:
-    """One composition at one count: every start in every admissible variant (the base engine's TRF,
-    twin resolution and delta alternatives, plus the constructed hidden start of ``seed_hidden``), each distinct
-    basin priced by Laplace under the coupled prior, or for a basin with a hidden pair by the integral over the
-    split (engine.CoupledEngine.price); ln Z sums the basins' masses with their variant/delta weights, then adds
-    ``ln w0`` and, for a pinned unmatched energy, its entry charge outside the integral (spec 2). Every basin
-    term also carries the candidate's loss price (``_Spec.loss_terms``), once."""
+    """One labelling at one count from the job's starts: every start in every admissible variant (the base
+    engine's TRF, twin resolution and delta alternatives, plus the constructed hidden start of ``seed_hidden``),
+    each distinct basin priced by Laplace under the coupled prior, or for a basin with a hidden pair by the
+    integral over the split (engine.CoupledEngine.price); ln Z sums the basins' masses with their variant/delta
+    weights, then adds the labelling's composition weight (``rules.ln_w_label``) and, for a pinned unmatched
+    energy, its entry charge outside the integral (spec 2). Every basin term also carries the candidate's loss
+    price (``_Spec.loss_terms``), once. The engine's ceiling is raised to the job's count."""
     t0 = time.perf_counter()
-    spec = _Spec(snapshot)
     k, slots = job.count, tuple(job.slots)
     if len(slots) != k:
         raise ValueError(f"job {job.key}: {len(slots)} slots for count {k}")
+    if not job.starts:
+        raise ValueError(f"job {job.key}: no starts (a job is built by the search, with its starts)")
+    spec = _Spec(snapshot)
     loss = spec.loss_terms(slots)           # recorded on every return, even a failed one
     objs = spec.slot_objects(slots)
     bad = [b for b, o in zip(slots, objs) if isinstance(o, cc.MatchedDensity) and o.status != "ok"]
@@ -695,12 +557,16 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
                       f"the neighbour density of {bad[0]} has no verified normaliser", 0, time.perf_counter() - t0,
                       loss=loss)
     u = sum(b is None for b in slots)
-    eng = _Labelled(spec.ctx, spec.fs, objs, structures=spec.structures)
-    starts = _starts(spec, k, slots)
-    for v in eng.variants.get(k, ()):
-        for family, modes in starts:
-            eng.fit(v, modes, family)
-    eng.seed_hidden(k, starts)
+    eng = _Labelled(spec.ctx, _ceiling(spec.fs, k), objs, structures=spec.structures)
+    if not eng.variants.get(k):
+        return Priced(job.key, k, slots, None, "no_structure", None,
+                      f"the card's structures hold no model with {k} modes", 0, time.perf_counter() - t0, loss=loss)
+    for v in eng.variants[k]:
+        for st in job.starts:
+            eng.fit(v, [(e, g, h, False) for e, g, h in st.modes], st.family)
+    # S1's constructed hidden start, from the neighbours' energies when the job carries them
+    hint = next((st for st in job.starts if st.family == "neighbour"), job.starts[0])
+    eng.seed_hidden(k, [(hint.family, [(e, g, h, False) for e, g, h in hint.modes])])
     while True:
         pending = [b for b in eng.basins() if b.count == k and b.status == "pending"]
         if not pending:
@@ -728,24 +594,46 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
     loss_nats = -0.5 * sum(L for _b, _e, L in loss)
     terms = [b.ln_model_prior + b.ln_z + charge(b) + loss_nats for b in priced]
     best = priced[int(np.argmax(terms))]
-    ln_z = float(logsumexp(terms)) + rules.ln_w0(k, k - u, len(spec.pool))
+    ln_z = float(logsumexp(terms)) + rules.ln_w_label(k, k - u, len(spec.pool))
     v = best.model.variant
     mode = (v.elastic, v.background, v.qe, tuple(best.model.delta),
             tuple(float(v) for v in best.theta_map))
+    records = tuple(_basin_record(b, slots, t) for b, t in zip(priced, terms))
+    peak = _residual_peak(eng, best, [m[1] for m in records[int(np.argmax(terms))][2]])
     return Priced(job.key, k, slots, ln_z, best.status, mode, None, eng.n_fits, time.perf_counter() - t0,
-                  tuple(_basin_record(b, slots, t) for b, t in zip(priced, terms)), loss)
+                  records, loss, peak)
+
+
+def _residual_peak(eng, b, energies) -> tuple[float, float]:
+    """(omega0, height) of a step's residual add from basin b by the fast pass's ladder rule (``_additions``): the
+    largest positive standardised residual above MIN_ADD_ENERGY, at most the window top, at least
+    LADDER_EXCLUDE_FWHM x FWHM from every recorded mode energy; (0.8 x top, 1.0) when there is none."""
+    r = (eng.y - eng.mean(b.model, b.theta_map)) / eng.expo
+    top, reach = eng.sp.e_hi, fast_pass.LADDER_EXCLUDE_FWHM * eng.fwhm
+    pick = next((i for i in np.argsort(-r) if fast_pass.MIN_ADD_ENERGY < eng.E[i] <= top
+                 and all(abs(eng.E[i] - e) > reach for e in energies)), None)
+    return (0.8 * top, 1.0) if pick is None else (float(eng.E[pick]), max(float(r[pick]), 1.0))
 
 
 def _basin_record(b, slots, term: float) -> tuple:
-    """(term, model label, ((slot, omega0, Gamma, h, delta) per mode in slot order), (QE height, width), mode,
-    slot_mode) of one priced basin at its posterior mode (``mode`` as ``Priced.mode`` but in energy order,
-    ``slot_mode`` the same tuple in slot order, its mask by slot position): what ``_basin_rows`` compares across
-    the slot orders of a composition. A split basin (a mode hidden under
+    """(term, model label, ((slot, omega0, Gamma, h, delta, sigma_omega0) per mode in slot order), (QE height,
+    width), mode, slot_mode) of one priced basin at its posterior mode (``mode`` as ``Priced.mode`` but in energy
+    order, ``slot_mode`` the same tuple in slot order, its mask by slot position); the search's ledger files it
+    under the labelling of its fitted energies. ``sigma_omega0`` is the Laplace covariance's energy sd (None when
+    the energy is not free or there is no covariance). A split basin (a mode hidden under
     another, priced by the integral over the intensity split) is labelled ``|split`` and records its pair at the
     pair's mean energy and width with H/2 each: the split is integrated, not fitted, so the two slot orders of
-    one hidden basin are one record. (The representative's weak-mode width is likelihood-blind: not read.)"""
+    one hidden basin are one record. (The representative's weak-mode width is likelihood-blind: not read; it is a
+    placed value, never a fitted one, and its sigma is None.)"""
     m, th = b.model, b.theta_map
-    modes = [(sl, float(th[a]), float(th[g]), float(th[c]), i in m.delta)
+    free = [int(i) for i in m.free]
+
+    def sigma(a):
+        if b.cov_free is None or a not in free:
+            return None
+        var = float(b.cov_free[free.index(a), free.index(a)])
+        return math.sqrt(var) if var > 0 else None
+    modes = [(sl, float(th[a]), float(th[g]), float(th[c]), i in m.delta, sigma(a))
              for i, ((a, g, c), sl) in enumerate(zip(m.modes, slots))]
     split = getattr(b, "boundary_method", "") == "split"
     if split:
@@ -753,10 +641,10 @@ def _basin_record(b, slots, term: float) -> tuple:
         e, g = (modes[i][1] + modes[j][1]) / 2.0, (modes[i][2] + modes[j][2]) / 2.0
         h = (modes[i][3] + modes[j][3]) / 2.0
         for n in (i, j):
-            modes[n] = (modes[n][0], e, g, h, modes[n][4])
+            modes[n] = (modes[n][0], e, g, h, modes[n][4], None)
     modes = tuple(modes)
     qe = tuple(None if i is None else float(th[i]) for i in (m.qe_h, m.qe_w))
-    # the basin's model and parameters in energy order (the order _basin_rows files it under): a delta mask and
+    # the basin's model and parameters in energy order (the order the ledger files it under): a delta mask and
     # each mode's values follow their mode when a swapped slot order is rewritten to the sorted one
     perm = sorted(range(len(modes)), key=lambda i: (modes[i][1], str(modes[i][0])))
     theta = th.copy()
@@ -775,7 +663,7 @@ def _same_basin(spec: _Spec, x: tuple, y: tuple) -> bool:
     s, w = spec.fs, spec.fwhm
     if x[1] != y[1] or [m[0] for m in x[2]] != [m[0] for m in y[2]]:
         return False
-    for (_b, e1, g1, h1, d1), (_c, e2, g2, h2, d2) in zip(x[2], y[2]):
+    for (_b, e1, g1, h1, d1), (_c, e2, g2, h2, d2) in ((m[:5], n[:5]) for m, n in zip(x[2], y[2])):
         if d1 != d2 or abs(e1 - e2) >= s.basin_merge_fwhm * w or abs(g1 - g2) > s.basin_gamma_frac * max(w, g1, g2) \
                 or abs(h1 - h2) > s.basin_height_frac * max(h1, h2):
             return False
@@ -785,118 +673,17 @@ def _same_basin(spec: _Spec, x: tuple, y: tuple) -> bool:
     return qh1 is None or qh2 is None or abs(qh1 - qh2) <= s.basin_height_frac * max(qh1, qh2)
 
 
-def _basin_rows(spec: _Spec, jobs, by_key) -> tuple[list, dict]:
-    """The evidence rows (count, slots, delta, ln_z), terms and prices that already include the loss price (one
-    constant of a slot multiset, so the slot orders of a composition share it): one per priced basin, except that
-    the slot orders of one composition (one count, one multiset of slots) are starts of one problem. Each job
-    optimises the full labelled space, so two orders can converge to one physical basin: their basins are pooled,
-    each is filed under the order of its own final energies (the mode lowest in energy takes the first slot), and
-    a basin two orders found counts once (the larger of its two prices). ``delta`` is the basin's mask by position
-    in its slot order (the width held at the floor); a job without a priced basin keeps one row, under the mask of
-    its best basin. Pricing stays exact; nothing is reused across snapshots.
-    Returns (rows, modes): modes maps (count, slots, delta) to the ``Priced.mode`` of the best basin filed under
-    it, in that slot order, whichever job found it."""
-    rows, groups, modes, best = [], {}, {}, {}
-    for j in jobs:
-        p = by_key.get(j.key)
-        if p is None or p.ln_z is None or not p.basins:
-            mask = tuple(p.mode[3]) if p is not None and p.mode is not None and len(p.mode) > 3 else ()
-            rows.append((j.count, j.slots, mask, None if p is None else p.ln_z))
-            if p is not None and p.mode is not None:
-                modes[(j.count, tuple(j.slots), mask)] = p.mode
-        else:
-            groups.setdefault((j.count, tuple(sorted(map(str, j.slots)))), []).append((j, p))
-    for members in groups.values():
-        k, u = members[0][0].count, sum(b is None for b in members[0][0].slots)
-        w0 = rules.ln_w0(k, k - u, len(spec.pool))
-        if len(members) == 1:
-            j, p = members[0]
-            for rec in p.basins:
-                delta = tuple(i for i, m in enumerate(rec[2]) if m[4])
-                rows.append((k, tuple(j.slots), delta, rec[0] + w0))
-                key = (k, tuple(j.slots), delta)
-                if key not in best or rec[0] > best[key][0]:
-                    best[key] = (rec[0], rec[5] if len(rec) > 5 else rec[4])
-            continue
-        unique: list[tuple] = []
-        for _j, p in members:
-            for term, model, bmodes, qe, mode, *_slot in p.basins:
-                rec = (term, model, tuple(sorted(bmodes, key=lambda m: (m[1], str(m[0])))), qe, mode)
-                i = next((i for i, u_ in enumerate(unique) if _same_basin(spec, u_, rec)), None)
-                if i is None:
-                    unique.append(rec)
-                elif term > unique[i][0]:
-                    unique[i] = rec
-        for rec in unique:
-            key = (k, tuple(m[0] for m in rec[2]), tuple(i for i, m in enumerate(rec[2]) if m[4]))
-            rows.append((*key, rec[0] + w0))
-            if key not in best or rec[0] > best[key][0]:
-                best[key] = (rec[0], rec[4])
-    modes.update({key: v[1] for key, v in best.items()})
-    return rows, modes
-
-
 def _loss_record(spec: _Spec, slots) -> dict:
     """What a candidate paid for the branches it does not name (already inside its ln_z)."""
     loss = spec.loss_terms(slots)
     return {"loss": [[b, e, L] for b, e, L in loss], "loss_nats": -0.5 * sum(L for _b, _e, L in loss)}
 
 
-def assign_decide(snapshot: Snapshot, priced: Sequence[Priced]) -> Assignment:
-    """Marginalise this snapshot's priced compositions (basins summed, composition prior normalised once
-    across counts), apply the evidence rule (hysteresis, tie to the incoming) and return the frozen
-    Assignment with every incident factor's definition. A job left unpriced stays unpriced, never zero."""
-    spec = _Spec(snapshot)
-    if not spec.triggers:
-        return spec.skipped()
-    s = snapshot.settings
-    jobs, coverage, limited = spec.jobs()
-    by_key = {p.key: p for p in priced}
-    (rows, modes), cands = _basin_rows(spec, jobs, by_key), []
-    # each candidate carries the deduplicated mass of its own (count, slots), the one the decision weighs, so
-    # the identity reads the same evidence (a basin two orders found is not a rival of itself)
-    mass: dict[tuple, list[float]] = {}
-    for c, s_, _d, z in rows:
-        if z is not None and math.isfinite(z):
-            mass.setdefault((c, tuple(s_)), []).append(z)
-    lz = {c: float(logsumexp(v)) for c, v in mass.items()}
-    for j in jobs:
-        p = by_key.get(j.key)
-        cands.append({"count": j.count, "slots": j.slots, "ln_z": lz.pop((j.count, tuple(j.slots)), None),
-                      "status": p.status if p is not None else "unpriced", "key": j.key, **_loss_record(spec, j.slots)})
-    # a basin filed under an order no job named still counts in the decision
-    cands += [{"count": c, "slots": s_, "ln_z": z, "status": "ok", "key": None, **_loss_record(spec, s_)}
-              for (c, s_), z in lz.items()]
-    d = rules.decide(rows, (spec.n0, spec.incoming, spec.inc_delta), eps=s.evidence_hysteresis_nats,
-                     conf=s.confidence, close=s.close_call_nats)
-    for c in cands:
-        c["weight"] = d["weights"].get((c["count"], tuple(c["slots"])), 0.0)
-    winner = d["winner"] or (spec.n0, spec.incoming)
-    k, slots = winner[0], tuple(winner[1])
-    # the refinement fits the evidence-chosen mask's basin, whichever order's job found it (a free width is chosen
-    # by evidence, never by the continuous objective)
-    mask_p = sorted(((dl, p) for (c, s_, dl), p in d["mask_weights"].items() if (c, s_) == (k, slots)))
-    coverage = {**coverage, "decision": {
-        "ambiguous": d["ambiguous"], "close_calls": [[c[0], list(c[1])] for c in d["close_calls"]],
-        "count_p": {str(c): p for c, p in sorted(d["count_p"].items())},
-        "mask": {"incoming": list(spec.inc_delta), "chosen": list(d["delta"]),
-                 "weights": [{"delta": list(dl), "p": p} for dl, p in mask_p]}}}
-    return Assignment(unit=snapshot.unit, snapshot_id=snapshot.stage_id, count=k, slots=slots,
-                      origins=spec.origins(slots), factors=spec.incident(slots), discrete="priced",
-                      triggers=spec.triggers, candidates=tuple(cands), coverage=coverage, search_limited=limited,
-                      changed=bool(d["changed"]), reasons=tuple(d["reasons"]),
-                      selected_model=modes.get((k, slots, d["delta"])), mask_only=bool(d["mask_only"]))
-
-
 def assign(snapshot: Snapshot, *, cached: Mapping[str, Priced] = {}) -> tuple[Assignment, tuple[Priced, ...]]:
-    """``assign_jobs``, ``price`` and ``assign_decide`` inline; returns the prices used or made."""
-    a, todo = assign_jobs(snapshot, cached=cached)
-    if a is not None:
-        return a, ()
-    jobs, _coverage, _limited = _Spec(snapshot).jobs()
-    made = {j.key: price(snapshot, j) for j in todo}
-    used = tuple(made[j.key] if j.key in made else cached[j.key] for j in jobs)
-    return assign_decide(snapshot, used), used
+    """The search driven inline (``search.drive``), each job priced here unless ``cached`` holds its key; returns the
+    decision and every price the search was given, in the order asked."""
+    from isar.analyze.coupled.search import drive
+    return drive(open_search(snapshot), lambda j: cached.get(j.key) or price(snapshot, j))
 
 
 def open_search(snapshot: Snapshot) -> Search:
@@ -1023,10 +810,8 @@ def refit(snapshot: Snapshot, *, stage: Literal["continuous", "both"], assignmen
     hits = 0
     if stage == "both":
         t0 = time.perf_counter()
-        spec = _Spec(snapshot)
-        if spec.triggers:
-            hits = sum(j.key in cached for j in spec.jobs()[0])
         assignment, priced = assign(snapshot, cached=cached)
+        hits = sum(p.key in cached for p in priced)
         timing["assign_s"] = time.perf_counter() - t0
         timing["likelihood_s"] = sum(p.seconds for p in priced if p.key not in cached)
     elif stage != "continuous":
@@ -1036,10 +821,10 @@ def refit(snapshot: Snapshot, *, stage: Literal["continuous", "both"], assignmen
     if assignment.unit != snapshot.unit or assignment.snapshot_id != snapshot.stage_id:
         raise ValueError(f"the assignment of {assignment.unit} on {assignment.snapshot_id} does not govern "
                          f"{snapshot.unit} on {snapshot.stage_id}")
-    return _continuous(snapshot, assignment, priced, cached, hits, timing)
+    return _continuous(snapshot, assignment, priced, hits, timing)
 
 
-def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
+def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
     t0 = time.perf_counter()
     spec = _Spec(snapshot)
     k, slots = a.count, tuple(a.slots)
@@ -1057,39 +842,38 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
     notes = [_reason(n["code"], "a neighbour's precision is unavailable; its guard is the window width / sqrt(12)",
                      n["ids"], **n["values"]) for n in spec.notes]
     objs = spec.slot_objects(slots, by_branch)
-    eng = _Labelled(spec.ctx, spec.fs, objs, continuous=True, structures=spec.structures)
+    eng = _Labelled(spec.ctx, _ceiling(spec.fs, k), objs, continuous=True, structures=spec.structures)
     old = _incoming_state(eng, spec) if k == spec.n0 else None
 
-    # starts: the incoming state, the priced posterior mode, the composition's own and neighbour-placed starts,
-    # all on the selected delta mask (the priced winner's, else the incoming fit's): a delta or a free width is
-    # chosen by the evidence comparison, never by the continuous objective, which a free width always lowers
+    # starts: the incoming state, the priced posterior mode (the decision's, ``a.selected_model``) and one
+    # neighbour-placed start, all on the selected delta mask (the decision's, else the incoming fit's): a delta or a
+    # free width is chosen by the evidence comparison, never by the continuous objective, which a free width always
+    # lowers. The runner passes no prices, so the Assignment alone carries the choice.
     starts = [] if old is None else [old]
     selected = tuple(old[0].delta) if old is not None else ()
-    win = cached.get(spec.key(k, slots)) or next((p for p in priced if p.count == k and tuple(p.slots) == slots), None)
-    # the decision's chosen mask enters refinement; the job's own best basin only when it carries the incoming mask
-    # (the runner passes no prices, so the Assignment alone must carry the choice)
-    mode = a.selected_model
-    if mode is None and win is not None and win.mode is not None and tuple(win.mode[3]) == spec.inc_delta:
-        mode = win.mode
+    base = [(m.omega0, m.gamma, m.height) for m in spec.own.modes] if k == spec.n0 else spec._record_modes(k)
     sel_variant = None
-    if mode is not None:
-        el, bg, qe, delta, theta = mode
+    if a.selected_model is not None:
+        el, bg, qe, delta, theta = a.selected_model
         variant = eng.variant(k, el, bg, qe)
         model = None if variant is None else eng.model(variant, delta)
         if model is not None:
             selected, sel_variant = tuple(delta), variant
+            theta = np.array(theta, dtype=float)
             starts = [s for s in starts if tuple(s[0].delta) == selected
-                      and _variant_key(s[0].variant) == _variant_key(variant)] + [(model, np.array(theta, dtype=float))]
-            if win is not None:
-                priced = priced or (win,)
+                      and _variant_key(s[0].variant) == _variant_key(variant)] + [(model, theta)]
+            base = [m[:3] for m in eng.modes_of(model, theta)]
     variants = [old[0].variant] if old is not None else list(eng.variants.get(k, ()))
     if sel_variant is not None:
         variants = [sel_variant]         # the decision's variant only: a QE it priced away is not restored
-    for _family, modes in _starts(spec, k, slots):
+    if base is not None and len(base) == k:
+        # matched slots at their branch's expected energy, the others where the mode is
+        placed = [(spec.expected[spec.canon(b)][0] if b is not None and spec.canon(b) in spec.expected else e, g, h,
+                   False) for (e, g, h), b in zip(base, slots)]
         for v in variants:
             model = eng.model(v, selected)
             if model is not None:
-                starts.append((model, eng._start(model, modes, None)))
+                starts.append((model, eng._start(model, placed, None)))
     best = None
     for model, theta0 in starts:
         res = eng._trf(model, theta0, "coupled")
@@ -1148,7 +932,7 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
     # release fit: the same count with no inter-spectra potential and no entry price, own ramp kept (spec 6)
     t2 = time.perf_counter()
     ramp = cc.MatchedDensity(spec.ep, snapshot.unit, [], {})
-    rel = _Labelled(spec.ctx, spec.fs, [ramp] * k, continuous=True, structures=spec.structures)
+    rel = _Labelled(spec.ctx, _ceiling(spec.fs, k), [ramp] * k, continuous=True, structures=spec.structures)
     rel_model = rel.model(model.variant, tuple(model.delta))
     rel_best = None
     for theta0 in [theta] + ([old[1]] if old is not None and old[0] is model else []):
@@ -1210,7 +994,7 @@ def _continuous(snapshot, a, priced, cached, hits, timing) -> RefitResult:
     delta_fast = {"count": k - len(fast.modes), "omega0": {b: energies[b] - fast_by[b].omega0 for b in ids if b in fast_by}}
 
     flag = _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, F, R, cov, notes, dropped)
-    why = _why(status, reason, spec.n0, k, slots, spec.incoming, J_old, J)
+    why = _why(status, reason, spec.n0, k, slots, spec.incoming, J_old, J, variant_changed)
     fit, overlay, cov_out = _record(eng, spec, a, model, theta, cov, sd, rel_sd, modes, ids, D, status)
     normalisers = {f"ln_z:{b}": (float(o.ln_z), "ln meV") for b, o in zip(slots, objs)
                    if isinstance(o, cc.MatchedDensity)}
@@ -1303,11 +1087,14 @@ def _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, 
     return {"score": F, "flagged": bool(flagged), "reasons": reasons}
 
 
-def _why(status, reason, n0, k, slots, incoming, J_old, J) -> str:
+def _why(status, reason, n0, k, slots, incoming, J_old, J, variant_changed=False) -> str:
     if status == "accepted" and k != n0:
         return f"The neighbours' evidence changed the number of modes from {n0} to {k}."
     if status == "accepted" and slots != incoming:
         return "The neighbours' evidence changed which branch a mode belongs to."
+    if status == "accepted" and reason == "evidence" and variant_changed:
+        return ("The evidence changed which components the model carries (the quasi-elastic line, the elastic line "
+                "or the background).")
     if status == "accepted" and reason == "evidence":
         return "The evidence changed which modes are resolution limited."
     if status == "accepted":

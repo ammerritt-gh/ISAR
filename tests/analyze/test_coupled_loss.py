@@ -10,10 +10,11 @@ import math
 from dataclasses import replace
 
 import pytest
+from _search_harness import Scripted, job_for, ledger, run, snapshot_for
 from test_coupled_refit import S, _short, held, spectrum, t_pair
 
 from isar.analyze.coupled import refit as R
-from isar.analyze.coupled.types import Dormant, PricingJob, TermInput
+from isar.analyze.coupled.types import Dormant, TermInput
 from isar.session.inter_spectra.graph import Term
 
 ZERO = replace(S, birth_edge=0.0, birth_mid=0.0)      # entry and loss prices off
@@ -28,8 +29,8 @@ def test_runs_from_the_worktree():
     assert isar.__file__.replace("\\", "/").startswith(here)
 
 
-def _job(slots):
-    return PricingJob("y", "b1:round1", len(slots), slots, "k")
+def _job(snap, slots):
+    return job_for(snap, len(slots), slots)
 
 
 def _with_neighbours(snap, x, z, *, guard=0.05):
@@ -47,17 +48,20 @@ def test_a_lost_branch_pays_the_entry_price_it_would_have_cost_to_appear():
     assert L == S.birth_edge + S.birth_mid                                  # mid-window: the full price
     assert spec.loss_terms(("b1",)) == (("b2", 15.0, L),)
     assert spec.loss_terms(("b1", "b2")) == () and spec.loss_terms(("b1", None)) == spec.loss_terms(("b1",))
-    lost, free = R.price(snap, _job(("b1",))), R.price(replace(snap, settings=ZERO), _job(("b1",)))
+    lost, free = R.price(snap, _job(snap, ("b1",))), R.price(replace(snap, settings=ZERO), _job(snap, ("b1",)))
     assert lost.loss == (("b2", 15.0, L),) and free.loss == (("b2", 15.0, 0.0),)
     assert lost.ln_z - free.ln_z == pytest.approx(-L / 2, abs=1e-6)         # the price, exactly once
-    named = R.price(snap, _job(("b1", "b2"))), R.price(replace(snap, settings=ZERO), _job(("b1", "b2")))
+    named = R.price(snap, _job(snap, ("b1", "b2"))), R.price(replace(snap, settings=ZERO), _job(snap, ("b1", "b2")))
     assert named[0].loss == () and named[0].ln_z == pytest.approx(named[1].ln_z, abs=1e-9)
-    # every candidate carries its record, and the decision's agrees with the price's
-    a = R.assign_decide(snap, [lost] + [R.price(snap, _job(s)) for s in (("b1", "b2"),)])
+    # every candidate the search records carries its loss record, a priced one and one with no price alike, and the
+    # decision's agrees with the price's (the candidate record is the search's own; the pricer is scripted)
+    # (a scripted table needs a best count: with every labelling equal, each count's total grows with its labellings
+    # and the walk, which has no ceiling, would never stop)
+    a, _used, _s = run(snap, Scripted({(1, ("b1",)): -100.0}, outcomes={(2, ("b1", "b2")): ("no_evidence", "made up")}))
     c = next(c for c in a.candidates if tuple(c["slots"]) == ("b1",))
-    assert c["loss"] == [["b2", 15.0, L]] and c["loss_nats"] == pytest.approx(-L / 2)
-    unpriced = [c for c in a.candidates if c["status"] == "unpriced"]
-    assert unpriced and all(c["loss"] == [list(t) for t in spec.loss_terms(c["slots"])] for c in unpriced)
+    assert c["loss"] == [list(t) for t in lost.loss] and c["loss_nats"] == pytest.approx(-L / 2)
+    unpriced = [c for c in a.candidates if c["ln_z"] is None]
+    assert unpriced and all(c["loss"] == [list(t) for t in spec.loss_terms(c["slots"])] for c in a.candidates)
 
 
 def test_births_and_deaths_mirror_at_the_window_edges():
@@ -149,27 +153,37 @@ def _hidden(settings=S):
 
 
 def _masses(snap, sets):
-    """The candidate masses the decision weighs (pooled over slot orders) of just the listed compositions."""
-    jobs = [j for j in R._Spec(snap).jobs()[0] if tuple(j.slots) in sets]
-    z = {tuple(c["slots"]): c["ln_z"] for c in R.assign_decide(snap, [R.price(snap, j) for j in jobs]).candidates}
-    return {k: v for k, v in z.items() if k in sets}
+    """The masses the decision weighs (the search's ledger, pooled over slot orders) of just the listed labellings."""
+    s = ledger(snap, [R.price(snap, _job(snap, labels)) for labels in sorted(sets)])
+    return {key[1]: s._mass(key) for key in s.ledger if key[1] in sets}
 
 
 PAIR_SETS = {("b1",), ("b1", "b2"), ("b2", "b1")}
 
 
+def _searched(snap, zero):
+    """The search's decision on ``snap``, its prices, and the ledger masses of its own (b1,) and (b1, b2) jobs priced
+    again at ``zero`` prices: those labellings have no unmatched slot, so the loss price is all that differs."""
+    from isar.analyze.coupled.search import drive
+    s = R.open_search(snap)
+    a, priced = drive(s, lambda j: R.price(snap, j))
+    jobs = [j for j, _p in s.outcomes if None not in j.slots and "b1" in j.slots and set(j.slots) <= {"b1", "b2"}]
+    zl = ledger(zero, [R.price(zero, j) for j in jobs])
+    return a, priced, {key[1]: zl._mass(key) for key in zl.ledger if key[1] in PAIR_SETS}
+
+
+@pytest.mark.slow       # a search on the real engine, its jobs priced again (about 120 s)
 def test_a_hidden_mode_survives_the_merge_and_is_recovered_by_the_loss_price():
     snap, free = _hidden(), _hidden(ZERO)
     spec = R._Spec(snap)
     assert not [n for n in spec.notes if n["code"] == "neighbour_precision_unavailable"]
     L = sum(L for _b, _e, L in spec.loss_terms(("b1",)))
     assert L == S.birth_edge + S.birth_mid
-    a, priced = R.assign(snap)
+    a, priced, zf = _searched(snap, free)
     pair = next(p for p in priced if p.slots == ("b1", "b2"))
     assert pair.status in ("ok", "ok_boundary") and math.isfinite(pair.ln_z) and pair.basins   # not merged away
     z = {tuple(c["slots"]): c["ln_z"] for c in a.candidates}
     assert z[("b1", "b2")] is not None and math.isfinite(z[("b1", "b2")])
-    zf = _masses(free, PAIR_SETS)
     g = zf[("b1", "b2")] - zf[("b1",)]
     assert -L / 2 < g < 0                         # at zero prices the data alone drop it: (b1,) wins
     margin = z[("b1", "b2")] - z[("b1",)]
@@ -190,14 +204,14 @@ def _vanished(scale, settings=S):
     return _three([(8.0, 0.4, 40.0)], [(8.0, 0.4, 40.0)], 14.0, 8.0, scale=scale, settings=settings)
 
 
+@pytest.mark.slow       # a search on the real engine at two statistics (about 35 s)
 def test_a_vanishing_branch_is_rejected_on_strong_statistics_and_kept_as_a_phantom_on_weak():
     snap = _vanished(256.0)
     L = sum(L for _b, _e, L in R._Spec(snap).loss_terms(("b1",)))
-    zs = _masses(_vanished(256.0, ZERO), PAIR_SETS)
+    a, _priced, zs = _searched(snap, _vanished(256.0, ZERO))
     g0 = zs[("b1", "b2")] - zs[("b1",)]
     assert g0 < -(L / 2 + 2)
-    a, _ = R.assign(snap)
-    z = {tuple(c["slots"]): c["ln_z"] for c in a.candidates}
+    z ={tuple(c["slots"]): c["ln_z"] for c in a.candidates}
     assert (a.count, tuple(a.slots)) == (1, ("b1",))                          # no phantom
     margin = z[("b1",)] - z[("b1", "b2")]
     assert margin == pytest.approx(-g0 - L / 2, abs=1e-6) and margin > -g0 - L        # L/2 less than at zero
@@ -215,6 +229,7 @@ def test_a_vanishing_branch_is_rejected_on_strong_statistics_and_kept_as_a_phant
 
 
 # 5 ---------------------------------------------------------------------------------------------------------
+@pytest.mark.slow       # four real prices (about 20 s)
 def test_slot_orders_of_one_composition_carry_the_loss_once():
     true = [(8.0, 0.3, 30.0), (9.0, 0.3, 30.0)]
     nb = [(8.45, 0.3, 30.0), (8.55, 0.3, 30.0), (15.0, 0.3, 30.0)]
@@ -223,14 +238,9 @@ def test_slot_orders_of_one_composition_carry_the_loss_once():
         snap = t_pair(spectrum(true, scale=0.3, seed=3), true, ["fast:y#0", "fast:y#1"], nb, ["b1", "b2", "b3"],
                       kind="simultaneous", guard=0.5, settings=settings)
         spec = R._Spec(snap)
-        jobs = [j for j in spec.jobs()[0] if j.count == 2 and set(j.slots) == {"b1", "b2"}]
-        assert len(jobs) == 2
-        by_key = {j.key: R.price(snap, j) for j in jobs}
-        out, _modes = R._basin_rows(spec, jobs, by_key)
-        mass = {}
-        for c, s, _d, z in out:                       # the mass of a (count, slots), the masks summed out
-            mass.setdefault((c, tuple(s)), []).append(z)
-        return {key: math.log(sum(math.exp(z) for z in v)) for key, v in mass.items()}, spec.loss_terms(("b1", "b2"))
+        s = ledger(snap, [R.price(snap, _job(snap, o)) for o in (("b1", "b2"), ("b2", "b1"))])
+        # the mass of a (count, labelling), every mask and basin once, as the decision weighs it
+        return {key: s._mass(key) for key in s.ledger}, spec.loss_terms(("b1", "b2"))
     with_loss, loss = rows(S)
     without, none = rows(ZERO)
     (_b, _e, L), = loss
@@ -248,7 +258,8 @@ def test_a_simultaneous_batch_charges_a_shared_missing_branch_once_and_refines_o
     (name, e, L), = spec.loss_terms(("b1",))                  # both neighbours predict b2: one entry
     assert (name, e) == ("b2", pytest.approx(15.0))
     free = replace(snap, settings=ZERO)
-    assert R.price(snap, _job(("b1",))).ln_z - R.price(free, _job(("b1",))).ln_z == pytest.approx(-L / 2, abs=1e-6)
+    job = _job(snap, ("b1",))
+    assert R.price(snap, job).ln_z - R.price(free, job).ln_z == pytest.approx(-L / 2, abs=1e-6)
     # the composition is fixed and the loss depends on it alone: the shared objective has no gradient from it
     a = spec.skipped()
     assert a.slots == ("b1",)
@@ -264,9 +275,34 @@ def test_a_simultaneous_batch_charges_a_shared_missing_branch_once_and_refines_o
 def test_the_cache_key_hashes_every_term_field_and_the_aliases():
     prep = spectrum(ONE, seed=9)
     snap = t_pair(prep, ONE, ["b1"], BOTH, ["b1", "b2"])
-    key = R._Spec(snap).key(1, ("b1",))
-    assert R._Spec(replace(snap)).key(1, ("b1",)) == key
-    assert R._Spec(replace(snap, aliases={"b2x": "b2"})).key(1, ("b1",)) != key
+    key = R._Spec(snap).content_key()                          # the job key hashes it with the count, slots, starts
+    assert R._Spec(replace(snap)).content_key() == key
+    assert R._Spec(replace(snap, aliases={"b2x": "b2"})).content_key() != key
     t0 = snap.terms[0]
     moved = replace(snap, terms=(replace(t0, term=replace(t0.term, line="row 2")), snap.terms[1]))
-    assert R._Spec(moved).key(1, ("b1",)) != key                # a field the old payload did not read
+    assert R._Spec(moved).content_key() != key                 # a field the old payload did not read
+    assert job_for(moved, 1, ("b1",)).key != job_for(snap, 1, ("b1",)).key
+
+
+# 8 ---------------------------------------------------------------------------------------------------------
+def _no_factor(settings=S):
+    """A curvature triple: x carries b1 and b2 (b2 at 14.0), z carries b1 only, so b2 has no coupling term."""
+    return snapshot_for(ONE, ["b1"], None, settings=settings,
+                        curvature=((BOTH[:1] + [(14.0, 0.4, 40.0)], ["b1", "b2"]), (ONE, ["b1"])))
+
+
+def test_a_branch_without_a_coupling_term_is_charged_when_lost_and_free_when_named():
+    snap = _no_factor()
+    spec = R._Spec(snap)
+    L = S.birth_edge + spec.entry.B(14.0)
+    assert "b2" not in spec.factors and "b2" in spec.pool
+    assert spec.loss_terms(("b1",)) == (("b2", 14.0, L),)
+    job = _job(snap, ("b1",))
+    lost, free = R.price(snap, job), R.price(_no_factor(ZERO), job)
+    assert lost.loss == (("b2", 14.0, L),)
+    assert lost.ln_z - free.ln_z == pytest.approx(-L / 2, abs=1e-6)
+    a, _used, _s = run(snap, Scripted({(1, ("b1",)): -100.0}))     # the candidate record is the search's own
+    c = next(c for c in a.candidates if (c["count"], tuple(c["slots"])) == (1, ("b1",)))
+    assert c["loss"] == [["b2", 14.0, L]]
+    # b2 is assignable (D9): naming it pays nothing for it, and the b1 it leaves out is charged instead
+    assert [t[0] for t in spec.loss_terms(("b2",))] == ["b1"]
