@@ -34,6 +34,7 @@ import numpy as np
 
 # Scan(s) identity and component palettes, shared by both renderers.
 DATA_NEUTRAL = "#404040"
+GUIDE_COLOR = "#999999"
 TRACE_COLORS = ("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
                 "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf")
 SYMBOLS = ("o", "s", "t", "d", "p", "h", "star", "t1", "t2", "t3")
@@ -220,6 +221,31 @@ class Series:
 
 
 @dataclass
+class GuideLine:
+    """An axis-aligned reference spanning the viewport, excluded from legends.
+
+    ``include_in_bounds`` includes only its fixed coordinate in autoscaling, never its extent.
+
+    ``axis="x"`` fixes x (vertical); ``axis="y"`` fixes y (horizontal).
+    """
+    axis: str
+    value: float
+    color: str = GUIDE_COLOR
+    style: str = "dotted"
+    include_in_bounds: bool = False
+
+    def __post_init__(self):
+        if self.axis not in {"x", "y"}:
+            raise ValueError("guide axis must be x or y")
+
+    def to_dict(self) -> dict:
+        result = {"axis": self.axis, "value": float(self.value), "color": self.color, "style": self.style}
+        if self.include_in_bounds:
+            result["include_in_bounds"] = True
+        return result
+
+
+@dataclass
 class Band:
     """Filled interval band [lo, hi] over x. Never used for an unreliable interval."""
     x: np.ndarray
@@ -350,6 +376,7 @@ class PlotSpec:
     #: min..max scale. Cells above ``vmax`` saturate; they are never hidden.
     strip_levels: tuple[float, float] | None = None
     meta: dict = field(default_factory=dict)
+    guides: list[GuideLine] = field(default_factory=list)
 
     def __post_init__(self):
         self._check_certifying()
@@ -360,7 +387,7 @@ class PlotSpec:
             raise ValueError(f"exactly one interval-ladder tier may be certifying; found {n}")
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "title": self.title, "xlabel": self.xlabel, "ylabel": self.ylabel,
             "series": [s.to_dict() for s in self.series],
             "bands": [b.to_dict() for b in self.bands],
@@ -375,6 +402,9 @@ class PlotSpec:
                              else [float(self.strip_levels[0]), float(self.strip_levels[1])]),
             "meta": self.meta,
         }
+        if self.guides:
+            result["guides"] = [g.to_dict() for g in self.guides]
+        return result
 
 
 # ---------------------------------------------------------------------------

@@ -130,8 +130,8 @@ class RenderedSpec:
         self.strip_levels: tuple[float, float] | None = None
         self.strip_colormap: str | None = None
 
-    def _add_data(self, item) -> None:
-        self._plot_item.addItem(item)
+    def _add_data(self, item, *, ignore_bounds=False) -> None:
+        self._plot_item.addItem(item, ignoreBounds=ignore_bounds)
         self._data_items.append(item)
 
     def _add_overlay(self, item) -> None:
@@ -562,6 +562,12 @@ def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
     for region in spec.regions:
         _draw_region(rs, region)
 
+    for guide in spec.guides:
+        line = pg.InfiniteLine(pos=guide.value, angle=90 if guide.axis == "x" else 0,
+                               pen=_pen(guide.color, 1.0, dashed=guide.style == "dashed",
+                                        dotted=guide.style == "dotted"), movable=False)
+        line.setZValue(0)
+        rs._add_data(line, ignore_bounds=not guide.include_in_bounds)
     for b in spec.bands:
         _draw_band(rs, b, legend_entries)
     for s in spec.series:

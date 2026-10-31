@@ -93,6 +93,7 @@ class ScansPageViewModel(ViewModel):
         self.scale = 'normalised'
         self.hand_step = None
         self.zero_lines = True
+        self.energy_zero_line = False
         self.peak_lines = True
         self.filled_symbols = False
         self._store = None
@@ -124,7 +125,7 @@ class ScansPageViewModel(ViewModel):
             self.refreshed.emit()
 
     def set_display_option(self, name, value):
-        if name not in ("zero_lines", "peak_lines", "filled_symbols"):
+        if name not in ("zero_lines", "energy_zero_line", "peak_lines", "filled_symbols"):
             raise ValueError(f"unknown display option: {name}")
         self._set(name, value, (True, False))
 
@@ -205,14 +206,16 @@ class ScansPageViewModel(ViewModel):
 
     def save_view_state(self, session):
         session.view_state[STATE_KEY] = {'fit': self.fit, 'layout': self.layout, 'scale': self.scale,
-            'zero_lines': self.zero_lines, 'peak_lines': self.peak_lines,
+            'zero_lines': self.zero_lines, 'energy_zero_line': self.energy_zero_line,
+            'peak_lines': self.peak_lines,
             'filled_symbols': self.filled_symbols}
 
     def load_view_state(self, session):
         outer = getattr(session, 'view_state', None)
         saved = outer.get(STATE_KEY) if isinstance(outer, dict) else None
         saved = saved if isinstance(saved, dict) else {}
-        for name, default in (("zero_lines", True), ("peak_lines", True), ("filled_symbols", False)):
+        for name, default in (("zero_lines", True), ("energy_zero_line", False),
+                              ("peak_lines", True), ("filled_symbols", False)):
             value = saved.get(name, default)
             setattr(self, name, value if isinstance(value, bool) else default)
         for name, choices, default in (('fit', PASSES, 'fast'), ('layout', LAYOUTS, 'offset'),
@@ -312,7 +315,7 @@ class ScansPageViewModel(ViewModel):
             revisions = ()
         signature = (keys, revisions, tuple(labels.items()), self.selection.active,
                      self.fit, self.layout, self.scale, self.hand_step, reference,
-                     self.zero_lines, self.peak_lines, self.filled_symbols,
+                     self.zero_lines, self.energy_zero_line, self.peak_lines, self.filled_symbols,
                      inter.revision if inter else '', tuple(self.chosen.items()), wf, history, wf_off,
                      row,
                      self._groups(snapshot, keys) if body == LIST else ())
@@ -462,10 +465,12 @@ class ScansPageViewModel(ViewModel):
         main = scans_spec(traces=traces, view=common['view'] if traces else 'offset', step=step,
                           ylabel=ylabel, curves_header=header,
                           xlabel=NOT_ZEROED_LABEL if raw_axis else ENERGY_LABEL,
-                          zero_lines=self.zero_lines, peak_lines=self.peak_lines,
+                          zero_lines=self.zero_lines, energy_zero_line=self.energy_zero_line,
+                          peak_lines=self.peak_lines,
                           filled_symbols=self.filled_symbols)
         residual = (scans_residual_spec(trace=traces[0], residuals=residuals,
-                                       ylabel=f'data − fit ({y_unit})')
+                                       ylabel=f'data − fit ({y_unit})',
+                                       energy_zero_line=self.energy_zero_line)
                     if common['view'] == 'single' and traces and traces[0].curves else None)
         counts = Counter(reason for _, reason in not_drawn)
         line = (f'{len(not_drawn)} of {n} selected not drawn: ' +

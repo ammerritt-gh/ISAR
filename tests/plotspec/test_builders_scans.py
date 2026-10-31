@@ -86,6 +86,22 @@ def test_missing_pass_full_identity_and_residual_mask_are_preserved():
     assert residual.title == ''
 
 
+@pytest.mark.parametrize('view', ['single', 'offset', 'overlay'])
+def test_zero_guides_are_viewport_lines_and_leave_the_data_unchanged(view):
+    ts = traces()[:1] if view == 'single' else traces()
+    args = dict(traces=ts, view=view, step=5, ylabel='Counts', curves_header=None)
+    plain = scans_spec(**args, zero_lines=False)
+    guided = scans_spec(**args, energy_zero_line=True)
+    assert [(g.axis, g.value) for g in guided.guides] == (
+        [('y', 10), ('y', 5), ('y', 0), ('x', 0)] if view == 'offset' else [('x', 0)])
+    for before, after in zip(plain.series, guided.series):
+        np.testing.assert_array_equal(before.x, after.x)
+        np.testing.assert_array_equal(before.y, after.y)
+    assert guided.to_dict()['guides'][-1] == {
+        'axis': 'x', 'value': 0.0, 'color': ps.GUIDE_COLOR, 'style': 'dotted'}
+    assert 'guides' not in plain.to_dict()
+
+
 def test_new_style_fields_are_optional_in_serialization():
     plain = ps.Series(np.array([1]), np.array([2]))
     assert not {'color', 'symbol', 'legend_group', 'legend_bold'} & plain.to_dict().keys()

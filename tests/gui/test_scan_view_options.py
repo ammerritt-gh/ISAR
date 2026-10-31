@@ -25,10 +25,10 @@ def test_config_actions_redraw_and_save_scan_appearance(qtbot, scans_view_ws_rea
     assert all(a.toolTip() for a in actions.values())
     assert actions['zero_lines'].isChecked() and actions['peak_lines'].isChecked()
     assert not actions['filled_symbols'].isChecked()
+    assert not actions['energy_zero_line'].isChecked()
     spec = page._drawn_state.main_spec
     guides = [s for s in spec.series if s.legend_group is None]
-    zeros = [s for s in guides if s.style == 'dotted']
-    assert [s.y.tolist() for s in zeros] == [[100, 100], [0, 0]]
+    assert [(g.axis, g.value) for g in spec.guides] == [('y', 100), ('y', 0)]
     peaks = [s for s in guides if s.style != 'dotted']
     assert len(peaks) == 5  # one of the six centres is outside the recorded energy range
     assert all(s.x[0] == s.x[1] and s.y[1] >= s.y[0] for s in peaks)
@@ -44,11 +44,12 @@ def test_config_actions_redraw_and_save_scan_appearance(qtbot, scans_view_ws_rea
                           for i in points)
     page._main_plot.setRange(xRange=(-8, 8), yRange=(-10, 250), padding=0)
     before = page.drawn().view_range
-    for action in actions.values():
-        action.trigger()
+    for name in ('zero_lines', 'peak_lines', 'filled_symbols'):
+        actions[name].trigger()
     page.flush_redraw()
     assert page.drawn().view_range == before
     assert not any(s.legend_group is None for s in page._drawn_state.main_spec.series)
+    assert not page._drawn_state.main_spec.guides
     backgrounds = [s for s in page._drawn_state.main_spec.series
                    if s.label is None and s.color == CURVE_COLORS['background']]
     assert len(backgrounds) == 2 and all(s.style == 'dotted' for s in backgrounds)

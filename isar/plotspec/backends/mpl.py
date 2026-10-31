@@ -14,6 +14,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.patches import Rectangle  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
 
 import numpy as np  # noqa: E402
 
@@ -275,6 +276,19 @@ def _render_onto(ax, spec: PlotSpec) -> None:
             _draw_strip(ax, st, levels, spec.strip_colormap)
     for region in spec.regions:
         _draw_region(ax, region)
+    for guide in spec.guides:
+        vertical = guide.axis == "x"
+        fixed, extent = [guide.value, guide.value], [0, 1]
+        line = Line2D(fixed if vertical else extent, extent if vertical else fixed,
+                      transform=ax.get_xaxis_transform() if vertical else ax.get_yaxis_transform(),
+                      color=guide.color, linestyle={"dotted": ":", "dashed": "--"}.get(guide.style, "-"),
+                      linewidth=1.0, zorder=0)
+        if guide.include_in_bounds:
+            # Preserve scan-baseline visibility when resetting zoom; the span is in axes coordinates.
+            ax.add_line(line)
+            ax.autoscale_view()
+        else:
+            ax.add_artist(line)
     for b in spec.bands:
         _draw_band(ax, b)
     seen_series = set()

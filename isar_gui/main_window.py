@@ -2135,7 +2135,8 @@ class MainWindow(QMainWindow):
         scans_menu.setToolTipsVisible(True)
         self._scans_display_actions = {}
         for name, label, tip in (
-            ("zero_lines", "Show scan zero lines", "Dotted grey zero-intensity lines for offset scans."),
+            ("zero_lines", "Show scan zero lines", "Dotted grey zero-intensity lines across the full plot width for offset scans."),
+            ("energy_zero_line", "Show energy zero line", "A dotted grey line at energy-axis zero across the full plot height, including the residual panel."),
             ("peak_lines", "Show mode centre lines", "Lines from each stored mode centre to its scan zero, on both energy sides, in the mode colour."),
             ("filled_symbols", "Filled data symbols", "Fill data symbols; turn off for empty symbols that reveal curves behind them."),
         ):

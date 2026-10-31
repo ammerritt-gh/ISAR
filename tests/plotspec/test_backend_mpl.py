@@ -148,6 +148,30 @@ def test_pooled_master_draws_above_legacy_same_position_verdict():
         plt.close(fig)
 
 
+@pytest.mark.parametrize('include_baseline', [False, True])
+def test_infinite_guides_follow_axes_limits_and_preserve_baseline_bounds(include_baseline):
+    spec = ps.PlotSpec('', 'x', 'y',
+                       series=[ps.Series(np.array([1000., 1001.]), np.array([1e6, 1e6 + 1]))],
+                       guides=[ps.GuideLine('x', 0), ps.GuideLine('y', 0, include_in_bounds=include_baseline)])
+    fig, ax = plt.subplots()
+    try:
+        mpl._render_onto(ax, spec)
+        assert ax.get_xlim()[0] > 999
+        assert ax.get_ylim()[0] <= 0 if include_baseline else ax.get_ylim()[0] > 1e6 - 1
+        guides = [line for line in ax.lines if line.get_zorder() == 0]
+        assert len(guides) == 2
+        for xlim, ylim in (((-10, 20), (-100, 200)), ((-1e6, 2e6), (-1e9, 2e9))):
+            ax.set_xlim(*xlim)
+            ax.set_ylim(*ylim)
+            fig.canvas.draw()
+            vertical, horizontal = [line.get_transform().transform(line.get_xydata()) for line in guides]
+            np.testing.assert_allclose(vertical[:, 1], [ax.bbox.ymin, ax.bbox.ymax])
+            np.testing.assert_allclose(horizontal[:, 0], [ax.bbox.xmin, ax.bbox.xmax])
+        assert ax.get_legend() is None
+    finally:
+        plt.close(fig)
+
+
 def test_render_png_on_minimal_spec():
     png = mpl.render_png(ps.PlotSpec(title="t", xlabel="x", ylabel="y",
                                      series=[ps.Series(x=np.array([0.0, 1.0]),

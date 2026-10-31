@@ -580,7 +580,7 @@ def stack_step(traces: Sequence[ScansTrace]) -> float:
 def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
                ylabel: str, curves_header: str | None,
                xlabel: str = "Energy transfer (meV)",
-               zero_lines: bool = True, peak_lines: bool = True,
+               zero_lines: bool = True, energy_zero_line: bool = False, peak_lines: bool = True,
                filled_symbols: bool = False) -> ps.PlotSpec:
     """Draw already-scaled spectra. This builder performs display offsets only."""
     if view not in {"single", "offset", "overlay"}:
@@ -625,13 +625,10 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
                 short, xy=(float(x[last]), float(offset)), anchor=(1, -0.15),
                 tooltip=label, bold=trace.active))
     if zero_lines and view == "offset":
-        for trace, offset in zip(traces, offsets):
-            x = np.asarray(trace.x)
-            x = x[np.isfinite(x)]
-            if x.size:
-                spec.series.append(ps.Series(
-                    x=np.array([x.min(), x.max()]), y=np.array([offset, offset]),
-                    role=ps.Role.COMPONENT, color="#999999", style="dotted"))
+        spec.guides.extend(ps.GuideLine("y", offset, include_in_bounds=True) for trace, offset in zip(traces, offsets)
+                           if np.isfinite(trace.x).any())
+    if energy_zero_line:
+        spec.guides.append(ps.GuideLine("x", 0.0))
     # Canonical role order is independent of what the first trace happens to contain.
     rank = {"total": 0, "elastic": 1, "quasielastic": 2, "mode": 3, "background": 4}
     curves = [(curve, trace, offset) for trace, offset in zip(traces, offsets)
@@ -667,10 +664,13 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
 
 
 def scans_residual_spec(*, trace: ScansTrace, residuals: np.ndarray,
-                        ylabel: str) -> ps.PlotSpec:
-    return residuals_spec(x=trace.x, residuals=residuals, yerr=trace.yerr,
+                        ylabel: str, energy_zero_line: bool = False) -> ps.PlotSpec:
+    spec = residuals_spec(x=trace.x, residuals=residuals, yerr=trace.yerr,
                           mask=trace.kept, xlabel="Energy transfer (meV)",
                           ylabel=ylabel, title="")
+    if energy_zero_line:
+        spec.guides.append(ps.GuideLine("x", 0.0))
+    return spec
 
 
 def residuals_spec(*, x, residuals, yerr=None, mask=None, xlabel="energy transfer (meV)",
