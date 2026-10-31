@@ -8,9 +8,8 @@ The batch is the one the GUI would start: its members come from the facade's bat
 here, each payload saved through ``writer.save_inter``; the batch records are the only thing written to the
 workspace. ``--out`` gets a copy of the report (``report.txt``, ``timing.json``).
 
-The report prints the batch's own ``timing`` block, the stage-1 decisions (read by a probe on the core, so the
-quiet round that ends a batch counts), and a projection for 56 spectra on 4 and 16 workers, an estimate. The
-30-minute target is reported, never enforced.
+The report is read from the batch's own ``timing`` block (C-timing-report): every stage-1 search's record per
+spectrum and ring or round, and the refit pool's use. The 30-minute target is reported, never enforced.
 
 ``--synthetic-grid-q`` places each spectrum on the BL43 grid (q = (col, row, 0) x 0.1 rlu) to time the curvature
 path only; the report and the batch's metric say so. ``--core module[:attr]`` injects a core (the tests' fake).
@@ -35,39 +34,7 @@ from isar.workspace_api.inter_spectra import BatchRequest, batch_preview  # noqa
 
 SYNTHETIC = "synthetic q coordinates: timing only"
 PROJECT_SPECTRA, PROJECT_WORKERS = 56, (4, 16)
-BAD_STATUSES = ("no_evidence", "degenerate_twin")
-
-
-class _Probe:
-    """The runner's core, delegated, noting what stage 1 decides: the tool's only view of a quiet final round,
-    which saves no payload."""
-
-    def __init__(self, core) -> None:
-        self._core, self.__name__ = core, core.__name__        # the pool imports the core by this name
-        self.stage1: dict[str, dict] = {}                      # stage id -> counts
-        self._cached: dict[str, set] = {}                      # unit -> keys offered as cached prices
-
-    def __getattr__(self, name):
-        return getattr(self._core, name)
-
-    def assign_jobs(self, snapshot, *, cached=None):
-        a, jobs = self._core.assign_jobs(snapshot, cached=cached or {})
-        s = self.stage1.setdefault(snapshot.stage_id, {"snapshots": 0, "triggered": 0, "jobs": 0, "fresh": 0,
-                                                       "bad": 0, "hits": 0})
-        s["snapshots"] += 1
-        s["triggered"] += int(a is None)
-        s["jobs"] += len(jobs)
-        self._cached[snapshot.unit] = set(cached or {})
-        return a, jobs
-
-    def assign_decide(self, snapshot, priced):
-        cached = self._cached.pop(snapshot.unit, set())
-        s = self.stage1[snapshot.stage_id]
-        fresh = [p for p in priced if p.key not in cached]
-        s["fresh"] += len(fresh)
-        s["bad"] += sum(p.status in BAD_STATUSES for p in fresh)
-        s["hits"] += len(priced) - len(fresh)
-        return self._core.assign_decide(snapshot, priced)
+TOP_REASONS = 3
 
 
 class _Service:
@@ -113,23 +80,38 @@ def _core(text: str):
     return getattr(mod, attr) if attr else mod
 
 
-def _report(spec, n_members: int, probe: _Probe, results: list, end: dict, workers: int, note):
-    """The report lines and the JSON copy of them."""
-    t, s1 = end["timing"], probe.stage1
+def _sum(recs: list, key: str):
+    return sum(r[key] for r in recs)
+
+
+def _ratio(a: float, b: float) -> float | None:
+    return a / b if b else None
+
+
+def _fmt(x, spec: str) -> str:
+    return "-" if x is None else format(x, spec)
+
+
+def _report(spec, n_members: int, results: list, end: dict, note):
+    """The report lines and the JSON copy of them, both read from the batch's end payload (C-timing-report)."""
+    t, recs, pool = end["timing"], end["timing"]["spectra"], end["timing"]["pool"]
     sweeps = Counter(r.payload["stage"]["round"] for r in results
                      if r.payload and r.payload["event"] == "stage" and r.payload["stage"]["stage"] == "sweep")
-    jobs = sum(v["jobs"] for v in s1.values())
-    fresh = sum(v["fresh"] for v in s1.values())
-    bad = sum(v["bad"] for v in s1.values())
-    triggered = sum(v["triggered"] for v in s1.values())
-    hits = sum(v["hits"] for v in s1.values())
-    refits = sum(s["n_refits"] for s in t["stages"])
-    per_job = t["likelihood_s"] / jobs if jobs else 0.0
-    per_refit = (t["continuous_s"] + t["uncertainty_s"] + t["release_s"]) / refits if refits else 0.0
-    per_member = (jobs / n_members) * per_job + (refits / n_members) * per_refit
-    proj = {w: PROJECT_SPECTRA * per_member / w for w in PROJECT_WORKERS}
+    labels = list(dict.fromkeys(r["stage"] for r in recs))             # stage-1 stages, in the order they ran
+    stage1 = {}
+    for label in labels:
+        mine = [r for r in recs if r["stage"] == label]
+        stage1[label] = {"spectra": len(mine),
+                         "searched": sum(1 for r in mine if r["candidates"] + r["cached"] > 0),
+                         "candidates": _sum(mine, "candidates"), "cached": _sum(mine, "cached")}
+    candidates, starts = _sum(recs, "candidates"), _sum(recs, "starts")
+    evidence, refine = _sum(recs, "evidence_s"), _sum(recs, "refine_s")
+    reasons = Counter()
+    for r in recs:
+        for why, n in r["failure_reasons"]:
+            reasons[why] += n
 
-    lines = [f"batch {spec.batch_id}  kind {spec.kind}  members {n_members}  workers {workers}"]
+    lines = [f"batch {spec.batch_id}  kind {spec.kind}  members {n_members}  workers {pool['workers']}"]
     if note:
         lines.append(note)
     lines += [f"batch_wall_s: {t['wall_s']:.3f}", f"target_s: {t['target_s']:.0f}",
@@ -139,31 +121,46 @@ def _report(spec, n_members: int, probe: _Probe, results: list, end: dict, worke
               f"sweeps: {end['sweeps'] if end['sweeps'] is not None else '-'}",
               f"rings: {end['rings_done'] if end['rings_done'] is not None else '-'}"]
     for s in t["stages"]:
-        n_jobs = s1.get(f"{spec.batch_id}:{s['kind']}{s['index']}", {}).get("jobs", 0)
-        lines.append(f"stage {s['kind']}{s['index']}: wall_s={s['wall_s']:.3f} width={s['width']} "
-                     f"n_refits={s['n_refits']} n_jobs={n_jobs}")
+        line = f"stage {s['kind']}{s['index']}: wall_s={s['wall_s']:.3f} width={s['width']} n_refits={s['n_refits']}"
+        if s["kind"] != "sweep":                                        # a sweep's refits carry no search of their own
+            mine = [r for r in recs if r["stage"] == f"{s['kind']}{s['index']}"]
+            line += (f" candidates={_sum(mine, 'candidates')} cached={_sum(mine, 'cached')} fits={_sum(mine, 'fits')}"
+                     f" failures={_sum(mine, 'failures')} evidence_s={_sum(mine, 'evidence_s'):.3f}"
+                     f" refine_s={_sum(mine, 'refine_s'):.3f}")
+        lines.append(line)
     lines += [f"{name}: {t[name]:.3f}" for name in ("prepare_s", "ship_s", "assign_s", "likelihood_s",
-                                                    "continuous_s", "uncertainty_s", "release_s", "save_s")]
-    for sid, v in s1.items():
-        label = sid.split(":", 1)[1]
-        lines.append(f"triggered_fraction {label}: {v['triggered'] / v['snapshots']:.2f} "
-                     f"({v['triggered']} of {v['snapshots']})")
-    for sid in s1:
-        label = sid.split(":", 1)[1]
+                                                    "continuous_s", "uncertainty_s", "release_s", "save_s", "search_s")]
+    lines += [f"candidates_priced: {candidates}", f"cache_hits: {_sum(recs, 'cached')}",
+              f"starts_per_candidate: {_fmt(_ratio(starts, candidates), '.2f')}",
+              f"optimizer_fits: {_sum(recs, 'fits')}", f"failures: {_sum(recs, 'failures')}",
+              "failure_reasons: " + ("; ".join(f"{why} x {n}" for why, n in reasons.most_common(TOP_REASONS)) or "-"),
+              f"evidence_s: {evidence:.3f}", f"refine_s: {refine:.3f}",
+              f"evidence_share: {_fmt(_ratio(evidence, evidence + refine), '.2f')}"]
+    for label, v in stage1.items():
+        lines.append(f"searched_fraction {label}: {v['searched'] / v['spectra']:.2f} "
+                     f"({v['searched']} of {v['spectra']})")
+    for label in labels:
         if label.startswith("round"):
             lines.append(f"sweeps_to_settle {label}: {sweeps.get(int(label[5:]), 0)}")
-    lines.append(f"price_jobs_per_triggered_spectrum: {jobs / triggered:.2f}" if triggered else
-                 "price_jobs_per_triggered_spectrum: -")
-    lines.append(f"cache_hits: {hits}")
-    lines.append(f"no_evidence_or_twin_fraction: {bad / fresh:.2f} ({bad} of {fresh} new prices)" if fresh else
-                 "no_evidence_or_twin_fraction: -")
-    lines.append(f"means: per_price_job_s={per_job:.4f} per_refit_s={per_refit:.4f}")
+    lines.append(f"pool_utilisation: {_fmt(_ratio(pool['busy_s'], pool['map_wall_s'] * pool['workers']), '.2f')}")
+    sp, st = t["slowest"]["spectrum"], t["slowest"]["stage"]
+    lines.append("slowest_spectrum: " + ("-" if sp is None else f"{sp['stage']} {sp['unit']} {sp['seconds']:.3f}s"))
+    lines.append("slowest_stage: " + ("-" if st is None else f"{st['kind']}{st['index']} wall_s={st['wall_s']:.3f}"))
+    for r in sorted(recs, key=lambda r: r["evidence_s"] + r["refine_s"], reverse=True):
+        lines.append(f"spectrum {r['stage']} {r['unit']}: candidates={r['candidates']} cached={r['cached']} "
+                     f"starts_per_candidate={_fmt(r['starts_per_candidate'], '.2f')} fits={r['fits']} "
+                     f"failures={r['failures']} failure_reasons={json.dumps(r['failure_reasons'])} "
+                     f"evidence_s={r['evidence_s']:.3f} refine_s={r['refine_s']:.3f} "
+                     f"branches_seen={r['branches_seen']} dormant_seen={r['dormant_seen']} "
+                     f"error={json.dumps(r['error'])} stopped={json.dumps(r['stopped'])}")
+    members = {r["unit"] for r in recs}
+    per_member = (evidence + refine) / len(members) if members else 0.0
+    lines.append(f"means: per_member_compute_s={per_member:.3f}")
     for w in PROJECT_WORKERS:
-        lines.append(f"projection_{PROJECT_SPECTRA}_spectra_{w}_workers_s: {proj[w]:.1f} "
-                     "(estimate: this run's per-spectrum prices and refits at its means, perfectly packed)")
-    data = {"batch_id": spec.batch_id, "kind": spec.kind, "members": n_members, "workers": workers, "note": note,
-            "end": end, "stage1": s1, "sweeps_by_round": {str(k): v for k, v in sweeps.items()},
-            "projection_s": {str(w): proj[w] for w in PROJECT_WORKERS}}
+        lines.append(f"projection_{PROJECT_SPECTRA}_spectra_{w}_workers_s: {PROJECT_SPECTRA * per_member / w:.1f} "
+                     "(estimate: this run's compute per member at its means, perfectly packed)")
+    data = {"batch_id": spec.batch_id, "kind": spec.kind, "members": n_members, "workers": pool["workers"], "note": note,
+            "end": end, "stage1": stage1, "sweeps_by_round": {str(k): v for k, v in sweeps.items()}}
     return lines, data
 
 
@@ -198,14 +195,14 @@ def main(argv=None) -> int:
                                        "direction": req.direction, "anchors": list(req.anchors),
                                        "members": list(pv.members)})
     note = SYNTHETIC if args.synthetic_grid_q else None
-    probe, service = _Probe(_core(args.core)), _Service(root, note)
+    core, service = _core(args.core), _Service(root, note)
     saved = q_provider.q_coordinates
     if args.synthetic_grid_q:
         q_provider.q_coordinates = _synthetic_q               # the runner's own call; the facade is not timed
     try:
         item = runner.BatchItem("inter-timing", f"inter:{spec.batch_id}:batch", "inter", args.workers, spec.to_json())
         print(pv.line, file=sys.stderr, flush=True)
-        runner.run_batch(root, item, progress=_progress, emit=service.emit, ack=service.ack, core=probe)
+        runner.run_batch(root, item, progress=_progress, emit=service.emit, ack=service.ack, core=core)
     finally:
         q_provider.q_coordinates = saved
     ends = [r.payload["end"] for r in service.results if r.payload and r.payload["event"] == "end"]
@@ -213,7 +210,7 @@ def main(argv=None) -> int:
         reasons = [r.reason for r in service.results if r.status == "failed"]
         print("no batch end: " + ("; ".join(map(str, reasons)) or "the batch did not run"), file=sys.stderr)
         return 1
-    lines, data = _report(spec, len(pv.members), probe, service.results, ends[-1], max(1, args.workers), note)
+    lines, data = _report(spec, len(pv.members), service.results, ends[-1], note)
     print("\n".join(lines))
     if args.out:
         out = Path(args.out)

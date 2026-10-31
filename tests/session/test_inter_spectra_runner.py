@@ -828,6 +828,226 @@ def test_stopping_a_batch_in_the_service_kills_its_pool_workers(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# check 4: stage 1 is search, price, resume (S3U3)
+# ---------------------------------------------------------------------------
+def _ring1(tmp_path, cfgs: dict):
+    """Two analyzers at 100 and 150 K, both 100 K scans the anchors: ring 1 is a03@150 and a04@150. ``cfgs``:
+    (detector, T) -> fake knobs; every other scan gets none."""
+    ws = _workspace(tmp_path, (100, 150), 2)
+    k = _keys(ws)
+    _set_fast(ws, {key: (5.0, cfgs.get(dt, {})) for dt, key in k.items()})
+    return ws, k, _anchored(ws, [k["a03", 100.0], k["a04", 100.0]])
+
+
+def _spy_maps(monkeypatch) -> list:
+    """Record ``(fn, number of calls)`` of every pool map."""
+    seen, orig = [], runner._Pool.map
+
+    def spy(self, fn, calls):
+        seen.append((fn, len(calls)))
+        return orig(self, fn, calls)
+    monkeypatch.setattr(runner._Pool, "map", spy)
+    return seen
+
+
+def _spectra(log, batch) -> dict:
+    return {(r["stage"], r["unit"]): r for r in log.batches[batch].end["timing"]["spectra"]}
+
+
+def test_all_live_searches_share_one_pool_map_per_pass(tmp_path, monkeypatch):
+    cfg = {"triggered": True, "iterations": 3}
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): cfg, ("a04", 150.0): cfg})
+    seen = _spy_maps(monkeypatch)
+    log = Bench(ws).run(spec)
+    assert [m for m in seen if m[0] == "price"] == [("price", 2)] * 3          # one map per pass over both spectra
+    t = log.batches[spec.batch_id].end["timing"]
+    for u in (k["a03", 150.0], k["a04", 150.0]):
+        r = _spectra(log, spec.batch_id)["ring1", u]
+        assert (r["iterations"], r["candidates"], r["cached"]) == (3, 3, 0)
+    assert t["pool"]["iterations"] == 3 and t["search_s"] >= 0.0
+
+
+def test_a_simultaneous_round_with_unchanged_inputs_prices_nothing(tmp_path, monkeypatch):
+    """x moves in round 1 and y keeps; round 2 re-prices x (its own value changed) and y (a neighbour's did) and
+    serves z (nobody it reads moved) from the cache, with no pool work for it. The fake's keys are values, never
+    fit ids; the real core's carry the ids (so an accepted sweep renews them), which the runner does not look at."""
+    cfg = {"triggered": True}
+    ws, x, y, z = _chain(tmp_path, ({**cfg, "toy": "average"}, {**cfg, "toy": "keep"}, {**cfg, "toy": "keep"}))
+    seen = _spy_maps(monkeypatch)
+    spec = _simultaneous(ws, (x, y, z))
+    log = Bench(ws).run(spec)
+    assert log.batches[spec.batch_id].end["rounds"] == 2
+    rows = _spectra(log, spec.batch_id)
+    assert [(rows["round1", u]["candidates"], rows["round1", u]["cached"]) for u in (x, y, z)] == [(1, 0)] * 3
+    assert [(rows["round2", u]["candidates"], rows["round2", u]["cached"]) for u in (x, y, z)] == [(1, 0), (1, 0), (0, 1)]
+    assert rows["round2", z]["iterations"] == 0
+    assert [m for m in seen if m[0] == "price"] == [("price", 3), ("price", 2)]
+
+
+def test_a_pool_exception_becomes_a_recorded_failure_reason_and_is_priced_again(tmp_path):
+    cfg = {"triggered": True, "toy": "keep"}
+    ws, x, y, z = _chain(tmp_path, ({**cfg, "price_raise": [0]}, cfg, cfg))
+    spec = _simultaneous(ws, (x, y, z))
+    bench = Bench(ws)
+    log = bench.run(spec)
+    assert log.batches[spec.batch_id].end["state"] == "settled" and bench.end().status == "done"
+    rows = _spectra(log, spec.batch_id)
+    reason = [["pricing failed (RuntimeError: boom)", 1]]
+    assert (rows["round1", x]["failures"], rows["round1", x]["failure_reasons"]) == (1, reason)
+    # never cached: round 2 asks again (and fails again); the others are served from the cache
+    assert (rows["round2", x]["candidates"], rows["round2", x]["cached"], rows["round2", x]["failures"]) == (1, 0, 1)
+    assert [rows["round2", u]["candidates"] for u in (y, z)] == [0, 0]
+
+
+def test_a_pool_exception_in_a_live_worker_fails_only_that_candidate(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, [str(HERE), os.environ.get("PYTHONPATH")])))
+    monkeypatch.setenv("ISAR_WORKERS", "2")
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): {"triggered": True, "price_raise": [0]},
+                                    ("a04", 150.0): {"triggered": True}})
+    bench = Bench(ws)
+    log = bench.run(spec, cores=2)                                  # a real two-worker process pool
+    rows = _spectra(log, spec.batch_id)
+    assert rows["ring1", k["a03", 150.0]]["failure_reasons"] == [["pricing failed (RuntimeError: boom)", 1]]
+    assert rows["ring1", k["a04", 150.0]]["failures"] == 0
+    assert log.batches[spec.batch_id].end["done"] == 2 and bench.end().status == "done"
+
+
+@pytest.mark.parametrize("kind", ["anchored", "simultaneous"])
+@pytest.mark.parametrize("where", ["open", "next", "feed", "result"])
+def test_a_search_that_raises_fails_only_its_own_spectrum(tmp_path, kind, where):
+    bad = {"triggered": True, "search_raise": where, "toy": "keep"}
+    good = {"triggered": True, "toy": "keep"}
+    if kind == "anchored":
+        ws, k, spec = _ring1(tmp_path, {("a03", 150.0): bad, ("a04", 150.0): good})
+        failed, other = k["a03", 150.0], k["a04", 150.0]
+    else:
+        ws, failed, other, _z = _chain(tmp_path, (bad, good, good))
+        spec = _simultaneous(ws, (failed, other, _z))
+    bench = Bench(ws)
+    log = bench.run(spec)
+    end = log.batches[spec.batch_id].end
+    assert bench.end().status == "done_warning"
+    assert [f["unit"] for f in end["failed_units"]] == [failed]
+    assert "the fake search failed" in end["failed_units"][0]["reason"] and "RuntimeError" in end["failed_units"][0]["reason"]
+    by_unit = {r.unit: r for r in log.refits if r.batch == spec.batch_id}
+    assert other in by_unit and by_unit[other].status in records.ELIGIBLE
+    if kind == "anchored":
+        assert by_unit[failed].status == "failed" and end["state"] == "completed"
+    else:
+        assert failed not in by_unit and end["state"] == "settled"
+    assert end["timing"] and _spectra(log, spec.batch_id)[(f"ring1" if kind == "anchored" else "round1", failed)][
+        "error"].startswith("RuntimeError")
+
+
+def test_a_ring_whose_every_search_fails_ends_without_error(tmp_path):
+    bad = {"triggered": True, "search_raise": "open"}
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): bad, ("a04", 150.0): bad})
+    bench = Bench(ws)
+    end = bench.run(spec).batches[spec.batch_id].end
+    assert (end["state"], end["rings_done"], end["failed"], end["done"]) == ("completed", 1, 2, 0)
+    assert bench.end().status == "done_warning"
+
+
+def test_a_failed_ringmate_is_no_identity_neighbour_of_its_survivor(tmp_path, monkeypatch):
+    """A ring member whose search raised is not in the ring's stage, so its own fast fit must not reach the
+    identity reconciliation as an earlier neighbour: it would hand its branches to the survivor."""
+    from isar.analyze.coupled import identity
+    seen, orig = [], identity.propagate_ids
+
+    def spy(order, links, modes, settings, **kw):
+        seen.append((tuple(order), set(kw["previous"])))
+        return orig(order, links, modes, settings, **kw)
+    monkeypatch.setattr(identity, "propagate_ids", spy)
+    bad = {"triggered": True, "search_raise": "open"}
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): bad, ("a04", 150.0): {"triggered": True}})
+    failed, other = k["a03", 150.0], k["a04", 150.0]
+    Bench(ws).run(spec)
+    ring_calls = [prev for order, prev in seen if order == (other,)]
+    assert ring_calls and all(failed not in prev for prev in ring_calls)
+
+
+@pytest.mark.timeout(20)
+def test_a_search_that_repeats_a_job_is_failed_not_looped(tmp_path):
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): {"triggered": True, "iterations": 2, "search_repeat": True},
+                                    ("a04", 150.0): {"triggered": True}})
+    log = Bench(ws).run(spec)
+    row = _spectra(log, spec.batch_id)["ring1", k["a03", 150.0]]
+    assert "repeated a job" in row["error"] and row["candidates"] == 1
+
+
+def test_the_timing_block_reports_contract_10(tmp_path, monkeypatch):
+    slow = {"triggered": True, "iterations": 2, "jobs_per_iteration": 2, "starts": 3, "fits": 5, "price_sleep": 0.03,
+            "stopped": {"down": "behind_margin:1", "up": "behind_margin:3"}}
+    quick = {"triggered": True, "iterations": 2, "jobs_per_iteration": 2, "starts": 3, "fits": 5}
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): slow, ("a04", 150.0): quick})
+    seen = _spy_maps(monkeypatch)
+    bench = Bench(ws)
+    t = bench.run(spec, target_s=0.0).batches[spec.batch_id].end["timing"]
+    a, b = (next(r for r in t["spectra"] if r["unit"] == k[d, 150.0]) for d in ("a03", "a04"))
+    assert a["stage"] == "ring1" and len(t["spectra"]) == 2          # ring 1 only: nothing else was searched
+    for r in (a, b):
+        assert (r["iterations"], r["candidates"], r["cached"], r["starts"], r["fits"], r["failures"]) == (2, 4, 0, 12, 20, 0)
+        assert r["starts_per_candidate"] == 3.0 and r["failure_reasons"] == [] and r["error"] is None
+        assert r["refine_s"] >= 0.0 and r["branches_seen"] == 1 and r["dormant_seen"] == 0
+    assert a["stopped"] == {"down": "behind_margin:1", "up": "behind_margin:3"} and a["evidence_s"] >= 0.1
+    assert b["stopped"] == {"down": "fake", "up": "fake"} and b["evidence_s"] < a["evidence_s"]
+    assert t["slowest"]["spectrum"]["unit"] == a["unit"] and t["slowest"]["spectrum"]["stage"] == "ring1"
+    assert t["slowest"]["stage"]["kind"] == "ring" and t["slowest"]["stage"]["wall_s"] == max(
+        s["wall_s"] for s in t["stages"])
+    assert t["pool"]["iterations"] == len([m for m in seen if m[0] == "price"]) == 2
+    assert t["pool"]["busy_s"] == pytest.approx(a["evidence_s"] + b["evidence_s"])
+    assert (t["pool"]["workers"], t["over_target"]) == (1, True) and bench.end().status == "done"
+
+
+def test_the_branches_a_spectrum_saw_are_counted_once_under_their_canonical_names():
+    from types import SimpleNamespace as NS
+    mode = lambda b: NS(branch=b)                   # noqa: E731
+    h1 = NS(modes=(mode("p"), mode("q")), dormant=(NS(branch="r"),))
+    h2 = NS(modes=(mode("p2"),), dormant=(NS(branch="r"), NS(branch="s")))
+    snap = NS(terms=(NS(held=(h1,)), NS(held=(h2,))), aliases={"p2": "p"})
+    assert runner._seen(snap) == (2, 2)
+
+
+class _DeadPool:
+    """Stands in for ProcessPoolExecutor: the first submit runs, then a worker dies and every later submit raises."""
+    made: list = []
+
+    def __init__(self, max_workers):
+        self.sent = 0
+        _DeadPool.made.append(self)
+
+    def submit(self, fn, *args):
+        if self.sent >= 1:
+            raise runner.BrokenProcessPool("a worker died")
+        self.sent += 1
+        f = Future()
+        f.set_result(fn(*args))
+        return f
+
+    def shutdown(self, *a, **k):
+        pass
+
+
+def test_a_dead_worker_fails_its_jobs_and_ends_the_batch_at_the_next_pool_call(tmp_path, monkeypatch):
+    monkeypatch.setenv("ISAR_WORKERS", "2")
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", _DeadPool)
+    _DeadPool.made = []
+    cfg = {"triggered": True, "iterations": 2}
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): cfg, ("a04", 150.0): cfg})
+    bench = Bench(ws)
+    log = bench.run(spec, cores=2)
+    end = bench.end()
+    assert end.status == "failed" and "BrokenProcessPool" in end.reason       # the second pass reached the dead pool
+    assert len(_DeadPool.made) == 1                                           # and no replacement was opened
+    assert [r for r in log.refits if r.batch == spec.batch_id] == []          # nothing of the stage was saved
+    rows = [r for r in end.payload["end"]["timing"]["spectra"]]
+    failed = [r for r in rows if r["failures"]]
+    assert len(failed) == 1 and failed[0]["candidates"] == 1
+    assert "BrokenProcessPool" in failed[0]["failure_reasons"][0][0]
+    assert sum(r["candidates"] for r in rows) == 2 and sum(r["failures"] for r in rows) == 1   # one price survived
+
+
+# ---------------------------------------------------------------------------
 # check 5: timing against a target nothing enforces
 # ---------------------------------------------------------------------------
 def test_a_batch_far_over_its_target_still_completes_and_records_its_timing(tmp_path):
@@ -842,8 +1062,9 @@ def test_a_batch_far_over_its_target_still_completes_and_records_its_timing(tmp_
     assert end["state"] == "completed" and end["rings_done"] == 2 and end["done"] == 4
     assert len([s for s in log.stages if s.batch == spec.batch_id]) == 2          # every ring saved
     for name in ("wall_s", "prepare_s", "ship_s", "save_s", "continuous_s", "assign_s", "likelihood_s",
-                 "uncertainty_s", "starts"):
+                 "uncertainty_s", "starts", "search_s", "pool", "spectra", "slowest"):
         assert name in t
+    assert t["pool"]["workers"] == 1
     assert [(s["kind"], s["index"], s["width"], s["n_refits"]) for s in t["stages"]] == [("ring", 1, 2, 2),
                                                                                         ("ring", 2, 2, 2)]
     assert t["wall_s"] >= sum(s["wall_s"] for s in t["stages"]) >= 0.4
@@ -882,6 +1103,9 @@ def test_the_real_core_runs_both_batch_kinds_end_to_end(tmp_path):
         end = log.batches[spec.batch_id].end
         print(spec.kind, end["state"], json.dumps(end["timing"], indent=1))
         assert end["state"] in ("completed", "settled"), end
+        for r in end["timing"]["spectra"]:               # the search ran on every spectrum and told why it stopped
+            assert r["stopped"] is not None and r["error"] is None
+            assert r["failures"] == sum(n for _, n in r["failure_reasons"])
         lines = [r for r in log.refits if r.batch == spec.batch_id]
         assert lines and all(r.status in records.ELIGIBLE for r in lines)
         assert all(records.read_payload(ws.root, r)["overlay"]["fast_pass"]["source"] == "inter_refit" for r in lines)

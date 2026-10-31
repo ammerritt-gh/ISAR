@@ -11,6 +11,11 @@ on the graph, and fits it with its own refit pool inside the item's cores:
   (continuous Gauss-Seidel sweeps over conflict-free groups) until a round changes nothing, or the sweep cap ends
   it as "did not settle".
 
+Stage 1 is search, price, resume: one core ``Search`` per spectrum of the ring or round, all driven together. Each
+iteration collects every live search's next jobs, sends the ones with no cached price to the pool in one map (the
+prices come back in job order and are fed to their searches) and repeats until every search is done. A pool
+exception becomes a recorded failure reason and is never cached; a search that raises fails only its spectrum.
+
 Every ring or sweep is handed over through ``emit`` and the runner waits on ``ack`` for the writer's verdict
 before the next stage: acceptance decides what the next stage conditions on, and a refused refit's held value
 goes back. Nothing here writes a user value (hard rule 1) or touches the fast solo fit. The 30-minute figure is
@@ -29,18 +34,18 @@ import math
 import os
 import pickle
 import time
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Literal
 
 log = logging.getLogger(__name__)
 
 CORE = "isar.analyze.coupled.refit"
-CORE_VERSION = "isar.coupled-refit/1"
+CORE_VERSION = "isar.coupled-refit/2"
 TARGET_S = 1800.0          # the design's 30-minute target: recorded and reported, read by no branch
 NOT_CURRENT = "its fast pass is not current; run the fast pass first"
 CUT_OFF = "cut off by a failed neighbour"
@@ -115,6 +120,47 @@ class InterResult:                     # dataclasses.asdict() of this goes down 
     payload: dict | None               # isar.inter-result/1; None for "cores"
     cores: int | None = None
     ack: int | None = None             # token the runner will wait on; None = no wait
+
+
+@dataclass
+class _Tally:
+    """One spectrum's stage-1 search in one ring or round: C-timing-report's ``spectra`` record, via ``as_dict``."""
+    stage: str
+    unit: str
+    iterations: int = 0          # pool iterations it took part in (a pass served wholly from the cache is not one)
+    candidates: int = 0          # fresh prices: jobs that ran
+    cached: int = 0              # prices served from the cache
+    starts: int = 0
+    fits: int = 0                # optimizer fits (Priced.starts) of the fresh prices
+    failures: int = 0
+    reasons: Counter = field(default_factory=Counter)
+    evidence_s: float = 0.0
+    refine_s: float = 0.0
+    stopped: object = None
+    branches_seen: int = 0
+    dormant_seen: int = 0
+    error: str | None = None
+
+    def as_dict(self) -> dict:
+        return {"stage": self.stage, "unit": self.unit, "iterations": self.iterations, "candidates": self.candidates,
+                "cached": self.cached, "starts": self.starts,
+                "starts_per_candidate": self.starts / self.candidates if self.candidates else None,
+                "fits": self.fits, "failures": self.failures,
+                "failure_reasons": [[r, n] for r, n in self.reasons.most_common()],
+                "evidence_s": self.evidence_s, "refine_s": self.refine_s, "stopped": self.stopped,
+                "branches_seen": self.branches_seen, "dormant_seen": self.dormant_seen, "error": self.error}
+
+
+def _stopped(a):
+    return (a.coverage or {}).get("stopped")
+
+
+def _seen(s) -> tuple[int, int]:
+    """(branches, dormant branches) the neighbours of snapshot ``s`` carry, each once under its canonical name."""
+    canon = lambda b: (s.aliases or {}).get(b, b)     # noqa: E731
+    held = [h for ti in s.terms for h in ti.held]
+    return (len({canon(m.branch) for h in held for m in h.modes}),
+            len({canon(d.branch) for h in held for d in h.dormant}))
 
 
 class _Ended(Exception):
@@ -376,7 +422,9 @@ class _Run:
         self.t0 = time.perf_counter()
         self.timing = {"wall_s": 0.0, "prepare_s": 0.0, "ship_s": 0.0, "save_s": 0.0, "assign_s": 0.0,
                        "likelihood_s": 0.0, "continuous_s": 0.0, "uncertainty_s": 0.0, "release_s": 0.0,
-                       "starts": 0, "stages": [], "target_s": target_s, "over_target": False}
+                       "starts": 0, "stages": [], "target_s": target_s, "over_target": False, "search_s": 0.0,
+                       "pool": {"workers": 1, "iterations": 0, "map_wall_s": 0.0, "busy_s": 0.0}}
+        self.tallies: dict[tuple[str, str], _Tally] = {}      # (stage label, unit) -> its stage-1 search record
         self.members: tuple[str, ...] = ()
         self.fixed: dict[str, str] = {}           # unit -> "anchor" | "lock" (never refitted)
         self.latest: dict[str, str] = {}          # unit -> "done" | "failed": its latest attempt (counts are current)
@@ -506,6 +554,16 @@ class _Run:
         self.timing["wall_s"] = time.perf_counter() - self.t0
         self.timing["ship_s"] = self.pool.ship_s
         self.timing["over_target"] = self.timing["wall_s"] > self.target_s     # information only
+        spectra = [t.as_dict() for t in self.tallies.values()]
+        slow = max(spectra, key=lambda r: r["evidence_s"] + r["refine_s"], default=None)
+        wide = max(self.timing["stages"], key=lambda s: s["wall_s"], default=None)
+        self.timing["spectra"] = spectra
+        self.timing["slowest"] = {
+            "spectrum": None if slow is None else {"stage": slow["stage"], "unit": slow["unit"],
+                                                   "seconds": slow["evidence_s"] + slow["refine_s"]},
+            "stage": None if wide is None else {"kind": wide["kind"], "index": wide["index"],
+                                                "wall_s": wide["wall_s"]}}
+        self.timing["pool"]["workers"] = self.pool.workers
         c, missed = self.counts(), self.unreached_list()
         if state == "failed":
             status = "failed"
@@ -733,32 +791,129 @@ class _Run:
             raise _Ended("failed", f"could not save the batch start: {verdict.get('error')}")
         self.started = True
 
-    def assign(self, snaps: dict, cache: dict) -> dict:
-        """Stage 1 of every snapshot: the trigger filter inline, every pricing job of every triggered spectrum
-        fanned out over the pool (remedy 2), the decision inline. ``cache``: unit -> {job key: Priced}, whose
-        keys hash every value a price depends on, so a changed snapshot never reuses one (remedy 1)."""
+    def stage_label(self) -> str:
+        """The stage of the stage-1 searches and of the refits that follow them: ``ring<r>`` or ``round<n>``."""
+        return f"ring{self.index}" if self.kind == "anchored" else f"round{self.round}"
+
+    def tally(self, label: str, k: str) -> _Tally:
+        return self.tallies.setdefault((label, k), _Tally(label, k))
+
+    def assign(self, snaps: dict, cache: dict) -> tuple[dict, dict]:
+        """Stage 1 of every snapshot: one core ``Search`` per spectrum, all driven together. Each pass takes every
+        live search's next jobs, sends the ones with no cached price to the pool in one map and feeds each search
+        its prices in job order, until every search is done. ``cache``: unit -> {job key: Priced}, whose keys
+        hash every value a price depends on (fit ids included), so a changed snapshot never reuses one. Returns
+        ``(A, errors)``: the assignments, and the exception that failed each spectrum whose search raised (a
+        pool exception is only that job's failed price; a dead pool raises out of here and ends the batch)."""
         from isar.analyze.coupled.types import Priced
         t0 = time.perf_counter()
-        pre = {k: self.core.assign_jobs(s, cached=cache.get(k, {})) for k, s in snaps.items()}
-        calls = [((k, j.key), (snaps[k], j), {}) for k, (a, jobs) in pre.items() if a is None for j in jobs]
-        priced = self.pool.map("price", calls)
-        A = {}
-        for k, (a, jobs) in pre.items():
-            if a is not None:
-                A[k] = a
+        label = self.stage_label()
+        tallies = {}
+        for k, s in snaps.items():
+            tallies[k] = self.tallies[label, k] = _Tally(label, k)
+            tallies[k].branches_seen, tallies[k].dormant_seen = _seen(s)
+        live, A, errors = {}, {}, {}
+        asked = {k: set() for k in snaps}
+
+        def timed(fn, *args):
+            t = time.perf_counter()
+            try:
+                return fn(*args)
+            finally:
+                self.timing["search_s"] += time.perf_counter() - t
+
+        def fail(k, exc):
+            log.error("the search of %s failed: %s", k, exc, exc_info=exc)
+            errors[k] = exc
+            tallies[k].error = f"{type(exc).__name__}: {exc}"
+            live.pop(k, None)
+
+        def next_fresh(k):
+            """The next pass of ``k``'s search, after feeding any passes the cache answers alone; () when done."""
+            have = cache.setdefault(k, {})
+            while True:
+                jobs = timed(live[k].next_jobs)
+                if not jobs:
+                    if not live[k].done:
+                        raise RuntimeError("the search returned no jobs but is not done")
+                    return ()
+                keys = [j.key for j in jobs]
+                if len(set(keys)) != len(keys) or asked[k] & set(keys):
+                    raise RuntimeError("the search repeated a job")
+                asked[k].update(keys)
+                if any(key not in have for key in keys):
+                    return jobs
+                tallies[k].cached += len(keys)
+                timed(live[k].feed, [have[key] for key in keys])
+
+        for k, s in snaps.items():
+            try:
+                live[k] = timed(self.core.open_search, s)
+            except Exception as exc:  # noqa: BLE001 — one spectrum's failure is its result
+                fail(k, exc)
+        passes = 0
+        while live:
+            wants = {}
+            for k in list(live):
+                try:
+                    jobs = next_fresh(k)
+                    if jobs:
+                        wants[k] = jobs
+                    else:
+                        a = timed(live[k].result)
+                        tallies[k].stopped = _stopped(a)
+                        A[k] = a
+                        del live[k]
+                except Exception as exc:  # noqa: BLE001
+                    fail(k, exc)
+            if not wants:
                 continue
-            new = {}
-            for j in jobs:
-                p = priced[(k, j.key)]
-                if isinstance(p, Exception):
-                    p = Priced(j.key, j.count, tuple(j.slots), None, "no_evidence", None,
-                               f"pricing failed ({type(p).__name__}: {p})", 0, 0.0)
-                new[j.key] = p
-                self.timing["likelihood_s"] += p.seconds
-            A[k] = self.core.assign_decide(snaps[k], [*cache.get(k, {}).values(), *new.values()])
-            cache.setdefault(k, {}).update({key: p for key, p in new.items() if p.ln_z is not None})
+            calls = [((k, j.key), (snaps[k], j), {}) for k, jobs in wants.items() for j in jobs
+                     if j.key not in cache[k]]
+            # shortcut: one barrier per pass, so a slow job idles the other workers; upgrade to feeding each
+            # spectrum as its own jobs return when pool.busy_s / (map_wall_s * workers) reads under about 0.5
+            got = {}
+            if calls:
+                t = time.perf_counter()
+                got = self.pool.map("price", calls)                  # a dead pool raises here, uncaught
+                self.timing["pool"]["iterations"] += 1
+                self.timing["pool"]["map_wall_s"] += time.perf_counter() - t
+            passes += 1
+            for k, jobs in wants.items():
+                out, sent, tl = [], False, tallies[k]
+                for j in jobs:
+                    if (k, j.key) not in got:
+                        out.append(cache[k][j.key])
+                        tl.cached += 1
+                        continue
+                    p = got[k, j.key]
+                    if isinstance(p, Exception):              # not a price: never cached, a later pass asks again
+                        p = Priced(key=j.key, count=j.count, slots=tuple(j.slots), ln_z=None, status="no_evidence",
+                                   mode=None, reason=f"pricing failed ({type(p).__name__}: {p})", starts=0,
+                                   seconds=0.0)
+                    else:
+                        cache[k][j.key] = p
+                    sent = True
+                    tl.candidates += 1
+                    tl.starts += len(j.starts)
+                    tl.fits += p.starts
+                    tl.evidence_s += p.seconds
+                    if p.ln_z is None:
+                        tl.failures += 1
+                        tl.reasons[p.reason or p.status] += 1
+                    self.timing["likelihood_s"] += p.seconds
+                    self.timing["pool"]["busy_s"] += p.seconds
+                    out.append(p)
+                tl.iterations += sent
+                try:
+                    timed(live[k].feed, out)
+                except Exception as exc:  # noqa: BLE001
+                    fail(k, exc)
+            log.info("batch %s %s pass %d: %d searches live, %d jobs sent, %d cached, %.1fs", self.batch, label,
+                     passes, len(wants), len(calls), sum(len(j) for j in wants.values()) - len(calls),
+                     time.perf_counter() - t0)
         self.timing["assign_s"] += time.perf_counter() - t0
-        return A
+        return {k: A[k] for k in snaps if k in A}, errors
 
     def identity(self, A: dict, snaps: dict, previous: dict, sid: str, energies: dict | None = None):
         """``propagate_ids`` over one stage (argument shapes: its docstring, amendment 6). Without ``energies``
@@ -779,10 +934,12 @@ class _Run:
     def refits(self, snaps: dict, A: dict) -> dict:
         calls = [(k, (snaps[k],), {"stage": "continuous", "assignment": A[k], "workers": 1}) for k in snaps]
         R = self.pool.map("refit", calls)
-        for r in R.values():
+        label = self.stage_label()
+        for k, r in R.items():
             if not isinstance(r, Exception):
                 for name in ("continuous_s", "uncertainty_s", "release_s"):
                     self.timing[name] += float((r.timing or {}).get(name, 0.0))
+                    self.tally(label, k).refine_s += float((r.timing or {}).get(name, 0.0))
                 self.timing["starts"] += int(r.starts or 0)
         return R
 
@@ -874,6 +1031,7 @@ class _Run:
         return new
 
     def open_pool(self, width: int) -> None:
+        # width is the item's cores, not the stage's width: one search pass holds several jobs per spectrum
         w = pool_size(self.item.cores, width)
         self.pool = _Pool(self.core, w, watch=self.fly, tick=self.publish)
         if w < self.item.cores:              # the cores this batch cannot use go back to the queue
@@ -899,7 +1057,7 @@ class _Run:
                 self.not_reached.setdefault(u, plan.not_reached[u])
             elif u not in self.incoming:
                 self.mark_unusable(u)
-        self.open_pool(max((len(r.members) for r in plan.rings), default=1))
+        self.open_pool(self.item.cores)
         self.of = len(plan.rings)
         self.start(anchors=plan.anchors, rings=plan.ring_of, seams=[(s.link.a, s.link.b) for s in plan.seams],
                    preview=preview_anchored(g, plan, spec.direction).text,
@@ -929,14 +1087,15 @@ class _Run:
                 continue
             snaps = {k: self.snapshot(k, self.incoming[k], sid, terms) for k, terms in todo.items()}
             self.progress("assign")
-            A = self.assign(snaps, {})
-            previous = {**held_frozen, **{k: s.own for k, s in snaps.items()}}    # amendment 11: own Held too
+            A, errors = self.assign(snaps, {})
+            previous = {**held_frozen, **{k: s.own for k, s in snaps.items() if k in A}}    # amendment 11: own Held too
             ids, refs = self.identity(A, snaps, previous, sid)
             A, rename = canonical_factors(A, ids, refs, held_frozen)
             self.merge_aliases(rename)
             snaps = {k: _renamed_snapshot(s, rename) for k, s in snaps.items()}
             self.progress("refine")
-            R = self.refits(snaps, A)
+            R = self.refits({k: s for k, s in snaps.items() if k in A}, A)
+            R.update(errors)                                # a spectrum whose search failed is a failed refit line
             # seams, judged on each spectrum's latest refit energies (after the ring's continuous refits)
             self.progress("seams")
             ok = {k for k, x in R.items() if not isinstance(x, Exception) and x.status in _ELIGIBLE}
@@ -1006,7 +1165,7 @@ class _Run:
                 held[u] = self.incoming[u]
             else:
                 self.mark_unusable(u)
-        self.open_pool(len(active))
+        self.open_pool(self.item.cores)
         self.of = s.sweep_cap
         self.start(anchors=(), rings={}, seams=[], preview=preview_simultaneous(g, plan).text, terms=plan.terms)
         self.stage_name, self.sweeps, self.rounds = "plan", 0, 0
@@ -1050,7 +1209,11 @@ class _Run:
                 break
             self.stage_name, self.index = "sweep", self.sweeps
             self.progress("assign")
-            A = self.assign(snaps, cache)                # one frozen state for the whole round
+            A, errors = self.assign(snaps, cache)        # one frozen state for the whole round
+            for k, exc in errors.items():                # its search failed: it would fail every round, its held
+                self.latest[k] = "failed"                # value stays and conditions its neighbours as a fixed one
+                self.failed[k] = f"analysis error ({type(exc).__name__}: {exc})"
+                active.discard(k)
             ids, refs = self.identity(A, snaps, dict(held), sid)
             A, rename = canonical_factors(A, ids, refs, {u: h for u, h in held.items() if u not in A})
             self.merge_aliases(rename)
