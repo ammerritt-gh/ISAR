@@ -92,7 +92,7 @@ def _fmt(x, spec: str) -> str:
     return "-" if x is None else format(x, spec)
 
 
-def _report(spec, n_members: int, results: list, end: dict, workers: int, note):
+def _report(spec, n_members: int, results: list, end: dict, note):
     """The report lines and the JSON copy of them, both read from the batch's end payload (C-timing-report)."""
     t, recs, pool = end["timing"], end["timing"]["spectra"], end["timing"]["pool"]
     sweeps = Counter(r.payload["stage"]["round"] for r in results
@@ -111,7 +111,7 @@ def _report(spec, n_members: int, results: list, end: dict, workers: int, note):
         for why, n in r["failure_reasons"]:
             reasons[why] += n
 
-    lines = [f"batch {spec.batch_id}  kind {spec.kind}  members {n_members}  workers {workers}"]
+    lines = [f"batch {spec.batch_id}  kind {spec.kind}  members {n_members}  workers {pool['workers']}"]
     if note:
         lines.append(note)
     lines += [f"batch_wall_s: {t['wall_s']:.3f}", f"target_s: {t['target_s']:.0f}",
@@ -159,7 +159,7 @@ def _report(spec, n_members: int, results: list, end: dict, workers: int, note):
     for w in PROJECT_WORKERS:
         lines.append(f"projection_{PROJECT_SPECTRA}_spectra_{w}_workers_s: {PROJECT_SPECTRA * per_member / w:.1f} "
                      "(estimate: this run's compute per member at its means, perfectly packed)")
-    data = {"batch_id": spec.batch_id, "kind": spec.kind, "members": n_members, "workers": workers, "note": note,
+    data = {"batch_id": spec.batch_id, "kind": spec.kind, "members": n_members, "workers": pool["workers"], "note": note,
             "end": end, "stage1": stage1, "sweeps_by_round": {str(k): v for k, v in sweeps.items()}}
     return lines, data
 
@@ -210,7 +210,7 @@ def main(argv=None) -> int:
         reasons = [r.reason for r in service.results if r.status == "failed"]
         print("no batch end: " + ("; ".join(map(str, reasons)) or "the batch did not run"), file=sys.stderr)
         return 1
-    lines, data = _report(spec, len(pv.members), service.results, ends[-1], max(1, args.workers), note)
+    lines, data = _report(spec, len(pv.members), service.results, ends[-1], note)
     print("\n".join(lines))
     if args.out:
         out = Path(args.out)

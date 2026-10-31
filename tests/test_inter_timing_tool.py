@@ -103,6 +103,19 @@ def test_the_synthetic_grid_labels_the_report_and_the_batch_and_is_unpatched_aft
     assert q_provider.q_coordinates is before                        # the tool restores the runner's binding
 
 
+def test_the_report_names_the_pool_the_batch_used_not_the_workers_asked_for(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("ISAR_WORKERS", "1")                          # the pool is capped below --workers 5
+    ws = _workspace(tmp_path)
+    _fake_cfg(ws, triggered=set())
+    out_dir = tmp_path / "out"
+    rc = _tool().main([str(ws), "--kind", "simultaneous", "--core", "_inter_fakes", "--workers", "5",
+                       "--out", str(out_dir)])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert any(line.startswith("batch ") and line.endswith("workers 1") for line in out.splitlines()), out
+    assert json.loads((out_dir / "timing.json").read_text(encoding="utf-8"))["workers"] == 1
+
+
 def _record(unit, *, candidates, cached, starts, fits, failures, reasons, evidence_s, refine_s):
     return {"stage": "ring1", "unit": unit, "iterations": 1, "candidates": candidates, "cached": cached,
             "starts": starts, "starts_per_candidate": starts / candidates if candidates else None, "fits": fits,
@@ -128,7 +141,7 @@ def test_the_report_reads_the_timing_block_and_guards_zero_time():
                            "stage": {"kind": "ring", "index": 1, "wall_s": 2.0}},
                   pool={"workers": 3, "iterations": 2, "map_wall_s": 2.0, "busy_s": 3.0})
     end = {"state": "done", "reason": None, "rounds": None, "sweeps": None, "rings_done": 1, "timing": timing}
-    lines, data = tool._report(spec, 2, [], end, 3, None)
+    lines, data = tool._report(spec, 2, [], end, None)
     assert "candidates_priced: 4" in lines and "cache_hits: 1" in lines and "failures: 1" in lines
     assert "starts_per_candidate: 2.25" in lines                     # 9 starts over 4 fresh candidates
     assert "failure_reasons: pricing failed (RuntimeError: boom) x 1" in lines
@@ -143,7 +156,7 @@ def test_the_report_reads_the_timing_block_and_guards_zero_time():
 
     empty = dict(end, timing=dict(timing, spectra=[], stages=[], slowest={"spectrum": None, "stage": None},
                                   pool=dict(timing["pool"], map_wall_s=0.0, busy_s=0.0)))
-    lines0, data0 = tool._report(spec, 0, [], empty, 1, None)
+    lines0, data0 = tool._report(spec, 0, [], empty, None)
     for line in ("pool_utilisation: -", "starts_per_candidate: -", "evidence_share: -", "slowest_spectrum: -",
                  "slowest_stage: -", "failure_reasons: -", "means: per_member_compute_s=0.000"):
         assert line in lines0, lines0
