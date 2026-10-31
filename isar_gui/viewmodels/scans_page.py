@@ -501,15 +501,17 @@ class ScansPageViewModel(ViewModel):
         ylabel = y_unit + (', traces offset' if common['view'] == 'offset' and len(traces) >= 2 else '')
         # A selected but unavailable single spectrum uses the builder's honest empty-plot state.
         raw_axis = bool(traces) and not zeroed_present
+        # File-axis 0 is not the elastic line; a guide there would claim a zero ISAR lacks (hard rule 4).
+        energy_zero_line = self.energy_zero_line and not raw_axis
         main = scans_spec(traces=traces, view=common['view'] if traces else 'offset', step=step,
                           ylabel=ylabel, curves_header=header,
                           xlabel=NOT_ZEROED_LABEL if raw_axis else ENERGY_LABEL,
-                          zero_lines=self.zero_lines, energy_zero_line=self.energy_zero_line,
+                          zero_lines=self.zero_lines, energy_zero_line=energy_zero_line,
                           peak_lines=self.peak_lines,
                           filled_symbols=self.filled_symbols)
         residual = (scans_residual_spec(trace=traces[0], residuals=residuals,
                                        ylabel=f'data − fit ({y_unit})',
-                                       energy_zero_line=self.energy_zero_line)
+                                       energy_zero_line=energy_zero_line)
                     if common['view'] == 'single' and traces and traces[0].curves else None)
         counts = Counter(reason for _, reason in not_drawn)
         line = (f'{len(not_drawn)} of {n} selected not drawn: ' +

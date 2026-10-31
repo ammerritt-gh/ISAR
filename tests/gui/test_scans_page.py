@@ -155,6 +155,24 @@ def test_unzeroed_scan_waits_while_zeroed_scans_are_drawn(page, monkeypatch):
     assert page._drawn_state.main_spec.xlabel == 'Energy, not zeroed (meV)'
 
 
+def test_energy_zero_guide_only_on_a_zeroed_axis(page, monkeypatch):
+    from dataclasses import replace
+    from isar.workspace_api.spectra import ZERO_NONE
+    from isar_gui.viewmodels import scans_page as module
+    original = module.spectrum_bundles
+
+    def raw_axis(*args, **kwargs):
+        return tuple(replace(b, zero=ZERO_NONE) if b.key == NO_ZERO else b for b in original(*args, **kwargs))
+
+    monkeypatch.setattr(module, 'spectrum_bundles', raw_axis)
+    page.vm.set_display_option('energy_zero_line', True)
+    select(page, NO_ZERO)
+    assert page._drawn_state.main_spec.xlabel == 'Energy, not zeroed (meV)'
+    assert not [g for g in page._drawn_state.main_spec.guides if g.axis == 'x']   # file-axis 0 is no zero
+    select(page, ONE_MODE)
+    assert [(g.axis, g.value) for g in page._drawn_state.main_spec.guides if g.axis == 'x'] == [('x', 0.0)]
+
+
 def test_missing_data_counts_and_offset_controls(page, qtbot):
     drawn = select(page, NO_ZERO, NO_MONITOR, ONE_MODE)
     assert set(drawn.keys) == {NO_ZERO, ONE_MODE}
