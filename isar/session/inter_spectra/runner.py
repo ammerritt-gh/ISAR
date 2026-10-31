@@ -690,7 +690,7 @@ class _Run:
                 continue
             prep = file_fit.prepare_unit(frozen, sp, u, ("fast",))
             if prep.reason is not None:
-                self.ctx[u] = ("failed", prep.reason)
+                self.ctx[u] = ("held" if prep.held else "failed", prep.reason)
                 continue
             self.ctx[u] = file_fit.fit_context(prep)
             self.inputs[u] = prep.now.inputs_hash

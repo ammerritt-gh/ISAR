@@ -74,7 +74,8 @@ def test_an_analyzer_whose_masks_cannot_be_checked_is_not_prepared_or_started(tm
     unit_data_path(ws.root / 'data', exp, int(scan_no), 'a03').write_text('{not json', encoding='utf-8')
     frozen = file_fit.freeze(ws.root)
     scan_prep = file_fit.prepare_scan(frozen, exp, int(scan_no), frozen.session.get(key))
-    assert file_fit.prepare_unit(frozen, scan_prep, key, ('fast',)).reason == f'a03: {inputs.UNCHECKED_MASKS}'
+    prep = file_fit.prepare_unit(frozen, scan_prep, key, ('fast',))
+    assert prep.held and prep.reason == f'a03: {inputs.UNCHECKED_MASKS}'
     # the scan's start point, as a run builds it: the held unit is handed no task and writes no started line
     rec, _sources = scan_prep
     scan = f'{exp}:{scan_no}'
@@ -87,6 +88,22 @@ def test_an_analyzer_whose_masks_cannot_be_checked_is_not_prepared_or_started(tm
     group = [(rec, 'a03', None, None, None, key, rows[scan]['data_revision'], 'g', 1)]
     assert sp(group).items == [None]
     assert not any(line.get('unit') == key for line in fit_inputs.read_log(ws.root))
+
+
+def test_the_queue_reports_a_held_analyzer_as_held_with_its_reason(tmp_path):
+    ws, data = fx.bl43_workspace(tmp_path, stems=('A',))
+    card, session = ws.load()
+    ingest.ingest_batch(card, session, [data], workspace_root=ws.root, data_dir=ws.root / 'data')
+    ws.save(card, session)
+    key = next(k for k in session.scans if k.endswith(':a03'))
+    exp, scan_no, _det = key.rsplit(':', 2)
+    stored = read_unit_data_for_unit(ws.root / 'data', exp, int(scan_no), 'a03')
+    assert save_selection(ws.root, {key: [point_ids(stored['x'], stored['counts'], stored['variance'])[-1]]}).ok
+    unit_data_path(ws.root / 'data', exp, int(scan_no), 'a03').write_text('{not json', encoding='utf-8')
+    out = []
+    file_fit.fit_file(ws.root, file_fit.FileItem('i1', key, 'fast', 1), progress=None, emit=out.append)
+    (res,) = out
+    assert (res.status, res.reason) == ('held', f'a03: {inputs.UNCHECKED_MASKS}')
 
 
 def test_a_dead_analyzer_keeps_its_declaration_when_its_masks_cannot_be_checked(tmp_path):

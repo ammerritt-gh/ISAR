@@ -118,6 +118,7 @@ def prepare_scan(frozen: Frozen, exp: str, scan: int, prev: ScanEntry) -> tuple 
 class Prepared:
     """A unit ready to fit or to hand to a refit. Only ``reason`` is set when the unit cannot be prepared."""
     reason: str | None = None
+    held: bool = False               # the unit is held, not failed: its reason is shown as "held"
     task: tuple | None = None        # (rec, det, q, T, sample, scan_id, chash, ghash, seed), as _process_one takes it
     eff: object = None               # the effective record the scan starts with
     view: object = None              # the scan's calibration view (the run's when it has none)
@@ -168,7 +169,7 @@ def prepare_unit(frozen: Frozen, scan_prep, unit_key: str, passes) -> Prepared:
                         gpi={} if gpi_entry is None else {key: gpi_entry})
         up = sp.plan([(rec, det, q, None, sample, unit_key, chash, "", seed)])[0]
         if up.held is not None:             # its masks cannot be checked: the item fails with the reason
-            return Prepared(reason=up.held)
+            return Prepared(reason=up.held, held=True)
         task, eff, view = up.task, sp.frozen[key], sp.views[key] or runcal
         now = currentness.UnitNow(chash, up.ghash, up.calfp, up.inputs_hash)
     else:
@@ -224,7 +225,7 @@ def _fit(root: Path, item: FileItem, progress, emit) -> None:
         return result(item.pass_kind, "failed", scan_prep)
     prep = prepare_unit(frozen, scan_prep, item.unit_key, ("fast",) if item.pass_kind == "fast" else ("fast", "deep"))
     if prep.reason is not None:
-        return result(item.pass_kind, "failed", prep.reason)
+        return result(item.pass_kind, "held" if prep.held else "failed", prep.reason)
     task, eff, view, now = prep.task, prep.eff, prep.view, prep.now
     nop_card, g, exclusions = prep.card, prep.g, prep.exclusions
     sp, up, tabulated, version = prep.sp, prep.up, prep.tabulated, prep.version
