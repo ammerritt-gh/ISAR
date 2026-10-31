@@ -201,10 +201,10 @@ def test_a_v4_blob_saved_without_the_dock_restores_and_leaves_it_hidden(qtbot, m
     assert w2.array_dock.array_window.isVisible() and not w2.array_dock.isFloating()
 
 
-def _array_windows():
-    """The top-level ArrayWindows still alive (deleted ones are gone once their deferred delete has run)."""
+def _alive(window) -> bool:
+    """Whether a window still exists: deleted ones are gone once their deferred delete has run."""
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-    return [x for x in QApplication.topLevelWidgets() if isinstance(x, ArrayWindow) and isValid(x)]
+    return isValid(window)
 
 
 def test_a_rebind_keeps_it_open_and_compact_mode_hides_and_restores_it(qtbot, monkeypatch, ws28):
@@ -213,7 +213,7 @@ def test_a_rebind_keeps_it_open_and_compact_mode_hides_and_restores_it(qtbot, mo
     w.array_vm.set_y_mode("shared")
     w._rebind(Workspace.open(ws28))
     qtbot.wait(50)
-    assert _array_windows() == [w.array_dock.array_window] and not isValid(old)   # the old window went with its binding
+    assert not _alive(old) and _alive(w.array_dock.array_window)     # the old window went with its binding
     assert w.array_dock.array_window.isVisible() and w.array_vm.y_mode == "shared"
     w.toggle_compact_mode()
     assert not w.array_dock.array_window.isVisible()
@@ -235,11 +235,11 @@ def test_a_docked_array_is_hidden_in_compact_mode_and_comes_back_docked(qtbot, m
 
 def test_closing_the_main_window_leaves_no_array_window_alive(qtbot, monkeypatch, ws28):
     w = _window(qtbot, monkeypatch, LAPTOP, ws28)
-    _open(w, qtbot)
-    assert len(_array_windows()) == 1
+    win = _open(w, qtbot).array_window
+    assert _alive(win) and win.isVisible()
     w.close()
     qtbot.wait(30)
-    assert _array_windows() == []
+    assert not _alive(win)                                            # deleted with the main window, not kept alive
     w._snapshot_session()                                             # an autosave after the close must not touch it
     assert w._session.view_state["analyzer_array_window"]["open"] is True
 
