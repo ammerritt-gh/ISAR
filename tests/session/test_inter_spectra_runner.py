@@ -1537,7 +1537,8 @@ def test_a_spare_worker_run_and_a_one_worker_run_reach_the_same_decision(tmp_pat
         end = log.batches[spec.batch_id].end
         assert end["state"] == "completed" and end["timing"]["pool"]["workers"] == cores
         seen[cores] = {r.unit: (r.status, r.accept.decision, p["came_out"]["assignment"]["slots"],
-                                p["came_out"]["assignment"]["count"], p["came_out"]["status"])
+                                p["came_out"]["assignment"]["count"], p["came_out"]["status"],
+                                p["overlay"]["fast_pass"]["selected_model_id"])
                        for r, p in _lines(root, spec.batch_id)}
     assert len(seen[1]) == 2 and seen[1].keys() == seen[4].keys()
     assert seen[1] == seen[4]
