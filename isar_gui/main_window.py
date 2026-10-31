@@ -3035,6 +3035,14 @@ class MainWindow(QMainWindow):
         self.setWindowState(state)
         self.show()
 
+    def createPopupMenu(self):  # noqa: N802 (Qt override)
+        """Qt's right-click list of panels, without the Analyzer array: its dock toggle would show the empty dock
+        while the array is in its own window. View > Panels opens it wherever it lives."""
+        menu = super().createPopupMenu()
+        if menu is not None and self.array_dock is not None:
+            menu.removeAction(self.array_dock.toggleViewAction())
+        return menu
+
     def _snapshot_session(self) -> Session:
         # The one arrangement is saved in every state (the empty state has the same one). Compact
         # mode is never serialized: the stash holds the real layout in memory and closeEvent expands

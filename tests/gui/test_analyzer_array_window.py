@@ -479,6 +479,15 @@ def test_a_reopened_window_is_shown_after_the_main_window(qtbot, monkeypatch, ws
     w2.show()
     qtbot.waitUntil(lambda: w2.array_dock.array_window.isVisible())
 
+
+def test_the_right_click_panel_list_leaves_out_the_array(qtbot, monkeypatch, ws28):
+    w = _window(qtbot, monkeypatch, LAPTOP, ws28)
+    _open(w, qtbot)
+    menu = w.createPopupMenu()
+    assert w.array_dock.toggleViewAction() not in menu.actions()
+    assert w.log_dock.toggleViewAction() in menu.actions()
+
+
 # ---------------------------------------------------------------------------
 # responsiveness (a target, my estimate: measured and reported, not a gate)
 # ---------------------------------------------------------------------------
