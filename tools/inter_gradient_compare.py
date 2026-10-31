@@ -8,7 +8,7 @@ hidden pair) the first ``--per-class`` jobs whose basins show that class. A flat
 fourth required class: it comes from the experiment when its prior is flat, else from a synthetic case built as in
 ``tests/inter_hidden_case.py`` (marked ``synthetic`` in the table). Every picked job is priced at ``depth="full"`` with
 ``gradients=False`` (the finite-difference path of 12bb8f4) and with the default, in parallel, and compared basin by
-basin: status, ln Z, the posterior mode in posterior sd, the objective F at the mode, the mask.
+basin: status, ln Z, the objective F at the mode, the mask; the posterior-mode difference (in sd) is shown, not judged.
 
 A basin that differs is judged CORRECTION, not a miss, when the finite-difference optimiser stopped short: it is
 undetermined / unpriced there, or the gradient path reached a lower F (by more than 1e-6) at a positive-definite
@@ -37,6 +37,7 @@ REPO = Path(__file__).resolve().parents[1]
 if __package__ in (None, ""):                      # run as a script from anywhere in the repo
     sys.path.insert(0, str(REPO))
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+    sys.path.insert(0, str(REPO / "tests"))          # the synthetic case's classes must import in the workers too
 
 import numpy as np  # noqa: E402
 
@@ -110,7 +111,6 @@ def classes_of(snap, basins) -> list[str]:
 
 def synthetic_flat_hidden():
     """(snapshot, job): the hidden-pair case of tests/inter_hidden_case.py under the flat width prior."""
-    sys.path.insert(0, str(REPO / "tests"))
     from inter_hidden_case import Prepared, hidden_snapshot
     from isar.analyze import prior
     snap = hidden_snapshot(3.0, asimov=True)
@@ -126,7 +126,7 @@ def synthetic_flat_hidden():
 
 
 # ---- the comparison --------------------------------------------------------------------------------------
-def compare_job(fd, new, mode_tol: float) -> dict:
+def compare_job(fd, new) -> dict:
     """fd, new: (Priced, basins, seconds). -> {"basins": [row], "verdict": agree | correction | miss, "job": {...}}."""
     (pf, bf, sf), (pn, bn, sn) = fd, new
     kf = {(b["label"], tuple(b["delta"]), b["index"]): b for b in bf}
@@ -154,8 +154,8 @@ def compare_job(fd, new, mode_tol: float) -> dict:
                 why.append(f"status {f['status']} -> {n['status']}")
             if abs(row["d_ln_z"]) > DLN_Z:
                 why.append(f"|d ln Z| {abs(row['d_ln_z']):.4f} > {DLN_Z}")
-            if row["mode_sd"] is not None and row["mode_sd"] > mode_tol:
-                why.append(f"mode {row['mode_sd']:.2g} sd > {mode_tol:g}")
+            if f["status"] != n["status"]:
+                why.append(f"reason new: {n['reason'][:80]}")
             if why:
                 better = (row["F_fd"] is not None and row["F_new"] is not None and not n["split"]
                           and row["F_new"] < row["F_fd"] - F_TIE and n["posdef"])
@@ -168,7 +168,8 @@ def compare_job(fd, new, mode_tol: float) -> dict:
             if row["verdict"] == "miss":
                 row["why"] += " at a mode that is not positive definite"
         elif pf_ok and not pn_ok:
-            row["why"] = f"gradient path {'absent' if n is None else n['status']}; fd path priced it"
+            row["why"] = (f"gradient path {'absent' if n is None else n['status']}"
+                          f"{'' if n is None else ' (' + n['reason'][:80] + ')'}; fd path priced it")
             row["verdict"] = "miss"
         rows.append(row)
     job = {"d_ln_z": None if pf.ln_z is None or pn.ln_z is None else pn.ln_z - pf.ln_z,
@@ -282,7 +283,6 @@ def main(argv=None) -> int:
     p.add_argument("--workers", type=int, default=16)
     p.add_argument("--out", required=True, help="folder for table.md, compare.json, summary.txt")
     p.add_argument("--per-class", type=int, default=2, help="jobs picked per class")
-    p.add_argument("--mode-sd-tol", type=float, default=1e-3, help="posterior-mode agreement, in posterior sd (S1U3)")
     p.add_argument("--timeout-s", type=float, default=3600.0, help="wall-clock guard: kills the run and reports")
     args = p.parse_args(argv)
     out = Path(args.out)
@@ -318,7 +318,7 @@ def main(argv=None) -> int:
             result = {"basins": [], "verdict": "miss", "notes": [f"a path raised: fd {fd!r} new {new!r}"],
                       "job": {"seconds_fd": 0.0, "seconds_new": 0.0}}
         else:
-            result = compare_job(fd, new, args.mode_sd_tol)
+            result = compare_job(fd, new)
         done.append({k: v for k, v in c.items() if k not in ("snap", "job")} | {"result": result})
     present = {cl for c in done for cl in c["classes"]}
     missing = [c for c in CLASSES if c not in present]

@@ -90,28 +90,26 @@ def _job(basins, ln_z, *, status="ok", mask=()):
 
 
 def test_agreement_within_the_tolerance_is_agree_and_a_difference_with_no_better_optimum_is_a_miss():
-    same = gc.compare_job(_job([_basin(-5.0)], -5.0), _job([_basin(-5.01)], -5.01), 1e-3)
+    same = gc.compare_job(_job([_basin(-5.0)], -5.0), _job([_basin(-5.01)], -5.01))
     assert same["verdict"] == "agree"
-    worse = gc.compare_job(_job([_basin(-5.0, F=10.0)], -5.0), _job([_basin(-5.2, F=10.2)], -5.2), 1e-3)
+    worse = gc.compare_job(_job([_basin(-5.0, F=10.0)], -5.0), _job([_basin(-5.2, F=10.2)], -5.2))
     assert worse["verdict"] == "miss" and "no better optimum" in worse["basins"][0]["why"]
-    tie = gc.compare_job(_job([_basin(-5.0, F=10.0)], -5.0), _job([_basin(-5.2, F=10.0)], -5.2), 1e-3)
+    tie = gc.compare_job(_job([_basin(-5.0, F=10.0)], -5.0), _job([_basin(-5.2, F=10.0)], -5.2))
     assert tie["verdict"] == "miss"                                 # a different answer at the same F is not a gain
-    mask = gc.compare_job(_job([_basin(-5.0)], -5.0, mask=(0,)), _job([_basin(-5.0)], -5.0, mask=()), 1e-3)
+    mask = gc.compare_job(_job([_basin(-5.0)], -5.0, mask=(0,)), _job([_basin(-5.0)], -5.0, mask=()))
     assert mask["verdict"] == "miss"
 
 
 def test_a_fd_optimiser_that_stopped_short_is_a_correction_only_at_a_positive_definite_better_mode():
     fd = _job([_basin(-7.0, F=12.0, posdef=False)], -7.0)
-    better = gc.compare_job(fd, _job([_basin(-5.0, F=10.0)], -5.0), 1e-3)
+    better = gc.compare_job(fd, _job([_basin(-5.0, F=10.0)], -5.0))
     assert better["verdict"] == "correction" and better["basins"][0]["verdict"] == "correction"
-    assert gc.compare_job(fd, _job([_basin(-5.0, F=13.0)], -5.0), 1e-3)["verdict"] == "miss"     # worse F: a miss
+    assert gc.compare_job(fd, _job([_basin(-5.0, F=13.0)], -5.0))["verdict"] == "miss"     # worse F: a miss
     # the other direction: the gradient path is the one that lost the basin
-    lost = gc.compare_job(_job([_basin(-5.0)], -5.0), _job([_basin(None, status="undetermined", priced=False)], None),
-                          1e-3)
+    lost = gc.compare_job(_job([_basin(-5.0)], -5.0), _job([_basin(None, status="undetermined", priced=False)], None))
     assert lost["verdict"] == "miss"
-    found = gc.compare_job(_job([_basin(None, status="undetermined", priced=False)], None), _job([_basin(-5.0)], -5.0),
-                           1e-3)
+    found = gc.compare_job(_job([_basin(None, status="undetermined", priced=False)], None), _job([_basin(-5.0)], -5.0))
     assert found["verdict"] == "correction"
     flat = gc.compare_job(_job([_basin(None, status="undetermined", priced=False)], None),
-                          _job([_basin(-5.0, posdef=False)], -5.0), 1e-3)
+                          _job([_basin(-5.0, posdef=False)], -5.0))
     assert flat["verdict"] == "miss"                                # priced at a mode that is not positive definite
