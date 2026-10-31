@@ -79,7 +79,7 @@ class Search:
         self.in_window = [b for b in self.pool if spec.canon(b) in spec.expected]
         self.dormant = [b for b in self.pool if b not in self.in_window and b not in spec.factors]
         self.neighbours = {h.unit: h for ti in snapshot.terms for h in ti.held}
-        self.attempted: dict[tuple, list] = defaultdict(list)    # (k, labels) -> energy vectors started or fitted
+        self.attempted: dict[tuple, list] = defaultdict(list)    # (k, labels) -> (split?, energies) started or fitted
         self.meta: dict[str, dict] = {}                           # job key -> purpose, source, new ledger keys
         self.ledger: dict[tuple, dict] = {}                       # (k, labels in energy order) -> basins and origin
         self.outcomes: list[tuple[PricingJob, Priced]] = []
@@ -115,9 +115,11 @@ class Search:
         groups = []                                             # (slot order, starts) of each job
         for st in starts:
             lab, es = _labels(k, slots, st.modes)
-            if any(all(abs(a - b) <= self.tol for a, b in zip(es, x)) for x in self.attempted[(k, lab)]):
+            split = st.family == "split"       # a split is not a repeat of its own step: splits dedupe against splits only
+            seen = self.attempted[(k, lab)]
+            if any(all(abs(a - b) <= self.tol for a, b in zip(es, x)) for s_, x in seen if s_ == split):
                 continue
-            self.attempted[(k, lab)].append(es)
+            seen.append((split, es))
             for order, kept in groups:
                 if _ascending(st.modes, order):
                     kept.append(st)
@@ -243,7 +245,7 @@ class Search:
         if e["basins"] and rec[0] > max(b[0] for b in e["basins"]):
             e["peak"] = p.residual_peak
         e["basins"].append(rec)
-        self.attempted[key].append(tuple(m[1] for m in modes))
+        self.attempted[key].append((False, tuple(m[1] for m in modes)))
         return key if new else None
 
     def _mass(self, key) -> float:

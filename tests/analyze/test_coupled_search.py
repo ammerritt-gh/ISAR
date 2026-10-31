@@ -381,3 +381,14 @@ def test_every_start_of_a_job_is_ascending_in_the_job_s_own_slot_order():
         for st in j.starts:
             energies = [m[0] for m in st.modes]             # the engine reads a start in slot order (engine.py)
             assert energies == sorted(energies), (j.slots, st.family, energies)
+
+
+# the split start of an up-step (S3U2 D18) ----------------------------------------------------------------------------
+def test_an_up_step_that_adds_a_branch_near_a_mode_also_starts_from_a_split():
+    # z puts b3 at 6.5 meV, 0.9 meV above the incoming b1 at 5.6: within SPLIT_UNDER_FWHM of it
+    snap = snapshot_for(OWN, ["b1", "b2"], {"x": X12, "z": ([(6.5, 0.5, 20.0)], ["b3"])})
+    s, sc = open_search(snap), Scripted({(2, B12): -100.0})
+    sc.M = s.M
+    s.feed([sc(j) for j in s.next_jobs()])
+    up = [j for j in s.next_jobs() if j.count == 3 and s.meta[j.key]["purpose"] == "step_up"]
+    assert any(st.family == "split" for j in up for st in j.starts)
