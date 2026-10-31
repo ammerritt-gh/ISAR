@@ -1288,6 +1288,7 @@ class _CountingPool:
         from concurrent.futures import ThreadPoolExecutor
         self.ex, self.lock = ThreadPoolExecutor(workers), threading.Lock()
         self.now = self.peak = 0
+        self._processes = {}              # no worker processes to stop: shutdown below awaits the threads, as before
 
     def submit(self, fn, *args):
         with self.lock:
@@ -1450,6 +1451,27 @@ def test_a_task_left_running_by_a_finished_stream_is_an_orphan_the_next_map_work
     gate.set()
     pool.close()
     assert pool.orphans == set()
+
+
+def test_close_stops_an_orphan_instead_of_waiting_for_it():
+    import pickle
+    import threading
+    pool = runner._Pool(None, 1)
+    pool._executor()
+    fut = pool.ex.submit(runner._work, "time", "sleep", pickle.dumps(((60,), {})))    # a real worker, stuck for a minute
+    pool.orphans.add(fut)
+    procs = list(pool.ex._processes.values())
+    deadline = time.perf_counter() + 30
+    while not fut.running():
+        assert time.perf_counter() < deadline, "the stuck task never started"
+        time.sleep(0.01)
+    closer = threading.Thread(target=pool.close, daemon=True)
+    closer.start()
+    closer.join(30)
+    assert not closer.is_alive(), "close waited for the abandoned task"
+    for proc in procs:
+        proc.join(10)
+    assert not any(proc.is_alive() for proc in procs) and pool.ex is None
 
 
 def test_a_dead_pool_fails_the_jobs_in_flight_and_raises_from_the_stream_for_calls_queued_after(monkeypatch):

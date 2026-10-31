@@ -341,7 +341,13 @@ class _Pool:
         for port in list(self.ports):         # a stream cut off from outside: its job threads end, no one waits on them
             port.abandon()
         if self.ex is not None:
-            self.ex.shutdown()
+            if self.orphans:             # abandoned work nobody reads: stop the workers, don't await them (_processes is private)
+                procs = list(self.ex._processes.values())      # read before shutdown clears the map
+                self.ex.shutdown(wait=False, cancel_futures=True)
+                for proc in procs:
+                    proc.terminate()
+            else:
+                self.ex.shutdown()
             self.ex = None
 
 

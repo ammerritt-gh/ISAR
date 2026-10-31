@@ -328,7 +328,8 @@ jobs each live search names as its likely next promotions (`Search.likely_next`)
 as many lookahead jobs live as there are workers. A cached price answers only the identical job when the search asks
 for it, and a price nobody asks for is never fed to a search, so the search's path and decision do not depend on
 lookahead. A request for a job a lookahead job is still pricing takes that job over; one it finished meanwhile is
-answered from it. Abandoned lookahead tasks that are still running count against the worker total until they return.
+answered from it. Abandoned lookahead tasks that are still running count against the worker total until they return. When the batch ends, the runner stops any still running without
+waiting for them (their workers are terminated), so the batch's cores free at once.
 With one worker, for any call other than a price, and for a core without `run_task`, the runner prices whole jobs as
 before. On this path `timing.pool.busy_s` is the seconds the tasks took in the workers.
 
