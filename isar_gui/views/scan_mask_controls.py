@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QPointF, Signal, Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QMenu, QToolButton, QWidget
 
 from isar.intake.point_masks import save_selection
 from isar_gui.selection import identity
@@ -12,8 +12,16 @@ from isar_gui.views.edge_indicators import EdgeIndicators
 from isar_gui.views.masked_points import MaskedPoints
 
 
+MODE_TIP = ('Click a point or drag an E/I rectangle across any displayed spectra. Mixed selection: '
+            'mask all; all masked: restore all. Escape exits masking. The arrow lists masked points '
+            'and sizes the axes.')
+
+
 class ScanMaskControls(QWidget):
+    """One split button on the Fit row (operator ruling 2026-10-31: no separate mask row, which
+    cost the laptop plot its legend room); messages go to the page's hint line."""
     saved = Signal()
+    message_changed = Signal()
 
     def __init__(self, page):
         super().__init__(page)
@@ -23,27 +31,29 @@ class ScanMaskControls(QWidget):
         self.rows = []
         self.unit = ''
         self.dialog = None
-        layout = QVBoxLayout(self)
+        self.message = ''
+        layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
-        row = QHBoxLayout()
-        self.mode = self._button(row, 'Mask points',
-            'Click a point or drag an E/I rectangle across any displayed spectra. Mixed selection: mask all; all masked: restore all. Escape exits masking.')
+        self.mode = QToolButton(self)
+        self.mode.setText('Mask points')
+        self.mode.setToolTip(MODE_TIP)
         self.mode.setCheckable(True)
-        self.mode.toggled.connect(self.vb.set_mask_mode)
+        self.mode.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        layout.addWidget(self.mode)
+        self.mode.toggled.connect(self._mode_toggled)
         self.vb.mode_changed.connect(self.mode.setChecked)
-        self.list_button = self._button(row, 'Masked (0)', 'List masked points by energy and intensity, and restore them.')
-        self.list_button.clicked.connect(self.show_list)
-        self.all_button = self._button(row, 'Show all', 'Reveal every displayed point, including masked points outside the current axes.')
-        self.all_button.clicked.connect(self.show_all)
-        self.auto_button = self._button(row, 'Auto range', 'Size the axes using unmasked data only.')
-        self.auto_button.clicked.connect(self.auto_range)
-        row.addStretch(1)
-        layout.addLayout(row)
-        self.message = QLabel(self)
-        self.message.setWordWrap(True)
-        self.message.hide()
-        layout.addWidget(self.message)
+        menu = QMenu(self.mode)
+        menu.setToolTipsVisible(True)
+        self.list_action = menu.addAction('Masked points (0)…')
+        self.list_action.setToolTip('List masked points by energy and intensity, and restore them.')
+        self.list_action.triggered.connect(self.show_list)
+        self.all_action = menu.addAction('Show all')
+        self.all_action.setToolTip('Reveal every displayed point, including masked points outside the current axes.')
+        self.all_action.triggered.connect(self.show_all)
+        self.auto_action = menu.addAction('Auto range')
+        self.auto_action.setToolTip('Size the axes using unmasked data only.')
+        self.auto_action.triggered.connect(self.auto_range)
+        self.mode.setMenu(menu)
         self.preview = pg.ScatterPlotItem(size=11, pen=pg.mkPen('#1864ab', width=2), brush=None)
         self.preview.setZValue(90)
         self.vb.addItem(self.preview, ignoreBounds=True)
@@ -57,12 +67,14 @@ class ScanMaskControls(QWidget):
         # both ordinary and masked symbols, as well as in the surrounding hit tolerance.
         page._glw.scene().sigMouseClicked.connect(self._scene_clicked)
 
-    def _button(self, row, title, tip):
-        button = QToolButton(self)
-        button.setText(title)
-        button.setToolTip(tip)
-        row.addWidget(button)
-        return button
+    def _say(self, text):
+        self.message = text
+        self.message_changed.emit()
+
+    def _mode_toggled(self, checked):
+        self.vb.set_mask_mode(checked)
+        if not checked:
+            self._say('')  # the messages belong to the masking session; the hint line frees its row
 
     def apply(self, state):
         self.vb.cancel_selection()  # a refresh never retargets an unfinished gesture
@@ -92,13 +104,12 @@ class ScanMaskControls(QWidget):
         self.bounds.setData(np.concatenate(bounds_x) if bounds_x else [],
                             np.concatenate(bounds_y) if bounds_y else [])
         self.edges.set_points(edge_points, self.page.vm.out_of_range)
-        self.mode.setEnabled(bool(self.points))
-        self.all_button.setEnabled(bool(state.traces))
-        self.auto_button.setEnabled(bool(state.traces))
+        # The button carries the menu, so it stays enabled while traces are drawn; masking needs points.
+        self.mode.setEnabled(bool(state.traces))
         if not self.points:
             self.mode.setChecked(False)
-        self.list_button.setText(f'Masked ({len(self.rows)})')
-        self.list_button.setEnabled(bool(state.traces))
+        self.list_action.setText(f'Masked points ({len(self.rows)})…')
+        self.mode.setToolTip(f'{MODE_TIP} {len(self.rows)} displayed points are masked.')
         self.unit = state.main_spec.ylabel.split(', traces offset')[0] if state.main_spec else ''
         if self.dialog is not None:
             self.dialog.show_points(self.rows, self.unit)
@@ -123,8 +134,7 @@ class ScanMaskControls(QWidget):
         if rect is not None:
             count = sum(len(v) for v in self._selection(selected).values())
             action = 'Restore' if selected and all(p[4] for p in selected) else 'Mask'
-            self.message.setText(f'{action} {count} points in the rectangle (all displayed spectra).')
-            self.message.show()
+            self._say(f'{action} {count} points in the rectangle (all displayed spectra).')
 
     def select_box(self, rect):
         self.save(self._selection(self._inside(rect)))
@@ -160,12 +170,10 @@ class ScanMaskControls(QWidget):
             return
         result = save_selection(self.page.ws.root, selection, masked=masked)
         if not result.ok:
-            self.message.setText(result.reason)
-            self.message.show()
+            self._say(result.reason)
             return
         count = sum(len(v) for v in selection.values())
-        self.message.setText(f'{"Masked" if result.value else "Restored"} {count} points. Existing fits keep their original inputs; changed fits are stale.')
-        self.message.show()
+        self._say(f'{"Masked" if result.value else "Restored"} {count} points. Existing fits keep their original inputs; changed fits are stale.')
         self.page.ws.refresh()
         self.page.scan_list_vm.on_workspace_changed({'intake_entries'})
         self.saved.emit()

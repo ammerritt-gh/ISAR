@@ -39,7 +39,7 @@ def test_box_masks_all_displayed_and_restores_mixed_selection_logically(page):
     page.scan_list_vm.on_workspace_changed()
     page.flush_redraw()
     page.masks.preview_box(rect)
-    assert 'Mask 2 points' in page.masks.message.text()
+    assert 'Mask 2 points' in page.hint.full_text() and page.hint.isVisible()
     page.masks.select_box(rect)
     page.flush_redraw()
     assert len(page.masks.rows) == 2

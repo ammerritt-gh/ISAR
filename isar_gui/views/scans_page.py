@@ -205,7 +205,9 @@ class ScansPage(QWidget):
         disable_view_drops(self._glw)
         self._main_plot = self._glw.addPlot(row=0, col=0, viewBox=MaskViewBox())
         self.masks = ScanMaskControls(self)
-        outer.addWidget(self.masks)
+        header_layout.insertWidget(1, self.masks)    # beside Fit, before the stretch
+        self.masks.message_changed.connect(self._show_hint)
+        self._control_hints = []
         self._resid_plot = self._glw.addPlot(row=1, col=0)
         self._resid_plot.setXLink(self._main_plot)
         for plot in (self._main_plot, self._resid_plot):
@@ -384,14 +386,19 @@ class ScansPage(QWidget):
             action.setChecked(value == self.vm.layout)
             action.setEnabled(state.layout.enabled)
             action.setText(value.title() + (f' ({state.layout.reason})' if state.layout.reason else ''))
-        hints = [f'{title}: {control.reason}' for title, control in
-                 (('Fit', state.fit), ('Offset | Overlay', state.layout), ('Offset box', state.offset))
-                 if not control.enabled and control.reason]
-        self.hint.set_full_text(' · '.join(hints))
-        self.hint.setVisible(bool(hints) and state.body == PLOT)
+        self._control_hints = [f'{title}: {control.reason}' for title, control in
+                               (('Fit', state.fit), ('Offset | Overlay', state.layout), ('Offset box', state.offset))
+                               if not control.enabled and control.reason]
+        self._show_hint()
         self.inter_mount.setVisible(state.inter is not None)
         if state.inter is not None:
             self.inter_bar.show_state(state.inter)
+
+    def _show_hint(self):
+        """One line for disabled-control reasons and the mask message: no row when both are empty."""
+        hints = [*self._control_hints, *([self.masks.message] if self.masks.message else [])]
+        self.hint.set_full_text(' · '.join(hints))
+        self.hint.setVisible(bool(hints) and self.body.currentIndex() == PLOT)
 
     def _redraw(self):
         started = perf_counter()
@@ -400,6 +407,7 @@ class ScansPage(QWidget):
             return
         self._controls(state)
         self.body.setCurrentIndex(state.body)
+        self._show_hint()          # its visibility follows the body just set
         self.not_drawn.set_full_text(state.not_drawn_text)
         self.not_drawn.setToolTip(state.not_drawn_text + '\n' + state.not_drawn_tip)
         self.not_drawn.setVisible(bool(state.not_drawn_text))

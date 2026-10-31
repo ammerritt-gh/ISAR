@@ -426,13 +426,17 @@ Implemented for imported BL43 analyzer spectra (`isar/intake/point_masks.py`,
 Operator ruling: selection acts on **all displayed spectra**, including overlaps;
 waterfall selection uses the points' displayed positions, including their offsets.
 
+- The controls are one split button on the Fit row (operator ruling 2026-10-31: a separate mask
+  row cost the laptop plot its legend room). **Mask points** toggles the mode; its arrow holds
+  **Masked points (N)…**, **Show all** and **Auto range**. Previews, results and refusals appear
+  on the page's hint line and clear when masking mode is switched off.
 - **Mask points** switches left-click to point selection and left-drag to an E/I rectangle.
   A click uses an 8-pixel hit tolerance; coincident points are selected together. Dragging
   previews the affected points and the action/count. A mixed selection masks every selected
   point; an entirely manually masked selection restores them. Empty selections do nothing.
   Only visible points participate. Escape exits the mode; ordinary navigation remains available
   outside masking mode. Repeated copies of one point in a fit waterfall are one saved exclusion.
-- **Masked (N)** opens a sortable E/I list for the displayed spectra. Values are in the current
+- **Masked points (N)…** opens a sortable E/I list for the displayed spectra. Values are in the current
   intensity scale and energy zero, without waterfall offsets. **Restore selected** and
   **Clear masks** withdraw manual exclusions; independent QC exclusions remain. **Show all**
   reveals masked outliers; **Auto range** returns to the retained-data bounds.
