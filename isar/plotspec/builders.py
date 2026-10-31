@@ -564,7 +564,10 @@ class ScansTrace:
     active: bool
 
 
-def stack_step(traces: Sequence[ScansTrace]) -> float:
+DEFAULT_STACK_RATIO = 1.1
+
+
+def stack_step(traces: Sequence[ScansTrace], ratio: float = DEFAULT_STACK_RATIO) -> float:
     """Space traces by their data range; masked spikes and fits never move the stack."""
     ranges = []
     for trace in traces:
@@ -574,7 +577,7 @@ def stack_step(traces: Sequence[ScansTrace]) -> float:
         values = y[shown if shown.any() else finite]
         if values.size:
             ranges.append(float(np.ptp(values)))
-    return 1.2 * max(ranges) if ranges else 1.0
+    return ratio * max(ranges) if ranges else 1.0
 
 
 def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,

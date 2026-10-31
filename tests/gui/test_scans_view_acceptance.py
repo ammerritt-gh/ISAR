@@ -448,7 +448,8 @@ def test_composed_window_geometry_names_and_elision(qtbot, monkeypatch, scans_vi
     assert inspector._title.full_text()
 
     controls = [*page.fit_buttons.values(), *page.layout_buttons.values(),
-                *page.scale_buttons.values(), page.offset_box, page.auto_button,
+                *page.scale_buttons.values(), page.offset_box, page.ratio_box,
+                 page.ratio_minus, page.ratio_plus, page.auto_button,
                 window.scan_list._inspect]
     for control in controls:
         assert_reachable(window, control)
@@ -467,8 +468,8 @@ def test_composed_window_geometry_names_and_elision(qtbot, monkeypatch, scans_vi
         assert "every Scan(s) plot" in button.toolTip()
     for button in page.scale_buttons.values():
         assert "every Scan(s) plot" in button.toolTip()
-    for button in page.layout_buttons.values():
-        assert "current plot" in button.toolTip()
+    assert page.layout_buttons['offset'].toolTip().startswith('Waterfall: each curve offset')
+    assert page.layout_buttons['overlay'].toolTip().startswith('Curves plotted with no offset, no fits.')
     set_a = window.scan_list._by_id[f"set:{KEY_A}"]
     set_b = window.scan_list._by_id[f"set:{KEY_B}"]
     assert "opens or closes" in set_a.data(Qt.ItemDataRole.AccessibleDescriptionRole)

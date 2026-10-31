@@ -30,9 +30,11 @@ def build(ts, view='offset', step=4.8):
 
 def test_stack_data_geometry_and_masked_spike():
     ts = traces()
-    assert stack_step(ts) == pytest.approx(4.8)
+    assert stack_step(ts) == pytest.approx(4.4)
     spike = replace(ts[1], y=np.array([0., 2., 100.]), kept=np.array([True, True, False]))
-    assert stack_step((ts[0], spike, ts[2])) == pytest.approx(4.8)
+    assert stack_step((ts[0], spike, ts[2])) == pytest.approx(4.4)
+    assert stack_step(ts, ratio=1.0) == 4
+    assert stack_step(ts, ratio=1.15) == pytest.approx(4.6)
     plotted = build(ts)
     np.testing.assert_allclose([s.y for s in plotted.series if s.role is ps.Role.DATA], [[10.6, 14.6, 11.6], [4.8, 6.8, 5.8], [3, 3, 3]])
     assert [a.xy for a in plotted.annotations] == [(2., 9.6), (2., 4.8), (2., 0.)]

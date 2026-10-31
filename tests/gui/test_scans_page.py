@@ -170,18 +170,18 @@ def test_missing_data_counts_and_offset_controls(page, qtbot):
     select(page, ONE_MODE, TWO_MODE, NO_Q)
     page.offset_box.setValue(50)
     page.flush_redraw()
-    assert not page.auto_button.isChecked()
+    assert not page._drawn_state.step_auto
     assert page.drawn().ylabel.endswith(', traces offset')
     np.testing.assert_allclose(page._drawn_state.main_spec.series[0].y,
                                page._drawn_state.traces[0].y[page._drawn_state.traces[0].kept] + 100)
     qtbot.mouseClick(page.auto_button, Qt.MouseButton.LeftButton)
     page.flush_redraw()
-    assert page.auto_button.isChecked()
+    assert page._drawn_state.step_auto
     page.vm.set_step(50)
     page.vm.set_scale('raw')
     page.vm.set_scale('normalised')
     page.flush_redraw()
-    assert page.auto_button.isChecked()
+    assert page._drawn_state.step_auto
 
 
 def test_active_and_live_updates_keep_zoom_and_reuse_bundles(page, monkeypatch):
@@ -221,7 +221,8 @@ def test_view_state_and_control_widths(page):
     page.vm.set_scale('raw')
     page.save_view_state(session)
     assert session.view_state['scans_page'] == {'fit': 'deep', 'layout': 'overlay', 'scale': 'raw',
-        'zero_lines': True, 'energy_zero_line': False, 'peak_lines': True, 'filled_symbols': False}
+        'zero_lines': True, 'energy_zero_line': False, 'peak_lines': True, 'filled_symbols': False,
+        'offset_ratio': 1.1, 'offset_absolute': None}
     session.view_state['scans_page'] = {'fit': 'x', 'layout': 3}
     page.load_view_state(session)
     page.flush_redraw()

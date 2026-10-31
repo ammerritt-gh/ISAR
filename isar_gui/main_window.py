@@ -620,6 +620,7 @@ class MainWindow(QMainWindow):
             self._gui_store = None
         self.scans_page.set_store(self._gui_store)
         self.scans_page.store_dirty.connect(self._on_groups_changed)
+        self.scans_page.view_state_changed.connect(self._autosave)
         self.scan_list_vm.set_store(self._gui_store)      # the scans this experiment's list has removed
         self.scans_page.load_view_state(self._session)
         self._seed_folder_watcher()

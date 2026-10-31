@@ -8,7 +8,8 @@ from time import perf_counter
 
 from PySide6.QtCore import Signal
 
-from isar.plotspec.builders import ScansCurve, ScansTrace, scans_spec, scans_residual_spec, stack_step
+from isar.plotspec.builders import (
+    DEFAULT_STACK_RATIO, ScansCurve, ScansTrace, scans_spec, scans_residual_spec, stack_step)
 from isar.plotspec.spec import PlotSpec
 from isar.workspace_api.spectra import (NotDrawn, ZERO_BEAMLINE, ZERO_NONE, normalisation_reference,
                                         spectrum_bundles)
@@ -68,6 +69,7 @@ class PageState:
     offset: Control = Control(False, 'applies to the Offset layout')
     step: float | None = None
     step_auto: bool = True
+    step_ratio: float | None = DEFAULT_STACK_RATIO
     deep_tooltip: str = DEEP_TOOLTIP
     reset_range: bool = False
     timing: RedrawTiming | None = None
@@ -92,6 +94,8 @@ class ScansPageViewModel(ViewModel):
         self.layout = 'offset'
         self.scale = 'normalised'
         self.hand_step = None
+        self.offset_ratio = DEFAULT_STACK_RATIO
+        self._step_range = 0.0
         self.zero_lines = True
         self.energy_zero_line = False
         self.peak_lines = True
@@ -139,6 +143,8 @@ class ScansPageViewModel(ViewModel):
         if value not in SCALES:
             raise ValueError(f'unknown scale: {value}')
         if value != self.scale:
+            if self.hand_step is not None and self._step_range > 0:
+                self.offset_ratio = self.hand_step / self._step_range
             self.hand_step = None
             self._set('scale', value, SCALES)
 
@@ -148,7 +154,19 @@ class ScansPageViewModel(ViewModel):
             if not math.isfinite(value) or value < 0:
                 raise ValueError('offset must be finite and non-negative')
         if value != self.hand_step:
+            if self._step_range > 0:
+                absolute = self.hand_step if value is None else value
+                self.offset_ratio = absolute / self._step_range
             self.hand_step = value
+            self.refreshed.emit()
+
+    def set_ratio(self, value):
+        value = float(value)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError('offset ratio must be finite and non-negative')
+        if value != self.offset_ratio or self.hand_step is not None:
+            self.offset_ratio = value
+            self.hand_step = None
             self.refreshed.emit()
 
     def set_inter(self, inter):
@@ -208,7 +226,8 @@ class ScansPageViewModel(ViewModel):
         session.view_state[STATE_KEY] = {'fit': self.fit, 'layout': self.layout, 'scale': self.scale,
             'zero_lines': self.zero_lines, 'energy_zero_line': self.energy_zero_line,
             'peak_lines': self.peak_lines,
-            'filled_symbols': self.filled_symbols}
+            'filled_symbols': self.filled_symbols,
+            'offset_ratio': self.offset_ratio, 'offset_absolute': self.hand_step}
 
     def load_view_state(self, session):
         outer = getattr(session, 'view_state', None)
@@ -222,7 +241,12 @@ class ScansPageViewModel(ViewModel):
                                         ('scale', SCALES, 'normalised')):
             value = saved.get(name)
             setattr(self, name, value if isinstance(value, str) and value in choices else default)
-        self.hand_step = None
+        ratio = saved.get('offset_ratio', DEFAULT_STACK_RATIO)
+        self.offset_ratio = (float(ratio) if isinstance(ratio, (int, float))
+                             and math.isfinite(ratio) and ratio >= 0 else DEFAULT_STACK_RATIO)
+        absolute = saved.get('offset_absolute')
+        self.hand_step = (float(absolute) if isinstance(absolute, (int, float))
+                          and math.isfinite(absolute) and absolute >= 0 else None)
         self.refreshed.emit()
 
     def _groups(self, snapshot, keys):
@@ -314,7 +338,7 @@ class ScansPageViewModel(ViewModel):
         else:
             revisions = ()
         signature = (keys, revisions, tuple(labels.items()), self.selection.active,
-                     self.fit, self.layout, self.scale, self.hand_step, reference,
+                     self.fit, self.layout, self.scale, self.hand_step, self.offset_ratio, reference,
                      self.zero_lines, self.energy_zero_line, self.peak_lines, self.filled_symbols,
                      inter.revision if inter else '', tuple(self.chosen.items()), wf, history, wf_off,
                      row,
@@ -324,12 +348,12 @@ class ScansPageViewModel(ViewModel):
         self._signature = signature
         build_started = perf_counter()
         # Live data may change the automatic spacing; preserve the user's zoom on that refresh.
-        frame = (keys, view, self.scale, self.hand_step, body, wf)
+        frame = (keys, view, self.scale, self.hand_step, self.offset_ratio, body, wf)
         reset_range = frame != self._frame
         self._frame = frame
         common = dict(body=body, view=view, reset_range=reset_range, step_auto=self.hand_step is None)
         if body != PLOT:
-            state = PageState(**common,
+            state = PageState(**common, step_ratio=self.offset_ratio,
                 over_limit_note=(f'{n} spectra selected — the plot shows at most 10. '
                                  'Select fewer, or recall a group' if body == LIST else ''),
                 over_limit=self._groups(snapshot, keys) if body == LIST else ())
@@ -456,7 +480,9 @@ class ScansPageViewModel(ViewModel):
         tooltip = DEEP_TOOLTIP
         if untrusted:
             tooltip += ' Untrusted: ' + (untrusted[0].summaries['deep'].trust_reason or 'trust not established')
-        step = stack_step(traces) if self.hand_step is None else self.hand_step
+        self._step_range = stack_step(traces, ratio=1.0)
+        step = self.offset_ratio * self._step_range if self.hand_step is None else self.hand_step
+        step_ratio = step / self._step_range if self._step_range > 0 else None
         if wf:
             traces.reverse()      # the first trace is drawn on top; the oldest fit goes at the bottom
         ylabel = y_unit + (', traces offset' if common['view'] == 'offset' and len(traces) >= 2 else '')
@@ -485,5 +511,6 @@ class ScansPageViewModel(ViewModel):
             layout=Control(n > 1 and not wf, WATERFALL_LAYOUT if wf else 'one spectrum' if n == 1 else None),
             offset=Control(common['view'] == 'offset',
                            None if common['view'] == 'offset' else 'applies to the Offset layout'),
-            step=step, deep_tooltip=tooltip, keys=tuple(drawn_keys), not_drawn=tuple(not_drawn),
+            step=step, step_ratio=step_ratio, deep_tooltip=tooltip,
+            keys=tuple(drawn_keys), not_drawn=tuple(not_drawn),
             traces=tuple(traces), curves_header=header)

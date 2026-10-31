@@ -8,13 +8,14 @@ from time import perf_counter
 from PySide6.QtCore import QSize, Qt, Signal, QSignalBlocker, QTimer
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QButtonGroup,
-    QDoubleSpinBox, QHBoxLayout, QLabel, QStackedWidget, QToolButton, QTreeWidget,
+    QDoubleSpinBox, QGridLayout, QHBoxLayout, QLabel, QStackedWidget, QToolButton, QTreeWidget,
     QTreeWidgetItem, QVBoxLayout, QWidget)
 import pyqtgraph as pg
 
 from isar_gui.plotspec_pg import clear_render, disable_view_drops, render_into
 from isar_gui.viewmodels.scans_page import (
-    EMPTY, PLOT, LIST, LAYOUTS, PASSES, SCALES, PageState, RedrawTiming, ScansPageViewModel)
+    DEFAULT_STACK_RATIO, EMPTY, PLOT, LIST, LAYOUTS, PASSES, SCALES,
+    PageState, RedrawTiming, ScansPageViewModel)
 from isar_gui.views.elided_label import ElidedLabel
 from isar_gui.views.group_chips import GroupChips
 from isar_gui.views.inter_fit_bar import InterFitBar
@@ -64,6 +65,7 @@ class _OffsetBox(QDoubleSpinBox):
 
 class ScansPage(QWidget):
     store_dirty = Signal()
+    view_state_changed = Signal()
 
     def __init__(self, scan_list_vm, ws, parent=None):
         super().__init__(parent)
@@ -125,23 +127,55 @@ class ScansPage(QWidget):
 
         # A separate offset row preserves the 300 px centre-column agreement.
         self.offset_mount = self._mount('scans_page_offset', self)
-        self.offset_mount.layout().addWidget(QLabel('Offset', self.offset_mount))
+        offset_fields = QWidget(self.offset_mount)
+        fields = QGridLayout(offset_fields)
+        fields.setContentsMargins(0, 0, 0, 0)
+        fields.setSpacing(self.offset_mount.layout().spacing())
+        self.offset_label = QLabel('Absolute offset', offset_fields)
+        self.ratio_label = QLabel('Offset ratio', offset_fields)
+        fields.addWidget(self.offset_label, 0, 0)
+        fields.addWidget(self.ratio_label, 1, 0)
+        self.offset_mount.layout().addWidget(offset_fields)
         self.offset_box = _OffsetBox(self.offset_mount)
         self.offset_box.setObjectName('scansOffset')
-        self.offset_box.setAccessibleName('Trace offset in the current intensity unit')
+        self.offset_box.setAccessibleName('Absolute offset in the current intensity unit')
+        self.offset_label.setBuddy(self.offset_box)
+        self.offset_box.setKeyboardTracking(False)
         self.offset_box.setRange(0, 1e12)
-        self.offset_box.setDecimals(3)
+        self.offset_box.setDecimals(2)
         self.offset_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.offset_box.setFixedWidth(90)
         self.offset_box.valueChanged.connect(self._offset_changed)
-        self.offset_mount.layout().addWidget(self.offset_box)
+        fields.addWidget(self.offset_box, 0, 1)
+        self.ratio_box = _OffsetBox(offset_fields)
+        self.ratio_box.setObjectName('scansOffsetRatio')
+        self.ratio_box.setAccessibleName('Offset ratio relative to the largest scan intensity range')
+        self.ratio_box.setRange(0, self.offset_box.maximum())
+        self.ratio_box.setDecimals(2)
+        self.ratio_box.setSingleStep(0.05)
+        self.ratio_box.setPrefix('×')
+        self.ratio_box.setKeyboardTracking(False)
+        self.ratio_box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.ratio_box.setFixedWidth(self.offset_box.width())
+        self.ratio_box.valueChanged.connect(self._ratio_changed)
+        self.ratio_label.setBuddy(self.ratio_box)
+        fields.addWidget(self.ratio_box, 1, 1)
+        self.ratio_minus = QToolButton(offset_fields)
+        self.ratio_plus = QToolButton(offset_fields)
+        for button, text, verb, column in ((self.ratio_minus, '−', 'Decrease', 2),
+                                           (self.ratio_plus, '+', 'Increase', 3)):
+            button.setText(text)
+            button.setAccessibleName(f'{verb} offset ratio by 0.05')
+            button.setToolTip(f'{verb} the offset ratio by 0.05.')
+            fields.addWidget(button, 1, column)
+        self.ratio_minus.clicked.connect(lambda _checked=False: self.ratio_box.stepDown())
+        self.ratio_plus.clicked.connect(lambda _checked=False: self.ratio_box.stepUp())
         self.auto_button = QToolButton(self.offset_mount)
         self.auto_button.setText('Auto')
-        self.auto_button.setCheckable(True)
-        self.auto_button.setAccessibleName('Automatic trace offset')
-        self.auto_button.setToolTip('Space traces automatically using their data range')
+        self.auto_button.setAccessibleName('Reset offset ratio to 1.10')
+        self.auto_button.setToolTip('Reset Offset ratio to ×1.10 and update Absolute offset.')
         self.auto_button.clicked.connect(self._auto_clicked)
-        self.offset_mount.layout().addWidget(self.auto_button)
+        fields.addWidget(self.auto_button, 0, 2, 1, 2)
         self.offset_mount.layout().addStretch(1)
         outer.addWidget(self.offset_mount)
 
@@ -296,9 +330,15 @@ class ScansPage(QWidget):
 
     def _offset_changed(self, value):
         self.vm.set_step(value)
+        self.view_state_changed.emit()
+
+    def _ratio_changed(self, value):
+        self.vm.set_ratio(value)
+        self.view_state_changed.emit()
 
     def _auto_clicked(self, checked):
-        self.vm.set_step(None if checked else self.offset_box.value())
+        self.vm.set_ratio(DEFAULT_STACK_RATIO)
+        self.view_state_changed.emit()
 
     def _controls(self, state):
         for buttons, current, control, tip in (
@@ -319,11 +359,23 @@ class ScansPage(QWidget):
         self.fit_buttons['deep'].setToolTip(self.fit_buttons['deep'].toolTip() + '. ' + state.deep_tooltip)
         self.offset_box.setEnabled(state.offset.enabled)
         self.auto_button.setEnabled(state.offset.enabled)
-        with QSignalBlocker(self.offset_box), QSignalBlocker(self.auto_button):
+        ratio_enabled = state.offset.enabled and state.step_ratio is not None
+        for widget in (self.ratio_box, self.ratio_minus, self.ratio_plus):
+            widget.setEnabled(ratio_enabled)
+        with QSignalBlocker(self.offset_box), QSignalBlocker(self.ratio_box):
             self.offset_box.setValue(state.step or 0)
-            self.auto_button.setChecked(state.step_auto)
-        self.offset_box.setToolTip('Trace spacing in the current intensity unit' +
-                                  (f'; {state.offset.reason}' if state.offset.reason else ''))
+            self.ratio_box.setSpecialValueText('—' if state.step_ratio is None else '')
+            self.ratio_box.setValue(state.step_ratio if state.step_ratio is not None else 0)
+        suffix = f'; {state.offset.reason}' if state.offset.reason else ''
+        self.offset_box.setToolTip('Spacing between adjacent scans in the current intensity unit. '
+                                  'Editing this fixes the absolute spacing and updates Offset ratio.' + suffix)
+        ratio_tip = ('Multiply the largest scan intensity range (maximum minus minimum of unmasked points) '
+                     'by this ratio to set the spacing. The absolute offset follows this ratio as data changes.' + suffix)
+        if state.step_ratio is None:
+            ratio_tip += ' No nonzero data range is available; use Absolute offset.'
+        self.ratio_box.setToolTip(ratio_tip)
+        for button, verb in ((self.ratio_minus, 'Decrease'), (self.ratio_plus, 'Increase')):
+            button.setToolTip(f'{verb} the offset ratio by 0.05. ' + ratio_tip)
         for value, action in self._layout_actions.items():
             action.setChecked(value == self.vm.layout)
             action.setEnabled(state.layout.enabled)
