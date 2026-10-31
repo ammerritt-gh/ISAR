@@ -39,7 +39,8 @@ def _plain(obj):
 class UnitPlan:
     """One unit as its scan's start point sees it (:meth:`StartPoint.plan`), before carry or fit is decided.
     ``task`` is the fit task tuple on the frozen effective record; ``condition`` the excluded entry of a unit
-    the user declared out, else None; ``started`` its started lines ([] for a condition entry)."""
+    the user declared out, else None; ``started`` its started lines ([] for a condition entry); ``held`` the
+    reason its masks cannot be checked (the unit is then neither fitted nor declared), else None."""
     unit: str
     det: str
     task: tuple
@@ -49,6 +50,7 @@ class UnitPlan:
     calfp: str | None
     inputs_hash: str
     started: list
+    held: str | None
 
 
 class StartPoint:
@@ -117,16 +119,17 @@ class StartPoint:
             h = inputs.inputs_hash(unit)
             reason = (_declared("excluded scan", si.excluded) if si.excluded is not None
                       else _declared("dead analyzer", si.dead[det]) if det in si.dead else None)
+            held = f"{det}: {inputs.UNCHECKED_MASKS}" if det in si.unchecked_masks else None
             calfp = None if reason else calibrations.calibration_fingerprint(view or self.runcal, eff, det)
             fallbacks = inputs.fallbacks(unit)
             self._units[scan_id] = (h, fallbacks, reason is not None)
             condition = (None if reason is None else scan_delivery.condition_entry(
                 eff, det, q, T, sample, scan_id, self.card, chash, ghash, reason))
-            started = ([] if reason is not None else
+            started = ([] if reason is not None or held is not None else
                        [{"unit": scan_id, "scan": key, "pass": p, "inputs": unit, "hash": h,
                          "fallbacks": list(fallbacks)} for p in self.passes])
             out.append(UnitPlan(scan_id, det, (eff, det, q, T, sample, scan_id, chash, ghash, seed), condition,
-                                chash, ghash, calfp, h, started))
+                                chash, ghash, calfp, h, started, held))
         self.frozen[key] = eff
         self.views[key] = view
         return out
@@ -136,6 +139,10 @@ class StartPoint:
         key = group[0][5].rsplit(":", 1)[0]
         items, started, stubs = [], [], []
         for u in units:
+            if u.held is not None:          # not fitted, and no entry written: the unit keeps its last result
+                self.carried.add(u.unit)
+                items.append(None)
+                continue
             prev = self.session.get(u.unit)
             if not (self.is_fresh(prev, u.det, chash=u.chash, ghash=u.ghash, calfp=u.calfp)
                     or ((prev.provenance or {}).get("fit_inputs") or {}).get("hash") != u.inputs_hash):

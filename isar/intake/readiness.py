@@ -71,6 +71,7 @@ KINDS: dict[str, _Kind] = {k: _Kind(*v) for k, v in {
     "curve_missing": ("Resolution curves", "analyzer", ("calibrate", "fit"), "held", "locate_folder"),
     "analyzer_file": ("Analyzer files missing", "analyzer", _ALL, "held", "import_again"),
     "analyzer_unreadable": ("Analyzer files unreadable", "analyzer", _ALL, "unreadable", "import_again"),
+    "masks_unchecked": ("Point masks cannot be checked", "analyzer", ("calibrate", "fit"), "held", "import_again"),
     "files_not_read": ("Files not read", "file", ("read",), "unreadable", "import_again"),
     "damaged_lines": ("Intake lines skipped", "line", (), "fallback", "tell_operator"),
     "calibration_failed": ("Calibration failed", "scan", ("calibrate", "fit"), "held", "tell_operator"),
@@ -514,7 +515,10 @@ def _scan(scan: str, row: dict, pos: int, index: inputs.EntryIndex, state: dict,
             gap("exposure_missing", "no monitor in the file", a, fallback=NO_MONITOR)
         else:
             u["reduce"] = _READY
-        cal, kind = _calibrate(a, ar, si, cx, flags)
+        if a in si.unchecked_masks:     # its stored data cannot show which masks still apply: held, not fitted
+            cal, kind = _use("held", f"{a}: {inputs.UNCHECKED_MASKS}"), "masks_unchecked"
+        else:
+            cal, kind = _calibrate(a, ar, si, cx, flags)
         u["calibrate"] = cal
         if kind == "pending":
             pending.add(a)

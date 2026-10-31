@@ -444,6 +444,13 @@ waterfall selection uses the points' displayed positions, including their offset
   measured counts and variance plus duplicate occurrence identify each source point; changing
   display zero, normalization or offset never changes identity. Reordering distinct points or
   appending data preserves masks. A replaced measurement does not inherit the old exclusion.
+- **Lapsed masks** (operator ruling D3 = A, 2026-10-31: a point keeps its identity through energy, counts
+  and variance, so a mask lapses when its point's data change). A mask lapses when no point of its analyzer's
+  current data matches it, as when a `rep_sum` file gains a repetition. The intake log keeps it and nothing
+  withdraws it, but it is never applied: the Mask points menu and the Masked points list show only the masks
+  that apply. An analyzer whose stored unit data are missing or unreadable is **held** (Needs attention:
+  *Point masks cannot be checked*, action *Add data…*): it is not fitted, and its masks are neither applied
+  nor lapsed until its data are added again.
 - The effective record combines manual and QC masks before calibration and fitting. Fast,
   Deep and inter-spectra preparation share this record. Each fit records its mask inputs;
   changes mark completed fits **stale**, including refits conditioned on a changed neighbour.

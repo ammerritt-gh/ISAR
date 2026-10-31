@@ -4,10 +4,11 @@ from dataclasses import replace
 import numpy as np
 
 import intake_fixtures as fx
-from isar.intake import inputs, scans, store
+from isar.intake import fit_inputs, inputs, scans, store
 from isar.intake.point_masks import point_ids, save_selection
-from isar.session import file_fit, ingest
+from isar.session import calibrations, file_fit, guidelines as guide_mod, ingest, start_point
 from isar.session.inter_spectra.authority import stale_of
+from isar.session.unit_data import read_unit_data_for_unit, unit_data_path
 from isar.workspace_api import Workspace as ReadWorkspace
 
 
@@ -59,3 +60,30 @@ def test_source_identity_distinguishes_duplicates_and_ignores_display_changes():
     assert len(set(ids)) == 3
     assert point_ids([1, 0, 1, 2], [8, 4, 8, 9], [8, 4, 8, 9])[:3] == (ids[1], ids[0], ids[2])
     assert point_ids([0, 1, 1], [4, 99, 8], [4, 99, 8])[1] != ids[1]
+
+
+def test_an_analyzer_whose_masks_cannot_be_checked_is_not_prepared_or_started(tmp_path):
+    ws, data = fx.bl43_workspace(tmp_path, stems=('A',))
+    card, session = ws.load()
+    ingest.ingest_batch(card, session, [data], workspace_root=ws.root, data_dir=ws.root / 'data')
+    ws.save(card, session)
+    key = next(k for k in session.scans if k.endswith(':a03'))
+    exp, scan_no, _det = key.rsplit(':', 2)
+    stored = read_unit_data_for_unit(ws.root / 'data', exp, int(scan_no), 'a03')
+    assert save_selection(ws.root, {key: [point_ids(stored['x'], stored['counts'], stored['variance'])[-1]]}).ok
+    unit_data_path(ws.root / 'data', exp, int(scan_no), 'a03').write_text('{not json', encoding='utf-8')
+    frozen = file_fit.freeze(ws.root)
+    scan_prep = file_fit.prepare_scan(frozen, exp, int(scan_no), frozen.session.get(key))
+    assert file_fit.prepare_unit(frozen, scan_prep, key, ('fast',)).reason == f'a03: {inputs.UNCHECKED_MASKS}'
+    # the scan's start point, as a run builds it: the held unit is handed no task and writes no started line
+    rec, _sources = scan_prep
+    scan = f'{exp}:{scan_no}'
+    rows = scans.read_scans(ws.root)
+    sp = start_point.StartPoint(frozen.root, frozen.card, guide_mod.resolve(frozen.card),
+                                calibrations.calibration_view(frozen.card), parsed={scan: rec},
+                                rows={scan: rows[scan]}, data_revision={scan: rows[scan]['data_revision']},
+                                passes=('fast',), run_id='r1', session=frozen.session,
+                                is_fresh=lambda *a, **k: True, write_stub=lambda t: None, loaded=None)
+    group = [(rec, 'a03', None, None, None, key, rows[scan]['data_revision'], 'g', 1)]
+    assert sp(group).items == [None]
+    assert not any(line.get('unit') == key for line in fit_inputs.read_log(ws.root))

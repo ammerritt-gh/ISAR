@@ -167,6 +167,8 @@ def prepare_unit(frozen: Frozen, scan_prep, unit_key: str, passes) -> Prepared:
                         is_fresh=None, write_stub=None, loaded=loaded,
                         gpi={} if gpi_entry is None else {key: gpi_entry})
         up = sp.plan([(rec, det, q, None, sample, unit_key, chash, "", seed)])[0]
+        if up.held is not None:             # its masks cannot be checked: the item fails with the reason
+            return Prepared(reason=up.held)
         task, eff, view = up.task, sp.frozen[key], sp.views[key] or runcal
         now = currentness.UnitNow(chash, up.ghash, up.calfp, up.inputs_hash)
     else:

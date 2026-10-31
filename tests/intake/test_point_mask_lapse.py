@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 import intake_fixtures as fx
-from isar.intake import inputs, scans, store
+from isar.intake import inputs, readiness, scans, store
 from isar.intake.inputs import apply, calibration_inputs_key, unit_inputs
 from isar.intake.point_masks import point_ids, save_selection
 from isar.session import calibrations, ingest, unit_data
@@ -142,3 +142,23 @@ def test_the_identities_are_read_once_per_data_revision(masked, monkeypatch):
     _rerun(ws.root, key)                            # a new revision: read again, and the answer is fresh
     assert _si(ws.root, key).lapsed_masks[det] == (point,)
     assert len(calls) == 2
+
+
+def _break(root, key):
+    exp, n, det = key.rsplit(":", 2)
+    unit_data_path(root / "data", exp, int(n), det).write_text("{not json", encoding="utf-8")
+
+
+def test_an_analyzer_whose_masks_cannot_be_checked_is_held_and_listed(masked):
+    ws, _data, key, _point = masked
+    det, scan = _det(key), _scan(key)
+    _break(ws.root, key)
+    na = readiness.evaluate(ws.root)
+    assert na.evaluated
+    (group,) = [g for g in na.groups if g.kind == "masks_unchecked"]
+    assert [(i.scan, i.analyzer) for i in group.items] == [(scan, det)]
+    assert (group.state, group.action, group.can_start) == ("held", "import_again", False)
+    row = na.scans[scan].analyzers[det]
+    assert row.can_start is False
+    assert (row.uses["calibrate"].state, row.uses["fit"].state) == ("held", "held")
+    assert row.uses["fit"].reason == f"{det}: {inputs.UNCHECKED_MASKS}"

@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 ENTERABLE = {"temperature": "K", "slit": "mm"}      # fact -> its one unit
 FILE_FACT = {"temperature": "T_K", "slit": "slit"}  # fact -> the scan fact name in the parsed record
 CONDITIONS = ("excluded", "dead", "counts_accepted")   # excluded: scan targets; dead, counts_accepted: unit targets
+UNCHECKED_MASKS = "its masks cannot be checked: stored data unreadable"   # hold reason: unit data unreadable
 FALLBACKS = ("bose_t0_limit", "slit_inferred", "slit_broadest_curve", "zero_file_axis", "counts_accepted")
 _LIBRARY_BASES = ("inferred", "broadest_curve_fallback")   # a slit chosen by comparing curves
 _CALIBRATION_FIELDS = ("setting", "basis", "zero", "zero_source", "held_reason")   # hashed, so also compared
