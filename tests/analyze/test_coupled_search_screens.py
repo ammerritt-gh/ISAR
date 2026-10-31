@@ -5,6 +5,7 @@ scripted offset. Mode "on" asks steps and moves as screens and promotes them onl
 "shadow" prices everything in full and records where the screened search would have decided otherwise.
 """
 import math
+import random
 from dataclasses import replace
 
 import pytest
@@ -260,3 +261,78 @@ def test_the_shadow_count_total_includes_a_basin_only_a_screen_filed():
     b_row = next(c for c in a.candidates if (c["count"], tuple(c["slots"])) == (2, B12))
     screened = math.log(math.exp(b_row["ln_z"]) + math.exp(screen_only[3] + rules.ln_w_label(2, 1, s.M)))
     assert sh["counts"]["2"] == pytest.approx(screened, abs=1e-6)       # the seed's full mass and the screen's, nothing else
+
+
+# S1U2 check 1: likely_next changes no pass and no result; () once done ------------------------------------------------
+def test_likely_next_before_every_feed_changes_no_pass_and_no_result():
+    T = {(2, B12): -100.0, (2, NB2): -101.0}
+
+    def walk(probe):
+        s = SE.Search(happy(), screens="on")
+        sc = Scripted(T, split={(2, NB2)}, screen={(2, NB2): -1.0})
+        sc.M = s.M
+        passes, named = [], 0
+        while not s.done:
+            jobs = s.next_jobs()
+            passes.append([j.key for j in jobs])
+            if probe:
+                named += len(s.likely_next(1000))
+                assert s.next_jobs() is jobs
+            s.feed([sc(j) for j in jobs])
+        assert s.likely_next(1000) == ()
+        return passes, s.result(), named
+
+    plain, probed = walk(False), walk(True)
+    assert probed[:2] == plain[:2]
+    assert probed[2] > 0                         # the probe named promotions, so the comparison is not vacuous
+
+
+# S1U2 check 2: each promotion _rank asks of an earlier pass's screen was named by likely_next just before that feed
+@pytest.mark.parametrize("seed", [1, 8, 21])   # random made-up prices whose screens are decided only by a later feed
+def test_every_rank_promotion_of_an_earlier_screen_was_named_by_likely_next(seed, monkeypatch):
+    ranked, rank = [], SE.Search._rank
+
+    def spy(self, view, cands):
+        out = rank(self, view, cands)
+        ranked.append(out)
+        return out
+    monkeypatch.setattr(SE.Search, "_rank", spy)
+    rng = random.Random(seed)
+    keys = [(3, lab) for lab in SIX] + [(2, B12), (2, NB2)]
+    table = {k: rng.uniform(-106.0, -96.0) for k in keys}
+    offsets = {k: rng.uniform(-8.0, 0.0) for k in keys}
+    s = SE.Search(happy(), screens="on")
+    sc = Scripted(table, split=set(offsets), screen=offsets)
+    sc.M = s.M
+    asked_total = 0
+    while not s.done:
+        jobs = s.next_jobs()
+        named = {j.key: j for j in s.likely_next(10 ** 6)}
+        earlier = {c for c, (j, _p) in s.current.items() if j.depth == "screen"}
+        ranked.clear()
+        s.feed([sc(j) for j in jobs])
+        pending = {j.key: j for j in s.next_jobs()}
+        asked = {c for out in ranked for c in out} & earlier
+        for c in asked:
+            assert c in named and c in pending and named[c] == pending[c], c
+        asked_total += len(asked)
+    assert asked_total > 0
+
+
+# S1U2 check 3: likely_next lists the screened candidates in _rank's order, promoted ones left out ---------------------
+def test_likely_next_lists_screened_candidates_in_rank_order():
+    s, sc = SE.Search(happy(), screens="on"), Scripted()
+    s.M = sc.M = 200
+    for key, mass in (("c0", -10.0), ("c1", -12.0), ("c2", -11.0)):    # optimistic contributions -5, -7, -6
+        labels = ("b1", "b2", "q" + key)
+        b = sc.basin(3, labels, (5.0, 10.0, 15.0), mass)
+        s.meta[key] = {"purpose": "move", "source": "test"}
+        job = PricingJob("y", "b:ring1", 3, labels, key, (), "screen")
+        s.current[key] = (job, Priced(key, 3, labels, mass, "ok", b[4], None, 1, 0.0, (b,), (), None,
+                                      depth="screen", screen_terms=(b[0],)))
+    s._rebuild()
+    assert [j.key for j in s.likely_next(10)] == ["c0", "c2", "c1"]
+    assert [j.key for j in s.likely_next(2)] == ["c0", "c2"]
+    s.promoted.add("c0")
+    assert [j.key for j in s.likely_next(10)] == ["c2", "c1"]
+    assert s._rank(s.view, ["c0", "c1", "c2"]) == ["c2", "c1"]
