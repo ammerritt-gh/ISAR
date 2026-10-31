@@ -450,7 +450,10 @@ waterfall selection uses the points' displayed positions, including their offset
   withdraws it, but it is never applied: the Mask points menu and the Masked points list show only the masks
   that apply. An analyzer whose stored unit data are missing or unreadable is **held** (Needs attention:
   *Point masks cannot be checked*, action *Add data…*): it is not fitted, and its masks are neither applied
-  nor lapsed until its data are added again.
+  nor lapsed until its data are added again. A fit records only the masks applied when it ran, so a fit made
+  before a lapse says so in its stale explanation (scan-list row tip and inspector): "*M* of its masks no longer
+  match the current data". A refit clears it. Operator ruling 2026-10-31: "a fit done on data X can't be made
+  to say it matches data Y. If they want it gone, they refit." There is no withdraw for a lapsed mask.
 - The effective record combines manual and QC masks before calibration and fitting. Fast,
   Deep and inter-spectra preparation share this record. Each fit records its mask inputs;
   changes mark completed fits **stale**, including refits conditioned on a changed neighbour.

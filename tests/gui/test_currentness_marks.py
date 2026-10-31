@@ -11,6 +11,7 @@ real intake writers into a private copy of the generated S2 workspace (hard rule
 """
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -22,6 +23,9 @@ from PySide6.QtWidgets import QApplication, QPushButton
 
 import bl43_fixture
 import bl43_intake_fixture
+from isar.intake import scans
+from isar.intake.point_masks import point_ids, save_selection
+from isar.session.unit_data import read_unit_data_for_unit, unit_data_path
 from isar.workspace_api import (AnalyzerReadiness, AttentionGroup, AttentionItem, ImportSummary, IncompleteSet,
                                 NeedsAttention, ScanReadiness, UseState, Workspace)
 from isar_gui.main_window import MainWindow
@@ -178,6 +182,33 @@ def test_the_window_marks_the_list_after_a_save(qtbot, monkeypatch, ws_root):
     QApplication.processEvents()
     assert _marked(w.scan_list, f"spec:{A03}", "fast")
     assert "97 K (file) → 100 K (yours)" in _cell(w.scan_list, f"spec:{A03}", "fast").toolTip()
+
+
+def _reimport_counts(root, unit):
+    """A re-import whose counts all moved: the unit file and the row's data revision change together."""
+    exp, n, det = unit.rsplit(":", 2)
+    path = unit_data_path(root / "data", exp, int(n), det)
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["counts"] = [c + 1.0 for c in doc["counts"]]
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    scan = unit.rsplit(":", 1)[0]
+    scans.record_import(root, [{**scans.read_scans(root)[scan], "data_revision": "rev-2"}])
+
+
+def test_a_lapsed_mask_is_named_in_the_stale_tip_until_the_fit_is_redone(qtbot, ws_root):
+    """A fit that recorded a mask says so once the data under it change; a refit records only what still applies."""
+    exp, n, det = A03.rsplit(":", 2)
+    unit = read_unit_data_for_unit(ws_root / "data", exp, int(n), det)
+    assert save_selection(ws_root, {A03: [point_ids(unit["x"], unit["counts"], unit["variance"])[-1]]}).ok
+    bl43_intake_fixture.write_run(ws_root, [A03])          # the fit now records the mask
+    _reimport_counts(ws_root, A03)                          # the point under it is gone
+    _intake, _vm, panel = _list(qtbot, ws_root)
+    tip = _cell(panel, f"spec:{A03}", "fast").toolTip()
+    assert "manual point mask" in tip and "1 of its masks no longer match the current data" in tip
+    bl43_intake_fixture.write_run(ws_root, [A03])          # the refit records only the masks that apply
+    _intake, _vm, panel = _list(qtbot, ws_root)
+    tip = _cell(panel, f"spec:{A03}", "fast").toolTip()
+    assert "no longer match" not in tip and not _marked(panel, f"spec:{A03}", "fast")
 
 
 # ---- the readiness line ------------------------------------------------------------------------------

@@ -220,7 +220,10 @@ def _change_line(p: PassInputs, change) -> tuple[str, str, str]:
     def shown(value, source) -> str:
         text = _change_value(name, value)
         return f"{text} ({_SOURCE_WORDS.get(source, source)})" if source else text
-    return (_CHANGE_LABELS.get(name, name), shown(change.used, used_source), shown(change.now, now_source))
+    used = shown(change.used, used_source)
+    if name == "point_masks" and p.lapsed:          # the masks this fit recorded, some no longer matching its data
+        used += f"; {p.lapsed} of its masks no longer match the current data"
+    return (_CHANGE_LABELS.get(name, name), used, shown(change.now, now_source))
 
 
 def _judged(status: Status, p: PassInputs | None) -> Status:
