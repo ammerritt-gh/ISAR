@@ -248,7 +248,10 @@ empty/ready layout pair, and amends G19 as stated below.
   user switched it off by hand (`scan_list.hidden` in the session), which the auto rule then respects. The
   G27 supersedes that rule: Scan(s) starts at Fit: None and draws only the stored pass the user selects. A missing temperature or |Q| shows a dash with its reason
   on hover; a missing hkl is a blank cell. A background update keeps selection, expansion and scroll
-  (the hkl, |Q|, gpi and rf columns are §0nonies).
+  (the hkl, |Q|, gpi and rf columns are §0nonies). The Scan column keeps at least Qt's default
+  section width and takes any spare width; narrowing the list clips columns from the right first.
+  A container label elides from its right edge, preserving its scan number/name before its analyzer
+  or selection count; the full label remains available on hover.
 - **Scan inspector (G24, G27).** The inspector remains in the left panel and retains recorded scan/analyzer facts, QC flags, target Q, campaign-era command, counting mode, calibration and other unit metadata. G27 removes its former raw-counts plot and adds a Fit section for the stored pass summaries and mode values; the Scan(s) page owns spectrum plotting. Pooled-master numbers and tables remain inspectable even though Scan(s) does not draw pooled curves.
 
 - **Stage two (Implemented, 2026-10-27; job `ja0cd202ecb67`, on the intake backend of job

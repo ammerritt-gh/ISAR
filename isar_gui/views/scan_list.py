@@ -51,6 +51,18 @@ class _ScanTree(QTreeView):
         self.setMouseTracking(True)
         self.viewport().setAttribute(Qt.WidgetAttribute.WA_Hover, False)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fit_scan_column()
+
+    def fit_scan_column(self):
+        """Spend spare width on identity, but let right-hand columns overflow first."""
+        header = self.header()
+        other_width = header.length() - header.sectionSize(0)
+        width = max(header.defaultSectionSize(), self.viewport().width() - other_width)
+        if header.sectionSize(0) != width:
+            header.resizeSection(0, width)
+
     def selectionCommand(self, index, event=None):
         return QItemSelectionModel.SelectionFlag.NoUpdate
 
@@ -164,12 +176,9 @@ class _ContainerDelegate(QStyledItemDelegate):
         view = self.parent()
         style = view.style()
         # Let the item style paint the full selected background before drawing the gutter.
-        label, separator, suffix = opt.text.rpartition(" (")
         opt.rect.adjust(GUTTER, 0, 0, 0)
-        if separator:
-            suffix = " (" + suffix
-            room = max(0, opt.rect.width() - opt.fontMetrics.horizontalAdvance(suffix) - 6)
-            opt.text = opt.fontMetrics.elidedText(label, Qt.TextElideMode.ElideMiddle, room) + suffix
+        # The scan number/name comes before its analyzer or selection count.
+        opt.textElideMode = Qt.TextElideMode.ElideRight
         style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, view)
         branch = QStyleOption()
         branch.rect = QRect(option.rect.left() + 4, option.rect.center().y() - 7, GUTTER - 8, 14)
@@ -275,7 +284,9 @@ class ScanListPanel(QWidget):           # acts through the VM; asks the window o
         header.setFirstSectionMovable(False)
         header.setMinimumSectionSize(36)
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        header.sectionResized.connect(
+            lambda column, _old, _new: self._view.fit_scan_column() if column else None)
         self._view.expanded.connect(lambda idx: self._on_toggled(idx, True))
         self._view.collapsed.connect(lambda idx: self._on_toggled(idx, False))
         self._view.activated.connect(self._on_activated)
@@ -452,6 +463,7 @@ class ScanListPanel(QWidget):           # acts through the VM; asks the window o
             if anchor is not None and anchor in self._by_id:
                 view.scrollTo(self._model.indexFromItem(self._by_id[anchor]),
                               QAbstractItemView.ScrollHint.PositionAtTop)
+        view.fit_scan_column()
         self._restore_selection(reveal=reveal)
         self._update_footer()
 

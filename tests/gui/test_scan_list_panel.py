@@ -161,6 +161,39 @@ def test_default_and_optional_columns(qtbot, monkeypatch, sample):
     assert not panel._view.isColumnHidden(COLUMNS.index("slit"))
 
 
+def test_scan_identity_keeps_its_width_when_right_columns_overflow(qtbot, monkeypatch, sample, tmp_path):
+    sets = tuple(dataclasses.replace(ss, label=str(12345 + i))
+                 for i, ss in enumerate(sample.sets))
+    panel, vm, _ = _make(qtbot, monkeypatch, dataclasses.replace(sample, sets=sets))
+    view = panel._view
+    view.expandAll()
+    vm.select(A[4])
+    QApplication.processEvents()
+    selection = vm.selection.keys
+    expanded = view.isExpanded(_index(panel, f"set:{KEY_A}"))
+    widths = []
+    for width in (900, 500, 280, 150, 120, 500):
+        view.setFixedWidth(width)
+        QApplication.processEvents()
+        header = view.header()
+        assert header.sectionViewportPosition(0) == 0
+        assert view.columnWidth(0) >= header.defaultSectionSize()
+        for node_id in (f"set:{KEY_A}", f"spec:{A[4]}"):
+            index = _index(panel, node_id)
+            rect = view.visualRect(index)
+            label = index.data().split(" (")[0]
+            inset = GUTTER if view.model().hasChildren(index) else 0
+            assert rect.left() >= 0
+            assert rect.left() + inset + view.fontMetrics().horizontalAdvance(label) < view.viewport().width()
+        assert view.grab().save(str(tmp_path / f"scan-list-{width}.png"))
+        widths.append(view.columnWidth(0))
+        assert vm.selection.keys == selection
+        assert view.isExpanded(_index(panel, f"set:{KEY_A}")) == expanded
+    assert widths[0] > widths[3]
+    assert widths[-1] == widths[1]
+    assert view.horizontalScrollBar().maximum() > 0
+
+
 def test_a_missing_value_is_a_dash_with_its_reason(qtbot, monkeypatch, sample):
     panel, vm, _ = _make(qtbot, monkeypatch, sample)
     hkl = _model_item(panel, f"spec:{A[5]}", "hkl")
