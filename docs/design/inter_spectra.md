@@ -30,7 +30,7 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | A mode hidden under another: guard against twin merges, evidence by integrating over the intensity split, undetermined status | Implemented on synthetic spectra, not established on real data | `isar/analyze/coupled/engine.py`, `refit.py` | `tests/analyze/test_coupled_hidden.py` |
 | Candidate search: seeds (each neighbour's own prediction and the spectrum's incoming fit), counts stepped both ways while within the stopping margin, labellings moved within a count, one ledger of distinct fitted basins, and a search record of every candidate and why each direction stopped. No count ceiling and no candidate cap in this pass | Partial: built and tested on synthetic cases; the stopping margin (5 nats) is an uncalibrated start, and the first real-data run is in section 10 | `isar/analyze/coupled/search.py`, `refit.py`, `types.py` | `tests/analyze/test_coupled_search.py`, `tests/analyze/test_coupled_search_real.py` |
 | Screen first, full price for contenders: each count step and labelling move is priced first as a screen (every split integral cut to its first node set); screened candidates are promoted to full prices until no optimistic remainder can change the decision. Seeds and failed screens are always full | Partial: built and tested; the 5-nat allowance is uncalibrated and was checked on one ring-1 shadow run (section 10) | `isar/analyze/coupled/search.py`, `engine.py` (`integrate_split`, `screen`), `refit.py` (`price`) | `tests/analyze/test_coupled_search_screens.py`, `tests/analyze/test_coupled_screen_price.py` |
-| Joint objective and gradient in the coupled pricing (ruling A): analytic derivatives of the Poisson term, heights, background, priors and split coordinates; column differences for mode energies and widths; curvature from differenced gradients; one-pass split polish. The solo fast pass keeps its finite differences | Partial: built and tested; it agrees with the finite-difference path on the real ordinary and bound cases, and two real hidden pairs miss the plan's 0.02-nat reading (section 10) | `isar/analyze/coupled/engine.py`, `refit.py`, `isar/analyze/prior.py` (`hessian_from_grad`), `isar/analyze/fast_pass.py` (the hook that returns none) | `tests/analyze/test_coupled_gradient.py` |
+| Joint objective and gradient in the coupled pricing (ruling A): analytic derivatives of the Poisson term, heights, background, priors and split coordinates; column differences for mode energies and widths; curvature from differenced gradients; one-pass split polish. The solo fast pass keeps its finite differences | Partial: built and tested; it agrees with the finite-difference path on the real ordinary and bound cases, and two real hidden pairs miss the plan's 0.02-nat reading (section 10), accepted by IS25 | `isar/analyze/coupled/engine.py`, `refit.py`, `isar/analyze/prior.py` (`hessian_from_grad`), `isar/analyze/fast_pass.py` (the hook that returns none) | `tests/analyze/test_coupled_gradient.py` |
 | Count-first decision: a count's total probability over its distinct labellings, a count change held by `evidence_hysteresis_nats`, label confidence judged within the chosen count | Implemented | `isar/analyze/coupled/rules.py` (`decide`), `search.py` | `tests/analyze/test_coupled_rules.py`, `tests/analyze/test_coupled_search_real.py` |
 | Loss price for a branch that disappears: a branch a neighbour predicts in the window and the candidate does not name pays the mirror of the entry price, once per spectrum per snapshot | Partial: its size reuses `birth_edge` and `birth_mid`, uncalibrated | `isar/analyze/coupled/refit.py` (`_Spec.loss_terms`), `engine.py` | `tests/analyze/test_coupled_loss.py` |
 | Width at the floor and the quasi-elastic line: a railed width is a resolution-limited alternative that is priced; a QE line railed at its narrowest width is the elastic line (shared engine); the model line is chosen by evidence beyond the hysteresis margin | Implemented on synthetic spectra | `isar/analyze/coupled/refit.py`, `engine.py`, `rules.py` | `tests/analyze/test_coupled_width_floor.py`, `tests/analyze/test_coupled_search_real.py` |
@@ -497,10 +497,19 @@ otherwise change; and that seeds and failed screens are always full. The 5-nat s
 (`SCREEN_ALLOWANCE_NATS`) is an uncalibrated algorithm setting in code, not a dialog setting. The plan kept it at 5 nats
 because the ring-1 calibration met its criterion on two runs, the second after the count-total record fix (section 10); the operator may set another value from those
 numbers. The same day's two speed-ups are the joint gradient (ruling A), a speed-up whose results agree on ordinary
-and bound cases and differ on some real hidden-pair basins (section 10), and no barrier between spectra (ruling B),
+and bound cases and differ on some real hidden-pair basins (section 10; accepted by IS25), and no barrier between spectra (ruling B),
 which changes no results. Dated 2026-10-31.
 "I think this is reasonable. … I think it is right for us to try this now, see how well it works on the data that we
 have, and tune as we need to as we encounter problems" (operator, 2026-10-31).
+
+**IS25 — The joint gradient lands although some hidden-pair evidence moved.** Decides that ruling A's "same results"
+is accepted as not holding exactly on nearly flat hidden-pair basins, and that the gradient path is the default
+there too. On two real hidden-pair jobs the gradient comparison (section 10) found job evidence moving by up to 0.15
+nat, single basins by up to about 1 nat, one split basin lost and one gained; the large differences sit in basins
+with several near-zero curvature eigenvalues, where the Laplace evidence depends on where an optimiser stops in a
+flat valley, so the old values are no reliable reference. Rejected: keeping the finite-difference arithmetic inside
+the split integral, which would restore identical results there at part of the speed-up. Dated 2026-10-31.
+Asked to land as is or keep the old arithmetic in the split integral, the operator answered "Land as is".
 
 ## 9. Out of scope and open
 
@@ -518,9 +527,6 @@ have, and tune as we need to as we encounter problems" (operator, 2026-10-31).
 - *Speed.* The full anchored batch took about 58 minutes against the 30-minute yardstick (IS13, section 10). The next
   step is not built. The options are a cheaper screen for labelling moves, a lighter anchored search, or analytic
   line-shape derivatives; the operator chooses.
-- *Gradient agreement.* Two real hidden pairs differ from the finite-difference path beyond the plan's 0.02-nat reading,
-  and one split basin the finite-difference path priced is undetermined on the gradient path (section 10). Not decided
-  here: whether the reading or the paths change.
 - *Screen allowance.* The 5-nat allowance was checked on one ring-1 shadow run, for that ring's frozen priors. It does
   not establish the same error for a simultaneous batch.
 - *Amplitude prior.* The amplitude-prior test was not run in planning. Amplitude stays free and there is no amplitude setting.
@@ -573,7 +579,8 @@ The real-data proof has not been run (Partial, section 1). The finish-line runs 
   about 0.15 nat. In `a03:6ae1930e` two split basins differ by about 0.04 and 0.11 nat with no better optimum (misses),
   and a flat-valley basin differs by about 0.35 nat (a correction on an objective gain of about 2e-6, a borderline
   call). Pairing is now by the search's basin identity, so one basin the gradient path leaves undetermined reads as
-  absent in its reason text; its verdict is unchanged. Speed is as above.
+  absent in its reason text; its verdict is unchanged. Speed is as above. The operator accepted the miss and kept the
+  gradient path as the default (IS25).
 - **2026-10-31, the screen calibration (`tools/inter_screen_calibration.py`, ring 1, shadow mode, a scratch copy, 44
   minutes).** Six ring-1 spectra. Role: the plan's allowance criterion, the plan's reading of "with room to spare": every
   observed underrating (full price minus screen; positive is the dangerous sign) of a split basin and of each count's
