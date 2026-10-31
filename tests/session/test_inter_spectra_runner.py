@@ -1107,8 +1107,11 @@ def test_the_real_core_runs_both_batch_kinds_end_to_end(tmp_path):
             assert r["stopped"] is not None and r["error"] is None
             assert r["failures"] == sum(n for _, n in r["failure_reasons"])
         lines = [r for r in log.refits if r.batch == spec.batch_id]
-        assert lines and all(r.status in records.ELIGIBLE for r in lines)
-        assert all(records.read_payload(ws.root, r)["overlay"]["fast_pass"]["source"] == "inter_refit" for r in lines)
+        # a later sweep may decline a move at equal J (a flat direction): a reasoned verdict, not a failure
+        assert lines and all(r.status in records.ELIGIBLE or (r.status, r.reason, r.index > 1)
+                             == ("rejected", "material_change_without_gain", True) for r in lines)
+        assert all(records.read_payload(ws.root, r)["overlay"]["fast_pass"]["source"] == "inter_refit"
+                   for r in lines if r.status in records.ELIGIBLE)
         if spec.kind == "anchored":
             assert end["done"] == 2 and {r.accept.decision for r in lines} == {"authoritative"}
             continue
