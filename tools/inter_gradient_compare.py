@@ -10,10 +10,14 @@ fourth required class: it comes from the experiment when its prior is flat, else
 ``gradients=False`` (the finite-difference path of 12bb8f4) and with the default, in parallel, and compared basin by
 basin: status, ln Z, the objective F at the mode, the mask; the posterior-mode difference (in sd) is shown, not judged.
 
-A basin that differs is judged CORRECTION, not a miss, when the finite-difference optimiser stopped short: it is
-undetermined / unpriced there, or the gradient path reached a lower F (by more than 1e-6) at a positive-definite
-mode. Corrections are listed. A MISS is anything else: worse or different with no better optimum, or
-|delta ln Z| > 0.02 nat (S1U3's agreement, the plan's reading of "far below the 0.1-nat hysteresis").
+Basins pair by the search's identity rule (R._same_basin), not by engine index. A basin that differs is judged
+CORRECTION, not a miss, when the finite-difference optimiser stopped short: it is undetermined / unpriced there and
+the gradient path prices it at a positive-definite mode or a converged split, or the gradient path reached a lower F
+(by more than 1e-6) at a positive-definite mode. Corrections are listed. A MISS is anything else: worse or different
+with no better optimum, or |delta ln Z| > 0.02 nat (S1U3's agreement, the plan's reading of "far below the 0.1-nat
+hysteresis"). The job-level checks (status, width mask, job |delta ln Z|, priced on one path only) run for every job
+and are listed; a status or mask change is a miss whatever the basins say, and the others are a miss unless a
+correction basin accounts for them.
 
 Exit code: 1 when any case misses; else 2 when a required class is absent (named); else 0. Writes ``table.md``,
 ``compare.json`` and ``summary.txt`` under --out. --timeout-s kills the run and writes TIMEOUT.txt.
@@ -60,6 +64,7 @@ def _summary(b, slots) -> dict:
          "split": getattr(b, "boundary_method", "") == "split", "pinned": list(b.pinned or ()), "priced": False}
     if b.status in R._PRICED and b.ln_z is not None and b.theta_map is not None and not R._free_width_at_floor(b):
         d["priced"] = True
+        d["rec"] = R._basin_record(b, slots, 0.0)          # the search's own basin identity, for _same_basin
         free = np.asarray(m.free, int)
         d["theta"] = [float(x) for x in b.theta_map[free]]
         d["F"] = float(b.objective(b.theta_map[free])) if b.objective is not None else None
@@ -126,17 +131,31 @@ def synthetic_flat_hidden():
 
 
 # ---- the comparison --------------------------------------------------------------------------------------
-def compare_job(fd, new) -> dict:
+def _same(spec, f, n) -> bool:
+    return f.get("rec") is not None and n.get("rec") is not None and R._same_basin(spec, f["rec"], n["rec"])
+
+
+def _pair(spec, bf, bn) -> list:
+    """(fd, new) basin pairs: a priced basin pairs with the other path's priced basin that is the same physical one by
+    the search's rule (R._same_basin), never by engine index; a basin with no partner stands alone."""
+    used, out = set(), []
+    for f in bf:
+        n = next((i for i, x in enumerate(bn) if i not in used and _same(spec, f, x)), None)
+        if n is not None:
+            used.add(n)
+        out.append((f, None if n is None else bn[n]))
+    return out + [(None, x) for i, x in enumerate(bn) if i not in used]
+
+
+def compare_job(fd, new, spec) -> dict:
     """fd, new: (Priced, basins, seconds). -> {"basins": [row], "verdict": agree | correction | miss, "job": {...}}."""
     (pf, bf, sf), (pn, bn, sn) = fd, new
-    kf = {(b["label"], tuple(b["delta"]), b["index"]): b for b in bf}
-    kn = {(b["label"], tuple(b["delta"]), b["index"]): b for b in bn}
-    rows, notes = [], []
-    for key in sorted(set(kf) | set(kn), key=str):
-        f, n = kf.get(key), kn.get(key)
-        row = {"label": key[0], "delta": list(key[1]), "index": key[2],
+    rows = []
+    for f, n in _pair(spec, bf, bn):
+        ref = f or n
+        row = {"label": ref["label"], "delta": list(ref["delta"]), "index": ref["index"],
                "status_fd": None if f is None else f["status"], "status_new": None if n is None else n["status"],
-               "split": bool((f or n)["split"]), "ln_z_fd": None, "ln_z_new": None, "d_ln_z": None, "F_fd": None,
+               "split": bool(ref["split"]), "ln_z_fd": None, "ln_z_new": None, "d_ln_z": None, "F_fd": None,
                "F_new": None, "mode_sd": None, "verdict": "agree", "why": ""}
         pf_ok, pn_ok = bool(f and f["priced"]), bool(n and n["priced"])
         if pf_ok:
@@ -176,21 +195,23 @@ def compare_job(fd, new) -> dict:
            "status_fd": pf.status, "status_new": pn.status,
            "mask_fd": None if pf.mode is None else list(pf.mode[3]),
            "mask_new": None if pn.mode is None else list(pn.mode[3]), "seconds_fd": sf, "seconds_new": sn}
+    notes = []                                         # run whatever the basins say; a failure here is a miss
+    if job["status_fd"] != job["status_new"]:
+        notes.append(f"job status {job['status_fd']} -> {job['status_new']}")
+    if job["mask_fd"] != job["mask_new"]:
+        notes.append(f"width mask {job['mask_fd']} -> {job['mask_new']}")
+    if job["d_ln_z"] is not None and abs(job["d_ln_z"]) > DLN_Z:
+        notes.append(f"job |d ln Z| {abs(job['d_ln_z']):.4f} > {DLN_Z}")
+    if (pf.ln_z is None) != (pn.ln_z is None):
+        notes.append("priced on one path only")
     verdicts = {r["verdict"] for r in rows}
     jv = "agree"
-    if "miss" in verdicts:
+    if "miss" in verdicts or job["status_fd"] != job["status_new"] or job["mask_fd"] != job["mask_new"]:
         jv = "miss"
-    elif "correction" in verdicts:
+    elif "correction" in verdicts:                     # a correction basin can explain a job ln Z change, not a mask
         jv = "correction"
-    else:                                              # basins agree: the job-level words must too
-        if job["status_fd"] != job["status_new"]:
-            jv, notes = "miss", notes + [f"job status {job['status_fd']} -> {job['status_new']}"]
-        if job["mask_fd"] != job["mask_new"]:
-            jv, notes = "miss", notes + [f"width mask {job['mask_fd']} -> {job['mask_new']}"]
-        if job["d_ln_z"] is not None and abs(job["d_ln_z"]) > DLN_Z:
-            jv, notes = "miss", notes + [f"job |d ln Z| {abs(job['d_ln_z']):.4f} > {DLN_Z}"]
-        if (pf.ln_z is None) != (pn.ln_z is None):
-            jv, notes = "miss", notes + ["priced on one path only"]
+    elif notes:
+        jv = "miss"
     return {"basins": rows, "verdict": jv, "job": job, "notes": notes}
 
 
@@ -318,7 +339,7 @@ def main(argv=None) -> int:
             result = {"basins": [], "verdict": "miss", "notes": [f"a path raised: fd {fd!r} new {new!r}"],
                       "job": {"seconds_fd": 0.0, "seconds_new": 0.0}}
         else:
-            result = compare_job(fd, new)
+            result = compare_job(fd, new, R._Spec(c["snap"]))
         done.append({k: v for k, v in c.items() if k not in ("snap", "job")} | {"result": result})
     present = {cl for c in done for cl in c["classes"]}
     missing = [c for c in CLASSES if c not in present]

@@ -94,11 +94,20 @@ def test_a_spectrum_without_a_shadow_record_is_named_not_averaged_in():
 
 
 # ---- the gradient comparison's verdicts -----------------------------------------------------------------------------
-def _basin(ln_z, *, F=10.0, status="ok", posdef=True, split=False, theta=(1.0, 2.0), sd=(0.5, 0.5), priced=True):
-    d = {"label": "m", "delta": [], "index": 0, "status": status, "reason": "", "ln_z": ln_z, "split": split,
+SPEC = SimpleNamespace(fs=SimpleNamespace(basin_merge_fwhm=1.0, basin_gamma_frac=0.5, basin_height_frac=0.5), fwhm=1.0)
+
+
+def compare(fd, new):
+    return gc.compare_job(fd, new, SPEC)
+
+
+def _basin(ln_z, *, F=10.0, status="ok", posdef=True, split=False, theta=(1.0, 2.0), sd=(0.5, 0.5), priced=True,
+           e=1.0, index=0):
+    d = {"label": "m", "delta": [], "index": index, "status": status, "reason": "", "ln_z": ln_z, "split": split,
          "pinned": [], "priced": priced}
-    if priced:
-        d |= {"theta": list(theta), "F": F, "sd": list(sd), "posdef": posdef}
+    if priced:   # rec: the search's basin record, one mode at energy e
+        d |= {"theta": list(theta), "F": F, "sd": list(sd), "posdef": posdef,
+              "rec": (0.0, "m", ((0, e, 0.5, 10.0, False, None),), (None, None), None, None)}
     return d
 
 
@@ -108,26 +117,48 @@ def _job(basins, ln_z, *, status="ok", mask=()):
 
 
 def test_agreement_within_the_tolerance_is_agree_and_a_difference_with_no_better_optimum_is_a_miss():
-    same = gc.compare_job(_job([_basin(-5.0)], -5.0), _job([_basin(-5.01)], -5.01))
+    same = compare(_job([_basin(-5.0)], -5.0), _job([_basin(-5.01)], -5.01))
     assert same["verdict"] == "agree"
-    worse = gc.compare_job(_job([_basin(-5.0, F=10.0)], -5.0), _job([_basin(-5.2, F=10.2)], -5.2))
+    worse = compare(_job([_basin(-5.0, F=10.0)], -5.0), _job([_basin(-5.2, F=10.2)], -5.2))
     assert worse["verdict"] == "miss" and "no better optimum" in worse["basins"][0]["why"]
-    tie = gc.compare_job(_job([_basin(-5.0, F=10.0)], -5.0), _job([_basin(-5.2, F=10.0)], -5.2))
+    tie = compare(_job([_basin(-5.0, F=10.0)], -5.0), _job([_basin(-5.2, F=10.0)], -5.2))
     assert tie["verdict"] == "miss"                                 # a different answer at the same F is not a gain
-    mask = gc.compare_job(_job([_basin(-5.0)], -5.0, mask=(0,)), _job([_basin(-5.0)], -5.0, mask=()))
-    assert mask["verdict"] == "miss"
+    mask = compare(_job([_basin(-5.0)], -5.0, mask=(0,)), _job([_basin(-5.0)], -5.0, mask=()))
+    assert mask["verdict"] == "miss" and mask["notes"] == ["width mask [0] -> []"]
 
 
 def test_a_fd_optimiser_that_stopped_short_is_a_correction_only_at_a_positive_definite_better_mode():
     fd = _job([_basin(-7.0, F=12.0, posdef=False)], -7.0)
-    better = gc.compare_job(fd, _job([_basin(-5.0, F=10.0)], -5.0))
+    better = compare(fd, _job([_basin(-5.0, F=10.0)], -5.0))
     assert better["verdict"] == "correction" and better["basins"][0]["verdict"] == "correction"
-    assert gc.compare_job(fd, _job([_basin(-5.0, F=13.0)], -5.0))["verdict"] == "miss"     # worse F: a miss
+    assert compare(fd, _job([_basin(-5.0, F=13.0)], -5.0))["verdict"] == "miss"     # worse F: a miss
     # the other direction: the gradient path is the one that lost the basin
-    lost = gc.compare_job(_job([_basin(-5.0)], -5.0), _job([_basin(None, status="undetermined", priced=False)], None))
+    lost = compare(_job([_basin(-5.0)], -5.0), _job([_basin(None, status="undetermined", priced=False)], None))
     assert lost["verdict"] == "miss"
-    found = gc.compare_job(_job([_basin(None, status="undetermined", priced=False)], None), _job([_basin(-5.0)], -5.0))
+    found = compare(_job([_basin(None, status="undetermined", priced=False)], None), _job([_basin(-5.0)], -5.0))
     assert found["verdict"] == "correction"
-    flat = gc.compare_job(_job([_basin(None, status="undetermined", priced=False)], None),
-                          _job([_basin(-5.0, posdef=False)], -5.0))
+    flat = compare(_job([_basin(None, status="undetermined", priced=False)], None),
+                   _job([_basin(-5.0, posdef=False)], -5.0))
     assert flat["verdict"] == "miss"                                # priced at a mode that is not positive definite
+    # a split basin has no covariance (posdef False) but its integral converged: the packet's rule takes it as a correction
+    split = compare(_job([_basin(None, status="undetermined", priced=False)], None),
+                    _job([_basin(-5.0, split=True, posdef=False)], -5.0))
+    assert split["verdict"] == "correction" and "correction" in [r["verdict"] for r in split["basins"]]
+
+
+def test_basins_pair_by_the_search_identity_not_by_engine_index():
+    # the two optimisers list the same two basins in opposite order: by index they would be compared crosswise
+    fd = _job([_basin(-5.0, e=1.0, index=0), _basin(-7.0, e=5.0, index=1)], -4.0)
+    new = _job([_basin(-7.0, e=5.0, index=0), _basin(-5.0, e=1.0, index=1)], -4.0)
+    out = compare(fd, new)
+    assert out["verdict"] == "agree" and len(out["basins"]) == 2
+    assert all(r["d_ln_z"] == 0.0 for r in out["basins"])
+
+
+def test_a_correction_basin_does_not_hide_a_changed_width_mask_or_status():
+    fd = _job([_basin(-7.0, F=12.0, posdef=False)], -7.0, mask=())
+    out = compare(fd, _job([_basin(-5.0, F=10.0)], -5.0, mask=(0,)))
+    assert out["basins"][0]["verdict"] == "correction"
+    assert out["verdict"] == "miss" and "width mask [] -> [0]" in out["notes"]
+    # the same job with the mask unchanged: the correction stands, and its job ln Z change is explained by it
+    assert compare(fd, _job([_basin(-5.0, F=10.0)], -5.0))["verdict"] == "correction"
