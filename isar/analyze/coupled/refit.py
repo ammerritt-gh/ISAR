@@ -556,6 +556,8 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
         raise ValueError(f"job {job.key}: {len(slots)} slots for count {k}")
     if not job.starts:
         raise ValueError(f"job {job.key}: no starts (a job is built by the search, with its starts)")
+    if job.depth not in ("full", "screen"):
+        raise ValueError(f"job {job.key}: depth {job.depth!r} is neither 'full' nor 'screen'")
     spec = _Spec(snapshot)
     loss = spec.loss_terms(slots)           # recorded on every return, even a failed one
     objs = spec.slot_objects(slots)
@@ -563,12 +565,13 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
     if bad:
         return Priced(job.key, k, slots, None, "no_evidence", None,
                       f"the neighbour density of {bad[0]} has no verified normaliser", 0, time.perf_counter() - t0,
-                      loss=loss)
+                      loss=loss, depth=job.depth)
     u = sum(b is None for b in slots)
-    eng = _Labelled(spec.ctx, _ceiling(spec.fs, k), objs, structures=spec.structures)
+    eng = _Labelled(spec.ctx, _ceiling(spec.fs, k), objs, structures=spec.structures, screen=job.depth == "screen")
     if not eng.variants.get(k):
         return Priced(job.key, k, slots, None, "no_structure", None,
-                      f"the card's structures hold no model with {k} modes", 0, time.perf_counter() - t0, loss=loss)
+                      f"the card's structures hold no model with {k} modes", 0, time.perf_counter() - t0,
+                      loss=loss, depth=job.depth)
     for v in eng.variants[k]:
         for st in job.starts:
             eng.fit(v, [(e, g, h, False) for e, g, h in st.modes], st.family)
@@ -591,7 +594,7 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
         reason = und.reason if und is not None else _failure_reason(basins, floored=bool(scored))
         status = "degenerate_twin" if twin else "undetermined" if und is not None else "no_evidence"
         return Priced(job.key, k, slots, None, status, None, reason, eng.n_fits, time.perf_counter() - t0,
-                      loss=loss)
+                      loss=loss, depth=job.depth)
 
     def charge(b):
         fixed = set(b.model.fixed_pos)
@@ -607,9 +610,12 @@ def price(snapshot: Snapshot, job: PricingJob) -> Priced:
     mode = (v.elastic, v.background, v.qe, tuple(best.model.delta),
             tuple(float(v) for v in best.theta_map))
     records = tuple(_basin_record(b, slots, t) for b, t in zip(priced, terms))
+    # a split basin's term with its evidence cut to the first node set (its screen); None where there is no split
+    screen_terms = tuple(None if getattr(b, "split_sets", None) is None else t - b.ln_z + b.split_sets[0][1]
+                         for b, t in zip(priced, terms))
     peak = _residual_peak(eng, best, [m[1] for m in records[int(np.argmax(terms))][2]])
     return Priced(job.key, k, slots, ln_z, best.status, mode, None, eng.n_fits, time.perf_counter() - t0,
-                  records, loss, peak)
+                  records, loss, peak, depth=job.depth, screen_terms=screen_terms)
 
 
 def _residual_peak(eng, b, energies) -> tuple[float, float]:
