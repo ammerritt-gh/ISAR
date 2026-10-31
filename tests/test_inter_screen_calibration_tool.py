@@ -1,0 +1,117 @@
+"""tools/inter_screen_calibration.py and tools/inter_gradient_compare.py (S1U5): the reports built from synthetic
+records. Nothing here opens an experiment or reads measured data (hard rule 10); the tools themselves are run
+deliberately on a scratch copy, never by the routine suite.
+"""
+from __future__ import annotations
+
+import math
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import isar
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parent
+sys.path.insert(0, str(REPO / "tools"))
+
+import inter_gradient_compare as gc  # noqa: E402
+import inter_screen_calibration as cal  # noqa: E402
+
+
+def test_import_root_is_the_worktree():
+    root = Path(isar.__file__).resolve().parents[1]
+    print("import root:", root)
+    assert root == REPO
+
+
+# ---- the calibration report -----------------------------------------------------------------------------------
+def _record(basins, decisions, first, *, counts=None, cands=None):
+    search = {"version": 2, "counts": counts or {"2": {"ln_total": -10.0}, "3": {"ln_total": -12.0}},
+              "screens": {"mode": "shadow", "screened": 4, "promoted": 0},
+              "shadow": {"basins": basins, "decisions": decisions, "first_divergence": first}}
+    cands = cands if cands is not None else [
+        {"count": 2, "ln_z": -10.0, "ln_z_screen": -10.5}, {"count": 2, "ln_z": -14.0, "ln_z_screen": None},
+        {"count": 3, "ln_z": -12.0, "ln_z_screen": -12.2}, {"count": 3, "ln_z": None, "ln_z_screen": None}]
+    return {"search": search, "candidates": cands}
+
+
+def test_basin_count_and_candidate_underratings_are_full_minus_screen():
+    rep = cal.build_report({"u1": _record([[2, ["b1", "b2"], -10.0, -10.6], [3, ["b1", None, None], -12.0, -11.0],
+                                           [3, [None, None, None], None, -20.0]], [], None)}, 5.0)
+    x = rep["spectra"]["u1"]
+    assert math.isclose(x["basins"][0]["underrating"], 0.6) and math.isclose(x["basins"][1]["underrating"], -1.0)
+    assert x["basins"][2]["underrating"] is None                    # no matching full basin: unmatched, not an error
+    assert rep["split_basin_underrating"]["n"] == 2 and math.isclose(rep["split_basin_underrating"]["max"], 0.6)
+    # count 2's face-screen total: lse(-10.5, -14.0 exact); the full total is the record's -10.0
+    face2 = math.log(math.exp(-10.5) + math.exp(-14.0))
+    assert math.isclose(x["counts"]["2"]["face_screen_total"], face2)
+    assert math.isclose(x["counts"]["2"]["underrating"], -10.0 - face2)
+    assert math.isclose(rep["candidate_underrating"]["max"], 0.5)      # the exact candidate has no screen to compare
+    assert rep["criterion_met"] and rep["divergences"] == 0 and rep["would_promote"] == 0
+
+
+def test_a_definite_divergence_or_a_big_underrating_fails_the_criterion_and_a_small_one_does_not():
+    decisions = [{"kind": "walk", "at": "3", "full": True, "screen": None},
+                 {"kind": "best_key", "at": "k", "full": True, "screen": False},
+                 {"kind": "final", "at": "decision", "full": True, "screen": None}]
+    rep = cal.build_report({"u1": _record([[2, ["b1"], -10.0, -10.1]], decisions, 1)}, 5.0)
+    x = rep["spectra"]["u1"]
+    assert x["first_divergence"]["index"] == 1 and x["first_divergence"]["kind"] == "best_key"
+    assert x["would_promote"] == 2 and len(x["divergences"]) == 1 and x["final_would_promote"]
+    assert x["kinds_that_differ"] == ["best_key"] and not x["final_choice_differs"]
+    assert not rep["criterion_met"]
+    big = cal.build_report({"u1": _record([[2, ["b1"], -10.0, -13.0]], [], None)}, 5.0)    # 3.0 > 2.5, no divergence
+    assert big["split_basin_underrating"]["over_half"] == 1 and big["split_basin_underrating"]["over_all"] == 0
+    assert not big["criterion_met"]
+
+
+def test_a_spectrum_without_a_shadow_record_is_named_not_averaged_in():
+    ok = _record([[2, ["b1"], -10.0, -10.1]], [], None)
+    rep = cal.build_report({"u1": ok, "u2": {"search": {"version": 2, "shadow": None}, "candidates": []},
+                            "u3": {"search": None, "candidates": []}}, 5.0)
+    assert rep["unreadable"] == ["u2", "u3"] and list(rep["spectra"]) == ["u1"] and not rep["criterion_met"]
+    text = cal.render(rep)
+    assert "u2, u3" in text and "frozen priors" in text and "criterion met" in text
+
+
+# ---- the gradient comparison's verdicts -----------------------------------------------------------------------------
+def _basin(ln_z, *, F=10.0, status="ok", posdef=True, split=False, theta=(1.0, 2.0), sd=(0.5, 0.5), priced=True):
+    d = {"label": "m", "delta": [], "index": 0, "status": status, "reason": "", "ln_z": ln_z, "split": split,
+         "pinned": [], "priced": priced}
+    if priced:
+        d |= {"theta": list(theta), "F": F, "sd": list(sd), "posdef": posdef}
+    return d
+
+
+def _job(basins, ln_z, *, status="ok", mask=()):
+    p = SimpleNamespace(ln_z=ln_z, status=status, mode=(True, True, False, tuple(mask), ()))
+    return p, basins, 1.0
+
+
+def test_agreement_within_the_tolerance_is_agree_and_a_difference_with_no_better_optimum_is_a_miss():
+    same = gc.compare_job(_job([_basin(-5.0)], -5.0), _job([_basin(-5.01)], -5.01), 1e-3)
+    assert same["verdict"] == "agree"
+    worse = gc.compare_job(_job([_basin(-5.0, F=10.0)], -5.0), _job([_basin(-5.2, F=10.2)], -5.2), 1e-3)
+    assert worse["verdict"] == "miss" and "no better optimum" in worse["basins"][0]["why"]
+    tie = gc.compare_job(_job([_basin(-5.0, F=10.0)], -5.0), _job([_basin(-5.2, F=10.0)], -5.2), 1e-3)
+    assert tie["verdict"] == "miss"                                 # a different answer at the same F is not a gain
+    mask = gc.compare_job(_job([_basin(-5.0)], -5.0, mask=(0,)), _job([_basin(-5.0)], -5.0, mask=()), 1e-3)
+    assert mask["verdict"] == "miss"
+
+
+def test_a_fd_optimiser_that_stopped_short_is_a_correction_only_at_a_positive_definite_better_mode():
+    fd = _job([_basin(-7.0, F=12.0, posdef=False)], -7.0)
+    better = gc.compare_job(fd, _job([_basin(-5.0, F=10.0)], -5.0), 1e-3)
+    assert better["verdict"] == "correction" and better["basins"][0]["verdict"] == "correction"
+    assert gc.compare_job(fd, _job([_basin(-5.0, F=13.0)], -5.0), 1e-3)["verdict"] == "miss"     # worse F: a miss
+    # the other direction: the gradient path is the one that lost the basin
+    lost = gc.compare_job(_job([_basin(-5.0)], -5.0), _job([_basin(None, status="undetermined", priced=False)], None),
+                          1e-3)
+    assert lost["verdict"] == "miss"
+    found = gc.compare_job(_job([_basin(None, status="undetermined", priced=False)], None), _job([_basin(-5.0)], -5.0),
+                           1e-3)
+    assert found["verdict"] == "correction"
+    flat = gc.compare_job(_job([_basin(None, status="undetermined", priced=False)], None),
+                          _job([_basin(-5.0, posdef=False)], -5.0), 1e-3)
+    assert flat["verdict"] == "miss"                                # priced at a mode that is not positive definite
