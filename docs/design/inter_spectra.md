@@ -496,11 +496,11 @@ search is priced first as a screen; that a screen is promoted to a full price wh
 otherwise change; and that seeds and failed screens are always full. The 5-nat safety allowance
 (`SCREEN_ALLOWANCE_NATS`) is an uncalibrated algorithm setting in code, not a dialog setting. The plan kept it at 5 nats
 because the one ring-1 calibration run met its criterion (section 10); the operator may set another value from those
-numbers. The design record places the same day's ruling in the two speed-ups that change no results: the joint
-gradient (ruling A) and no barrier between spectra (ruling B). Dated 2026-10-31.
-"try 'screen first, full price for contenders' now and tune it as problems appear, not guarded in advance against
-problems nobody has seen." The design record gives this ruling in its own words, not as a transcript of the operator;
-the quotation is the record's, and the operator's words are to be checked against it.
+numbers. The same day's two speed-ups are the joint gradient (ruling A), a speed-up whose results agree on ordinary
+and bound cases and differ on some real hidden-pair basins (section 10), and no barrier between spectra (ruling B),
+which changes no results. Dated 2026-10-31.
+"I think this is reasonable. … I think it is right for us to try this now, see how well it works on the data that we
+have, and tune as we need to as we encounter problems" (operator, 2026-10-31).
 
 ## 9. Out of scope and open
 
