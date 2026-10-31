@@ -127,4 +127,6 @@ class InterFitBar(QWidget):
         index = ids.index(self._viewed)
         target = max(0, min(len(ids) - 1, index + direction))
         if target != index:
-            self.fit_chosen.emit(ids[target])
+            # Advance before emitting: another key can arrive before the queued redraw.
+            self._viewed = ids[target]
+            self.fit_chosen.emit(self._viewed)
