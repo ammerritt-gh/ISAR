@@ -493,6 +493,7 @@ class MainWindow(QMainWindow):
         # re-arranges when the first data arrives.
         self.scan_list_vm.load_view_state(self._session)
         self._sync_scan_numbering()
+        self._window_geometry_restored = self._restore_window_geometry()
         self._restore_layout()
         self._sync_workspace_actions()
         QTimer.singleShot(0, self, self._surface_session_security_warnings)
@@ -1328,6 +1329,17 @@ class MainWindow(QMainWindow):
                 and self._operations.is_running_campaign()):
             self._compact_hint_shown = True
             self.statusBar().showMessage("Tip: View ▸ Mini monitor shows campaign progress in a small window")
+
+        self._autosave()
+
+    def moveEvent(self, event) -> None:  # noqa: N802
+        super().moveEvent(event)
+        self._autosave()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._autosave()
 
     def _register_dock(self, name: str, dock) -> None:
         """Track a dock so the Panels menu and layout autosave pick it up (call before menu build)."""
@@ -2967,12 +2979,36 @@ class MainWindow(QMainWindow):
         self.active_units.set_active(self._unit_key_for_fit(fresh))
 
     # ---- session layout --------------------------------------------------
+    def _restore_window_geometry(self) -> bool:
+        """Restore size, position and maximization before laying out or showing the window."""
+        b64 = self._session.view_state.get("window_geometry_b64")
+        if not isinstance(b64, str) or not b64:
+            return False
+        try:
+            if self.restoreGeometry(QByteArray.fromBase64(b64.encode("ascii"))):
+                self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
+                return True
+        except Exception as exc:  # noqa: BLE001 — corrupt geometry must not prevent startup
+            log.warning("could not restore the saved window geometry: %s", exc)
+        self.log("Window geometry: saved size or position is unreadable; using the startup default.")
+        return False
+
+    def show_saved_window(self) -> None:
+        """Show the settled startup state once; a minimized session always reopens visible."""
+        state = self.windowState() & ~Qt.WindowState.WindowMinimized
+        if not self._window_geometry_restored:
+            state |= Qt.WindowState.WindowMaximized
+        self.setWindowState(state)
+        self.show()
+
     def _snapshot_session(self) -> Session:
         # The one arrangement is saved in every state (the empty state has the same one). Compact
         # mode is never serialized: the stash holds the real layout in memory and closeEvent expands
         # before the final snapshot.
         if not self._compact_active:
             self._remember_inspector_width()
+            self._session.view_state["window_geometry_b64"] = bytes(
+                self.saveGeometry().toBase64().data()).decode("ascii")
             state = bytes(self.saveState(_LAYOUT_VERSION).toBase64().data()).decode("ascii")
             self._session.dock_layout_b64 = state
             # What the arrangement needs of a screen: everything except the display at its saved

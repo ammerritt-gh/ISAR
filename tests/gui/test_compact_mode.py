@@ -49,9 +49,11 @@ def test_expand_restores_layout_and_visibility(qtbot, ready_window):
 def test_snapshot_while_compact_keeps_full_layout(qtbot, ready_window):
     w = ready_window
     full = w._snapshot_session().dock_layout_b64
+    geometry = w._session.view_state["window_geometry_b64"]
     assert full
     w.toggle_compact_mode()
     assert w._snapshot_session().dock_layout_b64 == full   # never overwritten while compact
+    assert w._session.view_state["window_geometry_b64"] == geometry
 
 
 def test_close_while_compact_persists_full_layout(qtbot, ready_window):

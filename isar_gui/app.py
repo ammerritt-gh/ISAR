@@ -165,8 +165,8 @@ def main(argv=None) -> int:
     legacy = _legacy_temp_note()
     if legacy is not None:
         window.log(legacy)
-    # Maximised: the first-start arrangement is sized to the screen's available area.
-    window.showMaximized()
+    # Geometry and docks are restored before the first show; only a first start defaults to maximized.
+    window.show_saved_window()
     logging.getLogger(__name__).info("main window shown")  # the launcher smoke test waits for this line
     if selftest:
         from PySide6.QtCore import QTimer

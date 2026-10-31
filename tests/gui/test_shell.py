@@ -514,8 +514,12 @@ def test_empty_start_then_open_keeps_the_saved_arrangement(qtbot, make_ws, monke
     left = source.left_column_dock.width()
 
     root = make_ws(rows=[{"scan": 2, "detector": "det", "status": "fitted", "omega0": 6.0}])
+    # This test mocks the dock-layout screen, while Qt geometry sees the real offscreen screen.
+    # Isolate dock restoration here; test_window_startup covers geometry with real screen sizes.
+    view_state = dict(saved.view_state)
+    view_state.pop("window_geometry_b64")
     w = MainWindow(None, session=Session(dock_layout_b64=saved.dock_layout_b64,
-                                         view_state=dict(saved.view_state)), watch=False)
+                                         view_state=view_state), watch=False)
     qtbot.addWidget(w)
     w.show()
     qtbot.wait(50)

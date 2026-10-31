@@ -179,7 +179,7 @@ def test_hiding_gpi_or_showing_absq_is_remembered_across_a_reload(qtbot, tmp_pat
     session = SimpleNamespace(view_state={})
     vm.save_view_state(session)
     assert session.view_state["scan_list"] == {"columns": ["absq"], "sort": "set", "hidden": ["gpi"],
-                                               "show_removed": False}
+                                               "show_removed": False, "analyzer_numbering": "facility"}
 
     vm2, panel2 = _panel(qtbot, root)
     assert panel2._view.isColumnHidden(COLUMNS.index("absq"))

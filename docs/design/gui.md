@@ -205,6 +205,12 @@ empty/ready layout pair, and amends G19 as stated below.
   screen and Qt accepts it; otherwise the default for the current screen is used and one Log line says
   why. *View ▸ Reset layout* returns to the default for the current screen. `run-isar-gui.bat` starts
   the GUI with `pythonw`, so no console window opens.
+  Window size, position and normal/maximized state are saved in the session with Qt's geometry
+  record, separately from the dock arrangement. Startup restores geometry before docks and shows
+  the settled window once; a first start defaults to maximized. A window closed while minimized
+  reopens visibly in its previous normal/maximized state. Qt brings geometry from a removed or
+  resized screen back onto an available screen. Moves, resizes and window-state changes use the
+  existing debounced autosave; Mini monitor geometry never replaces the full window's saved state.
   **Known limit, accepted (2026-10-27; superseded by G27).** The earlier 86 px plot measurement applied to the former fit page while its side tables shared the centre column. G27 moves stored fit tables to the left inspector and gives Scan(s) the plot area. No new narrow-screen plot width is claimed here; the laptop-size human walkthrough remains unrun.
 
 - **G25 — the experiment is a real folder.** With no experiment open, a drop, *Add files…* or
