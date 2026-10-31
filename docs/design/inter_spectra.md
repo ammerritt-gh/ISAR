@@ -495,7 +495,7 @@ entry points here.
 search is priced first as a screen; that a screen is promoted to a full price whenever a count or label choice could
 otherwise change; and that seeds and failed screens are always full. The 5-nat safety allowance
 (`SCREEN_ALLOWANCE_NATS`) is an uncalibrated algorithm setting in code, not a dialog setting. The plan kept it at 5 nats
-because the one ring-1 calibration run met its criterion (section 10); the operator may set another value from those
+because the ring-1 calibration met its criterion on two runs, the second after the count-total record fix (section 10); the operator may set another value from those
 numbers. The same day's two speed-ups are the joint gradient (ruling A), a speed-up whose results agree on ordinary
 and bound cases and differ on some real hidden-pair basins (section 10), and no barrier between spectra (ruling B),
 which changes no results. Dated 2026-10-31.
@@ -565,6 +565,15 @@ The real-data proof has not been run (Partial, section 1). The finish-line runs 
   points of a flat valley, and the finite-difference path's split curvature carries a small bias that the gradient
   reduces. That was one investigation, and no code was changed. Speed on the same cases: about 1.2 to 1.4 times faster
   on the real cases (the two real hidden pairs 36 s to 28 s and 151 s to 118 s), and about 2 times on the synthetic pair.
+- **2026-10-31, the gradient comparison rerun after the review repairs (the same seven cases, a scratch copy, about 4.5
+  minutes).** Role: the same 0.02-nat reading. **Not met, as before.** Ordinary, bound and synthetic cases agree (the
+  largest basin difference about 0.016 nat). The two real hidden pairs miss. In `a03:d8da39b7` a split basin the
+  finite-difference path priced is undetermined on the gradient path, a flat-valley basin differs by about 0.95 nat (a
+  correction: the gradient path reaches a slightly lower objective at a positive-definite mode), and the job's ln Z by
+  about 0.15 nat. In `a03:6ae1930e` two split basins differ by about 0.04 and 0.11 nat with no better optimum (misses),
+  and a flat-valley basin differs by about 0.35 nat (a correction on an objective gain of about 2e-6, a borderline
+  call). Pairing is now by the search's basin identity, so one basin the gradient path leaves undetermined reads as
+  absent in its reason text; its verdict is unchanged. Speed is as above.
 - **2026-10-31, the screen calibration (`tools/inter_screen_calibration.py`, ring 1, shadow mode, a scratch copy, 44
   minutes).** Six ring-1 spectra. Role: the plan's allowance criterion, the plan's reading of "with room to spare": every
   observed underrating (full price minus screen; positive is the dangerous sign) of a split basin and of each count's
@@ -573,6 +582,12 @@ The real-data proof has not been run (Partial, section 1). The finish-line runs 
   candidates (241): largest about 0.5 nat. Shadow decisions that diverge: none. Decisions the screens could not settle
   alone, so that they would promote: 54. The allowance stays at 5 nats for this ring's frozen priors. This is a
   diagnostic of the screens, for that ring only.
+- **2026-10-31, the screen calibration rerun after the count-total record fix (`tools/inter_screen_calibration.py`, ring 1,
+  shadow mode, a scratch copy, about 38 minutes).** Six ring-1 spectra, no errors. Role: as above. **Met, as before.**
+  The numbers match the earlier run to the printed precision: split basins (417) median about minus 0.5 nat, 90th
+  percentile about 0.06 nat, largest about 0.4 nat; count totals (24) largest about 0.05 nat; whole candidates (241)
+  largest about 0.5 nat; no divergence; 54 decisions would promote. The fix changes how the count totals are read, not
+  these values: on this ring the shadow view and the candidate rows agree.
 - **2026-10-31, the timing (`tools/inter_timing.py`, the full 28-spectrum anchored batch, two anchors, spread in q, six
   rings, 16 workers, headless, unprofiled, a scratch copy).** Role: IS13's 30-minute figure, a yardstick and never a gate.
   **Missed.** The batch completed in about 58 minutes (3,501 s), about twice the yardstick. Rings, in order: about 12, 8,
