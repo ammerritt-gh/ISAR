@@ -250,6 +250,16 @@ def test_fit_dropdown_arrows_change_the_plotted_fit_without_writing(setup, reads
     assert reads[-1] == {ONE_MODE: "r2"}
     assert not inter.calls
 
+    # Rapid key presses must accumulate even before the page's redraw timer fires.
+    page.vm.choose_fit("fast")
+    page.flush_redraw()
+    qtbot.keyClick(fits, Qt.Key.Key_Down)
+    qtbot.keyClick(fits, Qt.Key.Key_Down)
+    assert page.vm.chosen == {ONE_MODE: "r2"}
+    page.flush_redraw()
+    assert reads[-1] == {ONE_MODE: "r2"}
+    assert not inter.calls
+
 
 def _fresh_page(qtbot, scans_view_ws_readonly):
     ws = Workspace.open(scans_view_ws_readonly)
