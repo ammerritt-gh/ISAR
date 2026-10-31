@@ -320,3 +320,15 @@ def test_a_branch_two_neighbours_spell_differently_keeps_both_couplings():
     assert n_factors(alias) == n_factors(plain) == 2
     alias_p, plain_p = R.price(alias, _job(alias, ("b1",))), R.price(plain, _job(plain, ("b1",)))
     assert alias_p.ln_z == pytest.approx(plain_p.ln_z, abs=1e-9)
+
+
+def test_two_endpoints_of_a_link_that_spell_one_branch_differently_define_one_factor():
+    # y spells the shared branch b1, x under b1x, an alias the batch merged into it: each endpoint names the link's
+    # factor by the canonical branch, so both build the one definition rebuilt_factors keeps (the link charged once)
+    prep = spectrum(ONE, seed=9)
+    y_side = replace(_with_neighbours(t_pair(prep, ONE, ["b1"], ONE, ["b1"]), (ONE, ["b1x"]), (ONE, ["b1"])),
+                     aliases={"b1x": "b1"})
+    x_side = replace(y_side, unit="x", own=held("x", ONE, ["b1x"], T=100.0),
+                     terms=(TermInput(y_side.terms[0].term, (held("y", ONE, ["b1"], T=200.0),)),))
+    link_ids = lambda s: {f.factor_id for fs in R._Spec(s).factors.values() for f in fs if "x|y" in f.factor_id}
+    assert link_ids(y_side) == link_ids(x_side) == {"T-change:x|y:b1"}

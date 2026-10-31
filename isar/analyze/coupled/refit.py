@@ -389,11 +389,13 @@ class _Spec:
                     spread = ((1.0 - t) * guards[left] + t * guards[right]) ** 2
                 else:
                     raise ValueError(f"unknown term kind {term.kind!r}")
-                f = cc.Factor(f"{term.kind}:{'|'.join(members)}:{b}", b, members, a,
+                # named by the canonical branch: every endpoint of the link builds the same id (D9)
+                f = cc.Factor(f"{term.kind}:{'|'.join(members)}:{c}", c, members, a,
                               s=s.widened(base, spread, d), C=s.penalty_cap, kind=_FACTOR_KIND[term.kind],
                               d=d, family=family)
+                # keyed by a neighbour's spelling: names() seeds the pool name from it
                 factors.setdefault(b, []).append(f)
-                frozen.setdefault(b, {}).update(energy)
+                frozen.setdefault(c, {}).update(energy)
         return factors, frozen
 
     def _centre(self, f) -> float:
