@@ -35,7 +35,7 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | Loss price for a branch that disappears: a branch a neighbour predicts in the window and the candidate does not name pays the mirror of the entry price, once per spectrum per snapshot | Partial: its size reuses `birth_edge` and `birth_mid`, uncalibrated | `isar/analyze/coupled/refit.py` (`_Spec.loss_terms`), `engine.py` | `tests/analyze/test_coupled_loss.py` |
 | Width at the floor and the quasi-elastic line: a railed width is a resolution-limited alternative that is priced; a QE line railed at its narrowest width is the elastic line (shared engine); the model line is chosen by evidence beyond the hysteresis margin | Implemented on synthetic spectra | `isar/analyze/coupled/refit.py`, `engine.py`, `rules.py` | `tests/analyze/test_coupled_width_floor.py`, `tests/analyze/test_coupled_search_real.py` |
 | Counts above six: pricing, refinement, the release fit and storage accept a count beyond six; `full_search` prices a stated finite domain as a check | Implemented on synthetic spectra | `isar/analyze/coupled/search.py`, `refit.py`, `isar/session/inter_spectra/runner.py` | `tests/analyze/test_coupled_search_real.py`, `tests/analyze/test_coupled_search.py` |
-| Search, price and resume across the refit pool: the runner feeds each spectrum's search as its own jobs return, caches prices within one batch, sizes the pool to the item's cores, and reports timing in the batch's `end` record | Implemented; the timing is measured in section 10 | `isar/session/inter_spectra/runner.py`, `tools/inter_timing.py` | `tests/session/test_inter_spectra_runner.py`, `tests/test_inter_timing_tool.py`, `tests/session/test_inter_service_e2e.py` |
+| Search, price and resume across the refit pool: the runner feeds each spectrum's search as its own jobs return, caches prices within one batch, sizes the pool to the item's cores (`ISAR_WORKERS`, when set, caps it), keeps every worker busy (a candidate's fits, basins and split nodes run as tasks on the same pool, and idle workers price the searches' likely next promotions ahead), and reports timing in the batch's `end` record | Implemented; the timing is measured in section 10 | `isar/session/inter_spectra/runner.py`, `isar/analyze/coupled/tasks.py`, `tools/inter_timing.py` | `tests/session/test_inter_spectra_runner.py`, `tests/test_inter_timing_tool.py`, `tests/session/test_inter_service_e2e.py` |
 | Branch identity: persistent ids, loops, returns, cumulative T drift | Implemented | `isar/analyze/coupled/identity.py` | `tests/analyze/test_coupled_identity.py` |
 | Anchored batch: rings fixed by distance, seams, not reached | Implemented | `isar/session/inter_spectra/rings.py`, `runner.py` | `tests/session/inter_spectra/test_rings.py`, `tests/session/test_inter_spectra_runner.py` |
 | Simultaneous batch: rounds, sweeps, quiet-sweep settling, sweep cap (did not settle) | Implemented | `isar/session/inter_spectra/runner.py`, `schedule.py` | `tests/session/test_inter_spectra_runner.py` |
@@ -280,7 +280,13 @@ quasi-elastic width, take a finite difference of only that mode's complete heigh
 column, at a step of `COLUMN_FD_REL` (1e-5) times the larger of the value and the width. Curvature is the full observed
 Hessian, the central difference of the gradient, not a Gauss-Newton form. The split integral runs each node's
 optimiser as one pass on the joint gradient, with a retry from its result only when that pass reports failure or ends
-on a non-finite value; the node-set ladder and its 0.1-nat agreement rule are unchanged. Fully analytic line-shape
+on a non-finite value; the node-set ladder and its 0.1-nat agreement rule are unchanged. With one worker the nodes
+are solved one by one, each from its solved neighbour (continuation). With more than one worker the nodes of every
+node set are sent to the pool at once and the ladder reads them in its order: each node starts from the nearest node
+of the integral already solved when it is sent, else from the joint solution, so a node can land on a slightly
+different optimum in a flat valley and the basin's ln Z can differ a little from the one-worker value (ruling IS26,
+D1). A node that fails from that start is retried once from the continuation start; if it fails again, one task
+runs the whole integral serially and its result is final. Fully analytic line-shape
 derivatives are not built. The solo fast pass keeps its finite differences: its objective-and-gradient hook returns
 nothing, so it calls the optimiser as before.
 
@@ -304,6 +310,27 @@ that spectrum's own state, never from whichever job returns first, so the same i
 completion order. Rings stay sequential, because a ring conditions on the saved fits of the rings before it; identity
 reconciliation, continuous refits and saving are unchanged. Prices are cached within one batch, under keys that hash
 every value a price depends on.
+
+**Every worker busy.** With more than one worker and a core that has `run_task`, a pricing job runs as a thread of
+the runner process and sends its inner work to the same pool as tasks: the fits of its variants and starts, the
+hidden-pair seed, its basins in waves and its split nodes (`isar/analyze/coupled/tasks.py` holds the task port; the
+runner's `_Sched` is its production side). No worker ever waits for another task: the job threads wait, so the pool
+cannot fill with waiting parents, and no second pool is opened. The number of tasks in flight never exceeds the pool's
+worker count (`ISAR_WORKERS` caps it), less any tasks still running for work the stage has
+since dropped. The job's replay is result-identical to the serial price for a candidate with no split basin: the heavy
+steps are pure functions of their inputs, and whatever the parallel tasks did not compute is sent to the pool as a
+single task and waited for. A split basin differs only by the node starts of the split-integral paragraph above (D1).
+Priority is set when a task is sent: a requested job's task always goes before any lookahead task, and a lookahead
+task goes only to a free worker when nothing requested is waiting. A lookahead task already running finishes (there is
+no preemption), so a requested task can wait for the shortest running lookahead task to free its worker; that costs
+wall time only, never a result (ruling IS26, D2). Lookahead: workers that would otherwise be idle price the full-depth
+jobs each live search names as its likely next promotions (`Search.likely_next`) into the batch's price cache, at most
+as many lookahead jobs live as there are workers. A cached price answers only the identical job when the search asks
+for it, and a price nobody asks for is never fed to a search, so the search's path and decision do not depend on
+lookahead. A request for a job a lookahead job is still pricing takes that job over; one it finished meanwhile is
+answered from it. Abandoned lookahead tasks that are still running count against the worker total until they return.
+With one worker, for any call other than a price, and for a core without `run_task`, the runner prices whole jobs as
+before. On this path `timing.pool.busy_s` is the seconds the tasks took in the workers.
 
 **Time.** The 30-minute figure is a target, not a limit (IS13). Nothing stops, fails or is cut because of it; going well over it is a reason to optimise. The batch's timing report sits in the `timing` block of its `end` record, printed by `tools/inter_timing.py`: per spectrum and ring, the candidates priced, cache hits, starts per candidate, optimizer fits, failures by reason, evidence seconds against refinement seconds and why the search stopped; per batch, the pool's utilisation and the slowest spectrum and ring. Section 10 says what has been measured.
 
@@ -401,6 +428,7 @@ or older refit is drawn and exported in its own context, never in a later fast s
 | `isar/session/inter_spectra/records.py` | the machine store's reader |
 | `isar/session/inter_spectra/authority.py` | the one resolver of the fit in use |
 | `isar/session/inter_spectra/runner.py` | the batch runner: rings, rounds, sweeps and acceptance hand-over; `_Run.assign`, the stage-1 pool that feeds each spectrum's search as its own jobs return |
+| `isar/analyze/coupled/tasks.py` | the task port a candidate's pricing sends its inner work through, and the worker side's engine cache |
 | `tools/inter_timing.py` | times one batch headless and prints its timing report (`report.txt`, `timing.json` with `--out`) |
 | `tools/inter_ring1.py` | opens the anchored batch headless and stops at the end of ring 1's stage 1; shared by the two measurement tools below |
 | `tools/inter_gradient_compare.py` | compares the gradient path with the finite-difference path on picked real-shaped jobs, per class (`summary.txt`, `table.md`, `compare.json` with `--out`) |
@@ -520,6 +548,20 @@ with several near-zero curvature eigenvalues, where the Laplace evidence depends
 flat valley, so the old values are no reliable reference. Rejected: keeping the finite-difference arithmetic inside
 the split integral, which would restore identical results there at part of the speed-up. Dated 2026-10-31.
 Asked to land as is or keep the old arithmetic in the split integral, the operator answered "Land as is".
+
+**IS26 — Every worker busy: inner work and lookahead on the one pool.** Decides that when a ring's search leaves
+fewer candidates in flight than there are workers, the spare workers run work inside a candidate (its starts, and the
+node sets of its split integral, larger sets computed at once instead of after the agreement test) and price the
+search's next likely promotions ahead into the exact-job cache. D1: parallel split nodes start from the nearest node
+solved when they are sent, so a flat-valley hidden pair's ln Z, and rarely a count decision near the stopping margin,
+can differ slightly from the one-worker value; a node that fails is retried once from the continuation start, and
+failing again the integral runs serially. D2, as built: requested work is always sent first, and lookahead goes only
+to a free worker with nothing requested waiting; a lookahead task already running finishes, so a requested task can
+wait for the shortest running one. The cost is wall time only, never correctness; the alternative is a cooperative
+abort flag checked between optimiser steps, which still waits up to one optimiser run, and the way back is a
+follow-up that adds it to lookahead tasks in `runner.py`, with no data or format change. Acceptance is correctness
+tests and the routine checks, with no timing or comparison campaign: "No measuring." Dated 2026-10-31.
+"You get the workers all working, so that when the pool of scans decreases the workers are churning on it as they should." "Inside one candidate we run more." "No measuring." On D1: "D1 accept". On D2: "D2 yes".
 
 ## 9. Out of scope and open
 

@@ -1275,3 +1275,221 @@ def test_the_chosen_width_mask_survives_the_stage_factor_rewrites(monkeypatch):
     built = runner.rebuilt_factors(core, out, {"y": object()}, rename)
     for got in (out["y"], built["y"]):
         assert (got.selected_model, got.changed, got.mask_only) == (chosen, True, True)
+
+
+# ---------------------------------------------------------------------------
+# the task scheduler: inner work and lookahead on the one pool (S1U3)
+# ---------------------------------------------------------------------------
+class _CountingPool:
+    """Stands in for ProcessPoolExecutor in process (threads): records the most tasks submitted and not yet back."""
+
+    def __init__(self, workers):
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        self.ex, self.lock = ThreadPoolExecutor(workers), threading.Lock()
+        self.now = self.peak = 0
+
+    def submit(self, fn, *args):
+        with self.lock:
+            self.now += 1
+            self.peak = max(self.peak, self.now)
+        fut = self.ex.submit(fn, *args)
+        fut.add_done_callback(self._back)
+        return fut
+
+    def _back(self, _fut):
+        with self.lock:
+            self.now -= 1
+
+    def shutdown(self, *a, **k):
+        self.ex.shutdown(wait=True)
+
+
+def test_inner_work_of_one_candidate_uses_the_spare_workers_and_never_more_than_the_pool():
+    from inter_hidden_case import hidden_snapshot
+
+    from isar.analyze.coupled import refit
+    from isar.analyze.coupled.types import PricingJob, Start
+    snap = hidden_snapshot(3.0, asimov=True)
+    job = PricingJob("y", snap.snapshot_id, 2, ("b1", "b2"), "k",
+                     (Start("neighbour", ((8.0, 0.4, None), (7.2, 0.4, None))),))
+    pool = runner._Pool(refit, 4)
+    pool.ex = _CountingPool(4)
+    got = []
+    pool.stream("price", [(("y", "k"), (snap, job), {})], lambda key, r: got.append((key, r)) or ())
+    ex = pool.ex
+    pool.close()                       # waits for the node tasks nobody read, which then drop out of the orphans
+    ((key, priced),) = got
+    assert key == ("y", "k") and not isinstance(priced, Exception) and priced.ln_z is not None
+    assert 1 < ex.peak <= 4, ex.peak          # one candidate live: its fits and split nodes filled the pool, no more
+    assert ex.now == 0 and pool.busy_s > 0.0 and pool.orphans == set()
+
+
+def _fake_core(monkeypatch, script):
+    """A module importable by name here with ``price(snap, job, tasks)`` and ``run_task``: the price runs
+    ``script[("before", key)]``, submits ``script[("n", key)]`` (default 1) tasks of kind ``key`` and waits for them,
+    then runs ``script[("after", key)]``; a task runs ``script[("run", kind)](args)``. ``core.log`` has every task."""
+    import types
+
+    from isar.analyze.coupled.types import Priced
+    core, log = types.ModuleType("fake_task_core"), []
+    nothing = lambda *a: None       # noqa: E731
+
+    def price(snap, job, tasks=None):
+        script.get(("before", job.key), nothing)()
+        for h in [tasks.submit((b"ctx", job.key, (i,))) for i in range(script.get(("n", job.key), 1))]:
+            tasks.wait(h)
+        script.get(("after", job.key), nothing)()
+        return Priced(job.key, job.count, tuple(job.slots), -1.0, "ok", None, None, 1, 0.0, depth=job.depth)
+
+    def run_task(ctx, kind, args):
+        log.append((kind, args))
+        script.get(("run", kind), nothing)(args)
+        return kind
+    core.price, core.run_task, core.log = price, run_task, log
+    monkeypatch.setitem(sys.modules, "fake_task_core", core)
+    return core
+
+
+class _KeyEvents(dict):
+    """A cache that sets ``events[key]`` when ``key`` is stored."""
+
+    def __init__(self, events):
+        super().__init__()
+        self.events = events
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        if key in self.events:
+            self.events[key].set()
+
+
+def test_idle_workers_price_the_next_promotions_and_the_later_request_is_served_from_the_cache(monkeypatch):
+    import threading
+    b_started, b_cached = threading.Event(), threading.Event()
+
+    def need(ev):
+        assert ev.wait(10), "lookahead never priced B while A ran"
+    core = _fake_core(monkeypatch, {("run", "B"): lambda a: b_started.set(),
+                                    ("run", "A"): lambda a: need(b_started),     # A's task ends once B's task has run
+                                    ("after", "A"): lambda: need(b_cached)})     # and A's price returns once B is cached
+    search = _ScriptSearch([[_job("u", "A")], [_job("u", "B")]])
+    search.likely_next = lambda n: (_job("u", "B"), _job("u", "C"))              # C is named, the search never asks it
+    pool = runner._Pool(core, 4)
+    pool.ex = _CountingPool(4)
+    run, (A, errors) = _scripted_run(pool, {"u": search}, {"u": _KeyEvents({"B": b_cached})})
+    pool.close()
+    assert errors == {} and "u" in A
+    assert [f[0] for f in search.fed] == ["A", "B"]                # the search was fed what it asked, in its order
+    assert [a for k, a in core.log if k == "B"] == [(0,)]          # B was priced once, ahead of the request
+    (row,) = run.tallies.values()
+    assert (row.candidates, row.cached) == (1, 1)                  # and its request was a cache hit
+
+
+def test_a_requested_task_is_sent_before_any_lookahead_task_and_rank_zero_before_rank_one(monkeypatch):
+    import pickle
+    from concurrent.futures import Future
+
+    class Hold:                      # records what is sent; a task is back when the test says so
+        def __init__(self):
+            self.sent, self.last = [], None
+
+        def submit(self, fn, core_name, blob):
+            self.sent.append(pickle.loads(blob)[1])
+            self.last = Future()
+            return self.last
+    pool = runner._Pool(_fake_core(monkeypatch, {}), 1)               # one worker: tasks go one at a time
+    pool.ex = Hold()
+    sched = runner._Sched(pool, [], lambda k, r: (), None, None)
+    sched.ex = pool.ex
+    look = runner._JobPort(sched, "L", None, "lookahead")
+    req = runner._JobPort(sched, "R", None, "requested")
+    look.submit((b"c", "look1", ()), rank=1)
+    req.submit((b"c", "req1", ()), rank=1)
+    req.submit((b"c", "req0", ()))
+    look.submit((b"c", "look0", ()))
+    sched.live.update((look, req))
+    while not sched.events.empty():
+        sched._handle(sched.events.get_nowait())
+    order = []
+    for _ in range(4):
+        sched._fill()
+        order.append(pool.ex.sent[-1])
+        pool.ex.last.set_result(("v", 0.0))
+        sched._handle(sched.events.get(timeout=5))
+    assert order == ["req0", "req1", "look0", "look1"], order
+    sched.live.clear()
+
+
+def test_a_task_left_running_by_a_finished_stream_is_an_orphan_the_next_map_works_around(monkeypatch):
+    import threading
+    import time
+    b_started, gate = threading.Event(), threading.Event()
+    state = {"now": 0, "peak": 0, "lock": threading.Lock()}
+
+    def slow(x=None):
+        with state["lock"]:
+            state["now"] += 1
+            state["peak"] = max(state["peak"], state["now"])
+        time.sleep(0.05)
+        with state["lock"]:
+            state["now"] -= 1
+        return x
+    core = _fake_core(monkeypatch, {("run", "B"): lambda a: (b_started.set(), gate.wait(10)),
+                                    ("run", "A"): lambda a: b_started.wait(10)})
+    core.slow = slow
+    pool = runner._Pool(core, 4)
+    pool.ex = _CountingPool(4)
+    search = _ScriptSearch([[_job("u", "A")]])
+    search.likely_next = lambda n: (_job("u", "B"),)
+    _scripted_run(pool, {"u": search}, {})
+    assert len(pool.orphans) == 1                                     # B's task is still running; nobody waits for it
+    out = pool.map("slow", [(i, (i,), {}) for i in range(8)])
+    assert list(out.values()) == list(range(8)) and not gate.is_set()
+    assert state["peak"] == 3 and pool.ex.peak == 4                  # the workers less the orphan; the total held
+    gate.set()
+    pool.close()
+    assert pool.orphans == set()
+
+
+def test_a_dead_pool_fails_the_jobs_in_flight_and_raises_from_the_stream_for_calls_queued_after(monkeypatch):
+    from concurrent.futures import Future
+
+    class Dying:                     # the first task runs, then a worker dies
+        sent = 0
+
+        def submit(self, fn, *args):
+            Dying.sent += 1
+            if Dying.sent > 1:
+                raise runner.BrokenProcessPool("a worker died")
+            f = Future()
+            f.set_result(fn(*args))
+            return f
+    pool = runner._Pool(_fake_core(monkeypatch, {("n", "A"): 3}), 4)
+    pool.ex = Dying()
+    got = []
+
+    def more(key, r):
+        got.append((key, r))
+        return [(("u", "Z"), (None, _job("u", "Z")), {})] if key == ("u", "A") else ()
+    with pytest.raises(runner.BrokenProcessPool):
+        pool.stream("price", [(("u", "A"), (None, _job("u", "A")), {})], more)
+    assert [k for k, _r in got] == [("u", "A")] and isinstance(got[0][1], runner.BrokenProcessPool)
+
+
+def test_a_spare_worker_run_and_a_one_worker_run_reach_the_same_decision(tmp_path, monkeypatch):
+    from test_inter_service_e2e import _fast_solos
+    monkeypatch.setenv("ISAR_WORKERS", "4")
+    seen = {}
+    for cores in (1, 4):
+        root = _fast_solos(tmp_path / f"cores{cores}")           # the same generated batch, in a workspace of its own
+        k = _keys(root)
+        spec = _anchored(root, [k["a03", 100.0], k["a04", 100.0]])
+        log = Bench(root).run(spec, core=None, cores=cores)
+        end = log.batches[spec.batch_id].end
+        assert end["state"] == "completed" and end["timing"]["pool"]["workers"] == cores
+        seen[cores] = {r.unit: (r.status, r.accept.decision, p["came_out"]["assignment"]["slots"],
+                                p["came_out"]["assignment"]["count"], p["came_out"]["status"])
+                       for r, p in _lines(root, spec.batch_id)}
+    assert len(seen[1]) == 2 and seen[1].keys() == seen[4].keys()
+    assert seen[1] == seen[4]

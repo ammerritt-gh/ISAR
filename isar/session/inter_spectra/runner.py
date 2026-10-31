@@ -14,7 +14,9 @@ on the graph, and fits it with its own refit pool inside the item's cores:
 Stage 1 is search, price, resume: one core ``Search`` per spectrum of the ring or round, all driven together through
 one pool stream. Each search waits only for its own jobs: when the last job of its pass returns, it is fed that pass's
 prices in its own job order and sends its next jobs at once, so no spectrum waits for another. A pool exception
-becomes that job's failed price and is never cached; a search that raises fails only its spectrum.
+becomes that job's failed price and is never cached; a search that raises fails only its spectrum. With more than one
+worker and a core that has ``run_task``, a job's inner work (its fits, basins and split nodes) runs as tasks on the
+same pool and workers left idle price the searches' likely next promotions into the cache (``_Sched``).
 
 Every ring or sweep is handed over through ``emit`` and the runner waits on ``ack`` for the writer's verdict
 before the next stage: acceptance decides what the next stage conditions on, and a refused refit's held value
@@ -28,11 +30,14 @@ called with ``workers=1``: the runner's pool is the only one.
 from __future__ import annotations
 
 import dataclasses
+import heapq
 import importlib
+import itertools
 import logging
 import math
 import os
 import pickle
+import threading
 import time
 from collections import Counter, deque
 from collections.abc import Mapping
@@ -40,6 +45,7 @@ from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from queue import Empty, SimpleQueue
 from typing import Callable, Literal
 
 log = logging.getLogger(__name__)
@@ -212,6 +218,9 @@ class _Pool:
     def __init__(self, core, workers: int, watch=None, tick=None) -> None:
         self.core, self.workers, self.ex, self.ship_s = core, workers, None, 0.0
         self.watch, self.tick = watch, tick
+        self.busy_s = 0.0                                # seconds ``run_task`` took in workers, on the task path
+        self.orphans: set = set()                        # in-flight futures whose job is gone: no one waits for them
+        self.ports: set = set()                          # live job ports of a running stream
         self.broken: BrokenProcessPool | None = None     # set when a worker died; the next map raises it, as its submit did
 
     def _note(self, key, on: bool) -> None:
@@ -239,13 +248,37 @@ class _Pool:
         self._run(fn, calls, keep, inline=self.workers <= 1 or len(calls) <= 1)
         return {key: out[key] for key, _a, _k in calls}      # the order of calls, as before
 
-    def stream(self, fn: str, calls: list, more) -> None:
+    def _cap(self) -> int:
+        """Tasks this pool may have in flight: the workers, less the orphans still running (never below one, so a
+        stream always progresses; the extra task then queues behind them in the executor)."""
+        return max(1, self.workers - len(self.orphans))
+
+    def uses_tasks(self, fn: str) -> bool:
+        """Whether ``stream(fn, ...)`` takes the task scheduler: more than one worker, a price, a task-capable core."""
+        return self.workers > 1 and fn == "price" and hasattr(self.core, "run_task")
+
+    def stream(self, fn: str, calls: list, more, *, lookahead=None, lookahead_done=None) -> None:
         """Run ``core.<fn>(*args, **kwargs)`` for each ``(key, args, kwargs)`` of ``calls``, at most ``workers`` in
         flight; as each finishes, call ``more(key, result or the exception it raised)`` in this process, which returns
         the further calls to queue (FIFO, after those queued). Returns when nothing is queued or in flight. A dead
         pool: before anything was sent it raises; mid-stream every unsent call is reported to ``more`` as the
-        ``BrokenProcessPool``, the flying ones as they come back, and a call queued after that raises it here."""
+        ``BrokenProcessPool``, the flying ones as they come back, and a call queued after that raises it here.
+        On the task path (``uses_tasks``) each call is a job thread whose inner tasks share the pool, ``more`` still
+        hears of each requested call once, and ``lookahead()`` (offers ``((unit, job key), args)``) and
+        ``lookahead_done(key, price)`` let idle workers price jobs ahead; the other paths ignore both."""
+        if self.uses_tasks(fn):
+            _Sched(self, calls, more, lookahead, lookahead_done).run()
+            return
         self._run(fn, calls, more, inline=self.workers <= 1)
+
+    def _executor(self):
+        if self.broken is not None:
+            raise self.broken
+        if self.ex is None:
+            for name in _THREAD_ENV:          # one BLAS thread per process, as _deep_stage pins it
+                os.environ.setdefault(name, "1")
+            self.ex = ProcessPoolExecutor(max_workers=self.workers)
+        return self.ex
 
     def _run(self, fn: str, calls: list, more, inline: bool) -> None:
         queue = deque(calls)
@@ -264,17 +297,12 @@ class _Pool:
                 queue.extend(more(key, result))
                 self._tick(not queue)             # the last job is back: publish it before the save waits on the ack
             return
-        if self.broken is not None:
-            raise self.broken
-        if self.ex is None:
-            for name in _THREAD_ENV:          # one BLAS thread per process, as _deep_stage pins it
-                os.environ.setdefault(name, "1")
-            self.ex = ProcessPoolExecutor(max_workers=self.workers)
+        self._executor()
         flying, blob, sent = {}, None, 0      # blob: the pickle of queue[0], made while workers run
         while queue or flying:
             if self.broken is not None and not flying:
                 raise self.broken             # calls queued after the pool died: they reach it as the next map would
-            while queue and len(flying) < self.workers and self.broken is None:
+            while queue and len(flying) < self._cap() and self.broken is None:
                 key, args, kwargs = queue.popleft()
                 blob = blob or self._pickle(args, kwargs)
                 try:
@@ -310,9 +338,344 @@ class _Pool:
         self._tick(True)                      # and the last one, which a throttle could have held back
 
     def close(self) -> None:
+        for port in list(self.ports):         # a stream cut off from outside: its job threads end, no one waits on them
+            port.abandon()
         if self.ex is not None:
             self.ex.shutdown()
             self.ex = None
+
+
+_ABANDONED = object()      # what a lookahead job's thread reports when the runner abandoned it
+JOIN_S = 2.0               # shortcut: leaving a stream waits this long in all for abandoned job threads, upgrade if a replay glue step ever outlasts it
+
+
+def _work_task(core_name: str, blob: bytes):
+    """A pool task of the scheduler: one core ``run_task`` (the payload pickled by the runner). Returns the value and
+    the seconds ``run_task`` took in the worker, which is what ``busy_s`` adds."""
+    payload = pickle.loads(blob)
+    t0 = time.perf_counter()
+    value = importlib.import_module(core_name).run_task(*payload)
+    return value, time.perf_counter() - t0
+
+
+class _Task:
+    """One task of one job (the handle of C-port): queued, sent, then back with a value or an exception."""
+    __slots__ = ("port", "payload", "prepare", "rank", "state", "value", "exc", "done", "dropped", "entry")
+
+    def __init__(self, port, payload, prepare, rank) -> None:
+        self.port, self.payload, self.prepare, self.rank = port, payload, prepare, rank
+        self.state, self.value, self.exc, self.entry, self.dropped = "queued", None, None, None, False
+        self.done = threading.Event()
+
+
+class _JobPort:
+    """C-port for one pricing job: its thread submits and waits, the scheduler (the main thread) sends. ``cls`` is
+    "requested" or "lookahead"."""
+
+    def __init__(self, sched, key, job, cls) -> None:
+        self.sched, self.key, self.job, self.cls = sched, key, job, cls
+        self.tasks: list[_Task] = []
+        self.abandoned = self.submitted = self.ended = False
+        self.thread: threading.Thread | None = None
+
+    def submit(self, payload, prepare=None, rank=0):
+        from isar.analyze.coupled.tasks import Abandoned
+        t = _Task(self, payload, prepare, rank)
+        self.tasks.append(t)                       # before the flag check, so abandon() cannot miss it
+        if self.abandoned:
+            raise Abandoned
+        self.submitted = True
+        self.sched.events.put(("task", t))
+        return t
+
+    def wait(self, handle):
+        from isar.analyze.coupled.tasks import Abandoned
+        if self.abandoned:
+            raise Abandoned
+        if handle.dropped:
+            raise RuntimeError("waiting on a dropped task")
+        if handle.state != "back":
+            if handle.rank:                         # the job needs it now
+                self.sched.events.put(("raise", handle))
+            handle.done.wait()
+            if self.abandoned:
+                raise Abandoned
+        if handle.exc is not None:
+            raise handle.exc
+        return handle.value
+
+    def peek(self, handle):
+        if handle.state != "back":
+            return False, None
+        return True, handle.exc if handle.exc is not None else handle.value
+
+    def drop(self, handles) -> None:
+        for h in handles:
+            h.dropped = True
+
+    def abandon(self) -> None:
+        self.abandoned = True
+        for t in list(self.tasks):
+            t.done.set()
+
+
+class _Sched:
+    """One stream of "price" calls on the task path (main thread): requested calls run as job threads whose inner
+    tasks fill the pool, and spare workers price ``lookahead`` offers. Only this thread touches the heap, the
+    futures and ``more``; job threads talk to it through ``events`` and wait only on their own tasks. At most
+    ``pool._cap()`` tasks are in flight. Priority is at send time: a requested task goes before any lookahead
+    task, a lookahead task only to a free worker with nothing requested waiting, and a running one finishes."""
+
+    def __init__(self, pool, calls, more, lookahead, lookahead_done) -> None:
+        self.pool, self.more, self.lookahead, self.lookahead_done = pool, more, lookahead, lookahead_done
+        self.queue = deque(calls)                  # requested calls not yet started
+        self.events: SimpleQueue = SimpleQueue()   # ("task", t) ("raise", t) ("done", t, fut) ("job", port, result)
+        self.heap: list = []                       # [class, rank, seq, task]: requested 0, lookahead 1
+        self.seq = itertools.count()
+        self.live: set[_JobPort] = set()
+        self.look: dict = {}                       # key -> live lookahead port
+        self.finished: dict = {}                   # key -> (job, price) of a finished lookahead job
+        self.tried: set = set()                    # lookahead keys started once, never started again
+        self.inflight: dict = {}                   # task -> future
+        self.sent = 0
+        self.ex = None
+
+    # -- state
+    def _free(self) -> int:
+        return self.pool._cap() - len(self.inflight)
+
+    def _starting(self) -> int:
+        return sum(1 for p in self.live if not p.submitted and not p.ended)
+
+    def _requested_live(self) -> bool:
+        return any(p.cls == "requested" for p in self.live)
+
+    def _push(self, t: _Task) -> None:
+        if t.entry is not None:
+            t.entry[3] = None                      # the old entry is skipped when it surfaces
+        t.entry = [0 if t.port.cls == "requested" else 1, t.rank, next(self.seq), t]
+        heapq.heappush(self.heap, t.entry)
+
+    def _top(self):
+        while self.heap:
+            e = self.heap[0]
+            t = e[3]
+            if t is None or t.entry is not e or t.state != "queued" or t.dropped or t.port.abandoned:
+                heapq.heappop(self.heap)
+                continue
+            return e
+        return None
+
+    def _finish(self, t: _Task, value=None, exc=None) -> None:
+        t.value, t.exc, t.state, t.payload = value, exc, "back", None
+        t.done.set()
+
+    # -- sending
+    def _send(self, e) -> None:
+        heapq.heappop(self.heap)
+        t = e[3]
+        t.entry = None
+        pool = self.pool
+        try:
+            payload = t.prepare(t.payload) if t.prepare is not None else t.payload
+            # shortcut: ctx bytes ride with every task, upgrade to a per-worker handshake if ship_s grows
+            t0 = time.perf_counter()
+            blob = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+            pool.ship_s += time.perf_counter() - t0
+        except Exception as exc:  # noqa: BLE001 — the job that submitted it gets the exception
+            log.exception("a pool task could not be prepared")
+            self._finish(t, exc=exc)
+            return
+        t.state, t.payload = "sent", None
+        try:
+            fut = self.ex.submit(_work_task, pool.core.__name__, blob)
+        except BrokenProcessPool as exc:
+            if not self.sent:                      # the pool was dead before this stream sent anything: raise, as before
+                raise
+            log.error("price: the worker pool broke (%s)", exc)
+            self._broke(exc)
+            return
+        self.sent += 1
+        self.inflight[t] = fut
+        fut.add_done_callback(lambda f, t=t: self.events.put(("done", t, f)))
+
+    def _broke(self, exc: BrokenProcessPool) -> None:
+        """A dead pool: every task not back resolves to the exception (so every job ends with it), requested calls
+        not yet started are reported to ``more`` as it, and what ``more`` returns raises it from the stream."""
+        self.pool.broken = exc
+        for port in self.live:
+            for t in port.tasks:
+                if t.state != "back":
+                    self._finish(t, exc=exc)
+        lost, self.queue = list(self.queue), deque()
+        for key, _a, _k in lost:
+            self.queue.extend(self.more(key, exc))
+
+    # -- starting jobs
+    def _start_job(self, key, args, kwargs, cls) -> None:
+        port = _JobPort(self, key, args[1], cls)
+        port.thread = threading.Thread(target=self._job_main, args=(port, args, kwargs), daemon=True,
+                                       name=f"price-{cls}")
+        self.live.add(port)
+        self.pool.ports.add(port)
+        if cls == "requested":
+            self.pool._note(key, True)
+        else:
+            self.look[key] = port
+        port.thread.start()
+
+    def _job_main(self, port, args, kwargs) -> None:
+        from isar.analyze.coupled.tasks import Abandoned
+        try:
+            result = self.pool.core.price(*args, **kwargs, tasks=port)
+        except Abandoned:
+            result = _ABANDONED
+        except BaseException as exc:  # noqa: BLE001 — the scheduler hears of every end
+            result = exc if isinstance(exc, Exception) else RuntimeError(f"price ended with {exc!r}")
+        self.events.put(("job", port, result))
+
+    def _start_call(self, call) -> None:
+        key, args, kwargs = call
+        fin = self.finished.get(key)
+        if fin is not None and fin[0] == args[1]:  # a late hit: the lookahead job finished after the search chose this call
+            self.queue.extend(self.more(key, fin[1]))
+            return
+        lp = self.look.get(key)
+        if lp is not None and lp.job == args[1]:   # promote the live lookahead job: its tasks now rank as requested
+            del self.look[key]
+            lp.cls = "requested"
+            self.pool._note(key, True)
+            for t in lp.tasks:
+                if t.state == "queued" and not t.dropped:
+                    self._push(t)
+            return
+        self._start_job(key, args, kwargs, "requested")
+
+    def _offer(self) -> bool:
+        """Start one lookahead job when workers are spare; False when no offer is new."""
+        if self.lookahead is None or len(self.look) >= self.pool.workers:
+            return False
+        for key, args in self.lookahead():
+            if key in self.look or key in self.finished or key in self.tried:
+                continue
+            self.tried.add(key)
+            self._start_job(key, args, {}, "lookahead")
+            return True
+        return False
+
+    def _fill(self) -> None:
+        while self.pool.broken is None and self._free() > 0:
+            top, idle = self._top(), not self.queue and not self._starting()
+            if top is not None and top[0] == 0 and top[1] == 0:
+                self._send(top)
+            elif self.queue and self._free() > self._starting():
+                self._start_call(self.queue.popleft())
+            elif top is not None and (top[0] == 0 or idle):
+                self._send(top)
+            elif idle and self._free() > self._starting() and self._offer():
+                pass
+            else:
+                return
+
+    # -- events
+    def _handle(self, ev) -> None:
+        kind = ev[0]
+        if kind == "task":
+            t = ev[1]
+            if t.dropped or t.port.abandoned:
+                return
+            if self.pool.broken is not None:
+                self._finish(t, exc=self.pool.broken)
+                return
+            t.entry = None
+            self._push(t)
+        elif kind == "raise":
+            t = ev[1]
+            if t.state == "queued" and t.rank and not t.dropped:
+                t.rank = 0
+                self._push(t)
+        elif kind == "done":
+            _, t, fut = ev
+            self.inflight.pop(t, None)
+            exc = fut.exception()
+            if exc is None:
+                value, seconds = fut.result()
+                self.pool.busy_s += seconds
+                if t.state != "back":
+                    self._finish(t, value=value)
+            elif isinstance(exc, BrokenProcessPool):
+                if self.pool.broken is None:
+                    log.error("price: the worker pool broke (%s)", exc)
+                    self._broke(exc)
+            elif t.state != "back":
+                self._finish(t, exc=exc)
+        else:
+            self._ended(ev[1], ev[2])
+
+    def _ended(self, port, result) -> None:
+        self.live.discard(port)
+        self.pool.ports.discard(port)
+        port.ended = True
+        if port.cls == "requested":
+            self.pool._note(port.key, False)
+            if isinstance(result, Exception):
+                log.error("price of %s failed in the pool", port.key, exc_info=result)
+            self.queue.extend(self.more(port.key, result))
+            return
+        self.look.pop(port.key, None)
+        if result is _ABANDONED or isinstance(result, Exception):
+            if isinstance(result, Exception):
+                log.warning("lookahead price of %s failed; it is not cached", port.key, exc_info=result)
+            return
+        self.finished[port.key] = (port.job, result)
+        if self.lookahead_done is not None:
+            self.lookahead_done(port.key, result)
+
+    # -- the stream
+    def run(self) -> None:
+        pool = self.pool
+        if pool.broken is not None:
+            raise pool.broken
+        self.ex = pool._executor()
+        try:
+            while True:
+                try:
+                    while True:
+                        self._handle(self.events.get_nowait())
+                except Empty:
+                    pass
+                if pool.broken is not None and not self._requested_live() and self.queue:
+                    raise pool.broken              # calls queued after the pool died reach it as the next map would
+                self._fill()
+                if not self.queue and not self._requested_live():
+                    break
+                try:
+                    self._handle(self.events.get(timeout=MEMBERS_GAP_S))
+                except Empty:
+                    pass
+                pool._tick(False)
+        finally:
+            self._leave()
+        pool._tick(True)
+
+    def _leave(self) -> None:
+        """Abandon every live job (lookahead ones; the requested ones too when the stream ends by an exception), and
+        hand the tasks still in flight to the pool's orphans, which no stream waits for."""
+        ports = list(self.live)
+        for port in ports:
+            port.abandon()
+        for fut in self.inflight.values():
+            if not fut.done():
+                self.pool.orphans.add(fut)
+                fut.add_done_callback(self.pool.orphans.discard)
+        self.inflight.clear()
+        end = time.perf_counter() + JOIN_S
+        for port in ports:
+            port.thread.join(max(0.0, end - time.perf_counter()))
+            if port.thread.is_alive():
+                log.warning("price job %s was still unwinding when its stream ended", port.key)
+        self.pool.ports.difference_update(ports)
+        self.live.clear()
 
 
 def pool_size(cores: int, width: int) -> int:
@@ -871,6 +1234,26 @@ class _Run:
                 tallies[k].cached += len(keys)
                 timed(live[k].feed, [have[key] for key in keys])
 
+        tasks = getattr(self.pool, "uses_tasks", lambda fn: False)("price")   # a stand-in pool has today's stream()
+
+        def lookahead() -> list:
+            """Offers for idle workers: each live search's likely next promotions, round-robin across spectra."""
+            rows = []
+            for k, search in live.items():
+                try:
+                    named = search.likely_next(self.pool.workers) if hasattr(search, "likely_next") else ()
+                except Exception:  # noqa: BLE001 — lookahead is only speculation; the search's own calls report real failures
+                    log.warning("likely_next of %s failed; no lookahead from it", k, exc_info=True)
+                    continue
+                rows.append([((k, j.key), (snaps[k], j)) for j in named
+                             if j.key not in cache.get(k, ()) and j.key not in asked[k]])
+            return [o for row in itertools.zip_longest(*rows) for o in row if o is not None]
+
+        def lookahead_done(key, p) -> None:
+            k, job_key = key
+            if k in live and isinstance(p, Priced):
+                cache.setdefault(k, {})[job_key] = p
+
         passes: dict = {}            # k -> (its pass's jobs, the keys of that pass still in the pool)
         got: dict = {}               # (k, job key) -> what the pool returned for it
 
@@ -922,7 +1305,8 @@ class _Run:
                     tl.failures += 1
                     tl.reasons[p.reason or p.status] += 1
                 self.timing["likelihood_s"] += p.seconds
-                self.timing["pool"]["busy_s"] += p.seconds
+                if not tasks:                              # on the task path the pool's own busy_s counts it
+                    self.timing["pool"]["busy_s"] += p.seconds
                 out.append(p)
             tl.iterations += 1
             tl.cached += hits
@@ -942,8 +1326,12 @@ class _Run:
                 fail(k, exc)
         calls = [c for k in list(live) for c in advance(k)]          # every spectrum's first pass, in snaps order
         if calls:
-            t = time.perf_counter()
-            self.pool.stream("price", calls, back)                   # a dead pool raises here, uncaught
+            t, busy0 = time.perf_counter(), getattr(self.pool, "busy_s", 0.0)
+            if tasks:
+                self.pool.stream("price", calls, back, lookahead=lookahead, lookahead_done=lookahead_done)
+                self.timing["pool"]["busy_s"] += self.pool.busy_s - busy0
+            else:
+                self.pool.stream("price", calls, back)               # a dead pool raises here, uncaught
             self.timing["pool"]["map_wall_s"] += time.perf_counter() - t
         self.timing["assign_s"] += time.perf_counter() - t0
         return {k: A[k] for k in snaps if k in A}, errors
