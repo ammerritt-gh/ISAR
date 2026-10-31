@@ -228,7 +228,7 @@ def _hashes(root, units):
     read = store.read_all(root, store.ENTRIES)
     return records.inputs_now_from(intake_scans.read_scans(root),
                                    inputs.index_entries(read.entries, lines=read.lines),
-                                   load_state(Path(root) / "card.state.json").tabulated_calibration, units)
+                                   load_state(Path(root) / "card.state.json").tabulated_calibration, units, data_dir=Path(root) / "data")
 
 
 def _outcomes(root, keys):

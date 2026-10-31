@@ -174,7 +174,8 @@ def test_the_calibration_pending_judgement_uses_the_run_s_key(exp):
     """A calibration stored under the key the run computes (named set included) stands; any other is pending."""
     exp.check()
     row = scans.read_scans(exp.root)[exp.key]
-    si = inputs.scan_inputs(row, inputs.index_entries([], lines=[]), entries_in_force(exp.root)[exp.key])
+    si = inputs.scan_inputs(row, inputs.index_entries([], lines=[]), entries_in_force(exp.root)[exp.key],
+                            data_dir=exp.root / "data")
     cc = curves.read_curve_check(exp.root)
     pattern = cc.pattern
 

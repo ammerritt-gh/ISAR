@@ -71,7 +71,7 @@ class Env:
         r = store.read_all(self.root, store.ENTRIES)
         index = inputs.index_entries(r.entries, lines=r.lines)
         scan, _, det = unit.rpartition(":")
-        si = inputs.scan_inputs(rows[scan], index)
+        si = inputs.scan_inputs(rows[scan], index, data_dir=self.root / "data")
         state = load_state(self.session_ws.state_path).tabulated_calibration.get(scan)
         u = inputs.unit_inputs(rows[scan], si, det, state)
         run = fit_inputs.begin_run(self.root, passes=run_passes or passes)

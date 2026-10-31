@@ -10,6 +10,7 @@ import json
 import re
 from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -84,7 +85,7 @@ def read_nodes(root) -> NodeSet:
     slots: dict[str, float] = {}
     labels: dict[str, str] = {}
     for scan, row in sorted(rows.items(), key=lambda kv: _natural(kv[0])):
-        si = inputs.scan_inputs(row, index)
+        si = inputs.scan_inputs(row, index, data_dir=Path(root) / "data")
         used = si.facts["temperature"].used_value
         T = None if used is None else float(used)
         series = series_key(row, sample=sample, hkl_step=pol.hkl_round_step)

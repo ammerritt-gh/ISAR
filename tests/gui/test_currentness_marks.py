@@ -22,6 +22,8 @@ from PySide6.QtWidgets import QApplication, QPushButton
 
 import bl43_fixture
 import bl43_intake_fixture
+from isar.intake.point_masks import point_ids, save_selection
+from isar.session.unit_data import read_unit_data_for_unit
 from isar.workspace_api import (AnalyzerReadiness, AttentionGroup, AttentionItem, ImportSummary, IncompleteSet,
                                 NeedsAttention, ScanReadiness, UseState, Workspace)
 from isar_gui.main_window import MainWindow
@@ -178,6 +180,22 @@ def test_the_window_marks_the_list_after_a_save(qtbot, monkeypatch, ws_root):
     QApplication.processEvents()
     assert _marked(w.scan_list, f"spec:{A03}", "fast")
     assert "97 K (file) → 100 K (yours)" in _cell(w.scan_list, f"spec:{A03}", "fast").toolTip()
+
+
+def test_a_lapsed_mask_is_named_in_the_stale_tip_until_the_fit_is_redone(qtbot, ws_root):
+    """A fit that recorded a mask says so once the data under it change; a refit records only what still applies."""
+    exp, n, det = A03.rsplit(":", 2)
+    unit = read_unit_data_for_unit(ws_root / "data", exp, int(n), det)
+    assert save_selection(ws_root, {A03: [point_ids(unit["x"], unit["counts"], unit["variance"])[-1]]}).ok
+    bl43_intake_fixture.write_run(ws_root, [A03])          # the fit now records the mask
+    bl43_intake_fixture.reimport_counts(ws_root, A03)      # the point under it is gone
+    _intake, _vm, panel = _list(qtbot, ws_root)
+    tip = _cell(panel, f"spec:{A03}", "fast").toolTip()
+    assert "manual point mask" in tip and "1 of its masks no longer match the current data" in tip
+    bl43_intake_fixture.write_run(ws_root, [A03])          # the refit records only the masks that apply
+    _intake, _vm, panel = _list(qtbot, ws_root)
+    tip = _cell(panel, f"spec:{A03}", "fast").toolTip()
+    assert "no longer match" not in tip and not _marked(panel, f"spec:{A03}", "fast")
 
 
 # ---- the readiness line ------------------------------------------------------------------------------

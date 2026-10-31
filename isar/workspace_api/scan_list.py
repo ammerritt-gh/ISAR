@@ -27,6 +27,7 @@ from typing import Any
 # Re-exported so the GUI (isar_gui/theme.py) takes the results writer's words from the facade and
 # never imports isar.session.* itself (the G16 import contract).
 from isar.intake import readiness
+from isar.intake.inputs import UNCHECKED_MASKS
 from isar.intake.readiness import ImportSummary, NeedsAttention
 from isar.session.outcome import NOT_FITTED, NOT_RECORDED
 from . import intake_view
@@ -220,7 +221,13 @@ def _change_line(p: PassInputs, change) -> tuple[str, str, str]:
     def shown(value, source) -> str:
         text = _change_value(name, value)
         return f"{text} ({_SOURCE_WORDS.get(source, source)})" if source else text
-    return (_CHANGE_LABELS.get(name, name), shown(change.used, used_source), shown(change.now, now_source))
+    used = shown(change.used, used_source)
+    if name == "point_masks" and p.lapsed:          # the masks this fit recorded, some no longer matching its data
+        used += f"; {p.lapsed} of its masks no longer match the current data"
+    now = shown(change.now, now_source)
+    if name == "point_masks" and p.unchecked:       # not a drop to none: the stored data cannot say which are gone
+        now = UNCHECKED_MASKS
+    return (_CHANGE_LABELS.get(name, name), used, now)
 
 
 def _judged(status: Status, p: PassInputs | None) -> Status:

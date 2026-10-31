@@ -59,8 +59,9 @@ to exclude, false to restore). Entries are replayed in sequence order. Source id
 are derived from raw x/counts/variance and duplicate occurrence, independently of display
 normalization or energy zero. The effective record intersects these with the existing QC
 mask; measured arrays are never deleted or overwritten. Per-unit fit inputs and calibration
-identities include the manual mask, so changing it invalidates reuse and marks affected
-completed fits stale. The GUI calls the checked intake writer, and the facade only reads.
+identities include the manual masks that still match a point of the unit's data, so changing
+them invalidates reuse and marks affected completed fits stale. A mask whose point no longer
+matches its data lapses: it stays in the log and is not applied (see [the GUI design](design/gui.md)). The GUI calls the checked intake writer, and the facade only reads.
 Fast, Deep and inter-spectra fit records also retain `exposure_basis` (source and reference).
 Masking can change the fit's median monitor; the curve reader uses the recorded basis to
 keep old and new curves correctly scaled without rewriting their amplitudes.

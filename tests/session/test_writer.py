@@ -56,7 +56,7 @@ def _inputs_hash(root, unit: str) -> str:
     scan, det = unit.rsplit(":", 1)[0], unit.rsplit(":", 1)[1]
     row = scans.read_scans(root)[scan]
     read = store.read_all(root, store.ENTRIES)
-    si = inputs.scan_inputs(row, inputs.index_entries(read.entries, lines=read.lines))
+    si = inputs.scan_inputs(row, inputs.index_entries(read.entries, lines=read.lines), data_dir=root / "data")
     return inputs.inputs_hash(inputs.unit_inputs(row, si, det, None))
 
 

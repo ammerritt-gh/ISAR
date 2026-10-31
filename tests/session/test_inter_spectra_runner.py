@@ -130,7 +130,7 @@ def _lines(ws, batch):
 def _now(ws, units):
     read = store.read_all(ws, store.ENTRIES)
     return records.inputs_now_from(intake_scans.read_scans(ws), inputs.index_entries(read.entries, lines=read.lines),
-                                   load_state(Path(ws) / "card.state.json").tabulated_calibration, units)
+                                   load_state(Path(ws) / "card.state.json").tabulated_calibration, units, data_dir=Path(ws) / "data")
 
 
 def _calibrate(root, scan, det, zero):

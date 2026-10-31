@@ -1449,11 +1449,16 @@ def load_workspace(workspace, spectrum, detector=None, *, refresh_fast_pass=Fals
     indexed = inputs.index_entries(read.entries, lines=read.lines)
     for line in inputs.damage_lines(workspace, read=read, index=indexed):
         print(line, file=sys.stderr, flush=True)
-    si = inputs.scan_inputs({"scan": f"{experiment}:{scan_number}", "facts": rec.facts}, indexed)
+    # The analyzers key lets the operator's point masks reach this fit, as they reach the driver's.
+    si = inputs.scan_inputs({"scan": f"{experiment}:{scan_number}", "facts": rec.facts,
+                             "analyzers": {d: {} for d in rec.spectra}}, indexed,
+                            data_dir=Path(workspace) / "data", record=rec)
     if si.excluded is not None:
         raise ValueError(f"scan {spectrum!r} is excluded: {si.excluded.reason or si.excluded.entry}")
     if det in si.dead:
         raise ValueError(f"analyzer {spectrum!r} is dead: {si.dead[det].reason or si.dead[det].entry}")
+    if det in si.unchecked_masks:
+        raise ValueError(f"analyzer {spectrum!r} is held: its masks cannot be checked: stored data unreadable")
     rec = inputs.apply(rec, si)
     sp = rec.spectra[det]
     q = [float(v) for v in sp.q] if sp.q is not None else None     # the driver's way, so the fingerprint can match

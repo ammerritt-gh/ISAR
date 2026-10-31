@@ -4,7 +4,8 @@ C-read-fit-inputs), the conditions in force (C-read-conditions), and the two ``r
 
 Everything else is a pure function over data ``Workspace`` has already parsed (``intake_scans.json``,
 ``entries.jsonl``, ``fit_inputs.jsonl``, the card state's tabulated calibration and the curve check); it
-reads no file and writes none. "Changed since" is judged on values: the inputs a pass used against the inputs in force
+reads no file but the unit data of an analyzer with stored point masks (cached per data revision), and writes
+none. "Changed since" is judged on values: the inputs a pass used against the inputs in force
 now, built by the same ``isar.intake.inputs`` functions the run uses, so the reads and the run's freshness
 hash never disagree. The curves are never hashed here: the folder, library and curve identity in force are
 those persisted in ``report/curves.json`` at the last import or run start. Qt- and scipy-free.
@@ -55,6 +56,8 @@ class PassInputs:
     fallbacks: tuple[str, ...]
     result: Mapping | None
     changes: tuple[Change, ...]   # against the inputs in force now; () when the values are the same
+    lapsed: int = 0               # of the masks it recorded, how many no longer match the data
+    unchecked: bool = False       # its masks cannot be checked now (the stored unit data are unreadable)
 
     @property
     def changed(self) -> bool:
@@ -102,7 +105,7 @@ def _scan_fact_row(scan: str, fact: str, fi: inputs.FactInput, row_fact: dict, f
 
 def fact_rows(rows: Mapping[str, dict], index: inputs.EntryIndex, calibration: Mapping[str, dict], check,
               folder_now: str | None, scans: Iterable[str] | None = None,
-              gpi: Mapping[str, object] | None = None) -> list[FactRow]:
+              gpi: Mapping[str, object] | None = None, *, data_dir) -> list[FactRow]:
     """Per scan: temperature, slit, then Q and counts per analyzer. ``rows`` is the import record,
     ``calibration`` the card state's tabulated calibration, ``check`` the persisted curve check (or None),
     ``gpi`` the gpi entries in force (``gpi.entries_in_force``), by scan key."""
@@ -110,7 +113,7 @@ def fact_rows(rows: Mapping[str, dict], index: inputs.EntryIndex, calibration: M
     out: list[FactRow] = []
     for scan in sorted(rows if scans is None else set(scans) & set(rows), key=lambda k: _order(rows, k)):
         row = rows[scan]
-        si = inputs.scan_inputs(row, index, gpi.get(scan))
+        si = inputs.scan_inputs(row, index, gpi.get(scan), data_dir=data_dir)
         row_facts = row.get("facts") or {}
         t, s = si.facts["temperature"], si.facts["slit"]
         out.append(_scan_fact_row(scan, "temperature", t, row_facts.get(inputs.FILE_FACT["temperature"]) or {},
@@ -155,7 +158,8 @@ def _now_args(used: dict, check, folder_now: str | None, named: Mapping[str, dic
     return args
 
 
-def _pass(p, current: dict | None, check, folder_now: str | None, named=None) -> PassInputs:
+def _pass(p, current: dict | None, check, folder_now: str | None, named=None, lapsed_ids=(),
+          unchecked=False) -> PassInputs:
     changed: tuple[Change, ...] = ()
     if current is not None:
         try:
@@ -165,12 +169,14 @@ def _pass(p, current: dict | None, check, folder_now: str | None, named=None) ->
                         p.unit, p.pass_name, p.run, exc)
     return PassInputs(pass_name=p.pass_name, state=p.state, run=p.run, started_at=p.started_at,
                       finished_at=p.finished_at, status=p.status, inputs=p.inputs, fallbacks=p.fallbacks,
-                      result=p.result, changes=changed)
+                      result=p.result, changes=changed,
+                      lapsed=len(set(p.inputs.get("point_masks") or ()) & set(lapsed_ids)), unchecked=unchecked)
 
 
 def fit_inputs(passes: Mapping[str, Mapping[str, object]], rows: Mapping[str, dict], index: inputs.EntryIndex,
                calibration: Mapping[str, dict], check, folder_now: str | None,
-               units: Iterable[str] | None = None, gpi: Mapping[str, object] | None = None) -> list[UnitFitInputs]:
+               units: Iterable[str] | None = None, gpi: Mapping[str, object] | None = None, *,
+               data_dir) -> list[UnitFitInputs]:
     """Per unit with a counting pass (``fit_inputs.latest_passes``): its latest fast and deep pass and the
     changes since, each pass judged on its own. A unit whose scan has no import row is listed without changes."""
     out: list[UnitFitInputs] = []
@@ -182,14 +188,17 @@ def fit_inputs(passes: Mapping[str, Mapping[str, object]], rows: Mapping[str, di
         any_pass = next(iter(by.values()))
         scan, _, det = unit.rpartition(":")
         if scan not in scan_inputs:
-            scan_inputs[scan] = inputs.scan_inputs(rows[scan], index, gpi.get(scan)) if scan in rows else None
+            scan_inputs[scan] = (inputs.scan_inputs(rows[scan], index, gpi.get(scan), data_dir=data_dir)
+                                 if scan in rows else None)
         si = scan_inputs[scan]
         current = None if si is None else inputs.unit_inputs(rows[scan], si, det, calibration.get(scan))
         named = si.gpi.curves if si is not None and si.named is not None else None
+        lapsed = () if si is None else si.lapsed_masks.get(det, ())
+        unchecked = si is not None and det in si.unchecked_masks
         out.append(UnitFitInputs(
             unit=unit, scan=any_pass.scan or scan, analyzer=det,
-            fast=_pass(by["fast"], current, check, folder_now, named) if "fast" in by else None,
-            deep=_pass(by["deep"], current, check, folder_now, named) if "deep" in by else None))
+            fast=_pass(by["fast"], current, check, folder_now, named, lapsed, unchecked) if "fast" in by else None,
+            deep=_pass(by["deep"], current, check, folder_now, named, lapsed, unchecked) if "deep" in by else None))
     return out
 
 
@@ -205,14 +214,15 @@ class ConditionRow:
 
 
 def condition_rows(rows: Mapping[str, dict], index: inputs.EntryIndex,
-                   scans: Iterable[str] | None = None, gpi: Mapping[str, object] | None = None) -> list[ConditionRow]:
+                   scans: Iterable[str] | None = None, gpi: Mapping[str, object] | None = None, *,
+                   data_dir) -> list[ConditionRow]:
     """The conditions in force, one row each: per scan the exclusion, then the dead analyzers, then the
     accepted counts, from the same ``inputs.scan_inputs`` the run's start point and readiness read."""
     out: list[ConditionRow] = []
     gpi = gpi or {}
     for scan in sorted(rows if scans is None else set(scans) & set(rows), key=lambda k: _order(rows, k)):
         row = rows[scan]
-        si = inputs.scan_inputs(row, index, gpi.get(scan))
+        si = inputs.scan_inputs(row, index, gpi.get(scan), data_dir=data_dir)
         if si.excluded is not None:
             c = si.excluded
             out.append(ConditionRow(scan, None, "excluded", c.entry, c.reason, c.at, None))

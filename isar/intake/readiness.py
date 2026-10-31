@@ -71,6 +71,7 @@ KINDS: dict[str, _Kind] = {k: _Kind(*v) for k, v in {
     "curve_missing": ("Resolution curves", "analyzer", ("calibrate", "fit"), "held", "locate_folder"),
     "analyzer_file": ("Analyzer files missing", "analyzer", _ALL, "held", "import_again"),
     "analyzer_unreadable": ("Analyzer files unreadable", "analyzer", _ALL, "unreadable", "import_again"),
+    "masks_unchecked": ("Point masks cannot be checked", "analyzer", ("calibrate", "fit"), "held", "import_again"),
     "files_not_read": ("Files not read", "file", ("read",), "unreadable", "import_again"),
     "damaged_lines": ("Intake lines skipped", "line", (), "fallback", "tell_operator"),
     "calibration_failed": ("Calibration failed", "scan", ("calibrate", "fit"), "held", "tell_operator"),
@@ -436,11 +437,12 @@ def _can_start(values: list[bool | None]) -> bool | None:
 
 def _scan(scan: str, row: dict, pos: int, index: inputs.EntryIndex, state: dict, check, cidx, folder_problem,
           stale: bool, marks: Mapping[str, UnitMarks], gaps: list[_Gap], an_can: dict, running_scans: set,
-          disagree: set, unread: Mapping[str, dict], gpi_entries: Mapping[str, object]) -> ScanReadiness:
+          disagree: set, unread: Mapping[str, dict], gpi_entries: Mapping[str, object],
+          data_dir: Path) -> ScanReadiness:
     """One scan's readiness; its gaps, the analyzers' ``can_start`` and the scans running or disagreeing are
     added to the collectors the caller passes. ``unread``: path -> its ``files`` entry, for each file the
     latest import recorded failed (the path the row's ``import.paths`` gives for the analyzer's file)."""
-    si = inputs.scan_inputs(row, index, gpi_entries.get(scan))
+    si = inputs.scan_inputs(row, index, gpi_entries.get(scan), data_dir=data_dir)
     cal_slit = _declared(inputs.calibration_slit(si))
     if si.named is not None:       # the named set's curves are the scan's library, at the setting it declares
         cidx = CurveIndex(CurveFile(d, cal_slit, c["file"], c["sha256"]) for d, c in sorted(si.gpi.curves.items()) if c)
@@ -513,7 +515,10 @@ def _scan(scan: str, row: dict, pos: int, index: inputs.EntryIndex, state: dict,
             gap("exposure_missing", "no monitor in the file", a, fallback=NO_MONITOR)
         else:
             u["reduce"] = _READY
-        cal, kind = _calibrate(a, ar, si, cx, flags)
+        if a in si.unchecked_masks:     # its stored data cannot show which masks still apply: held, not fitted
+            cal, kind = _use("held", f"{a}: {inputs.UNCHECKED_MASKS}"), "masks_unchecked"
+        else:
+            cal, kind = _calibrate(a, ar, si, cx, flags)
         u["calibrate"] = cal
         if kind == "pending":
             pending.add(a)
@@ -746,7 +751,7 @@ def _evaluate(root: Path, marks: Mapping[str, UnitMarks]) -> NeedsAttention:
     unread = {p: rec for p, rec in files.items() if (rec or {}).get("class") == "failed"}
     for pos, scan in enumerate(order):
         ready[scan] = _scan(scan, rows[scan], pos, index, state, check, cidx, folder_problem, stale, marks,
-                            gaps, an_can, running_scans, disagree, unread, gpi_entries)
+                            gaps, an_can, running_scans, disagree, unread, gpi_entries, root / "data")
     if folder_problem is not None and rows:
         gaps.append(_Gap("resolution_folder", folder_problem))
     if gpi_stale and rows:

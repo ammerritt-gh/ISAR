@@ -302,7 +302,9 @@ def run_batch(workspace: Workspace, data_paths, *, force=False, force_masters=No
             if intake:
                 gpi_lines, gpi_entries = _gpi_check_lines(workspace.root, card, data_paths, rows)
                 ctx_lines += gpi_lines
-                scan_in = {k: intake_inputs.scan_inputs(rows[k], index, gpi_entries.get(k)) for k in rows}
+                scan_in = {k: intake_inputs.scan_inputs(rows[k], index, gpi_entries.get(k),
+                                                        data_dir=Path(workspace.root) / "data",
+                                                        record=parsed_by_key[k]) for k in rows}
                 run_start_eff = {k: intake_inputs.apply(parsed_by_key[k], scan_in[k]) for k in rows}
             if loaded is None and (card.policy.calibration or {}).get("method") == "tabulated_elastic":
                 loaded = curves.load_curves(*curves.resolution_location(card, workspace.root)[:2])

@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 ENTERABLE = {"temperature": "K", "slit": "mm"}      # fact -> its one unit
 FILE_FACT = {"temperature": "T_K", "slit": "slit"}  # fact -> the scan fact name in the parsed record
 CONDITIONS = ("excluded", "dead", "counts_accepted")   # excluded: scan targets; dead, counts_accepted: unit targets
+UNCHECKED_MASKS = "its masks cannot be checked: stored data unreadable"   # hold reason: unit data unreadable
 FALLBACKS = ("bose_t0_limit", "slit_inferred", "slit_broadest_curve", "zero_file_axis", "counts_accepted")
 _LIBRARY_BASES = ("inferred", "broadest_curve_fallback")   # a slit chosen by comparing curves
 _CALIBRATION_FIELDS = ("setting", "basis", "zero", "zero_source", "held_reason")   # hashed, so also compared
@@ -161,7 +162,9 @@ class ScanInputs:
     counts_accepted: Mapping[str, Condition] = field(default_factory=dict)  # analyzer -> declaration
     gpi: "GpiScan | None" = None          # the latest gpi check's entry for this scan, accepted or not
     named: str | None = None              # the gpi file's sarf_name in force; None: none, rejected or dropped
-    point_masks: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    point_masks: Mapping[str, tuple[str, ...]] = field(default_factory=dict)   # applied: each still matches a point
+    lapsed_masks: Mapping[str, tuple[str, ...]] = field(default_factory=dict)  # stored, but no point of the data matches
+    unchecked_masks: tuple[str, ...] = ()   # analyzers whose stored data cannot be read: masks in neither list, held
     named_dropped: str | None = None      # why the named set was set aside (a user slit, ruling F), else None
 
 
@@ -181,9 +184,46 @@ def _condition(e: dict | None) -> Condition | None:
     return Condition(e["id"], e.get("reason"), e["at"]) if e is not None and e["declared"] else None
 
 
-def scan_inputs(row: dict, index: EntryIndex, gpi: "GpiScan | None" = None) -> ScanInputs:
+def record_point_ids(record, det: str) -> tuple[str, ...]:
+    """The identities of one analyzer's points on the arrays :func:`apply` masks against: the record's own scanned
+    axis, intensity and variance."""
+    from isar.schema.axes import scanned_axes
+    sp = record.spectra[det]
+    axes = scanned_axes(record) if record.scan_axes else []
+    x = axes[0].values if axes else np.arange(len(sp.intensity))
+    return point_masks.point_ids(x, sp.intensity, sp.variance)
+
+
+def _masks(scan: str, row: dict, index: EntryIndex, data_dir, record) -> tuple[dict, dict, tuple[str, ...]]:
+    """Each analyzer's stored masks split into applied (their point is in the data now) and lapsed (it is not). The
+    points are the parsed ``record``'s when one is given, else the stored unit data's; an analyzer whose stored unit
+    data cannot be read is listed unchecked, its masks in neither."""
+    applied, lapsed, unchecked = {}, {}, []
+    for det in row.get("analyzers", {}):
+        stored = index.point_masks.get(f"{scan}:{det}", ())
+        applied[det] = lapsed[det] = ()
+        if not stored:
+            continue
+        try:          # the stored unit data must be readable for the hold rule, with or without a record
+            on_disk = point_masks.current_ids(data_dir, f"{scan}:{det}")
+        except point_masks.UnreadableUnit:
+            unchecked.append(det)
+            continue
+        if record is None:
+            now = on_disk
+        else:
+            now = frozenset(record_point_ids(record, det)) if det in record.spectra else frozenset()
+        applied[det] = tuple(p for p in stored if p in now)
+        lapsed[det] = tuple(p for p in stored if p not in now)
+    return applied, lapsed, tuple(unchecked)
+
+
+def scan_inputs(row: dict, index: EntryIndex, gpi: "GpiScan | None" = None, *, data_dir,
+                record=None) -> ScanInputs:
     """One scan's file and user values, the used value, any disagreement, and the conditions in force.
-    ``gpi`` is the scan's entry of the latest gpi check; only an accepted one contributes."""
+    ``gpi`` is the scan's entry of the latest gpi check; only an accepted one contributes. ``data_dir`` is the
+    workspace's ``data`` folder: the stored point masks are checked against each analyzer's unit data there, unless
+    ``record`` (the parsed record the scan is fitted from) is given, when they are checked against its arrays."""
     scan = row["scan"]
     row_facts = row.get("facts") or {}
     accepted = gpi if gpi is not None and gpi.accepted else None
@@ -219,11 +259,11 @@ def scan_inputs(row: dict, index: EntryIndex, gpi: "GpiScan | None" = None) -> S
     def held(cond):
         return {det: c for det, e in sorted(index.units.get((scan, cond), {}).items())
                 if (c := _condition(e)) is not None}
+    applied, lapsed, unchecked = _masks(scan, row, index, data_dir, record)
     return ScanInputs(scan=scan, facts=facts, excluded=_condition(index.conditions.get((scan, "excluded"))),
                       dead=held("dead"), counts_accepted=held("counts_accepted"),
                       gpi=gpi, named=named, named_dropped=dropped,
-                      point_masks={det: index.point_masks.get(f"{scan}:{det}", ())
-                                   for det in row.get("analyzers", {})})
+                      point_masks=applied, lapsed_masks=lapsed, unchecked_masks=unchecked)
 
 
 def analyzer_q(row: dict, si: ScanInputs, det: str) -> tuple[list[float] | None, str]:
@@ -273,12 +313,9 @@ def apply(record, si: ScanInputs):
     changed = changed or len(spectra) != len(record.spectra) or any(det in gpi_q for det in spectra)
     active_masks = {det: list(ids) for det, ids in si.point_masks.items() if ids and det in spectra}
     if active_masks:
-        from isar.schema.axes import scanned_axes
-        axes = scanned_axes(record) if record.scan_axes else []
         for det, excluded in active_masks.items():
             sp = spectra[det]
-            x = axes[0].values if axes else np.arange(len(sp.intensity))
-            ids = point_masks.point_ids(x, sp.intensity, sp.variance)
+            ids = record_point_ids(record, det)
             spectra[det] = dataclasses.replace(sp, mask=np.asarray(sp.mask, dtype=bool)
                                               & ~point_masks.selected_mask(ids, excluded))
         facts["point_masks"] = {"value": active_masks, "source": "user"}

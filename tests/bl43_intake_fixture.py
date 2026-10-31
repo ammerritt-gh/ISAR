@@ -56,7 +56,7 @@ def write_run(ws_root: Path, units: Sequence[str], *, passes: Sequence[str] = ("
     for unit in units:
         scan, _, det = unit.rpartition(":")
         row = rows[scan]
-        u = inputs.unit_inputs(row, inputs.scan_inputs(row, index), det, None)
+        u = inputs.unit_inputs(row, inputs.scan_inputs(row, index, data_dir=ws_root / "data"), det, None)
         if stale and unit in stale:
             u = {**u, **stale[unit]}
         kept = list(inputs.fallbacks(u))
@@ -71,3 +71,17 @@ def write_run(ws_root: Path, units: Sequence[str], *, passes: Sequence[str] = ("
     if end:
         fit_inputs.end_run(ws_root, run, "complete")
     return run
+
+
+def reimport_counts(ws_root: Path, unit: str) -> None:
+    """A re-import whose counts all moved: the unit's file and its row's data revision change together."""
+    import json
+    from isar.intake import scans
+    from isar.session.unit_data import unit_data_path
+    exp, n, det = unit.rsplit(":", 2)
+    path = unit_data_path(Path(ws_root) / "data", exp, int(n), det)
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc["counts"] = [c + 1.0 for c in doc["counts"]]
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    row = scans.read_scans(ws_root)[unit.rsplit(":", 1)[0]]
+    scans.record_import(ws_root, [{**row, "data_revision": "rev-2"}])

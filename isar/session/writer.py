@@ -274,7 +274,7 @@ def save_inter(workspace_root, payloads: Sequence[dict]) -> list[dict | str]:
                                   inputs.index_entries(entries.entries, lines=entries.lines),
                                   load_state(root / STATE_NAME).tabulated_calibration,
                                   gpi.entries_in_force(root)))
-                now.update(records.inputs_now_from(*reads[0][:3], needed, gpi=reads[0][3]))
+                now.update(records.inputs_now_from(*reads[0][:3], needed, gpi=reads[0][3], data_dir=root / "data"))
             blobs, lines = [], []
             for r in fresh:
                 accept = None

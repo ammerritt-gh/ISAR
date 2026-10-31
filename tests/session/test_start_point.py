@@ -125,7 +125,7 @@ def _now(ws, unit):
     scan, _, det = unit.rpartition(":")
     row = scans.read_scans(ws.root)[scan]
     read = store.read_all(ws.root, store.ENTRIES)
-    si = inputs.scan_inputs(row, inputs.index_entries(read.entries, lines=read.lines))
+    si = inputs.scan_inputs(row, inputs.index_entries(read.entries, lines=read.lines), data_dir=ws.root / "data")
     card, _s = ws.load()
     return inputs.unit_inputs(row, si, det, card.state.tabulated_calibration.get(scan))
 

@@ -6,12 +6,59 @@ The append-only intake log is the authority; no data or old result is rewritten.
 from __future__ import annotations
 
 from collections import Counter
+import functools
 import hashlib
+import logging
 from pathlib import Path
 
 import numpy as np
 
 from isar.intake import store
+
+log = logging.getLogger(__name__)
+
+
+class UnreadableUnit(Exception):
+    """The stored unit data of one analyzer are missing or unreadable."""
+
+
+def _stamp(path: Path) -> tuple:
+    """A unit file's identity: its path, modification time and size (no time or size when it is not there)."""
+    try:
+        st = path.stat()
+    except OSError:
+        return (str(path), None, None)
+    return (str(path), st.st_mtime_ns, st.st_size)
+
+
+_reported: set = set()     # shortcut: one entry per unit file state that failed to read; a session's worth, never trimmed
+
+
+# shortcut: 256 cached units (each a set of point hashes), oldest re-read first; upgrade past a few hundred masked units
+@functools.lru_cache(maxsize=256)
+def _ids(data_dir, key: str, files: tuple) -> frozenset[str]:
+    """``files`` (the stamps of the unit files, taken before the read) is the cache key only."""
+    from isar.session.unit_data import read_unit_data_for_unit   # here: the read side never loads isar.session
+    exp, scan, det = key.rsplit(":", 2)
+    data = read_unit_data_for_unit(data_dir, exp, int(scan), det)
+    if data is None:
+        if (key, files) not in _reported:       # a failure is never cached, so it is reported once per file state
+            _reported.add((key, files))
+            log.warning("point masks of %s: its stored unit data is missing or unreadable under %s; its masks are held",
+                        key, data_dir)
+        raise UnreadableUnit(key)
+    return frozenset(point_ids(data["x"], data["counts"], data["variance"]))
+
+
+def current_ids(data_dir, key: str) -> frozenset[str]:
+    """The identities of a unit's points as its stored unit data give them. Cached per the identity of the unit
+    files (path, mtime, size), stamped before the read: an answer never outlives the file it was read from, and a
+    rewritten file is read again. ``key`` is ``exp:scan:det``. Raises :class:`UnreadableUnit` (never cached)."""
+    from isar.session.unit_data import unit_data_paths_for_read
+    exp, scan, det = key.rsplit(":", 2)
+    files = tuple(_stamp(p) for p in unit_data_paths_for_read(data_dir, exp, int(scan), det))
+    return _ids(data_dir, key, files)
+
 
 def point_ids(x, counts, variance) -> tuple[str, ...]:
     """Raw coordinates and measured values plus occurrence distinguish duplicate measurements.

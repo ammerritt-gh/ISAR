@@ -157,6 +157,36 @@ def test_mouse_drag_selects_visible_waterfall_points(page, qtbot):
     assert all(row[0] == point[0] for row in page.masks.rows)
 
 
+def test_the_inspector_names_a_lapsed_mask_until_the_fit_is_redone(qtbot, scans_view_ws):
+    """The inspector's inputs line of a fit reads the same change as the row tip: the note, until a refit."""
+    from PySide6.QtWidgets import QLabel
+    from bl43_intake_fixture import reimport_counts, write_run
+    from isar_gui.main_window import MainWindow
+    from isar_gui.session import Session
+
+    ws = Workspace.open(scans_view_ws)
+    window = MainWindow(ws, session=Session(), watch=False)
+    qtbot.addWidget(window)
+    window.show()
+    window.selection.set((ONE_MODE,))
+    qtbot.mouseClick(window.scan_list._inspect, Qt.MouseButton.LeftButton)
+    window.scans_page.flush_redraw()
+
+    def inputs_tip():
+        window._ws.refresh()
+        with qtbot.waitSignal(window.intake.worker_changed, timeout=15000):
+            window.intake.reload()                 # the fit-inputs read the list and inspector judge from
+        window.scans_page.flush_redraw()
+        return window.scan_inspector.findChild(QLabel, "fit_fast_inputs").toolTip()
+
+    save_selection(scans_view_ws, {ONE_MODE: [ws.unit_data(ONE_MODE).point_ids[-1]]})
+    write_run(scans_view_ws, [ONE_MODE])          # the fit records the mask
+    reimport_counts(scans_view_ws, ONE_MODE)      # the point under it is gone
+    assert "1 of its masks no longer match the current data" in inputs_tip()
+    write_run(scans_view_ws, [ONE_MODE])          # the refit records only the masks that apply
+    assert "no longer match" not in inputs_tip()
+
+
 def test_saved_edge_indicator_option_reaches_both_scan_views(qtbot, scans_view_ws):
     from isar_gui.main_window import MainWindow
     from isar_gui.session import Session
