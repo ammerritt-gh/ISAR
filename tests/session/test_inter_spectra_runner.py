@@ -948,6 +948,24 @@ def test_a_ring_whose_every_search_fails_ends_without_error(tmp_path):
     assert bench.end().status == "done_warning"
 
 
+def test_a_failed_ringmate_is_no_identity_neighbour_of_its_survivor(tmp_path, monkeypatch):
+    """A ring member whose search raised is not in the ring's stage, so its own fast fit must not reach the
+    identity reconciliation as an earlier neighbour: it would hand its branches to the survivor."""
+    from isar.analyze.coupled import identity
+    seen, orig = [], identity.propagate_ids
+
+    def spy(order, links, modes, settings, **kw):
+        seen.append((tuple(order), set(kw["previous"])))
+        return orig(order, links, modes, settings, **kw)
+    monkeypatch.setattr(identity, "propagate_ids", spy)
+    bad = {"triggered": True, "search_raise": "open"}
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): bad, ("a04", 150.0): {"triggered": True}})
+    failed, other = k["a03", 150.0], k["a04", 150.0]
+    Bench(ws).run(spec)
+    ring_calls = [prev for order, prev in seen if order == (other,)]
+    assert ring_calls and all(failed not in prev for prev in ring_calls)
+
+
 @pytest.mark.timeout(20)
 def test_a_search_that_repeats_a_job_is_failed_not_looped(tmp_path):
     ws, k, spec = _ring1(tmp_path, {("a03", 150.0): {"triggered": True, "iterations": 2, "search_repeat": True},

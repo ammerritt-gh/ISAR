@@ -1088,7 +1088,7 @@ class _Run:
             snaps = {k: self.snapshot(k, self.incoming[k], sid, terms) for k, terms in todo.items()}
             self.progress("assign")
             A, errors = self.assign(snaps, {})
-            previous = {**held_frozen, **{k: s.own for k, s in snaps.items()}}    # amendment 11: own Held too
+            previous = {**held_frozen, **{k: s.own for k, s in snaps.items() if k in A}}    # amendment 11: own Held too
             ids, refs = self.identity(A, snaps, previous, sid)
             A, rename = canonical_factors(A, ids, refs, held_frozen)
             self.merge_aliases(rename)
