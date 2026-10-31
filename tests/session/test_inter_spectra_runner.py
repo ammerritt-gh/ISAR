@@ -1422,6 +1422,32 @@ def test_a_requested_task_is_sent_before_any_lookahead_task_and_rank_zero_before
     sched.live.clear()
 
 
+def test_a_requested_task_posted_before_a_choice_is_sent_before_a_ready_lookahead_task(monkeypatch):
+    import pickle
+    from concurrent.futures import Future
+
+    class Hold:                      # records what is sent; the test never completes a task
+        def __init__(self):
+            self.sent = []
+
+        def submit(self, fn, core_name, blob):
+            self.sent.append(pickle.loads(blob)[1])
+            return Future()
+    pool = runner._Pool(_fake_core(monkeypatch, {}), 1)               # one free worker
+    pool.ex = Hold()
+    sched = runner._Sched(pool, [], lambda k, r: (), None, None)
+    sched.ex = pool.ex
+    look = runner._JobPort(sched, "L", None, "lookahead")
+    req = runner._JobPort(sched, "R", None, "requested")
+    look.submit((b"c", "look0", ()))
+    sched._handle(sched.events.get_nowait())                          # the lookahead task is ready in the heap
+    req.submit((b"c", "req0", ()))                                     # the requested job's event is still queued
+    sched.live.update((look, req))
+    sched._fill()
+    assert pool.ex.sent == ["req0"], pool.ex.sent
+    sched.live.clear()
+
+
 def test_a_task_left_running_by_a_finished_stream_is_an_orphan_the_next_map_works_around(monkeypatch):
     import threading
     import time

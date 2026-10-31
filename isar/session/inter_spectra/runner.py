@@ -569,8 +569,18 @@ class _Sched:
             return True
         return False
 
+    def _drain(self) -> None:
+        try:
+            while True:
+                self._handle(self.events.get_nowait())
+        except Empty:
+            pass
+
     def _fill(self) -> None:
-        while self.pool.broken is None and self._free() > 0:
+        while True:
+            self._drain()                # a requested task posted since the last choice must rank before it
+            if self.pool.broken is not None or self._free() <= 0:
+                return
             top, idle = self._top(), not self.queue and not self._starting()
             if top is not None and top[0] == 0 and top[1] == 0:
                 self._send(top)
@@ -645,11 +655,7 @@ class _Sched:
         self.ex = pool._executor()
         try:
             while True:
-                try:
-                    while True:
-                        self._handle(self.events.get_nowait())
-                except Empty:
-                    pass
+                self._drain()
                 if pool.broken is not None and not self._requested_live() and self.queue:
                     raise pool.broken              # calls queued after the pool died reach it as the next map would
                 self._fill()
