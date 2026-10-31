@@ -315,6 +315,17 @@ class _Model:
         return v.origin.label + str(self.hyp.label)[len(v.label):]
 
 
+@dataclass(frozen=True)
+class _Post:
+    """The posterior optimiser's outcome, the fields of scipy's OptimizeResult ``price`` reads; ``x`` is the
+    stopping point on the model's own scale, not yet clipped to the box."""
+    x: np.ndarray
+    nit: int
+    status: int
+    success: bool
+    message: str
+
+
 @dataclass(eq=False)
 class _Basin:
     """One distinct solution of one model: its TRF optimum, twin link and evidence."""
@@ -729,6 +740,7 @@ class _Engine:
         self.families = {}
         self._stack = []
         self.n_fits = 0
+        self.posterior_jac = None                # the posterior's finite-difference jac when it has no gradient (scipy's default)
         self.seed_count = None
         self.reached = set()
         self.rng = np.random.default_rng(0)
@@ -1408,18 +1420,16 @@ class _Engine:
                     if b.status == "pending":
                         self.price(b)
 
-    def price(self, b):
-        """The posterior mode by L-BFGS-B from the TRF optimum, the twin screens there, then the
-        box-rule Laplace evidence; a hit iteration limit is ``no_evidence``, never a failed model."""
-        s, model = self.s, b.model
-        f, lo, hi = self.objective(model, b.theta)
-        fg = self.objective_and_gradient(model, b.theta)
-        z0 = b.theta[model.free]
+    def _posterior(self, model, theta) -> _Post:
+        """The posterior optimiser (L-BFGS-B on the free coordinates scaled to order one) from ``theta``."""
+        f, lo, hi = self.objective(model, theta)
+        fg = self.objective_and_gradient(model, theta)
+        z0 = theta[model.free]
         scale = np.maximum(np.abs(z0), 1.0)
-        options = {"maxiter": s.posterior_maxiter, "ftol": 1e-11, "gtol": 1e-5,
-                   "maxfun": 20 * (z0.size + 1) * s.posterior_maxiter}
+        options = {"maxiter": self.s.posterior_maxiter, "ftol": 1e-11, "gtol": 1e-5,
+                   "maxfun": 20 * (z0.size + 1) * self.s.posterior_maxiter}
         if fg is None:
-            res = minimize(lambda u: f(u * scale), z0 / scale, method="L-BFGS-B",
+            res = minimize(lambda u: f(u * scale), z0 / scale, method="L-BFGS-B", jac=self.posterior_jac,
                            bounds=list(zip(lo / scale, hi / scale)), options=options)
         else:
             def fun(u):
@@ -1427,8 +1437,16 @@ class _Engine:
                 return v, g * scale
             res = minimize(fun, z0 / scale, method="L-BFGS-B", jac=True,
                            bounds=list(zip(lo / scale, hi / scale)), options=options)
-        b.posterior_iterations = int(res.nit)
-        z = np.clip(res.x * scale, lo, hi)
+        return _Post(res.x * scale, int(res.nit), int(res.status), bool(res.success), str(res.message))
+
+    def price(self, b):
+        """The posterior mode by L-BFGS-B from the TRF optimum, the twin screens there, then the
+        box-rule Laplace evidence; a hit iteration limit is ``no_evidence``, never a failed model."""
+        s, model = self.s, b.model
+        f, lo, hi = self.objective(model, b.theta)
+        res = self._posterior(model, b.theta)
+        b.posterior_iterations = res.nit
+        z = np.clip(res.x, lo, hi)
         point = b.theta.copy()
         point[model.free] = z
         if res.status == 1:

@@ -78,6 +78,16 @@ class _Labelled(cc.CoupledEngine):
         model = self.model(variant, tuple(i for i, m in enumerate(modes) if m[3]))
         if model is None:
             return None
+        out = self._fit_core(model, modes, linear, family)
+        if out is None:
+            return None
+        theta, cost, nfev, message = out
+        return self._place(model, theta, cost, family, nfev, message), cost
+
+    def _fit_core(self, model, modes, linear, family):
+        """One start's TRF (always exactly one ``_least_squares`` call, so one ``n_fits``): (theta, cost, nfev,
+        message) at its optimum, or None when the TRF failed or the cost is not finite. ``family`` labels the fit's
+        statistics only."""
         theta0 = self._start(model, modes, linear)
         res = self._trf(model, theta0, family)
         if res is None:
@@ -87,30 +97,25 @@ class _Labelled(cc.CoupledEngine):
         cost = self.cost(model, theta)
         if not math.isfinite(cost):
             return None
-        return self._place(model, theta, cost, family, int(res.nfev), str(res.message)), cost
+        return theta, cost, int(res.nfev), str(res.message)
 
     def price(self, b):
         """The coupled price, except that a posterior optimiser that stops ABNORMAL is retried once with a 3-point
         gradient (the 2-point one cannot finish on some resolution-limited models). The reason is reset first, so a
         stale 'ABNORMAL' never survives on a priced basin; a basin that still cannot converge stays no_evidence.
         The retry's posterior is the finite-difference one whatever ``gradients`` says: ``objective_and_gradient``
-        returns None for that call, so the base engine passes no ``jac`` of its own (a split integral keeps its
-        gradient, so a not-converged split reruns to the same nodes)."""
+        returns None for that call, so the base engine passes its ``posterior_jac`` (a split integral keeps its
+        gradient, so a not-converged split reruns to the same nodes). Both are engine attributes, never module
+        state: job threads price concurrently."""
         super().price(b)
         if b.status != "no_evidence" or "ABNORMAL" not in b.reason:
             return
         b.status, b.reason = "pending", ""
-        orig = fast_pass.minimize
-        # shortcut: a module-level swap of fast_pass.minimize. The hook turns the gradient off (fd_posterior), and only
-        # the swap can pass jac="3-point"; upgrade by a jac option through _Engine.price if the fast pass ever wants one
-        # too (that changes fast-pass results beyond change 8, so it is not done here). Safe: pool workers are separate
-        # processes and price is single threaded.
-        fast_pass.minimize = lambda *a, **k: orig(*a, jac="3-point", **k)
-        self.fd_posterior = True
+        self.fd_posterior, self.posterior_jac = True, "3-point"
         try:
             super().price(b)
         finally:
-            fast_pass.minimize, self.fd_posterior = orig, False
+            self.fd_posterior, self.posterior_jac = False, None
 
     def _ln_exch(self, model) -> float:
         """ln of the k! of each group of exchangeable unmatched modes (spec 3): the base engine's groups
