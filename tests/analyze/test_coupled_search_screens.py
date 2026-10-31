@@ -1,0 +1,184 @@
+"""Screen first, full price for contenders (plan S1U2, checks 1-7) against a scripted pricer, milliseconds each.
+
+Every mass is a made-up table value (``_search_harness``); a split labelling's screen sits at its full term plus a
+scripted offset. Mode "on" asks steps and moves as screens and promotes them only when a decision needs it; mode
+"shadow" prices everything in full and records where the screened search would have decided otherwise.
+"""
+import math
+
+import pytest
+from _search_harness import Scripted, run, snapshot_for
+from test_coupled_search import B12, EX1, OWN, SIX, TABLE9, X12, happy
+
+from isar.analyze.coupled import search as SE
+from isar.analyze.coupled.types import Priced, PricingJob
+
+NB2 = (None, "b2")   # a "call it new" move of B12 whose split pair keeps its order in the ledger
+
+
+def test_runs_from_the_worktree():
+    import isar
+    here = __file__.replace("\\", "/").rsplit("/tests/", 1)[0]
+    print("import root:", isar.__file__)
+    assert isar.__file__.replace("\\", "/").startswith(here)
+
+
+def by_cand(s, purpose):
+    return [j for j, _p in s.outcomes if s.meta[j.key]["purpose"] == purpose]
+
+
+# 1 the aggregate remainder (lens 1), on a hand-built ledger -----------------------------------------------------
+def test_many_small_screened_terms_hold_the_count_decision_until_promoted_largest_first():
+    s, sc = SE.Search(happy(), screens="on"), Scripted()
+    s.M = sc.M = 200                    # a pool wide enough to name 100 labellings (masses below include the weight)
+    X = -100.0
+
+    def put(key, labels, mass, depth, screen_term=None):
+        k = len(labels)
+        b = sc.basin(k, labels, tuple(5.0 * (i + 1) for i in range(k)), mass)
+        s.meta.setdefault(key, {"purpose": "move", "source": "test"})
+        job = PricingJob("y", "b:ring1", k, labels, key, (), depth)
+        p = Priced(key, k, labels, mass, "ok", b[4], None, 1, 0.0, (b,), (), None, depth=depth,
+                   screen_terms=(None if screen_term is None else b[0],))
+        s.current[key] = (job, p)
+
+    put("a", B12, X, "full")                                           # incoming count 2
+    put("b", ("b1", "b2", None), X - 0.05, "full")                     # count 3 on exact terms: 0.05 behind
+    many = {f"c{i:03d}": ("b1", "b2", f"q{i:03d}") for i in range(100)}
+    for i, (key, lab) in enumerate(many.items()):
+        put(key, lab, X - 10.1 - 0.001 * i, "screen", True)            # screen + allowance = X - 5.1: behind the margin
+    s._rebuild()
+    f = s._final(s.view)
+    assert f["d"]["winner"] == (2, B12) and not f["settled"]          # on exact terms A wins, but not settled
+    asked = []
+    while not f["settled"]:
+        wave = s._rank(s.view, f["requests"])
+        assert wave and len(wave) <= SE.PROMOTE_WAVE
+        assert wave == sorted(set(many) - set(asked))[:SE.PROMOTE_WAVE]   # largest optimistic contribution first
+        for key in wave:
+            s.promoted.add(key)
+            put(key, many[key], X - 5.2, "full")                       # each underrated by 4.9, inside the allowance
+        asked += wave
+        s._rebuild()
+        f = s._final(s.view)
+    assert f["d"]["winner"][0] == 3                                    # the 100 small terms carry count 3 past A
+    assert all(key not in asked for key in many if key not in s.promoted)
+    if len(asked) < len(many):                                         # settled with screens left: marked partial
+        assert f["partial"] and f["remainder"] is not None
+
+
+# 2 a full price supersedes its screen ----------------------------------------------------------------------------
+class Moved(Scripted):
+    """A screen of a split labelling lands at other heights: a basin the full price does not repeat."""
+
+    def __call__(self, job):
+        p = super().__call__(job)
+        if job.depth != "screen" or not p.basins:
+            return p
+        basins = tuple((b[0], b[1], tuple((m[0], m[1], m[2], 3.0 * m[3], m[4]) for m in b[2]), *b[3:])
+                       for b in p.basins)
+        return Priced(p.key, p.count, p.slots, p.ln_z, p.status, p.mode, p.reason, p.starts, p.seconds, basins,
+                      p.loss, p.residual_peak, depth=p.depth, screen_terms=p.screen_terms)
+
+
+def test_a_promoted_candidate_s_mass_is_its_full_price_alone():
+    T = {(2, B12): -100.0, (2, NB2): -101.0}
+    a, _u, s = run(happy(), Moved(T, split={(2, NB2)}, screen={(2, NB2): -1.0}), screens="on")
+    promoted = [c for c in s.promoted if s.current[c][0].count == 2]
+    assert len(promoted) == 1 and s.current[promoted[0]][0].depth == "full"
+    row = next(c for c in a.candidates if (c["count"], tuple(c["slots"])) == (2, NB2))
+    assert row["ln_z"] == pytest.approx(-101.0, abs=1e-9) and row["price"] == "full"   # not the logsumexp of both
+    assert len(s.ledger[(2, NB2)]["basins"]) == 1
+
+
+# 3 a failed screen is promoted at once; a quiet one is final ---------------------------------------------------------
+def test_a_failed_screen_is_promoted_in_the_same_pass_and_a_quiet_one_is_not():
+    sc = Scripted({(2, B12): -100.0, (3, ("b1", "b2", None)): -101.0},
+                  outcomes={1: ("no_evidence", "Hessian not positive definite"), 4: ("no_structure", "no model")})
+    s = SE.Search(happy(), screens="on")
+    sc.M = s.M
+    passes = []
+    while not s.done:
+        jobs = s.next_jobs()
+        passes.append(jobs)
+        s.feed([sc(j) for j in jobs])
+    failed = [(i, j) for i, js in enumerate(passes) for j in js if j.depth == "screen" and j.count == 1]
+    assert failed
+    for i, j in failed:
+        full = s.meta[j.key]["of"]
+        assert any(x.key == full and x.depth == "full" for x in passes[i + 1])     # the very next pass
+    quiet = [j for js in passes for j in js if j.count == 4]
+    assert quiet and all(j.depth == "screen" for j in quiet)                       # never asked in full
+    assert s.result().coverage["stopped"] == {"down": "unresolved:1", "up": "no_structure:4"}
+
+
+# 4 seeds full, screen keys distinct, a promotion carries the full key ----------------------------------------------
+def test_seeds_are_full_steps_and_moves_are_screens_under_their_own_keys():
+    T = {(2, B12): -100.0, (2, NB2): -101.0}
+    _a, _u, s = run(happy(), Scripted(T, split={(2, NB2)}, screen={(2, NB2): -1.0}), screens="on")
+    seeds = by_cand(s, "seed")
+    assert seeds and all(j.depth == "full" for j in seeds)
+    screens = [j for j, _p in s.outcomes if s.meta[j.key]["purpose"] in SE._SCREENED and j.key not in s.promoted]
+    assert screens and all(j.depth == "screen" and j.key != s.meta[j.key]["of"] for j in screens)
+    promos = [j for j, _p in s.outcomes if j.key in s.promoted]
+    assert promos and all(j.depth == "full" and "of" not in s.meta[j.key] for j in promos)
+    assert len({j.key for j, _p in s.outcomes}) == len(s.outcomes)                 # no key asked twice
+
+
+# 5 far-behind screens stay screens -----------------------------------------------------------------------------------
+def test_a_screen_behind_the_margin_even_at_its_allowance_is_never_promoted():
+    T = {(2, B12): -100.0, (2, NB2): -112.0}
+    a, _u, s = run(happy(), Scripted(T, split={(2, NB2)}), screens="on")
+    row = next(c for c in a.candidates if (c["count"], tuple(c["slots"])) == (2, NB2))
+    assert row["price"] == "screen" and row["ln_z"] is None and row["ln_z_screen"] == pytest.approx(-112.0)
+    assert not s.promoted and a.search["screens"]["promoted"] == 0
+    dec = a.coverage["decision"]
+    assert dec["partial"] and dec["label_p_range"][0] <= dec["label_p"] <= dec["label_p_range"][1] + 1e-12
+    assert a.search["screens"]["remainder_nats"] == pytest.approx(-112.0 + SE.SCREEN_ALLOWANCE_NATS, abs=1e-9)
+
+
+# 6 the screened search reaches the full search's decision while the allowance holds -------------------------------
+def three_branches():
+    return snapshot_for(OWN, ["b1", "b2"], {"x": X12, "z": ([(15.0, 0.5, 20.0)], ["b3"])})
+
+
+SORTED = [lab for lab in SIX if str(lab[0]) <= str(lab[1])]   # a split pair files in energy-then-label order
+CASES = {
+    "ex1": (happy, EX1, {(2, NB2): -4.9, (3, ("b1", "b2", None)): -2.0}),
+    "table9": (happy, TABLE9, {(2, NB2): -3.0, (3, ("b1", "b2", None)): -4.9}),
+    "six": (happy, {(2, B12): -100.0} | {(3, lab): -99.5 - math.log(6) for lab in SIX},
+            {(3, lab): -2.0 * i for i, lab in enumerate(SORTED)}),
+    "three": (three_branches, {(2, B12): -100.0, (3, ("b1", "b2", "b3")): -101.0, (2, NB2): -100.05},
+              {(3, ("b1", "b2", "b3")): -4.0, (2, NB2): -4.9}),
+}
+
+
+def decision(a):
+    return a.count, a.slots, a.coverage["decision"]["mask"]["chosen"], a.coverage["decision"]["variant"]["chosen"]
+
+
+@pytest.mark.parametrize("case", sorted(CASES))
+def test_mode_on_and_shadow_decide_alike_when_every_screen_is_within_the_allowance(case):
+    snap, table, offsets = CASES[case]
+    split = set(offsets)
+    on, _u, son = run(snap(), Scripted(table, split=split, screen=offsets), screens="on")
+    sh, _u, ssh = run(snap(), Scripted(table, split=split, screen=offsets), screens="shadow")
+    assert decision(on) == decision(sh)
+    assert sh.search["shadow"]["first_divergence"] is None, sh.search["shadow"]["decisions"]
+    assert son.tried["screens"] > 0 and sh.search["shadow"]["basins"]
+    assert all(full is not None and screen <= full <= screen + SE.SCREEN_ALLOWANCE_NATS
+               for _k, _l, full, screen in sh.search["shadow"]["basins"])
+
+
+# 7 the shadow catches a screen that underrates past the allowance -------------------------------------------------
+def test_a_screen_underrated_past_the_allowance_on_the_winner_is_a_recorded_divergence():
+    T = {(2, B12): -100.0, (2, NB2): -99.0}                           # the new-mode move wins under full prices
+    a, _u, _s = run(happy(), Scripted(T, split={(2, NB2)}, screen={(2, NB2): -16.0}), screens="shadow")
+    assert a.slots == NB2
+    sh = a.search["shadow"]
+    i = sh["first_divergence"]
+    assert i is not None
+    first = sh["decisions"][i]
+    assert first["screen"] is not None and first["screen"] != first["full"]
+    assert any(d["kind"] == "final" and d["screen"] is False for d in sh["decisions"])
+    assert a.search["screens"]["mode"] == "shadow" and a.search["version"] == 2

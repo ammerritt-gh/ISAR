@@ -340,10 +340,10 @@ def test_a_failed_price_after_a_hidden_pair_parent_is_an_unresolved_step_with_it
     why = "free width at the floor and its delta alternative did not fit"
     snap = snapshot_for([(8.0, 0.5, 40.0)], ["b1"], {"x": ([(8.0, 0.5, 40.0), (8.8, 0.5, 4.0)], ["b1", "b2"])})
     sc = Scripted({(2, B12): -100.0, (1, ("b1",)): -101.0}, split={(2, B12)}, outcomes={3: ("no_evidence", why)})
-    a, _u, s = run(snap, sc)
+    a, _u, s = run(snap, sc, screens="shadow")
     assert a.coverage["stopped"]["up"] == "unresolved:3" and f"unresolved_step:3:{why}" in a.reasons
     assert a.search_limited and any(c["reason"] == why for c in a.candidates if c["count"] == 3)
-    at3 = [labels(j) for j in sc.asked if j.count == 3]
+    at3 = [labels(j) for j in sc.asked if j.count == 3 and j.depth == "full"]   # a shadow screen rides with its job
     assert len(at3) == len(set(at3))                                # no labelling asked twice
     # D4: the two modes of the placed pair are never swapped
     s._expand((2, B12))
