@@ -256,7 +256,7 @@ def _polish(g, lo, hi, x, gv=None):
     when the pass reports failure or ends on a non-finite value. The finite-difference single pass stops short at a
     weak/strong tie (up to 1e-2 nat, on ftol with a noisy gradient); the gradient pass alone reaches the two-pass
     value there (test_coupled_gradient.py, check 4). A projected-gradient trigger was dropped: L-BFGS-B stops on ftol
-    near 1e-4 at nearly every node, so it retried almost always, about 12% of each hidden-pair job, at the same ln Z."""
+    near 1e-4, so it retried at 34 of 36 nodes of the hidden case for the same ln Z to 1e-4."""
     x = np.clip(x, lo, hi)
     opts = {"maxiter": 500, "ftol": 1e-12, "gtol": 1e-6}
     if gv is None:
