@@ -4,7 +4,7 @@ from dataclasses import replace
 import numpy as np
 
 import intake_fixtures as fx
-from isar.intake import fit_inputs, inputs, scans, store
+from isar.intake import fit_inputs, inputs, scans, store, values
 from isar.intake.point_masks import point_ids, save_selection
 from isar.session import calibrations, file_fit, guidelines as guide_mod, ingest, start_point
 from isar.session.inter_spectra.authority import stale_of
@@ -87,3 +87,28 @@ def test_an_analyzer_whose_masks_cannot_be_checked_is_not_prepared_or_started(tm
     group = [(rec, 'a03', None, None, None, key, rows[scan]['data_revision'], 'g', 1)]
     assert sp(group).items == [None]
     assert not any(line.get('unit') == key for line in fit_inputs.read_log(ws.root))
+
+
+def test_a_dead_analyzer_keeps_its_declaration_when_its_masks_cannot_be_checked(tmp_path):
+    ws, data = fx.bl43_workspace(tmp_path, stems=('A',))
+    card, session = ws.load()
+    ingest.ingest_batch(card, session, [data], workspace_root=ws.root, data_dir=ws.root / 'data')
+    ws.save(card, session)
+    key = next(k for k in session.scans if k.endswith(':a03'))
+    exp, scan_no, _det = key.rsplit(':', 2)
+    stored = read_unit_data_for_unit(ws.root / 'data', exp, int(scan_no), 'a03')
+    assert save_selection(ws.root, {key: [point_ids(stored['x'], stored['counts'], stored['variance'])[-1]]}).ok
+    unit_data_path(ws.root / 'data', exp, int(scan_no), 'a03').write_text('{not json', encoding='utf-8')
+    assert values.save_condition(ws.root, 'dead', [key], reason='no counts').ok
+    frozen = file_fit.freeze(ws.root)
+    rec, _sources = file_fit.prepare_scan(frozen, exp, int(scan_no), frozen.session.get(key))
+    scan = f'{exp}:{scan_no}'
+    rows = scans.read_scans(ws.root)
+    sp = start_point.StartPoint(frozen.root, frozen.card, guide_mod.resolve(frozen.card),
+                                calibrations.calibration_view(frozen.card), parsed={scan: rec},
+                                rows={scan: rows[scan]}, data_revision={scan: rows[scan]['data_revision']},
+                                passes=('fast',), run_id='r2', session=frozen.session,
+                                is_fresh=lambda *a, **k: True, write_stub=lambda t: None, loaded=None)
+    group = [(rec, 'a03', None, None, None, key, rows[scan]['data_revision'], 'g', 1)]
+    (entry,) = sp(group).items           # the declaration is written as the unit's entry, never held
+    assert entry is not None and entry.status == 'excluded'

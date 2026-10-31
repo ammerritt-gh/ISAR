@@ -119,7 +119,7 @@ class StartPoint:
             h = inputs.inputs_hash(unit)
             reason = (_declared("excluded scan", si.excluded) if si.excluded is not None
                       else _declared("dead analyzer", si.dead[det]) if det in si.dead else None)
-            held = f"{det}: {inputs.UNCHECKED_MASKS}" if det in si.unchecked_masks else None
+            held = f"{det}: {inputs.UNCHECKED_MASKS}" if reason is None and det in si.unchecked_masks else None
             calfp = None if reason else calibrations.calibration_fingerprint(view or self.runcal, eff, det)
             fallbacks = inputs.fallbacks(unit)
             self._units[scan_id] = (h, fallbacks, reason is not None)
