@@ -17,16 +17,18 @@ carrying it as ``ctx`` with optional ``settings`` (its ``FastPassSettings``: mod
 recipe) and ``structures`` (the catalogue whitelist). The fast pass is never rerun here:
 ``engine.CoupledEngine`` subclasses its engine and inherits its twin screens. Counts stay raw Poisson (Baker-Cousins, sigma 0 at zero
 counts, no floor) and the anti-Stokes amplitude stays derived by detailed balance: both live in the base
-engine's model, which this module never changes. No I/O, no pool, no Qt.
+engine's model, which this module never changes. No I/O, no pool, no Qt: given a task port (``tasks.Port``),
+``price`` sends its inner work to the caller's pool, and ``run_task`` is that work's entry in a pool worker.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import time
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, astuple, replace
+from dataclasses import asdict, astuple, dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -38,6 +40,7 @@ from isar.analyze.components import (QE_WEIGHT_CONVENTION, CentralQE, ConstantBa
                                      QuasiElastic)
 from isar.analyze.coupled import engine as cc
 from isar.analyze.coupled import rules
+from isar.analyze.coupled import tasks as _tasks
 from isar.analyze.coupled.identity import _carried_ids, new_branch_id
 from isar.analyze.coupled.settings import InterSettings
 from isar.analyze.coupled.types import (SEVERITY_OF, Assignment, Dormant, Held, HeldMode, Priced, PricingJob,
@@ -48,6 +51,8 @@ if TYPE_CHECKING:
     from isar.analyze.coupled.engine import Factor
     from isar.analyze.coupled.search import Search
     from isar.session.inter_spectra.graph import Link
+
+log = logging.getLogger(__name__)
 
 # Numerical defaults of the specification (uncalibrated; spec 5): an "unchanged" refit moves the predicted
 # raw mean by at most MEAN_REL_TOL (denominator max(1, mu_old)) and every free width, height and
@@ -70,7 +75,16 @@ class _Labelled(cc.CoupledEngine):
     """``CoupledEngine`` whose ``fit`` keeps a start's modes in slot order (labelled coordinates, spec 3).
 
     ``_Engine.fit`` sorts a start by energy before building its model; a neighbour-placed start or a
-    twin refit of a crossed basin would then hand one branch's density to another mode."""
+    twin refit of a crossed basin would then hand one branch's density to another mode.
+
+    Task mode (``price(..., tasks=port)``): the three heavy primitives, a start's fit, the posterior optimiser and
+    the Laplace evidence, each a function of its exact key alone, go through ``_prim``. A pool worker runs a whole
+    sub-computation with ``record`` on and returns the primitive outcomes it met; the job's thread replays today's
+    code over its one ledger, answering each primitive from ``memo`` and sending a miss to the pool. Without a port
+    and a record, every primitive is computed in place: today's path."""
+
+    port = None                             # the job's task port (replay side); None: compute in place
+    record = None                           # {key: outcome} of the primitives a worker task met; None: not recording
 
     def fit(self, variant, modes, family, linear=None):
         if variant is None:
@@ -78,11 +92,122 @@ class _Labelled(cc.CoupledEngine):
         model = self.model(variant, tuple(i for i, m in enumerate(modes) if m[3]))
         if model is None:
             return None
-        out = self._fit_core(model, modes, linear, family)
+        key = ("fit", _vkey(variant), tuple(tuple(m) for m in modes),
+               tuple(sorted(linear.items())) if linear else None)
+        out = self._prim(key, lambda: self._fit_core(model, modes, linear, family))
+        if self.port is not None:
+            self.n_fits += 1                # the start's one TRF ran in a worker
         if out is None:
             return None
         theta, cost, nfev, message = out
+        if self.port is not None:
+            theta = theta.copy()            # a memo outcome is shared; the ledger owns its own vector
         return self._place(model, theta, cost, family, nfev, message), cost
+
+    def _posterior(self, model, theta):
+        key = ("post", _vkey(model.variant), tuple(model.delta), theta.tobytes(), self.gradients, self.fd_posterior,
+               self.posterior_jac)
+        compute = super()._posterior
+        return self._prim(key, lambda: compute(model, theta))
+
+    def laplace(self, b, f, z, lo, hi, rel_step=1e-4):
+        # f is objective(b.model, b.theta) on the price path, so the key need not carry it; fd_posterior decides
+        # whether the curvature takes the joint gradient
+        key = ("lap", _vkey(b.model.variant), tuple(b.model.delta), b.theta.tobytes(),
+               np.asarray(z, dtype=float).tobytes(), rel_step, self.gradients, self.fd_posterior)
+        compute = super().laplace
+        return self._prim(key, lambda: compute(b, f, z, lo, hi, rel_step))
+
+    def _prim(self, key, compute):
+        if self.record is not None:
+            value = compute()
+            self.record.setdefault(key, value)
+            return value
+        if self.port is None:
+            return compute()
+        if key not in self.memo:            # a replay miss: one primitive task, waited for; never computed here
+            h = self.port.submit((self.task_ctx, "prim", (key,)))
+            self.handles.append(h)
+            self.memo[key] = self.port.wait(h)
+        return self.memo[key]
+
+    # -- task mode
+    def open_port(self, port, ctx: bytes):
+        self.port, self.task_ctx, self.memo, self.handles = port, ctx, {}, []
+
+    def submit(self, kind, args):
+        """Queue one speculative task of this job; None without a port."""
+        if self.port is None:
+            return None
+        h = self.port.submit((self.task_ctx, kind, args))
+        self.handles.append(h)
+        return h
+
+    def absorb(self, h):
+        """Wait for a speculative task and keep its primitive outcomes. A task that failed is logged and ignored:
+        replay computes what it really needs and raises there if the step truly fails. ``Abandoned`` (a
+        BaseException) always propagates."""
+        if h is None:
+            return
+        try:
+            got = self.port.wait(h)
+        except Exception:
+            log.warning("coupled refit: a speculative task failed; the replay prices without it", exc_info=True)
+            return
+        for k, v in got.items():
+            self.memo.setdefault(k, v)
+
+    def speculate_wave(self, pending) -> dict:
+        """One ``"basin"`` task per pending basin with no hidden pair, {id(basin): handle}; {} without a port. A basin
+        with a hidden pair is priced in the replay: its split integral runs there as today."""
+        out = {}
+        if self.port is None:
+            return out
+        for b in pending:
+            if self.hidden_pairs(b.model, b.theta):
+                continue
+            out[id(b)] = self.submit("basin", (_vkey(b.model.variant), tuple(b.model.delta), b.index, b.theta.copy(),
+                                               b.cost, b.ln_like, b.ln_model_prior, b.family, b.nfev, b.message))
+        return out
+
+    def close_port(self):
+        if self.port is not None:
+            self.port.drop(self.handles)
+
+    def variant_of(self, vk):
+        k, label, elastic, background, qe, on_demand = vk
+        if on_demand:
+            return self.variant(k, elastic, background, qe)
+        return next(v for v in self.variants[k] if v.label == label)
+
+    def reset_ledger(self):
+        """A worker task's clean ledger. The unit-column cache, the reduced variants and the QE start are pure or
+        init-time state and stay."""
+        self.models.clear()
+        self._split_done.clear()
+        self.fd_posterior, self.posterior_jac = False, None
+        self.s, self.n_fits, self.n_split_nodes = self._s0, 0, 0
+        self.record = {}
+
+    def run_prim(self, key):
+        """One primitive from its key alone, computed here."""
+        self.record = None
+        kind, variant = key[0], self.variant_of(key[1])
+        if kind == "fit":
+            modes, linear = list(key[2]), dict(key[3]) if key[3] else None
+            model = self.model(variant, tuple(i for i, m in enumerate(modes) if m[3]))
+            return self._fit_core(model, modes, linear, "replay")
+        model = self.model(variant, key[2])
+        theta = np.frombuffer(key[3], dtype=float).copy()
+        if kind == "post":
+            self.fd_posterior, self.posterior_jac = key[5], key[6]
+            return self._posterior(model, theta)
+        if kind == "lap":
+            self.fd_posterior = key[7]
+            f, lo, hi = self.objective(model, theta)
+            return self.laplace(_BasinPoint(model, theta), f, np.frombuffer(key[4], dtype=float).copy(), lo, hi,
+                                key[5])
+        raise ValueError(f"unknown primitive {kind!r}")
 
     def _fit_core(self, model, modes, linear, family):
         """One start's TRF (always exactly one ``_least_squares`` call, so one ``n_fits``): (theta, cost, nfev,
@@ -190,6 +315,17 @@ class _Labelled(cc.CoupledEngine):
             if out[n][2] is None:
                 out[n] = (out[n][0], out[n][1], float(theta[model.modes[pos][2]]), out[n][3])
         return out
+
+
+def _vkey(v) -> tuple:
+    """A starting or reduced variant's identity, from which a worker engine finds its own (``variant_of``)."""
+    return v.k, v.label, v.elastic, v.background, v.qe, v.on_demand
+
+
+@dataclass
+class _BasinPoint:                          # the basin fields ``laplace`` reads
+    model: object
+    theta: np.ndarray
 
 
 def _parts(context):
@@ -551,7 +687,57 @@ def _ceiling(fs, k: int):
     return fs if fs.mode_ceiling >= k else replace(fs, mode_ceiling=k)
 
 
-def price(snapshot: Snapshot, job: PricingJob, *, gradients: bool = True) -> Priced:
+def _engine_for(spec: _Spec, objs, job: PricingJob, gradients: bool) -> _Labelled:
+    """The job's engine, built the same way by ``price`` and by a pool worker (``run_task``)."""
+    eng = _Labelled(spec.ctx, _ceiling(spec.fs, job.count), objs, structures=spec.structures,
+                    screen=job.depth == "screen", gradients=gradients)
+    eng.job = job
+    return eng
+
+
+def _worker_engine(snapshot: Snapshot, job: PricingJob, gradients: bool) -> _Labelled:
+    spec = _Spec(snapshot)
+    return _engine_for(spec, spec.slot_objects(tuple(job.slots)), job, gradients)
+
+
+def _start_modes(st) -> list:
+    return [(e, g, h, False) for e, g, h in st.modes]
+
+
+def _hint(job: PricingJob):
+    return next((st for st in job.starts if st.family == "neighbour"), job.starts[0])
+
+
+def run_task(ctx: bytes, kind: str, args: tuple) -> object:
+    """A pool worker's entry (C-core): one task of one job's price, run to completion on this worker's engine for
+    the job (``tasks.worker_engine``) with a clean ledger. ``"fit"`` (variant index, start index), ``"seed"`` and
+    ``"basin"`` run that piece of today's serial price with the recorder on and return {primitive key: outcome};
+    ``"prim"`` returns one primitive's outcome. Plain picklable values only."""
+    eng = _tasks.worker_engine(ctx, _worker_engine)
+    eng.reset_ledger()
+    job, k = eng.job, eng.job.count
+    if kind == "fit":
+        vi, si = args
+        st = job.starts[si]
+        eng.fit(eng.variants[k][vi], _start_modes(st), st.family)
+    elif kind == "seed":
+        hint = _hint(job)
+        eng.seed_hidden(k, [(hint.family, _start_modes(hint))])
+    elif kind == "basin":
+        vk, delta, index, theta, cost, ln_like, ln_model_prior, family, nfev, message = args
+        model = eng.model(eng.variant_of(vk), delta)
+        b = fast_pass._Basin(model, index, theta, cost, ln_like, ln_model_prior, family, nfev, message)
+        model.basins.append(b)
+        eng.price(b)
+    elif kind == "prim":
+        return eng.run_prim(args[0])
+    else:
+        raise ValueError(f"unknown task kind {kind!r}")
+    return eng.record
+
+
+def price(snapshot: Snapshot, job: PricingJob, *, gradients: bool = True,
+          tasks: _tasks.Port | None = None) -> Priced:
     """One labelling at one count from the job's starts: every start in every admissible variant (the base
     engine's TRF, twin resolution and delta alternatives, plus the constructed hidden start of ``seed_hidden``),
     each distinct basin priced by Laplace under the coupled prior, or for a basin with a hidden pair by the
@@ -560,7 +746,10 @@ def price(snapshot: Snapshot, job: PricingJob, *, gradients: bool = True) -> Pri
     energy, its entry charge outside the integral (spec 2). Every basin term also carries the candidate's loss
     price (``_Spec.loss_terms``), once. The engine's ceiling is raised to the job's count. ``gradients``: the
     posterior and split-node optimisers and their Laplace curvature run on the joint objective and gradient
-    (``CoupledEngine.objective_and_gradient``); False prices with finite differences, as before that existed."""
+    (``CoupledEngine.objective_and_gradient``); False prices with finite differences, as before that existed.
+    ``tasks``: a task port (C-port). The fits, the seed and each wave's basins without a hidden pair go to its pool
+    as tasks and this thread replays today's code from their outcomes, so the price equals the serial one in every
+    field but ``seconds``; a split integral still runs here. None: today's serial path."""
     t0 = time.perf_counter()
     k, slots = job.count, tuple(job.slots)
     if len(slots) != k:
@@ -578,25 +767,41 @@ def price(snapshot: Snapshot, job: PricingJob, *, gradients: bool = True) -> Pri
                       f"the neighbour density of {bad[0]} has no verified normaliser", 0, time.perf_counter() - t0,
                       loss=loss, depth=job.depth)
     u = sum(b is None for b in slots)
-    eng = _Labelled(spec.ctx, _ceiling(spec.fs, k), objs, structures=spec.structures, screen=job.depth == "screen",
-                    gradients=gradients)
+    eng = _engine_for(spec, objs, job, gradients)
     if not eng.variants.get(k):
         return Priced(job.key, k, slots, None, "no_structure", None,
                       f"the card's structures hold no model with {k} modes", 0, time.perf_counter() - t0,
                       loss=loss, depth=job.depth)
-    for v in eng.variants[k]:
-        for st in job.starts:
-            eng.fit(v, [(e, g, h, False) for e, g, h in st.modes], st.family)
-    # S1's constructed hidden start, from the neighbours' energies when the job carries them
-    hint = next((st for st in job.starts if st.family == "neighbour"), job.starts[0])
-    eng.seed_hidden(k, [(hint.family, [(e, g, h, False) for e, g, h in hint.modes])])
-    while True:
-        pending = [b for b in eng.basins() if b.count == k and b.status == "pending"]
-        if not pending:
-            break
-        for b in pending:
-            if b.status == "pending":
-                eng.price(b)
+    sent = {}
+    if tasks is not None:
+        eng.open_port(tasks, _tasks.pack_context(snapshot, job, gradients))
+    try:
+        if tasks is not None:
+            # every fit and the seed go out at once; the replay below reads them in today's order
+            sent = {(vi, si): eng.submit("fit", (vi, si)) for vi in range(len(eng.variants[k]))
+                    for si in range(len(job.starts))}
+            sent["seed"] = eng.submit("seed", ())
+        for vi, v in enumerate(eng.variants[k]):
+            for si, st in enumerate(job.starts):
+                eng.absorb(sent.get((vi, si)))
+                eng.fit(v, _start_modes(st), st.family)
+        # S1's constructed hidden start, from the neighbours' energies when the job carries them
+        hint = _hint(job)
+        eng.absorb(sent.get("seed"))
+        eng.seed_hidden(k, [(hint.family, _start_modes(hint))])
+        while True:
+            pending = [b for b in eng.basins() if b.count == k and b.status == "pending"]
+            if not pending:
+                break
+            wave = eng.speculate_wave(pending)
+            for b in pending:
+                if b.status == "pending":
+                    eng.absorb(wave.pop(id(b), None))
+                    eng.price(b)
+            if wave:
+                tasks.drop(wave.values())       # basins merged or settled before their turn
+    finally:
+        eng.close_port()
     basins = [b for b in eng.basins() if b.count == k]
     scored = [b for b in basins if b.status in _PRICED and b.ln_z is not None]
     priced = [b for b in scored if not _free_width_at_floor(b)]
