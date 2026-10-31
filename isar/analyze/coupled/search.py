@@ -98,6 +98,11 @@ def _priced(p: Priced) -> bool:
     return p.ln_z is not None and math.isfinite(p.ln_z) and bool(p.basins)
 
 
+def _contribution(view, c):
+    """Promotion order (_rank, likely_next): optimistic contribution descending, then the key."""
+    return (-view.opt.get(c, _NEG), c)
+
+
 class _View:
     """One ledger of a search: every current price filed once, under the labelling of its fitted energies, each basin
     exact or screened (a split basin of a job sent as a screen). A key's lo leaves its screened basins out (-inf when
@@ -438,7 +443,17 @@ class Search:
         """The first PROMOTE_WAVE candidates not yet promoted, by optimistic contribution (screened term + allowance +
         labelling weight, the largest of their screened basins), descending, ties by key."""
         return sorted((c for c in cands if c not in self.promoted),
-                      key=lambda c: (-view.opt.get(c, _NEG), c))[:PROMOTE_WAVE]
+                      key=lambda c: _contribution(view, c))[:PROMOTE_WAVE]
+
+    def likely_next(self, n: int) -> tuple[PricingJob, ...]:
+        """Up to n full-depth jobs a later pass may ask as promotions: the screened candidates not promoted or
+        promoting, in _rank's order, each as _promote builds it. Pure; () once done."""
+        if self.done:
+            return ()
+        cands = [c for c, (j, _p) in self.current.items()
+                 if j.depth == "screen" and c not in self.promoted and c not in self.promoting]
+        order = sorted(cands, key=lambda c: _contribution(self.view, c))[:n]
+        return tuple(replace(self.current[c][0], key=c, depth="full") for c in order)
 
     def _shadow(self, kind, at, full, screen):
         """Mode shadow: record a comparison the screened search would have judged otherwise (None: it would promote)."""
