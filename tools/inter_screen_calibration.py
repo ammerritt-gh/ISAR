@@ -40,14 +40,6 @@ CRITERION = ("Allowance criterion (the plan's reading of 'with room to spare', n
              "no shadow decision diverges.")
 
 
-def _lse(xs: list[float]) -> float | None:
-    xs = [x for x in xs if x is not None]
-    if not xs:
-        return None
-    m = max(xs)
-    return m + math.log(sum(math.exp(x - m) for x in xs))
-
-
 def _dist(xs: list[float], allowance: float) -> dict:
     """Count, median, 90th percentile and largest of ``xs``, and how many exceed half and all of the allowance."""
     if not xs:
@@ -65,7 +57,7 @@ def build_report(items: dict, allowance: float) -> dict:
     spectra, unreadable = {}, []
     for unit, it in items.items():
         s = it["search"]
-        if not s or s.get("version") != 2 or not s.get("shadow"):
+        if not s or s.get("version") != 2 or not s.get("shadow") or "counts" not in s["shadow"]:
             unreadable.append(unit)
             continue
         sh = s["shadow"]
@@ -76,11 +68,10 @@ def build_report(items: dict, allowance: float) -> dict:
         cand_under += [c["ln_z"] - c["ln_z_screen"] for c in cands if c.get("ln_z_screen") is not None]
         counts = {}
         for k, v in s["counts"].items():
-            mine = [c for c in cands if str(c["count"]) == k]
-            face = _lse([c["ln_z_screen"] if c.get("ln_z_screen") is not None else c["ln_z"] for c in mine])
+            face = sh["counts"].get(k)                       # None: the screens leave the count no mass at all
             full = v.get("ln_total")
             counts[k] = {"full_total": full, "face_screen_total": face,
-                         "underrating": None if full is None or face is None else full - face}
+                         "underrating": None if full is None else (math.inf if face is None else full - face)}
             if counts[k]["underrating"] is not None:
                 count_under.append(counts[k]["underrating"])
         decs = sh["decisions"]

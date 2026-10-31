@@ -26,10 +26,14 @@ def test_import_root_is_the_worktree():
 
 
 # ---- the calibration report -----------------------------------------------------------------------------------
-def _record(basins, decisions, first, *, counts=None, cands=None):
+FACE2 = math.log(math.exp(-10.5) + math.exp(-14.0))   # count 2 on the screens: a screened -10.5 and an exact -14.0
+
+
+def _record(basins, decisions, first, *, counts=None, cands=None, shadow_counts=None):
     search = {"version": 2, "counts": counts or {"2": {"ln_total": -10.0}, "3": {"ln_total": -12.0}},
               "screens": {"mode": "shadow", "screened": 4, "promoted": 0},
-              "shadow": {"basins": basins, "decisions": decisions, "first_divergence": first}}
+              "shadow": {"basins": basins, "decisions": decisions, "first_divergence": first,
+                         "counts": shadow_counts or {"2": FACE2, "3": -12.2}}}
     cands = cands if cands is not None else [
         {"count": 2, "ln_z": -10.0, "ln_z_screen": -10.5}, {"count": 2, "ln_z": -14.0, "ln_z_screen": None},
         {"count": 3, "ln_z": -12.0, "ln_z_screen": -12.2}, {"count": 3, "ln_z": None, "ln_z_screen": None}]
@@ -43,12 +47,26 @@ def test_basin_count_and_candidate_underratings_are_full_minus_screen():
     assert math.isclose(x["basins"][0]["underrating"], 0.6) and math.isclose(x["basins"][1]["underrating"], -1.0)
     assert x["basins"][2]["underrating"] is None                    # no matching full basin: unmatched, not an error
     assert rep["split_basin_underrating"]["n"] == 2 and math.isclose(rep["split_basin_underrating"]["max"], 0.6)
-    # count 2's face-screen total: lse(-10.5, -14.0 exact); the full total is the record's -10.0
-    face2 = math.log(math.exp(-10.5) + math.exp(-14.0))
-    assert math.isclose(x["counts"]["2"]["face_screen_total"], face2)
-    assert math.isclose(x["counts"]["2"]["underrating"], -10.0 - face2)
+    assert math.isclose(x["counts"]["2"]["face_screen_total"], FACE2)   # the shadow view's total, the record's -10.0 full
+    assert math.isclose(x["counts"]["2"]["underrating"], -10.0 - FACE2)
     assert math.isclose(rep["candidate_underrating"]["max"], 0.5)      # the exact candidate has no screen to compare
     assert rep["criterion_met"] and rep["divergences"] == 0 and rep["would_promote"] == 0
+
+
+def test_count_totals_are_the_shadow_views_own_so_a_basin_filed_under_another_label_counts():
+    # the candidates list holds only the exact -14.0 of count 2 (the screened basin sits under another label, so no
+    # row carries its screen): the total must still read the shadow view's -12.0, not the rows'
+    cands = [{"count": 2, "ln_z": -14.0, "ln_z_screen": None}]
+    rep = cal.build_report({"u1": _record([], [], None, cands=cands, shadow_counts={"2": -12.0})}, 5.0)
+    x = rep["spectra"]["u1"]
+    assert x["counts"]["2"]["face_screen_total"] == -12.0 and math.isclose(x["counts"]["2"]["underrating"], 2.0)
+    # a count the screens leave no mass for is infinitely underrated, never dropped; the criterion fails
+    assert x["counts"]["3"]["face_screen_total"] is None and x["counts"]["3"]["underrating"] == math.inf
+    assert rep["count_total_underrating"]["max"] == math.inf and not rep["criterion_met"]
+    # a record without the shadow totals (version 2, written before them) is named unreadable, not a KeyError
+    old = _record([], [], None)
+    del old["search"]["shadow"]["counts"]
+    assert cal.build_report({"u1": old}, 5.0)["unreadable"] == ["u1"]
 
 
 def test_a_definite_divergence_or_a_big_underrating_fails_the_criterion_and_a_small_one_does_not():

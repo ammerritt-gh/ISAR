@@ -807,8 +807,11 @@ class Search:
         if S is not None:
             sf = self._final(S)
             self._shadow("final", "decision", True, self._same_choice(sf, f) if sf["settled"] else None)
+            # each count's total on the screens, from the view the decisions used: a key only a screen filed counts
+            face = {c: _lse([S.face[x] if S.face[x] is not None else S.lo[x] for x in ks]) for c, ks in S.by_k.items()}
             shadow = {"basins": self._shadow_basins(), "decisions": list(self.decisions),
-                      "first_divergence": self.first_divergence}
+                      "first_divergence": self.first_divergence,
+                      "counts": {str(c): v if v > _NEG else None for c, v in face.items()}}
         walks = [self._walk(w) for w in self.walks]
         full = self.full is not None
         if full:

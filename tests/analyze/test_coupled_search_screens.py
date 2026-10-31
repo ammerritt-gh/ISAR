@@ -237,3 +237,26 @@ def test_an_exact_price_that_replaces_a_screened_basin_takes_its_peak_source_and
     e = s.view.ledger[(2, NB2)]
     assert e["scr"] == [False] and len(e["basins"]) == 1
     assert (e["key"], e["source"], e["peak"]) == ("full-key", "move", (30.0, 2.0))
+
+
+# 10 the shadow's count totals are the screened view's, so a basin only a screen filed counts -----------------------
+class Relabelled(Scripted):
+    """NB2's screen files its split basin under another branch than its full price does: its ledger key is its own."""
+
+    def __call__(self, job):
+        p = super().__call__(job)
+        if job.depth != "screen" or tuple(job.slots) != NB2 or not p.basins:
+            return p
+        basins = tuple((b[0], b[1], tuple(("b3" if m[0] == "b2" else m[0],) + m[1:] for m in b[2]), *b[3:])
+                       for b in p.basins)
+        return replace(p, basins=basins)
+
+
+def test_the_shadow_count_total_includes_a_basin_only_a_screen_filed():
+    T = {(2, B12): -100.0, (2, NB2): -101.0}
+    a, _u, s = run(happy(), Relabelled(T, split={(2, NB2)}, screen={(2, NB2): -1.0}), screens="shadow")
+    sh = a.search["shadow"]
+    (screen_only,) = [b for b in sh["basins"] if b[2] is None]          # the screen's basin: no full basin matches it
+    b_row = next(c for c in a.candidates if (c["count"], tuple(c["slots"])) == (2, B12))
+    screened = math.log(math.exp(b_row["ln_z"]) + math.exp(screen_only[3] + rules.ln_w_label(2, 1, s.M)))
+    assert sh["counts"]["2"] == pytest.approx(screened, abs=1e-6)       # the seed's full mass and the screen's, nothing else
