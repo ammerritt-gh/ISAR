@@ -36,16 +36,29 @@ _QUIET = ("degenerate_twin", "no_structure")     # no price, and no reason in th
 _PURPOSE = {"seed": 0, "step_down": 1, "step_up": 2, "move": 3, "full": 4}
 
 
+def _energy_order(k, slots, modes):
+    """Slot positions in ascending energy of one start's modes (ties by label): the order its labelling reads in."""
+    return tuple(sorted(range(k), key=lambda i: (modes[i][0], str(slots[i]))))
+
+
 def _labels(k, slots, modes):
     """(labels, energies) of a start or basin, both in ascending energy (ties by label)."""
-    order = sorted(range(k), key=lambda i: (modes[i][0], str(slots[i])))
+    order = _energy_order(k, slots, modes)
     return tuple(slots[i] for i in order), tuple(float(modes[i][0]) for i in order)
 
 
-def _sorted_job(slots, starts):
-    """Slots and starts permuted together into the first start's energy order (lead correction 2)."""
-    order = sorted(range(len(slots)), key=lambda i: (starts[0].modes[i][0], str(slots[i])))
-    return tuple(slots[i] for i in order), [Start(s.family, tuple(s.modes[i] for i in order)) for s in starts]
+def _ascending(modes, order):
+    """Whether a start's energies never fall when read in a slot order: the fitter's own requirement (engine.py)."""
+    return all(modes[a][0] <= modes[b][0] for a, b in zip(order, order[1:]))
+
+
+def _record_start(rec, k, slots, modes):
+    """The incoming record's saved energies at count k as a start: ascending and unlabelled, so laid on the job's slots
+    by rank in the energy order of the job's first start (modes), as the record was always read; [] when absent."""
+    if rec is None or len(rec) != k:
+        return []
+    order = _energy_order(k, slots, modes)
+    return [Start("record", tuple(rec[order.index(i)] for i in range(k)))]
 
 
 def _priced(p: Priced) -> bool:
@@ -90,26 +103,36 @@ class Search:
         if self.s.full_search:
             self.pending = self._full_jobs()
         else:
-            jobs = [self._job(k, slots, starts, "seed", "seed:" + sources[0])
-                    for (k, slots), (starts, sources) in seeds.items()]
-            self.pending = self._order(j for j in jobs if j is not None)
+            jobs = [j for (k, slots), (starts, sources) in seeds.items()
+                    for j in self._jobs(k, slots, starts, "seed", "seed:" + sources[0])]
+            self.pending = self._order(jobs)
 
     # -- jobs ---------------------------------------------------------------------------------------------------
-    def _job(self, k, slots, starts, purpose, source):
-        """A job with every start not within SAME_START_FWHM of one attempted at its labelling, or None."""
-        kept = []
+    def _jobs(self, k, slots, starts, purpose, source):
+        """The jobs for the starts not within SAME_START_FWHM of one attempted at their labelling. The fitter reads
+        each start in the job's slot order, so a start whose energies do not ascend in it gets a job of its own,
+        with its slots in its own energy order (finding aa71ec9548ff1-1)."""
+        groups = []                                             # (slot order, starts) of each job
         for st in starts:
             lab, es = _labels(k, slots, st.modes)
             if any(all(abs(a - b) <= self.tol for a, b in zip(es, x)) for x in self.attempted[(k, lab)]):
                 continue
             self.attempted[(k, lab)].append(es)
-            kept.append(st)
-        if not kept:
-            return None
-        part = json.dumps([k, list(slots), [[st.family, [list(m) for m in st.modes]] for st in kept]])
-        key = hashlib.sha256((self.content + part).encode("utf-8")).hexdigest()
-        self.meta[key] = {"purpose": purpose, "source": source, "new": ()}
-        return PricingJob(self.snap.unit, self.snap.snapshot_id, k, tuple(slots), key, tuple(kept))
+            for order, kept in groups:
+                if _ascending(st.modes, order):
+                    kept.append(st)
+                    break
+            else:
+                groups.append((_energy_order(k, slots, st.modes), [st]))
+        jobs = []
+        for order, group in groups:
+            js = tuple(slots[i] for i in order)
+            sts = tuple(Start(st.family, tuple(st.modes[i] for i in order)) for st in group)
+            part = json.dumps([k, list(js), [[st.family, [list(m) for m in st.modes]] for st in sts]])
+            key = hashlib.sha256((self.content + part).encode("utf-8")).hexdigest()
+            self.meta[key] = {"purpose": purpose, "source": source, "new": ()}
+            jobs.append(PricingJob(self.snap.unit, self.snap.snapshot_id, k, js, key, sts))
+        return jobs
 
     def _order(self, jobs):
         return tuple(sorted(jobs, key=lambda j: (j.count, _PURPOSE[self.meta[j.key]["purpose"]], str(j.slots), j.key)))
@@ -157,9 +180,7 @@ class Search:
                         slots = [None] * k
                         for p, b in zip(pos, bs):
                             slots[p] = b
-                        job = self._job(k, tuple(slots), [start], "full", "full")
-                        if job is not None:
-                            jobs.append(job)
+                        jobs += self._jobs(k, tuple(slots), [start], "full", "full")
         untried = sum(k > N for k in self.seed_counts)
         self.full = {"max_count": N, "jobs": len(jobs), "untried": untried, "truncated": untried > 0}
         return self._order(jobs)
@@ -359,13 +380,13 @@ class Search:
         parent = self._best_key(c, masses)
         L, P, _pairs = self._parent(parent)
         rec = spec._record_modes(t)
-        extra = [Start("record", tuple(rec))] if rec is not None and len(rec) == t else []
         out = []
         if t < c:
             for i in range(c):
-                out.append(self._job(t, L[:i] + L[i + 1:], [Start("step", tuple(P[:i] + P[i + 1:]))] + extra,
-                                     "step_down", "step_down"))
-            return [j for j in out if j is not None]
+                slots, modes = L[:i] + L[i + 1:], P[:i] + P[i + 1:]
+                out += self._jobs(t, slots, [Start("step", tuple(modes))] + _record_start(rec, t, slots, modes),
+                                  "step_down", "step_down")
+            return out
         named = {spec.canon(b) for b in L if b is not None}
         for b in self.in_window:
             cb = spec.canon(b)
@@ -385,14 +406,14 @@ class Search:
                     i = min(near, key=lambda i: abs(P[i][0] - eb))
                     split = tuple((e, g, 0.6 * h if n == i else h) for n, (e, g, h) in enumerate(P))
                     starts.append(Start("split", split + ((eb, P[i][1], 0.4 * P[i][2]),)))
-            slots, starts = _sorted_job(L + (b,), starts)
-            out.append(self._job(t, slots, starts + extra, "step_up", "step_up"))
+            slots = L + (b,)
+            out += self._jobs(t, slots, starts + _record_start(rec, t, slots, starts[0].modes), "step_up", "step_up")
         peak = self.ledger[parent]["peak"]
         if peak is not None:
-            slots, starts = _sorted_job(L + (None,), [Start("residual", tuple(P) + ((peak[0], fast_pass.LADDER_GAMMA,
-                                                                                  peak[1]),))])
-            out.append(self._job(t, slots, starts + extra, "step_up", "step_up"))
-        return [j for j in out if j is not None]
+            resid = Start("residual", tuple(P) + ((peak[0], fast_pass.LADDER_GAMMA, peak[1]),))
+            slots = L + (None,)
+            out += self._jobs(t, slots, [resid] + _record_start(rec, t, slots, resid.modes), "step_up", "step_up")
+        return out
 
     # -- labelling moves ----------------------------------------------------------------------------------------
     def _expand(self, key):
@@ -433,9 +454,7 @@ class Search:
         """The next MOVE_WAVE moves of a key that still need a price (a start already attempted is skipped)."""
         ks, jobs = self.keys[key], []
         while ks["queue"] and len(jobs) < MOVE_WAVE:
-            job = self._job(key[0], ks["queue"].pop(0), [Start("move", ks["start"])], "move", "move")
-            if job is not None:
-                jobs.append(job)
+            jobs += self._jobs(key[0], ks["queue"].pop(0), [Start("move", ks["start"])], "move", "move")
         ks["waves"].append({j.key for j in jobs})
         if not jobs:
             ks["stopped"] = "no_moves" if len(ks["waves"]) == 1 else "no_move_within_margin"

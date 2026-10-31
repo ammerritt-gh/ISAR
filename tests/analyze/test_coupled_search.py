@@ -187,7 +187,7 @@ def test_a_labelling_reached_from_two_parents_is_priced_twice_and_counted_once()
     assert s.tried["repeated_basins"] >= 1 and cands(a)[(2, B12)]["ln_z"] == pytest.approx(-100.0)
     assert len(s.ledger[(2, B12)]["basins"]) == 1
     near = Start("move", ((5.7, 0.5, 20.0), (10.7, 0.5, 20.0)))
-    assert s._job(2, B12, [near], "move", "move") is None           # within SAME_START_FWHM of an attempted one
+    assert s._jobs(2, B12, [near], "move", "move") == []            # within SAME_START_FWHM of an attempted one
 
 
 # 8 moves ----------------------------------------------------------------------------------------------------------
@@ -365,5 +365,19 @@ def test_job_for_builds_the_search_s_own_job():
     snap = happy()
     j = job_for(snap, 2, B12)
     assert j.starts[0].family == "own" and j.starts[0].modes == tuple(OWN)
-    j = job_for(snap, 2, ("b2", "b1"))
-    assert j.starts[0].modes == ((10.0, 0.5, None), (5.0, 0.5, None))
+    j = job_for(snap, 2, ("b2", "b1"))              # its starts read in energy order: b1 at 5, then b2 at 10
+    assert j.slots == ("b1", "b2") and j.starts[0].modes == ((5.0, 0.5, None), (10.0, 0.5, None))
+
+
+def test_every_start_of_a_job_is_ascending_in_the_job_s_own_slot_order():
+    # two neighbours put the new branch b2 on opposite sides of the incoming mode b1 (finding aa71ec9548ff1-1)
+    snap = snapshot_for([(5.6, 0.5, 20.0)], ["b1"], {"x": ([(3.0, 0.5, 20.0)], ["b2"]),
+                                                    "w": ([(8.0, 0.5, 20.0)], ["b2"])})
+    # b1 is no neighbour's branch, so the incoming labelling is (None,); count 3 ends the walk
+    sc = Scripted({(1, (None,)): -100.0}, default={1: -110.0, 2: -110.0, 3: -130.0})
+    run(snap, sc)
+    assert any(j.count == 2 for j in sc.asked)              # the step up that adds b2 was priced
+    for j in sc.asked:
+        for st in j.starts:
+            energies = [m[0] for m in st.modes]             # the engine reads a start in slot order (engine.py)
+            assert energies == sorted(energies), (j.slots, st.family, energies)

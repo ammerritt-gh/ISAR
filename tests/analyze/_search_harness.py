@@ -115,7 +115,7 @@ def job_for(snapshot, k, slots):
                                                                  fast_pass.LADDER_GAMMA))
             modes.append((e, g, None))
         start = Start("neighbour", tuple(modes))
-    return s._job(k, slots, [start], "seed", "test")
+    return s._jobs(k, slots, [start], "seed", "test")[0]
 
 
 def ledger(snapshot, priced):
