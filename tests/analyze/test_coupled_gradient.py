@@ -147,6 +147,31 @@ def test_a_split_node_gradient_is_the_derivative_of_its_value(width_kind):
         _agree(d, _fd(g, x), (width_kind, f))
 
 
+def test_a_soft_log_pair_width_on_its_lower_bound_keeps_its_inward_derivative():
+    # a width floor where exp(ln(lo + knee)) - knee rounds to lo or below: the Gamma part must not be dropped there
+    snap = _hidden(prior.PriorSettings(width_kind="softlog"))
+    eng = _engine(snap, ("b1", "b2"))
+    model = eng.model(eng.variant(2, True, True), ())
+    knee, floor = eng.sp.settings.width_knee, 0.05
+    assert math.exp(math.log(floor + knee)) - knee <= floor          # the rounding this test needs
+    widths = [g for _a, g, _c in model.modes[:2]]
+    model.lo = model.lo.copy()
+    model.lo[widths] = floor
+    theta = eng._start(model, [(8.0, 0.4, 40.0, False), (8.2, 0.5, 3.0, False)], {"elastic": 100.0, "bg": 2.0})
+    obj, xi0, _fj, lo, _theta_of = eng.split_problem(model, theta, (0, 1))
+    coords = [int(x) for x in model.free if x != model.modes[1][2]]
+    for f in (0.03, 0.5, 0.97):
+        g, gv, h2 = obj(f)
+        x = _inside(xi0, lo, h2, seed=int(100 * f))
+        for n in (coords.index(w) for w in widths):
+            x[n] = lo[n]
+            h = 1e-6 * max(abs(x[n]), 1.0)
+            step = np.zeros(x.size)
+            step[n] = h
+            fwd = (g(x + step) - g(x)) / h                           # one-sided: the box ends at lo
+            assert abs(gv(x)[1][n] - fwd) <= 1e-3 * abs(fwd) + 1e-3, (f, n, gv(x)[1][n], fwd)
+
+
 def test_the_qe_width_and_height_gradient():
     # BL43LXU with a free central QE width (its column difference) and the QE width prior's derivative
     lo_w, _fwhm = recipe.qe_floor()

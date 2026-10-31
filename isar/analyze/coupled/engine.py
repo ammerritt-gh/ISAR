@@ -459,8 +459,8 @@ class CoupledEngine(fast_pass._Engine):
         is (g, gv, h2): the node objective g(xi), its joint value and gradient gv(xi) (None with gradients off) and
         the coordinates' upper bounds at that f. g = cost/2 - sat - ln_prior - Jacobians + ridge, in nats.
         The gradient by the chain rule: H (coordinate of h_i) f dF/dh_i + (1 - f) dF/dh_j - 1/H; a soft-log pair
-        width u = ln(Gamma + knee) (Gamma + knee) dF/dGamma - 1 (0 for the Gamma part where theta_of clips Gamma at
-        its lower bound); an untransformed one dF/dGamma; every pair width the ridge's own term on top; every other
+        width u = ln(Gamma + knee) (Gamma + knee) dF/dGamma - 1, on its lower bound too (the inward derivative);
+        an untransformed one dF/dGamma; every pair width the ridge's own term on top; every other
         coordinate its dF/dtheta."""
         (ai, gi, ci), (aj, gj, cj) = model.modes[pair[0]], model.modes[pair[1]]
         free = [int(x) for x in model.free]
@@ -519,9 +519,8 @@ class CoupledEngine(fast_pass._Engine):
                 out = dF[coords]
                 out[hp] = f * dF[ci] + (1.0 - f) * dF[cj] - (1.0 / xi[hp] if xi[hp] > 1e-300 else 0.0)
                 for gw, n in zip(widths, wn):
-                    if softlog:                                  # d Gamma / du = Gamma + knee, unless theta_of clipped it
-                        e_u = math.exp(xi[n])
-                        out[n] = (e_u * dF[gw] if e_u - knee > float(model.lo[gw]) else 0.0) - 1.0
+                    if softlog:   # d Gamma / du = Gamma + knee; xi >= ln(lo + knee), so theta_of's clip only absorbs rounding
+                        out[n] = math.exp(xi[n]) * dF[gw] - 1.0
                     out[n] += SPLIT_RIDGE * (xi[n] - mid[n]) / span[n] ** 2
                 return v - jac + ridge, out
             return g, (gv if self.gradients else None), h2
