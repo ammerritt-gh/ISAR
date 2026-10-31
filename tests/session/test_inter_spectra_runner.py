@@ -840,13 +840,25 @@ def _ring1(tmp_path, cfgs: dict):
 
 
 def _spy_maps(monkeypatch) -> list:
-    """Record ``(fn, number of calls)`` of every pool map."""
-    seen, orig = [], runner._Pool.map
+    """Record ``(fn, number of calls)`` of every pool map, and of every stream (all the calls it ran)."""
+    seen, orig, orig_stream = [], runner._Pool.map, runner._Pool.stream
 
     def spy(self, fn, calls):
         seen.append((fn, len(calls)))
         return orig(self, fn, calls)
+
+    def spy_stream(self, fn, calls, more):
+        n = [0]
+
+        def counted(key, result):
+            n[0] += 1
+            return more(key, result)
+        try:
+            return orig_stream(self, fn, calls, counted)
+        finally:
+            seen.append((fn, n[0]))
     monkeypatch.setattr(runner._Pool, "map", spy)
+    monkeypatch.setattr(runner._Pool, "stream", spy_stream)
     return seen
 
 
@@ -854,17 +866,135 @@ def _spectra(log, batch) -> dict:
     return {(r["stage"], r["unit"]): r for r in log.batches[batch].end["timing"]["spectra"]}
 
 
-def test_all_live_searches_share_one_pool_map_per_pass(tmp_path, monkeypatch):
-    cfg = {"triggered": True, "iterations": 3}
-    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): cfg, ("a04", 150.0): cfg})
-    seen = _spy_maps(monkeypatch)
-    log = Bench(ws).run(spec)
-    assert [m for m in seen if m[0] == "price"] == [("price", 2)] * 3          # one map per pass over both spectra
+def test_a_spectrum_sends_its_next_pass_while_another_spectrums_job_still_runs(tmp_path, monkeypatch):
+    """No barrier: a03's one job is slow; a04's three passes all go to the pool before a03's job is back."""
+    from concurrent.futures import ThreadPoolExecutor
+    monkeypatch.setenv("ISAR_WORKERS", "2")
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", ThreadPoolExecutor)    # in process: the fake core is importable
+    events, orig = [], runner._Run.fly
+
+    def fly(self, key, on):
+        events.append((key, on))
+        return orig(self, key, on)
+    monkeypatch.setattr(runner._Run, "fly", fly)
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): {"triggered": True, "price_sleep": 1.0},
+                                    ("a04", 150.0): {"triggered": True, "iterations": 3}})
+    slow, quick = k["a03", 150.0], k["a04", 150.0]
+    log = Bench(ws).run(spec, cores=2)
+    price = [(key, on) for key, on in events if isinstance(key, tuple)]
+    slow_back = price.index(next((key, False) for key, on in price if key[0] == slow))
+    quick_sent = [i for i, (key, on) in enumerate(price) if key[0] == quick and on]
+    assert len(quick_sent) == 3 and quick_sent[-1] < slow_back      # a04's third pass flew before a03's job was back
+    rows = _spectra(log, spec.batch_id)
+    assert (rows["ring1", quick]["iterations"], rows["ring1", quick]["candidates"]) == (3, 3)
+    assert (rows["ring1", slow]["iterations"], rows["ring1", slow]["candidates"]) == (1, 1)
     t = log.batches[spec.batch_id].end["timing"]
-    for u in (k["a03", 150.0], k["a04", 150.0]):
-        r = _spectra(log, spec.batch_id)["ring1", u]
-        assert (r["iterations"], r["candidates"], r["cached"]) == (3, 3, 0)
-    assert t["pool"]["iterations"] == 3 and t["search_s"] >= 0.0
+    assert t["pool"]["iterations"] == 4 and t["pool"]["workers"] == 2 and t["search_s"] >= 0.0
+    assert t["pool"]["busy_s"] <= t["pool"]["map_wall_s"] * 2           # utilisation stays a fraction
+
+
+class _ScriptSearch:
+    """A search that asks scripted passes and records every price it is fed, in order."""
+
+    def __init__(self, passes) -> None:
+        self.passes, self.fed = list(passes), []
+
+    @property
+    def done(self) -> bool:
+        return not self.passes
+
+    def next_jobs(self) -> tuple:
+        return tuple(self.passes[0]) if self.passes else ()
+
+    def feed(self, priced) -> None:
+        self.passes.pop(0)                    # the test compares what was fed with the job order
+        self.fed.extend((p.key, p.ln_z, p.status, p.depth) for p in priced)
+
+    def result(self):
+        from types import SimpleNamespace as NS
+        return NS(coverage={})
+
+
+def _job(unit, key, depth="full"):
+    from isar.analyze.coupled.types import PricingJob
+    return PricingJob(unit, "s", 1, ("B",), key, depth=depth)
+
+
+def _scripted_price(job):
+    from isar.analyze.coupled.types import Priced
+    return Priced(job.key, job.count, tuple(job.slots), -float(len(job.key)) - (job.depth == "screen"), "ok", None,
+                  None, 1, 0.01, depth=job.depth)
+
+
+class _OrderPool:
+    """Stands in for the run's ``_Pool``: ``workers`` calls in flight, the next to come back picked by ``order``
+    (``fifo``, ``reversed`` = newest first, ``interleaved`` = oldest and newest in turn); ``raises``: job keys
+    whose call raises."""
+
+    def __init__(self, order, workers=3, raises=()) -> None:
+        self.order, self.workers, self.raises, self.ship_s = order, workers, set(raises), 0.0
+
+    def stream(self, fn, calls, more) -> None:
+        queue, flying, n = list(calls), [], 0
+        while queue or flying:
+            while queue and len(flying) < self.workers:
+                flying.append(queue.pop(0))
+            i = {"fifo": 0, "reversed": -1, "interleaved": 0 if n % 2 else -1}[self.order]
+            key, (snap, job), _kw = flying.pop(i)
+            n += 1
+            queue.extend(more(key, RuntimeError("boom") if job.key in self.raises else _scripted_price(job)))
+
+
+def _scripted_run(pool, searches: dict, cache: dict):
+    from types import SimpleNamespace as NS
+    run = runner._Run(Path("."), NS(spec={"batch_id": "b", "kind": "anchored"}), None, None, None,
+                      NS(open_search=lambda s: searches[s.unit]), 30.0)
+    run.pool, run.index = pool, 1
+    snaps = {u: NS(unit=u, terms=(), aliases={}) for u in searches}
+    return run, run.assign(snaps, cache)
+
+
+def _scripts():
+    """x: a pass the cache answers alone, then one with a cache hit among fresh jobs; y: a screen of a candidate,
+    then its promotion (the full key, depth "full") beside a new job; z: one fresh pass."""
+    x = [[_job("x", "x-c1"), _job("x", "x-c2")], [_job("x", "x-a"), _job("x", "x-c3"), _job("x", "x-bb")],
+         [_job("x", "x-ccc")]]
+    y = [[_job("y", "y-1"), _job("y", "y-2:screen", "screen")], [_job("y", "y-2:full"), _job("y", "y-3")],
+         [_job("y", "y-4444")]]
+    z = [[_job("z", "z-1"), _job("z", "z-22"), _job("z", "z-333")]]
+    return {"x": x, "y": y, "z": z}
+
+
+def _cached():
+    from isar.analyze.coupled.types import Priced
+    return {"x": {key: Priced(key, 1, ("B",), 7.0, "ok", None, None, 1, 0.5) for key in ("x-c1", "x-c2", "x-c3")}}
+
+
+def test_each_search_sees_the_same_prices_in_job_order_whatever_order_the_pool_returns_them():
+    """B's ordering (S1U4 check 1): over three completion orders, each search's feed is identical and is what a
+    barrier per pass fed it: every pass's prices in its job order, cache hits in their place."""
+    feeds = {}
+    for order in ("fifo", "reversed", "interleaved"):
+        searches = {u: _ScriptSearch(p) for u, p in _scripts().items()}
+        run, (A, errors) = _scripted_run(_OrderPool(order), searches, _cached())
+        assert errors == {} and sorted(A) == ["x", "y", "z"]
+        feeds[order] = {u: s.fed for u, s in searches.items()}
+    cached = _cached()
+    expect = {u: [(j.key, *((7.0, "ok", "full") if j.key in cached.get(u, {}) else
+                            (_scripted_price(j).ln_z, "ok", j.depth))) for p in passes for j in p]
+              for u, passes in _scripts().items()}
+    assert feeds["fifo"] == feeds["reversed"] == feeds["interleaved"] == expect
+    assert ("y-2:screen", -11.0, "ok", "screen") in expect["y"] and ("y-2:full", -8.0, "ok", "full") in expect["y"]
+    rows = {t.unit: t for t in run.tallies.values()}
+    assert (rows["x"].iterations, rows["x"].candidates, rows["x"].cached) == (2, 3, 3)   # the cache-only pass is no iteration
+    assert run.timing["pool"]["iterations"] == 6
+
+
+def test_a_failed_screen_job_comes_back_as_a_failed_screen_price():
+    searches, cache = {"y": _ScriptSearch([[_job("y", "y-1"), _job("y", "y-2:screen", "screen")]])}, {}
+    run, (A, errors) = _scripted_run(_OrderPool("fifo", raises={"y-2:screen"}), searches, cache)
+    assert searches["y"].fed == [("y-1", -3.0, "ok", "full"), ("y-2:screen", None, "no_evidence", "screen")]
+    assert set(cache["y"]) == {"y-1"} and run.tallies["ring1", "y"].failures == 1     # a failure is never cached
 
 
 def test_a_simultaneous_round_with_unchanged_inputs_prices_nothing(tmp_path, monkeypatch):
@@ -994,7 +1124,8 @@ def test_the_timing_block_reports_contract_10(tmp_path, monkeypatch):
     assert t["slowest"]["spectrum"]["unit"] == a["unit"] and t["slowest"]["spectrum"]["stage"] == "ring1"
     assert t["slowest"]["stage"]["kind"] == "ring" and t["slowest"]["stage"]["wall_s"] == max(
         s["wall_s"] for s in t["stages"])
-    assert t["pool"]["iterations"] == len([m for m in seen if m[0] == "price"]) == 2
+    assert [m for m in seen if m[0] == "price"] == [("price", 8)]               # one stream for the ring, its 8 jobs
+    assert t["pool"]["iterations"] == 4                                         # two passes of each spectrum
     assert t["pool"]["busy_s"] == pytest.approx(a["evidence_s"] + b["evidence_s"])
     assert (t["pool"]["workers"], t["over_target"]) == (1, True) and bench.end().status == "done"
 
