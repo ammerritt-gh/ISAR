@@ -680,8 +680,8 @@ The Log, bottom left, holds what the window reports. The Output, bottom right, n
 - *Save experiment copy…* copies the whole experiment folder to a new one. The original stays the active
   experiment and new data keeps going to it. The copy is offered as *Open copy*, and the Log says what the
   copy still reads from outside its folder (its source data files, its resolution curves).
-- *Export results…* runs `isar export` on the experiment and names the new folder when it is done, with
-  *Open folder*. See *Exporting results* below.
+- *Export results…* opens a dialog to choose contents, formats, intensity scale and destination, then
+  names the completed folder with *Open folder*. See *Exporting results* below.
 
 Both actions are unavailable, with the reason beside them, while an ingest, a campaign or an export is
 writing to the experiment, and while nothing has been read into it yet. A running analysis does not make
@@ -693,7 +693,41 @@ the last one did.
 
 ### Exporting results
 
-`isar export` writes one new folder, `report/exports/export-<timestamp>/`, from the stored results. It
+**From the GUI:** choose measured spectra, fit curves, and whole-model parameters in separate files,
+a combined file, or both. Data and numerical curves always have one file per scan/analyzer. Fits
+use the current authoritative model, including a picked or locked inter-spectra fit. No refitting
+is performed. Fit files contain a separate fine energy grid, total signal and all model elements;
+Stokes/anti-Stokes can be separate curves or combined for each mode.
+
+Select **Neutral CSV**, **Origin**, or both, and one intensity scale: **Raw counts** or
+**Monitor-normalized intensity** (counts per monitor count). The same scale applies to both formats,
+fit curves and intensity parameters. Format/content choices are remembered globally. The parent
+folder and any edited folder name are remembered separately for each experiment. **Save here** uses
+the displayed path; **Save elsewhere** opens a parent-folder picker and saves there; **Cancel**
+leaves the saved choices and files alone. An existing export requires confirmation before replacement.
+
+Each selected format has its own `csv/` or `origin/` directory, containing `spectra/`, `fits/`,
+`parameters/` and/or a combined `parameters.csv`, according to the choices. The parameter table is
+one row per parameter, including elastic/background terms and recorded uncertainties, with clear
+labels and units. This is the readable whole-model counterpart of the audit export's technical
+`modes.csv`. Zero and missing values are distinct, and conditional errors are labelled as such.
+Raw fit curves use a reference exposure, recorded in `export.json` and Origin comments: measured
+points can have different exposures. Missing monitor values give blank normalized values, never
+raw-count substitutes. Excluded data points remain in the files with `Included=0`.
+
+Origin CSV files have four header rows: **Long Name**, **Units**, **Comments**, **column designation**.
+In Origin's ASCII import options assign rows 1–3 accordingly and start data at row 5; use the
+designations on row 4 (`X`, `Y`, `yEr`, `Label`) for the worksheet columns. Save that import filter
+for reuse. `README.txt` gives these instructions. `export.json` records the options, source identities,
+authoritative models and any unavailable outputs; problems are also listed in `README.txt`.
+
+**From the command line:** `--options-json` accepts the same choices (`spectra`, `curves`,
+`parameters_separate`, `parameters_combined`, `csv`, `origin`, `scale`, `split_sides`). `scale` is
+`raw` or `normalised`; the remaining fields are booleans. `--destination` names the full export
+folder, and `--overwrite` explicitly permits replacing an existing ISAR export. Without options,
+`isar export` retains the audit bundle described below.
+
+**Audit bundle:** `isar export` writes one new folder, `report/exports/export-<timestamp>/`, from the stored results. It
 refits nothing, reparses nothing and saves nothing, and an earlier export is never overwritten. The
 folder holds:
 

@@ -34,6 +34,7 @@ from PySide6.QtCore import QByteArray, QEvent, QPoint, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QGuiApplication, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QDockWidget,
     QFileDialog,
     QHBoxLayout,
@@ -1713,13 +1714,22 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("Export is already waiting for the result being saved to finish")
             return
         root = Path(self._ws.root)
+        from isar_gui.export_dialog import ExportDialog
+        dialog = ExportDialog(root, self._session.view_state, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if Path(self._ws.root) != root or not self._availability()[0]:
+            self.statusBar().showMessage("Export did not start: the open experiment changed or is busy")
+            return
+        dialog.save_preferences(self._session.view_state)
+        self._autosaver.flush_now()
         self._export_hold = True    # the queue's writer saves nothing until the export has read the results
-        self._queue.hold_writes(then=lambda: self._start_held_export(root))
+        self._queue.hold_writes(then=lambda: self._start_held_export(root, dialog.request))
         if self._export_hold and not self._export.is_running():
             self.statusBar().showMessage("Export: waiting for the result being saved to finish…")
 
-    def _start_held_export(self, root: Path) -> None:
-        if not self._export.start(root):
+    def _start_held_export(self, root: Path, request=None) -> None:
+        if not self._export.start(root, request):
             self._release_export_hold()
             self.statusBar().showMessage("Export did not start")
 

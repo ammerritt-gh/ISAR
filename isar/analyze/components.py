@@ -150,6 +150,25 @@ class PhononDHO(Component):
                                       [self.peak], areas=False)
         return {"h": cols[0]}
 
+    def evaluate_sides(self, x, local: dict, ctx) -> list[tuple[str, np.ndarray]]:
+        """Convolved Stokes/anti-Stokes contributions with the WHOLE mode's height scale.
+
+        Splitting after convolution, or normalizing each half to its own maximum, changes
+        the fitted model. Split the unconvolved signal and use the original normalization.
+        """
+        x = np.asarray(x, dtype=float)
+        conv = _convolver(x, ctx)
+        e0, gamma = local["omega0"], local["Gamma"]
+        full = dho_signal(conv.grid, e0, gamma, 1.0, ctx.T, self.peak)
+        height = unit_peak_of_nodes(conv, conv.nodes(full), e0, gamma, areas=False).height
+        sides = ("stokes", "astokes") if self.peak.lower() == "all" else tuple(
+            side for side in ("stokes", "astokes") if side in self.peak.lower().split("+"))
+        signals = [dho_signal(conv.grid, e0, gamma, 1.0, ctx.T, side) for side in sides]
+        rows = conv.nodes(np.stack(signals)) if signals else []
+        return [(side, local["h"] * np.interp(x - ctx.center, conv.x_out, row,
+                                             left=0.0, right=0.0) / height)
+                for side, row in zip(sides, rows)]
+
     def unit_peak(self, nonlinear: dict, ctx) -> UnitPeak:
         """The :class:`UnitPeak` (per unit intrinsic A) at ``{"omega0", "Gamma"}``, on the grid of
         the context's fitted window."""

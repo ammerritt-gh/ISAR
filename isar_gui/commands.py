@@ -72,9 +72,15 @@ def build_ingest_command(python: str, data_paths, workspace: str, *, json: bool 
     return cmd
 
 
-def build_export_command(python: str, workspace: str) -> list[str]:
+def build_export_command(python: str, workspace: str, request=None) -> list[str]:
     """The argv for ``isar export --workspace <ws> --json``: stored results only, no refit."""
-    return [python, "-m", "isar", "export", "--workspace", str(workspace), "--json"]
+    cmd = [python, "-m", "isar", "export", "--workspace", str(workspace), "--json"]
+    if request is not None:
+        import json
+        cmd += ["--options-json", json.dumps(request["options"]), "--destination", request["destination"]]
+        if request["overwrite"]:
+            cmd.append("--overwrite")
+    return cmd
 
 
 def build_detect_command(python: str, data: str) -> list[str]:

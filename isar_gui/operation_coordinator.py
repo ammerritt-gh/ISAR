@@ -143,13 +143,13 @@ class WorkspaceOperationCoordinator(QObject):
         self._start_next()
         return True
 
-    def request_export(self, root) -> bool:
+    def request_export(self, root, request=None) -> bool:
         """Queue ``isar export`` for the live, ready workspace; it runs FIFO like any other job."""
         live = self._wsm.root()
         if live is None or self._wsm.state() != "ready" or not _same_root(live, root):
             self._log("export refused: no ready experiment at that folder")
             return False
-        self._queue.append(_Job("export", None, str(root), self._wsm.generation()))
+        self._queue.append(_Job("export", request, str(root), self._wsm.generation()))
         self._emit_activity()
         self._start_next()
         return True
@@ -309,7 +309,7 @@ class WorkspaceOperationCoordinator(QObject):
 
     def _start_export(self, job: _Job) -> None:
         assert job.root is not None
-        cmd = build_export_command(self._python, job.root)
+        cmd = build_export_command(self._python, job.root, job.payload)
         log_path = Path(job.root) / "report" / "gui-runs" / f"export-{datetime.now():%Y%m%d-%H%M%S}.log"
         self._log("$ " + " ".join(cmd))
         runner = ProcessRunner(self)

@@ -236,9 +236,9 @@ empty/ready layout pair, and amends G19 as stated below.
   - *Save copy as…* copies the whole folder to a new one. The original stays the active experiment and
     new data keeps going to it; the copy is offered with *Open copy*, and the Log says what the copy
     still reads from outside its folder.
-  - *Export…* runs `isar export` through the operation queue and names the new folder when it is
-    done. Both passes are exported side by side, each labelled, and nothing picks one (operator,
-    amendment 3).
+  - *Export results…* opens the export-options dialog, then runs `isar export` through the operation
+    queue and names the completed folder. The 2026-10-31 amendment below defines the selected outputs;
+    the command without options still provides the multi-pass audit bundle of amendment 3.
   - *Save copy as…* and *Export…* are unavailable, with the reason beside them, while there is no
     experiment, while an ingest, a campaign or an export is writing to it, and while nothing has been
     read into it yet. (Amended 2026-10-28: a running analysis no longer makes them unavailable; they hold
@@ -325,14 +325,34 @@ empty/ready layout pair, and amends G19 as stated below.
   - *Counts accepted* (design amendment 5, operator-approved): the declaration that an `_i` analyzer's
     counts are raw lifts the hold on them and changes no count and no flag (an `_lr` analyzer stays
     held whatever is saved); every fit made that way records it, and *Withdraw* takes it back.
-- **Pinned for later, not built here:** the analyzer overview in the centre, automatic
-  export to an outside folder, and user values for Q and for facts
+- **Pinned for later, not built here:** the analyzer overview in the centre, unattended
+  automatic export, and user values for Q and for facts
   other than temperature, slit and dead analyzers.
 - **Built since:** `gpi.*` parsing for per-analyzer Q, slit and curve set (the BL43 gpi files, [USING_ISAR](../USING_ISAR.md)).
 
 ---
 
 ### 0sexies. The analysis queue and the GUI threshold (2026-10-28)
+
+**Export-options amendment (2026-10-31).** The dialog offers measured spectra, authoritative fit
+curves, separate whole-model parameter tables and a combined parameter table. Data and curves are
+always separate files per scan/analyzer. CSV and Origin are independent format choices; one export
+uses either raw counts or monitor-normalized intensity. Fit files contain their own fine energy
+axis, the total and every component. A separate choice combines each mode's Stokes/anti-Stokes
+pair or writes the two convolved contributions separately, using the original whole-mode height
+normalization. Parameter tables include all stored model parameters, available uncertainties and
+fixed calibration/resolution inputs, with descriptive names and units; missing errors stay empty.
+
+Formats and content choices are global GUI session preferences. Parent folder and an edited export
+folder name are remembered per experiment path. Automatic names include a timestamp and are not
+reused as custom names. Below the choices are the folder-name field and parent-folder field, then
+**Save here**, **Save elsewhere**, **Cancel**. Save elsewhere opens the folder picker and saves into
+the chosen parent. Cancel changes neither preferences nor files. Replacing a saved export requires
+confirmation; unrelated directories and the experiment itself cannot be replacement targets. The
+previous export remains intact until the complete replacement has been written. The dialog holds
+no queue writes; after acceptance the existing writer hold lasts until export has captured the
+stored results. The GUI computes no science. Owners: `isar_gui/export_dialog.py`,
+`isar/workspace_api/export.py`, `isar/report/selected_export.py`, `isar/report/export_tables.py`.
 
 The analysis queue was designed on 2026-10-27 (job `j926265e2189c`: design steps 1–24 and the operator's decisions) and built in two slices: the engine under `isar/session/` and the window under `isar_gui/`. This section describes it as built, read from the code; where the design's wording differs, this text governs. The reference picture is `mockups/2026-10-27-isar-right-side-queue.html`, under the same rule.
 

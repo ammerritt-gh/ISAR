@@ -146,6 +146,9 @@ def build_parser() -> argparse.ArgumentParser:
     pex = sub.add_parser("export", help="write a timestamped export of the stored results under "
                                         "report/exports/ (no refit)")
     pex.add_argument("--workspace", required=True)
+    pex.add_argument("--options-json", help="JSON export choices (CSV/Origin, data, curves, parameters)")
+    pex.add_argument("--destination", help="Full path of the export folder to create")
+    pex.add_argument("--overwrite", action="store_true", help="Replace a confirmed existing ISAR export")
     pex.add_argument("--json", action="store_true",
                      help="end with one machine-readable JSON line (the folder, or the error)")
 

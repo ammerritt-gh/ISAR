@@ -169,7 +169,7 @@ def _compose_manifest(manifest: dict, quasielastic_fwhm):
         raise UnsupportedFitView(str(exc)) from exc
 
 
-def evaluate_manifest(manifest, resolution, x, quasielastic_fwhm=None):
+def evaluate_manifest(manifest, resolution, x, quasielastic_fwhm=None, *, split_sides=False):
     """Evaluate a stored rate manifest at x, returning total and prefix components."""
     if not isinstance(resolution, Mapping):
         raise UnsupportedFitView("resolution context is unavailable")
@@ -180,7 +180,20 @@ def evaluate_manifest(manifest, resolution, x, quasielastic_fwhm=None):
                       if key != "quasielastic_fwhm"}
     ctx = SimpleNamespace(quasielastic_fwhm=effective_qe, **context_values)
     x = np.asarray(x, dtype=float)
-    return composite.evaluate(x, theta, ctx), composite.evaluate_components(x, theta, ctx)
+    parts = composite.evaluate_components(x, theta, ctx)
+    if split_sides:
+        from isar.analyze.components import PhononDHO
+        expanded = []
+        for component, (prefix, values) in zip(composite.components, parts):
+            if isinstance(component, PhononDHO):
+                local = {name: manifest["parameters"][f"{prefix}.{name}"]
+                         for name in component.param_names()}
+                expanded.extend((f"{prefix}.{side}", curve)
+                                for side, curve in component.evaluate_sides(x, local, ctx))
+            else:
+                expanded.append((prefix, values))
+        parts = expanded
+    return composite.evaluate(x, theta, ctx), parts
 
 
 def deep_manifest(fit):

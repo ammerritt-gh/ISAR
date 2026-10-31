@@ -279,8 +279,10 @@ def test_export_running_blocks_save_copy_and_a_pending_experiment_is_not_ready(q
 
 
 def test_export_request_goes_through_the_controller_only_when_available(qtbot, monkeypatch, make_ws):
+    from isar_gui.export_dialog import ExportDialog
+    monkeypatch.setattr(ExportDialog, "exec", lambda dialog: (dialog._save(), dialog.result())[1])
     started = []
-    monkeypatch.setattr(ExportController, "start", lambda self, root: started.append(root) or True)
+    monkeypatch.setattr(ExportController, "start", lambda self, root, request: started.append(root) or True)
     w = _window(qtbot, monkeypatch, LAPTOP)
     w.output_bar.export_requested.emit()
     assert started == []                              # no experiment: refused before the controller

@@ -36,15 +36,23 @@ def run(args) -> int:
     if not ws.exists():
         return _fail("no_workspace", f"no workspace at {ws.root} (run `isar init` first)", as_json, 2)
     try:
-        s = export_workspace(ws.root, progress=_progress)
+        from isar.workspace_api.export import ExportOptions
+        raw = getattr(args, "options_json", None)
+        options = ExportOptions.from_dict(json.loads(raw)) if raw is not None else None
+        s = export_workspace(ws.root, progress=_progress, options=options,
+                             destination=getattr(args, "destination", None),
+                             overwrite=getattr(args, "overwrite", False))
     except Exception as exc:  # noqa: BLE001 — logged with its traceback, then reported
         log.exception("export failed")
         return _fail("export_failed", f"{type(exc).__name__}: {exc}", as_json, 1)
     folder = str(s.folder.resolve())
     inter = f", {s.n_modes_inter} inter-spectra" if s.n_modes_inter else ""
-    print(f"export: {s.n_spectra} spectra, {s.n_modes} mode rows ({s.n_modes_fast} fast, "
-          f"{s.n_modes_deep} deep{inter}), {s.n_curves} resolution curves, {len(s.problems)} problems "
-          f"(listed in fits.json)")
+    if options is not None:
+        print(f"export: {s.n_spectra} spectra, {len(s.problems)} problems (listed in export.json and README.txt)")
+    else:
+        print(f"export: {s.n_spectra} spectra, {s.n_modes} mode rows ({s.n_modes_fast} fast, "
+              f"{s.n_modes_deep} deep{inter}), {s.n_curves} resolution curves, {len(s.problems)} problems "
+              f"(listed in fits.json)")
     print(folder)
     if as_json:
         print(json.dumps({"export": {

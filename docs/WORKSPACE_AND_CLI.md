@@ -243,6 +243,19 @@ init  detect  ingest  run  status  profile  report  export  diagnose  score  vie
 reference, because a hand-maintained duplicate of argparse is a guaranteed drift source.
 `tests/docs/test_doc_drift.py` pins the command list above to `isar.cli.main.build_parser()`.
 
+The GUI's export dialog supplies `isar export --options-json JSON --destination DIR` for the
+selectable numerical export (`isar/report/selected_export.py`). The JSON keys are `spectra`,
+`curves`, `parameters_separate`, `parameters_combined`, `csv`, `origin`, `scale`, `split_sides`;
+all are booleans except `scale` (`raw` or `normalised`). Defaults are spectra, authoritative curves,
+combined parameters and CSV enabled, raw counts, combined Stokes/anti-Stokes. CSV and Origin can
+both be enabled, parameter layouts independently selected. The result has an `isar.export/2`
+`export.json` index, `README.txt`, and selected files in `csv/` and `origin/`. `--overwrite` is the
+explicit authorization to replace an existing ISAR export at the destination; the GUI asks first.
+The complete replacement is staged before the earlier export is moved. A failed publication
+restores the previous directory. Other directories, symlinks, the workspace and its parents are
+refused as replacement targets. The no-options audit command above remains available. See
+[Exporting results](USING_ISAR.md#exporting-results) for columns and Origin import instructions.
+
 The operating loop during a beamtime is: a batch of files lands → `isar run` (same command, same
 workspace) → read the report → correct the card if needed → next batch. Re-running the batch CLI
 *is* the live driver; there is no watch/daemon mode.

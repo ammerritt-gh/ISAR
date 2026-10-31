@@ -348,9 +348,11 @@ def test_a_copy_waits_for_the_writer_hold_and_releases_it_after(qtbot, monkeypat
 
 
 def test_an_export_holds_the_writer_until_its_first_progress_line(qtbot, monkeypatch, bl43_ws):
+    from isar_gui.export_dialog import ExportDialog
+    monkeypatch.setattr(ExportDialog, "exec", lambda dialog: (dialog._save(), dialog.result())[1])
     w = _win(qtbot, bl43_ws)
     started = []
-    monkeypatch.setattr(w._export, "start", lambda root: started.append(root) or True)
+    monkeypatch.setattr(w._export, "start", lambda root, request: started.append(root) or True)
     w.output_bar.export_requested.emit()
     assert started == [bl43_ws] and w._queue._holds == 1                   # no process: the hold is immediate
     w._export.progress.emit("Exporting: spectrum 1 of 3")
@@ -358,7 +360,7 @@ def test_an_export_holds_the_writer_until_its_first_progress_line(qtbot, monkeyp
     w._export.progress.emit("Exporting: spectrum 2 of 3")                  # released once, never twice
     w._export.finished.emit(bl43_ws)
     assert w._queue._holds == 0 and not w._export_hold
-    monkeypatch.setattr(w._export, "start", lambda root: False)            # an export that does not start
+    monkeypatch.setattr(w._export, "start", lambda root, request: False)   # an export that does not start
     w.output_bar.export_requested.emit()
     assert w._queue._holds == 0 and w.statusBar().currentMessage() == "Export did not start"
 

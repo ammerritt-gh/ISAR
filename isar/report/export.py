@@ -21,6 +21,7 @@ import json
 import logging
 import math
 import os
+import tempfile
 import shutil
 import dataclasses
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ from isar.session.workspace import Workspace
 from isar.workspace_api import Workspace as ReadWorkspace
 from isar.workspace_api.inter_spectra import inter_overview, is_flagged, refit_flagged
 from isar.workspace_api.scan_keys import split_key
+from isar.workspace_api.export import check_destination
 
 log = logging.getLogger(__name__)
 
@@ -479,7 +481,8 @@ def _null_nonfinite(value):
 
 
 def _write_fits(folder: Path, doc: dict) -> None:
-    with open(folder / "fits.json", "w", encoding="utf-8", newline="\n") as f:
+    filename = "export.json" if doc.get("schema") == "isar.export/2" else "fits.json"
+    with open(folder / filename, "w", encoding="utf-8", newline="\n") as f:
         # allow_nan=False: a bare NaN token can never be written again, whatever the sanitiser misses
         f.write(json.dumps(_null_nonfinite(doc), indent=1, sort_keys=True, allow_nan=False))
         f.write("\n")
@@ -725,22 +728,54 @@ def _promote(stage: Path, exports: Path, ts: str, doc: dict) -> Path:
     raise FileExistsError(f"no free export folder name for export-{ts} (tried {_MAX_SUFFIX})")
 
 
-def export_workspace(root, *, now: datetime | None = None, progress=None) -> ExportSummary:
-    """Write one new export folder under ``<root>/report/exports/`` from stored results only.
+def _replace_export(stage, target, doc, root, overwrite):
+    check_destination(root, target, overwrite)
+    _write_fits(stage, {**doc, "folder": target.name})
+    previous = None
+    if target.exists():
+        previous = stage.with_name(stage.name + "-previous")
+        os.rename(target, previous)
+    try:
+        os.rename(stage, target)
+    except BaseException:
+        log.exception("export: could not publish %s; restoring the previous export", target)
+        if previous is not None:
+            os.rename(previous, target)
+        raise
+    if previous is not None:
+        try:
+            shutil.rmtree(previous)
+        except OSError as exc:
+            log.warning("Export saved; could not remove previous export at %s: %s", previous, exc)
+    return target
+
+
+def export_workspace(root, *, now: datetime | None = None, progress=None,
+                     options=None, destination=None, overwrite=False) -> ExportSummary:
+    """Write stored results, optionally selecting numerical outputs and a destination.
 
     ``now`` (local time) names the folder; ``progress(i, n)`` is called after each spectrum.
-    Raises on failure, leaving no new folder."""
+    Without options, retain the multi-pass audit bundle. With ExportOptions, write selected
+    CSV/Origin tables. ``destination`` is the complete export directory, not its parent.
+    Replacement requires ``overwrite=True``; failure preserves an existing export.
+    """
     root = Path(root)
     now = now or datetime.now()
     ts = now.strftime("%Y%m%d-%H%M%S")
-    exports = root / "report" / EXPORTS_DIRNAME
+    target = check_destination(root, destination, overwrite) if destination is not None else None
+    exports = target.parent if target is not None else root / "report" / EXPORTS_DIRNAME
     exports.mkdir(parents=True, exist_ok=True)
-    stage = exports / f".partial-{ts}-{os.getpid()}"
-    stage.mkdir()
+    stage = Path(tempfile.mkdtemp(prefix=f".partial-{ts}-", dir=exports))
     try:
-        doc, (n_spectra, n_fast, n_deep, n_curves, problems, n_inter) = _build(root, stage, progress)
+        if options is None:
+            built = _build(root, stage, progress)
+        else:
+            from .selected_export import build
+            built = build(root, stage, progress, options)
+        doc, (n_spectra, n_fast, n_deep, n_curves, problems, n_inter) = built
         doc["exported_at"] = now.astimezone(timezone.utc).isoformat()
-        folder = _promote(stage, exports, ts, doc)
+        folder = (_promote(stage, exports, ts, doc) if target is None else
+                  _replace_export(stage, target, doc, root, overwrite))
     except BaseException:
         try:
             shutil.rmtree(stage)

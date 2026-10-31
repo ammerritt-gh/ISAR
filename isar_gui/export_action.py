@@ -37,7 +37,7 @@ class ExportController(QObject):
         operations.export_line.connect(self._on_line)
         operations.export_finished.connect(self._on_finished)
 
-    def start(self, root: Path) -> bool:
+    def start(self, root: Path, request=None) -> bool:
         """True = queued; False = refused (already running, or the coordinator is busy). Never raises."""
         if self._running or self._operations.is_busy():
             return False
@@ -46,7 +46,7 @@ class ExportController(QObject):
         self._running = True
         self._lines = []
         self._log_path = ""
-        if not self._operations.request_export(root):
+        if not self._operations.request_export(root, request):
             self._running = False
             return False
         return True
