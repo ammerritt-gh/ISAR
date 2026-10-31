@@ -1171,7 +1171,8 @@ def _record(eng, spec, a, model, theta, cov, sd, rel_sd, modes, ids, D, status):
                       "height": md.height, "sigma_omega0": sd.get(ai), "sigma_Gamma": sd.get(gi),
                       "sigma_height": sd.get(ci), "sigma_release": rel_sd.get(ai), "regime": md.regime,
                       "mode_status": md.status, "branch": ids[src], "confident": md.status != "poorly_determined"})
-    cp = (a.coverage.get("decision") or {}).get("count_p") or spec.snap.own_record.get("count_probabilities") or {}
+    dec = a.coverage.get("decision") or {}
+    cp = dec.get("count_p") or spec.snap.own_record.get("count_probabilities") or {}
     p_k = cp.get(str(a.count))
     label = str(cmodel.hyp.label)
     params = {n: float(v) for n, v in zip(cmodel.names, ctheta)}
@@ -1180,6 +1181,7 @@ def _record(eng, spec, a, model, theta, cov, sd, rel_sd, modes, ids, D, status):
         "state": "close_call" if p_k is not None and p_k < spec.snap.settings.confidence else "resolved",
         "energy_support_meV": [spec.lo, spec.hi],
         "preferred_count": a.count, "count_probabilities": dict(cp),
+        "count_probabilities_partial": bool(dec.get("partial")), "count_p_range": dec.get("count_p_range"),
         "probabilities_conditional": a.discrete == "priced", "close_call_alternatives": [],
         "numerically_marginal": False, "search_limit_reason": "", "deep_pass_candidate": False,
         "selected_model_id": f"{label}#0", "selected_label": label,

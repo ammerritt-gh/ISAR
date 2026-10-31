@@ -225,6 +225,18 @@ def test_a_broad_ridge_is_held_by_neighbours_until_the_counts_pin_it():
 
 
 # 5 ---------------------------------------------------------------------------------------------------------
+def test_a_partly_screened_decision_is_marked_partial_in_the_saved_fit():
+    true = [(8.0, 0.4, 40.0)]
+    snap = t_pair(spectrum(true, seed=10), true, ["b1"], true, ["b1"])
+    skipped = R._Spec(snap).skipped()
+    plain = R.refit(snap, stage="continuous", assignment=skipped).fit
+    assert plain["count_probabilities_partial"] is False and plain["count_p_range"] is None     # a fake's {} reads as exact
+    decision = {"count_p": {"1": 0.7}, "partial": True, "count_p_range": [[0.6, 0.8]]}
+    r = R.refit(snap, stage="continuous", assignment=replace(skipped, coverage={**skipped.coverage, "decision": decision}))
+    assert r.fit["count_probabilities_partial"] is True and r.fit["count_p_range"] == [[0.6, 0.8]]
+    assert r.fit["count_probabilities"] == {"1": 0.7}
+
+
 def test_a_width_change_is_reported_without_an_energy_score():
     r = _kept(t_pair(spectrum([(8.0, 1.0, 40.0)], seed=10), [(8.0, 0.4, 40.0)], ["b1"], [(8.0, 0.4, 40.0)], ["b1"]))
     assert "linewidth_change" in codes(r) and r.F < S.flag_threshold
