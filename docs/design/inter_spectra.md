@@ -149,8 +149,10 @@ Each line names the failure it prevents.
 **Browsing fits (2026-10-31).** The Inter-spectra fitting dropdown lists every completed fit of the active
 spectrum directly, oldest first: Fast solo, then refits with their batch and ring or sweep names. There
 are no batch submenus. Unchanged refits remain visible and labelled; authoritative and stale fits are
-marked, and the displayed fit is checked. In the open dropdown, Up/Down moves, Enter selects and Esc
-closes without selecting. With the dropdown button focused and its list closed, Up/Down shows the
+marked, and the displayed fit is checked. In the open dropdown, Up/Down immediately displays the
+highlighted fit without closing the list or requiring Enter. Esc closes the list and leaves that fit
+displayed. Mouse hover alone does not change the displayed fit. With the dropdown button focused and
+its list closed, Up/Down shows the
 previous or next fit directly, including across batches, stopping at either end. Browsing only changes
 the displayed fit; Make authoritative and Lock this fit remain explicit actions in the existing bar.
 

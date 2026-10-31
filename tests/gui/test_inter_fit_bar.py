@@ -83,12 +83,25 @@ def test_open_menu_arrows_enter_escape_and_refresh_preserve_navigation(qtbot):
     assert bar.menu.activeAction().data() == "f2"
     qtbot.keyClick(bar.menu, Qt.Key.Key_Down)
     qtbot.keyClick(bar.menu, Qt.Key.Key_Return)
-    assert chosen == ["f3"] and not bar.menu.isVisible()
+    assert chosen == ["f2", "f3", "f3"] and not bar.menu.isVisible()
     bar.show_state(bar_state(history, "f3"))
     bar.menu.popup(bar.menu_button.mapToGlobal(bar.menu_button.rect().bottomLeft()))
     qtbot.keyClick(bar.menu, Qt.Key.Key_Up)
     qtbot.keyClick(bar.menu, Qt.Key.Key_Escape)
-    assert chosen == ["f3"] and not bar.menu.isVisible()
+    assert chosen == ["f2", "f3", "f3", "f2"] and not bar.menu.isVisible()
+
+
+def test_mouse_hover_and_programmatic_highlight_do_not_choose_a_fit(qtbot):
+    bar = _bar(qtbot, bar_state(_history(), "f1"))
+    chosen = []
+    bar.fit_chosen.connect(chosen.append)
+    bar.show()
+    bar.menu.popup(bar.menu_button.mapToGlobal(bar.menu_button.rect().bottomLeft()))
+    target = bar.menu.actions()[2]
+    bar.menu.setActiveAction(target)
+    qtbot.mouseMove(bar.menu, pos=bar.menu.actionGeometry(target).center())
+    assert bar.menu.activeAction() == target and chosen == []
+    bar.menu.hide()
 
 
 def test_make_authoritative_and_lock_emit_once_each(qtbot):

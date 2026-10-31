@@ -14,7 +14,7 @@ from isar_gui.viewmodels.inter_fits import BarState, entry_tip
 
 MENU_TIP = ("Choose the fit of this spectrum to show. All fits are listed directly, oldest first. "
             "With this button focused, Up and Down show the previous or next fit. "
-            "In the open list, Up and Down move, Enter selects and Esc closes. "
+            "In the open list, Up and Down immediately show the highlighted fit; Esc closes. "
             "Viewing a fit does not make it authoritative.")
 AUTHORITATIVE_TIP = "Make the fit shown the one ISAR uses for this spectrum."
 LOCK_TIP = "Keep this fit as the one ISAR uses: no batch will refit this spectrum."
@@ -25,6 +25,19 @@ WATERFALL_TIP = "Draw this spectrum's fits one above another, oldest at the bott
 def _apply(button, off_reason: str | None, tip: str) -> None:
     button.setEnabled(off_reason is None)
     button.setToolTip(tip if off_reason is None else off_reason)
+
+
+class _FitMenu(QMenu):
+    fit_previewed = Signal(str)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        before = self.activeAction()
+        super().keyPressEvent(event)
+        action = self.activeAction()
+        if (event.modifiers() == Qt.KeyboardModifier.NoModifier
+                and event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down)
+                and action is not None and action is not before):
+            self.fit_previewed.emit(action.data())
 
 
 class _FitMenuButton(QToolButton):
@@ -56,7 +69,8 @@ class InterFitBar(QWidget):
         self.menu_button.setAccessibleName("Inter-spectra fitting: choose the fit to show")
         self.menu_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.menu = QMenu(self)
+        self.menu = _FitMenu(self)
+        self.menu.fit_previewed.connect(self._preview_fit)
         self.menu.setToolTipsVisible(True)
         self.menu_button.setMenu(self.menu)
         self._entries = None
@@ -120,6 +134,11 @@ class InterFitBar(QWidget):
     def _mark_viewed(self) -> None:
         self.menu.setActiveAction(next((a for a in self.menu.actions() if a.data() == self._viewed), None))
 
+    def _preview_fit(self, fit_id: str) -> None:
+        # Advance before emitting: another key can arrive before the queued redraw.
+        self._viewed = fit_id
+        self.fit_chosen.emit(fit_id)
+
     def _step(self, direction: int) -> None:
         ids = [entry.fit_id for entry in self._entries or ()]
         if self._viewed not in ids:
@@ -127,6 +146,4 @@ class InterFitBar(QWidget):
         index = ids.index(self._viewed)
         target = max(0, min(len(ids) - 1, index + direction))
         if target != index:
-            # Advance before emitting: another key can arrive before the queued redraw.
-            self._viewed = ids[target]
-            self.fit_chosen.emit(self._viewed)
+            self._preview_fit(ids[target])

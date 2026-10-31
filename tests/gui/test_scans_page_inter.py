@@ -261,6 +261,30 @@ def test_fit_dropdown_arrows_change_the_plotted_fit_without_writing(setup, reads
     assert not inter.calls
 
 
+def test_open_fit_list_arrows_preview_immediately_and_keep_the_list_open(setup, reads, qtbot):
+    page, inter = setup
+    inter.histories[ONE_MODE] = make_history(_refit("r1", "ring 1"), _refit("r2", "ring 2", changed=False))
+    _select(page, ONE_MODE)
+    menu = page.inter_bar.menu
+    menu.popup(page.inter_bar.menu_button.mapToGlobal(page.inter_bar.menu_button.rect().bottomLeft()))
+    for key, fit_id in ((Qt.Key.Key_Down, "r1"), (Qt.Key.Key_Down, "r2"), (Qt.Key.Key_Up, "r1")):
+        qtbot.keyClick(menu, key)
+        page.flush_redraw()
+        assert reads[-1] == {ONE_MODE: fit_id}
+        assert page._drawn_state.inter.viewed == fit_id
+        assert page.drawn().curves
+        assert menu.isVisible() and menu.activeAction().data() == fit_id
+        assert [a.data() for a in menu.actions() if a.isChecked()] == [fit_id]
+    # A redraw must not swallow the next key, including a burst before another redraw.
+    qtbot.keyClick(menu, Qt.Key.Key_Up)
+    qtbot.keyClick(menu, Qt.Key.Key_Down)
+    assert page.vm.chosen == {ONE_MODE: "r1"}
+    page.flush_redraw()
+    qtbot.keyClick(menu, Qt.Key.Key_Escape)
+    assert not menu.isVisible()
+    assert reads[-1] == {ONE_MODE: "r1"} and not inter.calls
+
+
 def _fresh_page(qtbot, scans_view_ws_readonly):
     ws = Workspace.open(scans_view_ws_readonly)
     page = ScansPage(ScanListViewModel(ws), ws)
