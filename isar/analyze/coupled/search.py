@@ -150,6 +150,8 @@ class _View:
                 self.repeated += 1
                 if (e["scr"][i] and not screened) or (e["scr"][i] == screened and rec[0] > x[0]):
                     e["basins"][i], e["scr"][i], e["by"][i] = rec, screened, cand
+                    if rec[0] > max((b[0] for j, b in enumerate(e["basins"]) if j != i), default=_NEG):
+                        e["peak"], e["source"], e["key"] = p.residual_peak, self.search.meta[job.key]["source"], job.key
                 return None
         if e["basins"] and rec[0] > max(b[0] for b in e["basins"]):
             e["peak"] = p.residual_peak

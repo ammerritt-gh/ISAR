@@ -13,7 +13,7 @@ from test_coupled_search import B12, EX1, OWN, SIX, TABLE9, X12, happy
 
 from isar.analyze.coupled import rules
 from isar.analyze.coupled import search as SE
-from isar.analyze.coupled.types import Priced, PricingJob
+from isar.analyze.coupled.types import Priced, PricingJob, Start
 
 NB2 = (None, "b2")   # a "call it new" move of B12 whose split pair keeps its order in the ledger
 
@@ -215,3 +215,25 @@ def test_the_shadow_final_choice_is_the_whole_choice_so_a_mask_change_is_a_diver
     assert sh["first_divergence"] is not None
     assert [d for d in sh["decisions"] if d["kind"] == "final"] == [
         {"kind": "final", "at": "decision", "full": True, "screen": False}]
+
+
+# 9 an exact price that replaces a screened basin takes its origin ------------------------------------------------------
+def test_an_exact_price_that_replaces_a_screened_basin_takes_its_peak_source_and_key():
+    s = SE.Search(happy(), screens="on")
+    start = Start("step", ((5.0, 0.5, None), (10.0, 0.5, None)))
+    screen = PricingJob("y", "b:ring1", 2, NB2, "screen-key", (start,), "screen")
+    full = PricingJob("y", "b:ring1", 2, NB2, "full-key", (start,), "full")
+    s.meta["screen-key"] = {"purpose": "step_up", "source": "step_up", "of": "A"}
+    s.meta["full-key"] = {"purpose": "move", "source": "move"}
+    scr = Scripted({NB2: -100.0}, split={(2, NB2)}, screen={(2, NB2): -1.0}, peak=(20.0, 1.0))
+    exact = Scripted({NB2: -100.0}, split={(2, NB2)}, screen={(2, NB2): -1.0}, peak=(30.0, 2.0))
+    scr.M = exact.M = s.M
+    s.current = {"A": (screen, scr(screen))}
+    s._rebuild()
+    e = s.view.ledger[(2, NB2)]
+    assert e["scr"] == [True] and (e["key"], e["source"]) == ("screen-key", "step_up")
+    s.current["B"] = (full, exact(full))                       # another candidate's exact price of the same basin
+    s._rebuild()
+    e = s.view.ledger[(2, NB2)]
+    assert e["scr"] == [False] and len(e["basins"]) == 1
+    assert (e["key"], e["source"], e["peak"]) == ("full-key", "move", (30.0, 2.0))
