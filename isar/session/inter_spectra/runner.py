@@ -245,7 +245,7 @@ class _Pool:
         def keep(key, result):
             out[key] = result
             return ()
-        self._run(fn, calls, keep, inline=self.workers <= 1 or len(calls) <= 1)
+        self._run(fn, calls, keep, inline=self.workers <= 1 or (len(calls) <= 1 and not self.orphans))
         return {key: out[key] for key, _a, _k in calls}      # the order of calls, as before
 
     def _cap(self) -> int:

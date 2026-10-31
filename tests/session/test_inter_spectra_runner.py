@@ -1479,6 +1479,32 @@ def test_a_task_left_running_by_a_finished_stream_is_an_orphan_the_next_map_work
     assert pool.orphans == set()
 
 
+def test_a_single_call_map_with_an_orphan_in_flight_goes_to_the_pool_not_inline(monkeypatch):
+    import types
+    core = types.ModuleType("fake_map_core")
+    core.ping = lambda x: ("ran", x)
+    monkeypatch.setitem(sys.modules, "fake_map_core", core)
+
+    class Spy:                       # a pool stand-in that runs each task at once and records the ones sent
+        def __init__(self):
+            self.sent = []
+
+        def submit(self, fn, *args):
+            self.sent.append(args[1])
+            f = Future()
+            f.set_result(fn(*args))
+            return f
+    pool = runner._Pool(core, 4)
+    pool.ex = Spy()
+    pool.orphans.add(Future())       # an abandoned task still in flight: one of the four workers is taken
+    assert pool.map("ping", [("k", (3,), {})]) == {"k": ("ran", 3)}
+    assert pool.ex.sent == ["ping"]  # the one call went to the pool, queued behind the orphan, not inline
+    pool.orphans.clear()
+    pool.ex.sent = []
+    assert pool.map("ping", [("k", (4,), {})]) == {"k": ("ran", 4)}
+    assert pool.ex.sent == []        # with no orphan a single call still runs inline, as before
+
+
 def test_close_stops_an_orphan_instead_of_waiting_for_it():
     import pickle
     import threading
