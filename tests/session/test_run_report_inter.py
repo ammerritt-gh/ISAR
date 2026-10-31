@@ -52,7 +52,7 @@ def ws_root(built, tmp_path):
 def _hash(root, unit):
     read = store.read_all(root, store.ENTRIES)
     return records.inputs_now_from(intake_scans.read_scans(root), inputs.index_entries(read.entries, lines=read.lines),
-                                   load_state(root / "card.state.json").tabulated_calibration, [unit])[unit]
+                                   load_state(root / "card.state.json").tabulated_calibration, [unit], data_dir=root / "data")[unit]
 
 
 def _save_ring(root, batch, refits, overlay=OVERLAY, number_flag=None):

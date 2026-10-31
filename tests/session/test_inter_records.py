@@ -40,7 +40,7 @@ def _now(root, units):
     """The inputs hashes the writer computes now (the same reads it makes under the lock)."""
     read = store.read_all(root, store.ENTRIES)
     return records.inputs_now_from(intake_scans.read_scans(root), inputs.index_entries(read.entries, lines=read.lines),
-                                   load_state(Path(root) / "card.state.json").tabulated_calibration, units)
+                                   load_state(Path(root) / "card.state.json").tabulated_calibration, units, data_dir=Path(root) / "data")
 
 
 def _start(batch, intake_seq=0):

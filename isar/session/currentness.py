@@ -158,7 +158,8 @@ def current_passes(workspace_root: Path | str, unit_keys: Iterable[str] | None =
             if row is None:              # a BL43 unit with no import row has nothing to compare with
                 out[key] = frozenset()
                 continue
-            si = inputs_of.get(scan) or inputs_of.setdefault(scan, inputs.scan_inputs(row, index, gpi_now.get(scan)))
+            si = inputs_of.get(scan) or inputs_of.setdefault(
+                scan, inputs.scan_inputs(row, index, gpi_now.get(scan), data_dir=root / "data"))
             if scan not in curves_of:    # narrowed once per scan: each narrowing reads the named set's curve files
                 curves_of[scan] = curves.with_named(curves_now, si.named)
             scan_curves = curves_of[scan]

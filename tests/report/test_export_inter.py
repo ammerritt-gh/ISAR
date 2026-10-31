@@ -57,7 +57,7 @@ def _hash(root, unit):
     from isar.intake import inputs, scans as intake_scans, store
     read = store.read_all(root, store.ENTRIES)
     return records.inputs_now_from(intake_scans.read_scans(root), inputs.index_entries(read.entries, lines=read.lines),
-                                   load_state(root / "card.state.json").tabulated_calibration, [unit])[unit]
+                                   load_state(root / "card.state.json").tabulated_calibration, [unit], data_dir=root / "data")[unit]
 
 
 def _save_ring(root, batch, refits, number_flag=None, overlay=OVERLAY):

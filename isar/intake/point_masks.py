@@ -6,12 +6,37 @@ The append-only intake log is the authority; no data or old result is rewritten.
 from __future__ import annotations
 
 from collections import Counter
+import functools
 import hashlib
+import logging
 from pathlib import Path
 
 import numpy as np
 
 from isar.intake import store
+
+log = logging.getLogger(__name__)
+
+
+class UnreadableUnit(Exception):
+    """The stored unit data of one analyzer are missing or unreadable."""
+
+
+# shortcut: 256 cached units (each a set of point hashes), oldest re-read first; upgrade past a few hundred masked units
+@functools.lru_cache(maxsize=256)
+def current_ids(data_dir, key: str, data_revision: str) -> frozenset[str]:
+    """The identities of a unit's points as its stored unit data give them, cached per ``data_revision`` (the
+    source file's content hash, so an answer never outlives the data it was read from). ``key`` is ``exp:scan:det``.
+    Raises :class:`UnreadableUnit` (logged; never cached) when the data are missing or unreadable."""
+    from isar.session.unit_data import read_unit_data_for_unit   # here: the read side never loads isar.session
+    exp, scan, det = key.rsplit(":", 2)
+    data = read_unit_data_for_unit(data_dir, exp, int(scan), det)
+    if data is None:
+        log.warning("point masks of %s: its stored unit data is missing or unreadable under %s; its masks are held",
+                    key, data_dir)
+        raise UnreadableUnit(key)
+    return frozenset(point_ids(data["x"], data["counts"], data["variance"]))
+
 
 def point_ids(x, counts, variance) -> tuple[str, ...]:
     """Raw coordinates and measured values plus occurrence distinguish duplicate measurements.

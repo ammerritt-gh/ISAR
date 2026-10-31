@@ -37,13 +37,13 @@ def test_mask_freeze_context_and_qc_restore(tmp_path):
     assert used['point_masks'] == [last]
     # Withdrawing a manual exclusion cannot re-enable a QC-excluded point.
     si = inputs.scan_inputs(scans.read_scans(ws.root)[key.rsplit(':', 1)[0]],
-                            inputs.index_entries([], lines=[]))
+                            inputs.index_entries([], lines=[]), data_dir=ws.root / "data")
     qc = replace(parsed[0], spectra={det: replace(parsed[0].spectra[det], mask=spectrum.mask.copy())})
     assert not inputs.apply(qc, si).spectra[det].mask[-1]
     assert save_selection(ws.root, {key: [last]}, masked=False).ok
     read = store.read_all(ws.root, store.ENTRIES)
     now_si = inputs.scan_inputs(scans.read_scans(ws.root)[key.rsplit(':', 1)[0]],
-                               inputs.index_entries(read.entries, lines=read.lines))
+                               inputs.index_entries(read.entries, lines=read.lines), data_dir=ws.root / "data")
     current = inputs.unit_inputs(scans.read_scans(ws.root)[key.rsplit(':', 1)[0]], now_si, det, None)
     assert any(c.field == 'point_masks' for c in inputs.changes(used, current))
     assert inputs.inputs_hash(used) != inputs.inputs_hash(current)

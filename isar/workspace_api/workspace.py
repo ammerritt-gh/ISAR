@@ -734,7 +734,7 @@ class Workspace:
         self._note_intake_damage()
         return intake_view.fact_rows(
             self._intake_rows(), self._intake_index(), self._state().tabulated_calibration,
-            self._curve_check(), self._folder_now(), scans, self._gpi_entries())
+            self._curve_check(), self._folder_now(), scans, self._gpi_entries(), data_dir=self.root / "data")
 
     def conditions(self, scans=None) -> list:
         """The BL43 conditions in force (excluded scans, dead analyzers, accepted counts) of ``scans`` (scan
@@ -743,7 +743,8 @@ class Workspace:
         :meth:`fact_rows` parses (once per :meth:`refresh`).
         """
         self._note_intake_damage()
-        return intake_view.condition_rows(self._intake_rows(), self._intake_index(), scans, self._gpi_entries())
+        return intake_view.condition_rows(self._intake_rows(), self._intake_index(), scans, self._gpi_entries(),
+                                          data_dir=self.root / "data")
 
     def fit_inputs(self, units=None) -> list:
         """Per unit key (``"spec1:42:a03"``; None = all) with a pass on record: its latest fast and latest
@@ -765,7 +766,7 @@ class Workspace:
             passes = {}
         return intake_view.fit_inputs(
             passes, self._intake_rows(), self._intake_index(), self._state().tabulated_calibration,
-            self._curve_check(), self._folder_now(), units, self._gpi_entries())
+            self._curve_check(), self._folder_now(), units, self._gpi_entries(), data_dir=self.root / "data")
 
     # ---- change notifications ---------------------------------------------
     def watch(self, callback, *, debounce_ms: float = 200,

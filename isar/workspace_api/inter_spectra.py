@@ -140,7 +140,7 @@ def _inputs_now(root: Path, units) -> dict[str, str | None]:
     read = store.read_all(root, store.ENTRIES)
     return records.inputs_now_from(intake_scans.read_scans(root), inputs.index_entries(read.entries, lines=read.lines),
                                    load_state(root / STATE_NAME).tabulated_calibration, sorted(units),
-                                   gpi=gpi.entries_in_force(root))
+                                   gpi=gpi.entries_in_force(root), data_dir=root / "data")
 
 
 def _solo_keys(root: Path) -> frozenset[str]:

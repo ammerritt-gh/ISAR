@@ -76,7 +76,7 @@ def build_inter_workspace(root: Path, temperatures: Sequence[float] = (100, 150,
             # file_fit's own preparation: the hashes it stamps, and the calibration state a save stores on the card
             prep = file_fit.prepare_unit(frozen, scan_preps[scan], key, ("fast",))
             card.state.tabulated_calibration.update(prep.sp.recalibrated)
-            si = inputs.scan_inputs(rows[scan], index)
+            si = inputs.scan_inputs(rows[scan], index, data_dir=ws_root / "data")
             unit = inputs.unit_inputs(rows[scan], si, det, card.state.tabulated_calibration.get(scan))
             entry.detectors = {det: {**outcome(det, "resolved"), "T": entry.provenance["T"]}}     # the spectrum's own T
             entry.status, entry.reasons = "fitted", []

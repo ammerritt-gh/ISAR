@@ -1449,7 +1449,8 @@ def load_workspace(workspace, spectrum, detector=None, *, refresh_fast_pass=Fals
     indexed = inputs.index_entries(read.entries, lines=read.lines)
     for line in inputs.damage_lines(workspace, read=read, index=indexed):
         print(line, file=sys.stderr, flush=True)
-    si = inputs.scan_inputs({"scan": f"{experiment}:{scan_number}", "facts": rec.facts}, indexed)
+    si = inputs.scan_inputs({"scan": f"{experiment}:{scan_number}", "facts": rec.facts}, indexed,
+                            data_dir=Path(workspace) / "data")
     if si.excluded is not None:
         raise ValueError(f"scan {spectrum!r} is excluded: {si.excluded.reason or si.excluded.entry}")
     if det in si.dead:

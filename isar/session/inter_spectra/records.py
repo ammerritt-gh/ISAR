@@ -176,9 +176,11 @@ def read_payload(root, line: RefitLine) -> dict | None:
     return {"came_in": o.get("came_in"), "came_out": o.get("came_out"), "overlay": o.get("overlay")}
 
 
-def inputs_now_from(rows, index, tabulated, units: Sequence[str], gpi: Mapping | None = None) -> dict[str, str | None]:
+def inputs_now_from(rows, index, tabulated, units: Sequence[str], gpi: Mapping | None = None, *,
+                    data_dir: Path) -> dict[str, str | None]:
     """Each unit's inputs hash now (N1: the hash ``file_fit`` stamps), from the import rows, the intake entry index,
-    the stored tabulated calibration and the gpi entries in force (``gpi.entries_in_force``, by scan key; None: none);
+    the stored tabulated calibration and the gpi entries in force (``gpi.entries_in_force``, by scan key; None: none),
+    the unit data under ``data_dir`` (the masks' check);
     None for a unit with no import row (outside BL43: not judged)."""
     from isar.intake import inputs     # here: it loads numpy, and the pure authority module imports this one
     out: dict[str, str | None] = {}
@@ -190,6 +192,6 @@ def inputs_now_from(rows, index, tabulated, units: Sequence[str], gpi: Mapping |
             out[unit] = None
             continue
         if scan not in scan_inputs:
-            scan_inputs[scan] = inputs.scan_inputs(row, index, (gpi or {}).get(scan))
+            scan_inputs[scan] = inputs.scan_inputs(row, index, (gpi or {}).get(scan), data_dir=data_dir)
         out[unit] = inputs.inputs_hash(inputs.unit_inputs(row, scan_inputs[scan], det, tabulated.get(scan)))
     return out

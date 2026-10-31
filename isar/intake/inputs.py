@@ -161,7 +161,9 @@ class ScanInputs:
     counts_accepted: Mapping[str, Condition] = field(default_factory=dict)  # analyzer -> declaration
     gpi: "GpiScan | None" = None          # the latest gpi check's entry for this scan, accepted or not
     named: str | None = None              # the gpi file's sarf_name in force; None: none, rejected or dropped
-    point_masks: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    point_masks: Mapping[str, tuple[str, ...]] = field(default_factory=dict)   # applied: each still matches a point
+    lapsed_masks: Mapping[str, tuple[str, ...]] = field(default_factory=dict)  # stored, but no point of the data matches
+    unchecked_masks: tuple[str, ...] = ()   # analyzers whose stored data cannot be read: masks in neither list, held
     named_dropped: str | None = None      # why the named set was set aside (a user slit, ruling F), else None
 
 
@@ -181,9 +183,29 @@ def _condition(e: dict | None) -> Condition | None:
     return Condition(e["id"], e.get("reason"), e["at"]) if e is not None and e["declared"] else None
 
 
-def scan_inputs(row: dict, index: EntryIndex, gpi: "GpiScan | None" = None) -> ScanInputs:
+def _masks(scan: str, row: dict, index: EntryIndex, data_dir) -> tuple[dict, dict, tuple[str, ...]]:
+    """Each analyzer's stored masks split into applied (their point is in the data now) and lapsed (it is not);
+    an analyzer whose unit data cannot be read is listed unchecked, its masks in neither."""
+    applied, lapsed, unchecked = {}, {}, []
+    for det in row.get("analyzers", {}):
+        stored = index.point_masks.get(f"{scan}:{det}", ())
+        applied[det] = lapsed[det] = ()
+        if not stored:
+            continue
+        try:
+            now = point_masks.current_ids(data_dir, f"{scan}:{det}", row["data_revision"])
+        except point_masks.UnreadableUnit:
+            unchecked.append(det)
+            continue
+        applied[det] = tuple(p for p in stored if p in now)
+        lapsed[det] = tuple(p for p in stored if p not in now)
+    return applied, lapsed, tuple(unchecked)
+
+
+def scan_inputs(row: dict, index: EntryIndex, gpi: "GpiScan | None" = None, *, data_dir) -> ScanInputs:
     """One scan's file and user values, the used value, any disagreement, and the conditions in force.
-    ``gpi`` is the scan's entry of the latest gpi check; only an accepted one contributes."""
+    ``gpi`` is the scan's entry of the latest gpi check; only an accepted one contributes. ``data_dir`` is the
+    workspace's ``data`` folder: the stored point masks are checked against each analyzer's unit data there."""
     scan = row["scan"]
     row_facts = row.get("facts") or {}
     accepted = gpi if gpi is not None and gpi.accepted else None
@@ -219,11 +241,11 @@ def scan_inputs(row: dict, index: EntryIndex, gpi: "GpiScan | None" = None) -> S
     def held(cond):
         return {det: c for det, e in sorted(index.units.get((scan, cond), {}).items())
                 if (c := _condition(e)) is not None}
+    applied, lapsed, unchecked = _masks(scan, row, index, data_dir)
     return ScanInputs(scan=scan, facts=facts, excluded=_condition(index.conditions.get((scan, "excluded"))),
                       dead=held("dead"), counts_accepted=held("counts_accepted"),
                       gpi=gpi, named=named, named_dropped=dropped,
-                      point_masks={det: index.point_masks.get(f"{scan}:{det}", ())
-                                   for det in row.get("analyzers", {})})
+                      point_masks=applied, lapsed_masks=lapsed, unchecked_masks=unchecked)
 
 
 def analyzer_q(row: dict, si: ScanInputs, det: str) -> tuple[list[float] | None, str]:

@@ -90,7 +90,8 @@ def _authoritative_refit(root, unit) -> str:
     from isar.session.inter_spectra import records
     read = store.read_all(root, store.ENTRIES)
     now = records.inputs_now_from(intake_scans.read_scans(root), inputs.index_entries(read.entries, lines=read.lines),
-                                  load_state(root / "card.state.json").tabulated_calibration, [unit])
+                                  load_state(root / "card.state.json").tabulated_calibration, [unit],
+                                  data_dir=root / "data")
     batch, fit = records.new_batch_id(), records.new_fit_id()
     head = {"schema": records.SCHEMA_SAVE, "unit": f"inter:{batch}:batch", "pass": "inter", "batch": batch}
     start = {"batch_kind": "anchored", "scope": {"direction": "q", "members": []}, "anchors": [], "rings": {},

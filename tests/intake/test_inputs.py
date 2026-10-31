@@ -35,7 +35,7 @@ def _index(root):
 
 
 def _si(root, row=ROW):
-    return scan_inputs(row, _index(root))
+    return scan_inputs(row, _index(root), data_dir=root / "data")
 
 
 def _t(root):
@@ -88,14 +88,14 @@ def parsed(tmp_path):
 
 def test_apply_with_nothing_in_force_is_the_record_itself(parsed):
     root, rec, row = parsed
-    assert apply(rec, scan_inputs(row, _index(root))) is rec
+    assert apply(rec, scan_inputs(row, _index(root), data_dir=root / "data")) is rec
 
 
 def test_apply_user_temperature_copies_and_never_mutates(parsed):
     root, rec, row = parsed
     before = content_hash(rec)
     values.save_value(root, "temperature", 120.0, [row["scan"]], reason="offset")
-    si = scan_inputs(row, _index(root))
+    si = scan_inputs(row, _index(root), data_dir=root / "data")
     eff = apply(rec, si)
     assert eff is not rec and np.all(eff.temperature.setpoint == 120.0)
     assert eff.facts["T_K"] == {"value": 120.0, "source": "user", "entry": si.facts["temperature"].user_entry,
@@ -103,14 +103,14 @@ def test_apply_user_temperature_copies_and_never_mutates(parsed):
     assert rec.facts["T_K"]["value"] == 100.0 and np.all(rec.temperature.setpoint == 100.0)
     assert content_hash(rec) == before                       # file values never changed, in memory too
     values.use_file_value(root, "temperature", [row["scan"]])
-    assert apply(rec, scan_inputs(row, _index(root))) is rec
+    assert apply(rec, scan_inputs(row, _index(root), data_dir=root / "data")) is rec
 
 
 def test_apply_drops_dead_analyzers_and_names_accepted_counts(parsed):
     root, rec, row = parsed
     values.save_condition(root, "dead", [row["scan"] + ":a14"])
     values.save_condition(root, "counts_accepted", [row["scan"] + ":a05", row["scan"] + ":a14"], reason="checked")
-    si = scan_inputs(row, _index(root))
+    si = scan_inputs(row, _index(root), data_dir=root / "data")
     eff = apply(rec, si)
     assert sorted(eff.spectra) == ["a03", "a05"] and sorted(rec.spectra) == ["a03", "a05", "a14"]
     assert eff.facts["counts_accepted"] == {"value": ["a05"], "source": "user",
@@ -296,7 +296,7 @@ def _gpi(accepted=True, *, slit="40x40", setting="40x40", q=None, name="sarf_z_s
 
 
 def _gsi(root, g, row=ROW):
-    return scan_inputs(row, _index(root), g)
+    return scan_inputs(row, _index(root), g, data_dir=root / "data")
 
 
 def test_an_accepted_gpi_slit_is_used_above_any_file_slit(root):
@@ -344,7 +344,7 @@ def test_apply_takes_the_accepted_gpi_values_as_a_copy(parsed):
     root, rec, row = parsed
     before = content_hash(rec)
     g = dataclasses.replace(_gpi(q={"a03": [1.0, 0.0, 2.0]}), scan=row["scan"])
-    si = scan_inputs(row, _index(root), g)
+    si = scan_inputs(row, _index(root), g, data_dir=root / "data")
     eff = apply(rec, si)
     assert eff.facts["slit"] == {"value": "40x40", "source": "gpi", "file": g.file}
     assert (eff.spectra["a03"].q, eff.spectra["a03"].q_source) == ([1.0, 0.0, 2.0], "gpi")
@@ -352,7 +352,7 @@ def test_apply_takes_the_accepted_gpi_values_as_a_copy(parsed):
     assert eff.facts["resolution_set"] == {"value": "sarf_z_s1_40_40", "setting": "40x40", "source": "gpi",
                                            "file": g.file, "curves": g.curves}
     assert content_hash(rec) == before and rec.spectra["a03"].q_source != "gpi"
-    assert apply(rec, scan_inputs(row, _index(root), dataclasses.replace(g, accepted=False))) is rec
+    assert apply(rec, scan_inputs(row, _index(root), dataclasses.replace(g, accepted=False), data_dir=root / "data")) is rec
 
 
 def test_import_rows_carry_each_analyzers_data_q(tmp_path):

@@ -164,7 +164,7 @@ def effective(root, outcomes: Mapping[str, dict], tabulated, rows=None, index=No
         rows = intake_scans.read_scans(root) if rows is None else rows
         index = inputs.index_entries(read.entries, lines=read.lines) if index is None else index
     from isar.intake.gpi import entries_in_force      # the gpi entries a refit's inputs hash was made with
-    now = records.inputs_now_from(rows, index, tabulated, needed, gpi=entries_in_force(root))
+    now = records.inputs_now_from(rows, index, tabulated, needed, gpi=entries_in_force(root), data_dir=root / "data")
     res = resolve_all(log_, user, now, set(outcomes))
     lines = {r.fit: r for r in log_.refits}
     out: dict[str, Effective] = {}

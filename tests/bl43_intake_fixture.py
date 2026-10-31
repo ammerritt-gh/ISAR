@@ -56,7 +56,7 @@ def write_run(ws_root: Path, units: Sequence[str], *, passes: Sequence[str] = ("
     for unit in units:
         scan, _, det = unit.rpartition(":")
         row = rows[scan]
-        u = inputs.unit_inputs(row, inputs.scan_inputs(row, index), det, None)
+        u = inputs.unit_inputs(row, inputs.scan_inputs(row, index, data_dir=ws_root / "data"), det, None)
         if stale and unit in stale:
             u = {**u, **stale[unit]}
         kept = list(inputs.fallbacks(u))

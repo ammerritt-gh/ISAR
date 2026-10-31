@@ -96,7 +96,7 @@ def q_coordinates(root, keys: Collection[str]) -> QCoordinates:
             q, source = None, "none"
         else:
             if scan not in scan_inputs:
-                scan_inputs[scan] = inputs.scan_inputs(row, index, gpi_now.get(scan))
+                scan_inputs[scan] = inputs.scan_inputs(row, index, gpi_now.get(scan), data_dir=root / "data")
             q, source = inputs.analyzer_q(row, scan_inputs[scan], det)
         if q is None or source not in ACCEPTED:
             reasons[key] = NO_HKL

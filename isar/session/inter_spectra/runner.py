@@ -661,7 +661,7 @@ class _Run:
             by_unit.setdefault(r.unit, []).append(r)
         needed = sorted({*scope, *(c.unit for u in scope for r in by_unit.get(u, ()) for c in r.conditioned_on)})
         self.now = now = records.inputs_now_from(rows, index, frozen.card.state.tabulated_calibration, needed,
-                                                 gpi=gpi.entries_in_force(self.root))
+                                                 gpi=gpi.entries_in_force(self.root), data_dir=self.root / "data")
         self.lines = {r.fit: r for r in log0.refits}
         self.res = {u:authority.resolve(u, refits=by_unit.get(u, ()), pick=user.picks.get(u), lock=user.locks.get(u),
                                          has_fast=authority.has_fast_solo(frozen.session.get(u), u), inputs_now=now)

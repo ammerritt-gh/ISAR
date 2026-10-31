@@ -347,6 +347,6 @@ def test_the_fingerprint_agrees_at_save_time(tmp_path):
                                  unit, ("fast",))
     read = store.read_all(ws, store.ENTRIES)
     now = records.inputs_now_from(intake_scans.read_scans(ws), inputs.index_entries(read.entries, lines=read.lines),
-                                  load_state(ws / "card.state.json").tabulated_calibration, [unit])[unit]
+                                  load_state(ws / "card.state.json").tabulated_calibration, [unit], data_dir=ws / "data")[unit]
     stored = frozen.session.get(unit).provenance["fit_inputs"]["hash"]
     assert prep.now.inputs_hash == now == stored
