@@ -254,6 +254,11 @@ STALE_PHRASES = (
         "H22(b) retired shadow as a `scan_window_eig_mode` value; the name now survives only on "
         "the (retained) scoring engine's modules",
     ),
+    (
+        "asks each search for its next prices in rounds",
+        "the runner feeds each spectrum's search as its own jobs return (ruling B, 2026-10-31); rings "
+        "stay sequential",
+    ),
 )
 
 
