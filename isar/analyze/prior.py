@@ -59,7 +59,14 @@ class PhononPrior:
 # 0..20 meV, ordered energies with k!, posterior-mode Laplace with the box rule.
 # /6: each ordered energy's flat density times the near-zero penalty (EnergyPrior), renormalised
 # over the window; the ramp's numbers are PriorSettings.energy_ramp_*.
-PRIOR_RECIPE_VERSION = "isar.mode-prior-recipe/6"
+# /7: each mode's width is a proper density on [g_lo, c(omega0)], c = min(WIDTH_CAP_LONE_MEV,
+# omega0): a lone spectrum fits no mode wider than 4 meV, nor wider than its own energy. The old
+# 20 meV ceiling survives as the lifted one (width_cap), for a mode a neighbour-carried branch
+# vouches for. Every energy is bounded below by 2 g_lo so the width range is never empty.
+PRIOR_RECIPE_VERSION = "isar.mode-prior-recipe/7"
+
+# The widest a mode of a lone spectrum may be (meV): a fixed number of the recipe, not a setting.
+WIDTH_CAP_LONE_MEV = 4.0
 
 # --- The v4 reference arm (legacy_v4) and the quasi-elastic area rule ---------------------------
 # Amplitude ceiling: a fitted height h (counts per point at the reference exposure) is bounded by
@@ -136,8 +143,10 @@ class PriorSettings:
     """What the sensitivity check (design 2.4) varies. Defaults are the operator's 2026-10-25 recipe.
 
     amplitude_margin: peak and elastic heights flat on [0, margin x max count]  (1.2; check 1.05, 3).
-    width_kind: "softlog" -> density 1/(Gamma + width_knee) on [0, width_cap]; "flat" -> uniform.
-    width_knee: meV (0.12).  width_cap: meV (20; check 40).
+    width_kind: "softlog" -> density 1/(Gamma + width_knee) on [g_lo, ceiling]; "flat" -> uniform.
+    width_knee: meV (0.12).  width_cap: meV (20; check 40): the LIFTED ceiling, the widest a mode
+        a neighbour-carried branch vouches for may be; a lone spectrum's mode stops at
+        min(WIDTH_CAP_LONE_MEV, width_cap, its own omega0) (:func:`width_ceiling`).
     energy_cap: meV, E0 ordered on (energy_floor, min(energy_cap, max fitted E)].
     legacy_v4: True -> the v4 recipe in the height coordinate (S1U2's /4h), the sensitivity
         check's reference arm.
@@ -174,10 +183,137 @@ SENSITIVITY_ARMS = {
     "margin_1.05": PriorSettings(amplitude_margin=1.05),
     "margin_3": PriorSettings(amplitude_margin=3.0),
     "width_flat": PriorSettings(width_kind="flat"),
-    "width_cap_40": PriorSettings(width_cap=40.0),   # moves the prior and the TRF bound, not
-                                                     # phonon._gamma_at_bound (a diagnostic flag)
+    "width_cap_40": PriorSettings(width_cap=40.0),   # under /7 moves only the lifted ceiling
     "today_v4": PriorSettings(legacy_v4=True),
 }
+
+
+# --- The width ceiling (recipe /7) -----------------------------------------------------------------
+def width_ceiling(omega0: float, *, lifted: bool = False,
+                  settings: "PriorSettings | None" = None) -> float:
+    """The widest this mode may be (meV). ``lifted``: ``settings.width_cap``. Else exactly
+    ``min(WIDTH_CAP_LONE_MEV, settings.width_cap, omega0)`` (no floor: the recipe keeps omega0 above
+    ``2 g_lo``). ``legacy_v4``: ``GAMMA_MAX_V4`` whatever omega0 and ``lifted``."""
+    s = settings or PriorSettings()
+    if s.legacy_v4:
+        return GAMMA_MAX_V4
+    if lifted:
+        return s.width_cap
+    return min(WIDTH_CAP_LONE_MEV, s.width_cap, float(omega0))
+
+
+def d_width_ceiling(omega0: float, *, lifted: bool = False,
+                    settings: "PriorSettings | None" = None) -> float:
+    """d :func:`width_ceiling` / d omega0: 1 where the lone ceiling equals omega0
+    (``0 < omega0 < min(WIDTH_CAP_LONE_MEV, width_cap)``), else 0. At the kink the right derivative."""
+    s = settings or PriorSettings()
+    if s.legacy_v4 or lifted:
+        return 0.0
+    return 1.0 if 0.0 < omega0 < min(WIDTH_CAP_LONE_MEV, s.width_cap) else 0.0
+
+
+def gamma_from_t(t: float, g_lo: float, ceiling: float) -> float:
+    """The width at optimiser coordinate ``t`` in [0, 1] on ``[g_lo, ceiling]``."""
+    if not ceiling > g_lo:
+        raise ValueError(f"width range [{g_lo!r}, {ceiling!r}] is empty")
+    return g_lo + (ceiling - g_lo) * t
+
+
+def t_from_gamma(gamma: float, g_lo: float, ceiling: float) -> float:
+    """The optimiser coordinate of a width (not clipped)."""
+    if not ceiling > g_lo:
+        raise ValueError(f"width range [{g_lo!r}, {ceiling!r}] is empty")
+    return (gamma - g_lo) / (ceiling - g_lo)
+
+
+def ln_width_given(gamma: float, ceiling: float, g_lo: float, settings: "PriorSettings") -> float:
+    """The width's log density given its mode's ceiling: proper on ``[g_lo, ceiling]`` (the optimiser's
+    own interval), -inf outside. Softlog ``1/(Gamma + knee)``, flat (or ``legacy_v4``) uniform."""
+    if not g_lo <= gamma <= ceiling:
+        return -math.inf
+    if settings.width_kind == "flat" or settings.legacy_v4:
+        return -math.log(ceiling - g_lo)
+    k = settings.width_knee
+    return -math.log(gamma + k) - math.log(math.log((ceiling + k) / (g_lo + k)))
+
+
+def d_ln_width_given(gamma: float, ceiling: float, g_lo: float,
+                     settings: "PriorSettings") -> tuple[float, float]:
+    """``(d/d gamma, d/d ceiling)`` of :func:`ln_width_given` inside the support."""
+    if settings.width_kind == "flat" or settings.legacy_v4:
+        return 0.0, -1.0 / (ceiling - g_lo)
+    k = settings.width_knee
+    return (-1.0 / (gamma + k),
+            -1.0 / ((ceiling + k) * math.log((ceiling + k) / (g_lo + k))))
+
+
+class GammaMap:
+    """The optimiser coordinate of the widths over a full parameter vector: each mapped mode's
+    Gamma is fitted as ``t`` in [0, 1] on ``[g_lo, ceiling(omega0)]``; everything else is untouched.
+    ``pairs``: ``(pos_omega0, pos_Gamma, g_lo, lifted)``. Pure numpy; stored and shown values stay
+    Gamma in meV (``t`` lives only at the optimiser seam). The z-space log density is
+    ``ln p(theta) + ln_jac(theta)``."""
+
+    def __init__(self, pairs, settings: "PriorSettings | None" = None):
+        self.pairs = tuple((int(a), int(g), float(lo), bool(lf)) for a, g, lo, lf in pairs)
+        self.settings = settings or PriorSettings()
+
+    def ceiling(self, theta, k: int) -> float:
+        a, _g, _lo, lifted = self.pairs[k]
+        return width_ceiling(float(theta[a]), lifted=lifted, settings=self.settings)
+
+    def _d_ceiling(self, theta, k: int) -> float:
+        a, _g, _lo, lifted = self.pairs[k]
+        return d_width_ceiling(float(theta[a]), lifted=lifted, settings=self.settings)
+
+    def box(self, bounds):
+        """``bounds`` (a ``[(lo, hi)]`` list over the full vector) with each mapped Gamma's -> (0, 1)."""
+        out = [tuple(b) for b in bounds]
+        for _a, g, _lo, _lf in self.pairs:
+            out[g] = (0.0, 1.0)
+        return out
+
+    def to_z(self, theta) -> np.ndarray:
+        z = np.array(theta, dtype=float)
+        for k, (_a, g, g_lo, _lf) in enumerate(self.pairs):
+            z[g] = min(max(t_from_gamma(z[g], g_lo, self.ceiling(theta, k)), 0.0), 1.0)
+        return z
+
+    def to_theta(self, z) -> np.ndarray:
+        """The full vector at ``z``; omega0 is read AFTER the assignment (it is its own coordinate)."""
+        t = np.array(z, dtype=float)
+        for k, (_a, g, g_lo, _lf) in enumerate(self.pairs):
+            c = self.ceiling(t, k)
+            # t = 1 is exactly the ceiling (a capped mode below 4 meV then has Gamma == omega0, which
+            # the regime rule reads as overdamped); elsewhere clip a ulp past an edge
+            t[g] = c if z[g] >= 1.0 else min(max(gamma_from_t(float(z[g]), g_lo, c), g_lo), c)
+        return t
+
+    def ln_jac(self, theta) -> float:
+        return float(sum(math.log(self.ceiling(theta, k) - g_lo)
+                         for k, (_a, _g, g_lo, _lf) in enumerate(self.pairs)))
+
+    def d_ln_jac(self, theta) -> np.ndarray:
+        """d ln_jac / d theta (the omega0 entries: ``c' / (c - g_lo)``)."""
+        out = np.zeros(len(theta))
+        for k, (a, _g, g_lo, _lf) in enumerate(self.pairs):
+            out[a] += self._d_ceiling(theta, k) / (self.ceiling(theta, k) - g_lo)
+        return out
+
+    def jac(self, theta) -> np.ndarray:
+        """``d theta / d z`` (full, at the theta whose Gamma are real widths)."""
+        n = len(theta)
+        J = np.eye(n)
+        for k, (a, g, g_lo, _lf) in enumerate(self.pairs):
+            c = self.ceiling(theta, k)
+            s = c - g_lo
+            J[g, g] = s
+            J[g, a] += (float(theta[g]) - g_lo) / s * self._d_ceiling(theta, k)
+        return J
+
+    def cov_to_theta(self, theta, cov_z) -> np.ndarray:
+        J = self.jac(theta)
+        return J @ np.asarray(cov_z, dtype=float) @ J.T
 
 
 @dataclass(frozen=True)
@@ -211,10 +347,28 @@ class SpectrumPrior:
             raise ValueError("the legacy_v4 prior needs v4_height_hi: resolve it with resolve_prior_for")
         return self.v4_height_hi
 
+    @property
+    def g_lo(self) -> float:
+        """The widest-allowed lower edge of every width (meV): the one definition ``mode_bounds`` reads."""
+        return min(GAMMA_FLOOR, WIDTH_FLOOR_FRACTION * self.fwhm)
+
     def _width_support(self) -> tuple[float, float]:
+        """The LIFTED width support (the density ``ln_width`` is normalised on)."""
         if self.settings.legacy_v4:
             return (GAMMA_FLOOR, GAMMA_MAX_V4)       # v4: flat between the fit's own bounds
-        return (0.0, self.settings.width_cap)
+        return (self.g_lo, self.settings.width_cap)
+
+    def ceiling_at(self, omega0: float, *, lifted: bool = False) -> float:
+        return width_ceiling(omega0, lifted=lifted, settings=self.settings)
+
+    def ln_width_at(self, g: float, omega0: float, *, lifted: bool = False) -> float:
+        """The width's log density given its mode's energy (proper on ``[g_lo, ceiling]``)."""
+        return ln_width_given(g, self.ceiling_at(omega0, lifted=lifted), self.g_lo, self.settings)
+
+    def d_ln_width_at(self, g: float, omega0: float, *, lifted: bool = False) -> tuple[float, float]:
+        """``(d/d g, d/d omega0)`` of :meth:`ln_width_at` inside the support."""
+        dg, dc = d_ln_width_given(g, self.ceiling_at(omega0, lifted=lifted), self.g_lo, self.settings)
+        return dg, dc * d_width_ceiling(omega0, lifted=lifted, settings=self.settings)
 
     def bounds(self, kind: str) -> tuple[float, float]:
         """kind in {"h", "omega0", "Gamma", "elastic", "bg", "qe_width"}."""
@@ -224,8 +378,9 @@ class SpectrumPrior:
             return (0.0, self.background_hi)
         if kind == "omega0":
             return (self.e_lo, self.e_hi)
-        if kind == "Gamma":
-            return self._width_support()
+        if kind == "Gamma":      # the static outer box; each mode's own ceiling is width_ceiling
+            lo, hi = self._width_support()
+            return (lo, hi if self.settings.legacy_v4 else min(hi, WIDTH_CAP_LONE_MEV))
         if kind == "qe_width":
             if self.qe_width is None:
                 raise ValueError("this spectrum has no central QE width prior (BL43LXU only)")
@@ -247,7 +402,7 @@ class SpectrumPrior:
         if s.width_kind == "flat" or s.legacy_v4:
             return -math.log(hi - lo)
         return -math.log(g + s.width_knee) - math.log(math.log((hi + s.width_knee)
-                                                              / s.width_knee))
+                                                              / (lo + s.width_knee)))
 
     def d_ln_width(self, g: float) -> float:
         """d ln_width / d Gamma inside the support (the heights' and background's densities are flat: no
@@ -278,9 +433,9 @@ class SpectrumPrior:
         factor (its width is pinned, not fitted). elastic/bg None = that variant has no such term."""
         peaks = list(peaks)
         lp = self.ln_energies([p[0] for p in peaks])
-        for _, g, h in peaks:
+        for e, g, h in peaks:
             if g is not None:
-                lp += self.ln_width(g)
+                lp += self.ln_width_at(g, e)
             lp += self.ln_height(h)
         if elastic is not None:
             lp += self.ln_height(elastic)
@@ -325,10 +480,13 @@ def resolve_prior(counts, energies_used, settings: PriorSettings | None = None, 
     mx = max(1.0, float(c.max()))
     e_max = float(np.max(energies_used))
     e_hi = e_max if s.legacy_v4 else min(s.energy_cap, e_max)   # v4 never capped the window
-    if not e_hi > s.energy_floor:
+    # every admissible omega0 has a width ceiling of at least 2 g_lo, so [g_lo, ceiling] is never empty
+    e_lo = s.energy_floor if s.legacy_v4 else max(
+        s.energy_floor, 2.0 * min(GAMMA_FLOOR, WIDTH_FLOOR_FRACTION * float(fwhm)))
+    if not e_hi > e_lo:
         raise ValueError(f"resolve_prior: no positive energy range (max E {e_hi!r})")
-    return SpectrumPrior(settings=s, max_count=mx, e_lo=s.energy_floor, e_hi=e_hi,
-                         energy=energy_prior(s.energy_floor, e_hi, fwhm, s), fwhm=float(fwhm))
+    return SpectrumPrior(settings=s, max_count=mx, e_lo=e_lo, e_hi=e_hi,
+                         energy=energy_prior(e_lo, e_hi, fwhm, s), fwhm=float(fwhm))
 
 
 def resolve_prior_for(ctx, settings: PriorSettings | None = None) -> SpectrumPrior:
@@ -350,9 +508,10 @@ def mode_bounds(names, ctx, settings: PriorSettings | None = None) -> list[tuple
     of its priors. All of them come from :func:`resolve_prior_for`, so the TRF box and the Laplace
     box can never disagree.
 
-    * ``.omega0`` (the undamped energy E0): ``(energy_floor, min(20, max fitted energy))``.
+    * ``.omega0`` (the undamped energy E0): ``(max(energy_floor, 2 g_lo), min(20, max fitted energy))``.
     * ``.Gamma`` (width): from ``WIDTH_FLOOR_FRACTION`` of the resolution width (never above the
-      absolute ``GAMMA_FLOOR``) to the width cap (``GAMMA_MAX`` = 20 meV).
+      absolute ``GAMMA_FLOOR``) to the lone cap (``WIDTH_CAP_LONE_MEV`` = 4 meV): the static outer
+      box; each mode's own ceiling, ``min(4, omega0)``, is :func:`width_ceiling`.
     * ``.h`` (phonon and elastic heights, counts per point): ``(0, margin x max count)``.
     * ``.BG`` (flat background, counts per point): ``(0, max count)``.
     * ``.width`` (the central QE's intrinsic FWHM, BL43LXU): the :class:`QEWidthPrior` support.
@@ -368,7 +527,7 @@ def mode_bounds(names, ctx, settings: PriorSettings | None = None) -> list[tuple
         if name.endswith(".omega0"):
             out.append(sp.bounds("omega0"))
         elif name.endswith(".Gamma"):
-            out.append((min(GAMMA_FLOOR, WIDTH_FLOOR_FRACTION * width), sp.bounds("Gamma")[1]))
+            out.append((sp.g_lo, sp.bounds("Gamma")[1]))
         elif name.endswith(".h"):
             out.append(sp.bounds("h"))
         elif name.endswith(".width"):
@@ -860,7 +1019,8 @@ def _ln_box_mass(mu, cov, lo, hi, sd):
     return float(sum(_ln_interval_mass(a[i], b[i]) for i in near))
 
 
-def laplace_log_evidence(neg_log_post, theta, lo, hi, *, rel_step=1e-4, grad=None) -> LaplaceResult:
+def laplace_log_evidence(neg_log_post, theta, lo, hi, *, rel_step=1e-4, grad=None,
+                         step_floor=None) -> LaplaceResult:
     """Posterior-mode Laplace evidence on the support box ``[lo, hi]`` (the box rule).
 
     neg_log_post(theta) = -(ln L + ln prior), finite inside the support. ``theta`` is the posterior
@@ -873,13 +1033,20 @@ def laplace_log_evidence(neg_log_post, theta, lo, hi, *, rel_step=1e-4, grad=Non
     ``(g s)^2/2 + ln Phi(-g s)``. A Hessian that is not positive definite is ``no_evidence``.
     ``grad`` (the gradient of neg_log_post, or None): the Hessian is the central difference of the gradient
     (:func:`hessian_from_grad`) at the same nudged centre and steps, and a railed coordinate's inward
-    gradient is ``grad(theta)`` clipped the same way; the value still comes from neg_log_post."""
+    gradient is ``grad(theta)`` clipped the same way; the value still comes from neg_log_post.
+    A step is ``rel_step x max(|theta|, floor)``, the floor ``1e-2 x span`` unless ``step_floor`` (an
+    array over the coordinates, NaN: that default) gives one: a width in its z coordinate asks for
+    the floor its meV scale had before the coordinate changed, or a narrow pole's round-off wins."""
     theta = np.asarray(theta, float).copy()
     lo = np.asarray(lo, float)
     hi = np.asarray(hi, float)
     d = theta.size
     span = np.maximum(hi - lo, 1e-9)
-    steps = np.minimum(rel_step * np.maximum(np.abs(theta), 1e-2 * span), (hi - lo) / 4.0)
+    floor = 1e-2 * span
+    if step_floor is not None:
+        given = np.asarray(step_floor, float)
+        floor = np.where(np.isfinite(given), given, floor)
+    steps = np.minimum(rel_step * np.maximum(np.abs(theta), floor), (hi - lo) / 4.0)
     tol = 1e-6 * span
     at_lo = theta - lo <= tol
     at_hi = hi - theta <= tol

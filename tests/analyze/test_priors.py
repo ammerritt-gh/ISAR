@@ -98,12 +98,12 @@ def test_ppf_roundtrips_through_the_truncated_cdf(kind, mu, sigma):
         assert abs(u_back - u) < 1e-9
 
 
-def test_softlog_is_normalised_on_zero_to_hi_and_sheds_the_mass_below_lo():
+def test_softlog_is_normalised_exactly_on_lo_to_hi():
+    # recipe /7: the density is proper on the optimiser's own interval [lo, hi]; the mass below lo
+    # (~1.6e-3, left out of the /6 normalisation) is no longer shed
     p = catalogue.ResolvedPrior("phonon.Gamma", "softlog", 0.12, None, 1e-3, 20.0, "default_softlog")
     pdf = lambda v: math.exp(p.logpdf(v))
-    assert quad(pdf, 0.0, 1.0)[0] + quad(pdf, 1.0, 20.0)[0] == pytest.approx(1.0, abs=1e-9)
-    below = math.log((1e-3 + 0.12) / 0.12) / math.log((20.0 + 0.12) / 0.12)    # ~1.6e-3
-    assert quad(pdf, 1e-3, 1.0)[0] + quad(pdf, 1.0, 20.0)[0] == pytest.approx(1.0 - below, abs=1e-9)
+    assert quad(pdf, 1e-3, 1.0)[0] + quad(pdf, 1.0, 20.0)[0] == pytest.approx(1.0, abs=1e-9)
     assert p.logpdf(0.5e-3) == float("-inf") and p.logpdf(20.5) == float("-inf")
     # one width density on both paths: the fast pass's SpectrumPrior is the same function
     from isar.analyze.prior import resolve_prior
@@ -156,8 +156,11 @@ def test_bundle_logpdf_sums_and_spec_is_declarative():
                                    origins={"phonon.h": "prior_predictive"})
     bundle = catalogue.resolve_priors(_composite(), _ctx(constraints=constraints), _BOUNDS)
     values = {"phonon.omega0": 4.0, "phonon.Gamma": 0.4, "phonon.h": 40.0, "bg.BG": 10.0}
-    expected = sum(p.logpdf(values[p.name]) for p in bundle.params)
+    # recipe /7: a width's density is conditional on its mode's ceiling min(p.hi, omega0) = 4 here
+    expected = sum(p.logpdf_given(values[p.name], values["phonon.omega0"]) if p.name.endswith(".Gamma")
+                   else p.logpdf(values[p.name]) for p in bundle.params)
     assert abs(bundle.logpdf(values) - expected) < 1e-12
+    assert bundle.logpdf(values) != sum(p.logpdf(values[p.name]) for p in bundle.params)
     spec = bundle.spec()
     assert [row["name"] for row in spec] == [p.name for p in bundle.params]
     assert all(set(row) == {"name", "kind", "mu", "sigma", "lo", "hi", "origin",

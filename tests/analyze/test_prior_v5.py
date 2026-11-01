@@ -20,7 +20,7 @@ def test_every_arm_density_is_normalised_on_its_support():
         if s.legacy_v4:
             continue
         sp = resolve_prior([0, 3, 250, 7], np.linspace(-16, 20, 50), s, fwhm=1.0)
-        zw = quad(lambda g: math.exp(sp.ln_width(g)), 0, s.width_cap, limit=200)[0]
+        zw = quad(lambda g: math.exp(sp.ln_width(g)), sp.g_lo, s.width_cap, limit=200)[0]
         zh = quad(lambda h: math.exp(sp.ln_height(h)), 0, sp.height_hi)[0]
         zb = quad(lambda b: math.exp(sp.ln_background(b)), 0, sp.background_hi)[0]
         ze = quad(lambda e: math.exp(sp.ln_energies([e])), sp.e_lo, sp.e_hi,
@@ -56,7 +56,9 @@ def test_ex1_resolved_prior_values():
     sp = resolve_prior([0, 3, 250, 7], np.linspace(-16, 20, 50), fwhm=1.0)
     assert sp.max_count == 250 and sp.height_hi == pytest.approx(300.0) and sp.background_hi == 250
     assert sp.ln_height(100) == pytest.approx(-math.log(300.0))
-    assert sp.ln_width(0) == pytest.approx(0.4867, abs=1e-4)
+    # recipe /7: the lifted width density is normalised on [g_lo, 20] (/6 left the mass below g_lo out: 0.4867)
+    assert sp.ln_width(sp.g_lo) == pytest.approx(0.4800, abs=1e-4)
+    assert sp.ln_width(0) == -math.inf
     # recipe /6: ln 3! - 3 ln Z, Z = 19.096 the penalised normaliser (/5: ln 3! - 3 ln W = -7.1953)
     assert sp.ln_energies([5, 9, 14]) == pytest.approx(-7.0567, abs=1e-4)
 
@@ -85,11 +87,12 @@ def test_ex4_a_delta_mode_carries_no_width_factor():
     assert sp.ln_prior([(9.0, None, 100.0)], None, None) == pytest.approx(
         sp.ln_energies([9.0]) + sp.ln_height(100.0))
     assert sp.ln_prior([(9.0, 0.5, 100.0)], None, None) == pytest.approx(
-        sp.ln_energies([9.0]) + sp.ln_height(100.0) + sp.ln_width(0.5))
+        sp.ln_energies([9.0]) + sp.ln_height(100.0) + sp.ln_width_at(0.5, 9.0))
 
 
 def test_width_cap_is_the_phonon_ceiling():
-    assert PriorSettings().width_cap == GAMMA_MAX == 20.0
+    assert PriorSettings().width_cap == GAMMA_MAX == 20.0       # the lifted ceiling
+    assert prior.WIDTH_CAP_LONE_MEV == 4.0                      # a lone spectrum's, a fixed number
 
 
 # --------------------------------------------------------------------------- example 8: the k!

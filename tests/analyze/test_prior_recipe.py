@@ -74,8 +74,9 @@ def test_bounds_follow_declared_exposure_and_resolution():
 def test_bounds_energy_width_amplitude_shapes():
     ctx = _ctx(exposure_scale=np.ones(81), exposure_reference=1.0e5, exposure_source="monitor")
     got = dict(zip(NAMES, prior.mode_bounds(NAMES, ctx)))
-    assert got["phonon.omega0"] == got["phonon2.omega0"] == (EPS_OMEGA0, 10.0)  # fit window
-    assert got["phonon.Gamma"] == (GAMMA_FLOOR, 20.0)            # resolution 1.0 meV: floor wins
+    # recipe /7: the energy window starts at 2 g_lo so every width range [g_lo, min(4, omega0)] is non-empty
+    assert got["phonon.omega0"] == got["phonon2.omega0"] == (2 * GAMMA_FLOOR, 10.0)  # fit window
+    assert got["phonon.Gamma"] == (GAMMA_FLOOR, 4.0)             # resolution 1.0 meV: floor wins; the lone cap
     # re-pin (recipe /5): heights 1.2 x max count, background the max count (counts are 100)
     assert got["phonon.h"] == got["phonon2.h"] == got["elastic.h"] == (0.0, pytest.approx(120.0))
     assert got["bg.BG"] == (0.0, pytest.approx(100.0))
@@ -89,7 +90,10 @@ def test_width_floor_scales_with_a_very_sharp_resolution():
     sharp = _ctx(gauss_fwhm=1.0e-3)
     lo, hi = dict(zip(NAMES, prior.mode_bounds(NAMES, sharp)))["phonon.Gamma"]
     assert lo == pytest.approx(prior.WIDTH_FLOOR_FRACTION * 1.0e-3) and lo < GAMMA_FLOOR
-    assert hi == GAMMA_MAX
+    assert hi == prior.WIDTH_CAP_LONE_MEV == 4.0
+    # and the energy window follows the floor, so [g_lo, min(4, omega0)] is never empty
+    assert dict(zip(NAMES, prior.mode_bounds(NAMES, sharp)))["phonon.omega0"][0] == pytest.approx(
+        max(EPS_OMEGA0, 2 * lo))
 
 
 def test_no_declared_exposure_uses_the_nominal_one_not_the_counts():
@@ -133,8 +137,8 @@ def test_provenance_records_the_empirical_bayes_quantity():
     # and the near-zero energy penalty it placed, in meV and at the resolution FWHM it read
     p = prior.recipe_provenance(_ctx(exposure_scale=np.ones(81), exposure_reference=2.0e5,
                                      exposure_source="time"))
-    assert p["version"] == prior.PRIOR_RECIPE_VERSION == "isar.mode-prior-recipe/6"
-    assert p["energy_penalty"] == {"lo": EPS_OMEGA0, "hi": 10.0, "start": 1.0, "end": 0.25,
+    assert p["version"] == prior.PRIOR_RECIPE_VERSION == "isar.mode-prior-recipe/7"
+    assert p["energy_penalty"] == {"lo": 2 * GAMMA_FLOOR, "hi": 10.0, "start": 1.0, "end": 0.25,
                                    "ceiling": 7.5, "corner": 0.05, "fwhm_meV": 1.0}
     assert p["settings"]["energy_ramp_ceiling"] == 7.5
     assert p["empirical_bayes"] is True and p["empirical_quantity"] == "max_count"
@@ -350,7 +354,7 @@ def test_both_ordered_lanes_share_the_recipe_window():
     names, bundle = _two_mode_bundle()
     top = 10.0
     i1, i2 = names.index("phonon.omega0"), names.index("phonon2.omega0")
-    assert (bundle.params[i1].lo, bundle.params[i1].hi) == (EPS_OMEGA0, top)
+    assert (bundle.params[i1].lo, bundle.params[i1].hi) == (2 * GAMMA_FLOOR, top)   # recipe /7: max(floor, 2 g_lo)
     theta = dict(zip(names, [2.0, 0.3, 50.0, 6.0, 0.4, 30.0, 5.0]))
     lane = bundle.logpdf_ordered(theta) - bundle.logpdf(theta)
     assert lane == pytest.approx(math.log(2.0))                  # the same N! over the same W
@@ -360,7 +364,7 @@ def test_both_ordered_lanes_share_the_recipe_window():
     assert bundle.logpdf_ordered(beyond) == -math.inf
     u = np.random.default_rng(5).random((2000, len(names)))
     draws = np.array([bundle.transform_ordered(row) for row in u])
-    assert draws[:, [i1, i2]].min() >= EPS_OMEGA0 and draws[:, [i1, i2]].max() <= top
+    assert draws[:, [i1, i2]].min() >= 2 * GAMMA_FLOOR and draws[:, [i1, i2]].max() <= top
 
 
 def test_bundle_ordered_transform_is_the_ordered_prior_and_keeps_the_evidence():

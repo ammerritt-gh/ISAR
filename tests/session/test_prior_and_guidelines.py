@@ -376,9 +376,20 @@ def test_a_fast_pass_edit_changes_the_signature_of_a_scan():
     assert edit != base
 
 
+def test_the_prior_recipe_version_is_in_the_signature_so_a_new_recipe_makes_stored_fits_stale(monkeypatch):
+    from isar.analyze import prior
+    sig = lambda: G.guidelines_signature(G.resolve(_card_with_fitting({})), scan_number=1, q=None, T=None)
+    now = sig()
+    assert now["prior_recipe"] == prior.PRIOR_RECIPE_VERSION == "isar.mode-prior-recipe/7"
+    monkeypatch.setattr(prior, "PRIOR_RECIPE_VERSION", "isar.mode-prior-recipe/6")
+    assert sig() != now and sig()["prior_recipe"] == "isar.mode-prior-recipe/6"
+
+
 # Computed on the parent commit (before the central QE), same call: a non-BL43LXU card's stored
-# currency must not move.
-S30_SIGNATURE_HASH = "14ba740fb67d38fef1fd46596f769ac430e9f946f861d21eb4ee0d7d589aebdb"
+# currency must not move except when the prior recipe does. Re-pinned at recipe /7 (the width ceiling),
+# whose version is hashed into the signature on purpose: every stored fast pass goes stale. The
+# previous value, recipe /6, was 14ba740fb67d38fef1fd46596f769ac430e9f946f861d21eb4ee0d7d589aebdb.
+S30_SIGNATURE_HASH = "b4b1288f1c6ce0b011a3cbfd17621b7a09adeabad65c1990b872fa1abab53e6f"
 
 
 def test_the_central_qe_moves_only_a_bl43lxu_signature(monkeypatch):
