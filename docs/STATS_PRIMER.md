@@ -563,10 +563,9 @@ span, and stencil centres move inward whenever necessary, including for a mode j
 the rail tolerance. The rail tolerance still determines the boundary-gradient correction; it
 does not decide whether an objective may be evaluated outside its support.
 
-**The sensitivity arms.** `SENSITIVITY_ARMS` names the five alternatives the recipe is checked
+**The sensitivity arms.** `SENSITIVITY_ARMS` names the four alternatives the recipe is checked
 against, plus itself: `margin_1.05` and `margin_3` (the amplitude margin), `width_flat` (a flat
-width prior), `width_cap_40` (a 40 meV cap; under /7 it moves only the lifted ceiling, not a lone
-spectrum's) and `today_v4` (recipe /4 in the height coordinate:
+width prior) and `today_v4` (recipe /4 in the height coordinate:
 heights and background `scale x exposure`, width flat on `[1e-3, 5]`). Changing the margin from 1.05
 to 3 costs 1.05 nats per extra peak in the Occam factor (`ln(3/1.05)`), the figure the design
 quotes. The check itself, on the real spectra, is run before the beamtime and reported to the

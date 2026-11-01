@@ -183,7 +183,6 @@ SENSITIVITY_ARMS = {
     "margin_1.05": PriorSettings(amplitude_margin=1.05),
     "margin_3": PriorSettings(amplitude_margin=3.0),
     "width_flat": PriorSettings(width_kind="flat"),
-    "width_cap_40": PriorSettings(width_cap=40.0),   # under /7 moves only the lifted ceiling
     "today_v4": PriorSettings(legacy_v4=True),
 }
 
