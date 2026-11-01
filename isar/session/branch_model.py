@@ -30,6 +30,7 @@ import logging
 
 import numpy as np
 
+from isar.analyze.prior import width_ceiling
 from isar.schema.steering import RETIRED_AMPLITUDE_BASES, ParamConstraints
 from isar.session.session_prior import is_unconstrained_prior_point
 
@@ -178,7 +179,8 @@ def predict(branch: dict, omega0: float) -> BranchPrediction:
     dist = 0.0 if in_range else (w_min - w if w < w_min else w - w_max)
     infl = 1.0 + dist / span                               # σ grows linearly outside the anchor range
 
-    gamma = max(gs * w + gi, GAMMA_FLOOR)
+    # anchors fitted under an older recipe may be wider than a lone fit may now be (recipe /7)
+    gamma = max(min(gs * w + gi, width_ceiling(w)), GAMMA_FLOOR)
     amp = float(np.exp(ls * np.log(max(w, 1e-9)) + li))
     gamma_sigma = max(GAMMA_SIGMA_FLOOR, gsig) * infl
     a_rel = max(A_REL_SIGMA_FLOOR, float(np.exp(lsig) - 1.0)) * infl

@@ -76,6 +76,16 @@ def test_extrapolation_inflates_sigma_and_flags_out_of_range():
     assert outside.amplitude_rel_sigma >= inside.amplitude_rel_sigma
 
 
+def test_a_predicted_width_stops_at_the_lone_ceiling():
+    # anchors fitted under recipe /6 may carry a 6 meV width; a solo fit at omega0 2 may claim only 2
+    b = {"branch_id": "acoustic", "sample": "S", "t_bin": 100.0, "w_min": 1.0, "w_max": 5.0,
+         "n_anchors": 3, "gamma": [0.0, 6.0, 0.1], "logA": [-1.0, 6.4, 0.1]}
+    p = BM.predict(b, 2.0)
+    assert p.gamma == pytest.approx(2.0)
+    assert BM.predict(b, 10.0).gamma == pytest.approx(4.0)
+    assert p.hard_constraints(1e6, 1.0).hard["phonon.Gamma"] == pytest.approx(2.0)
+
+
 # --------------------------------------------------------------------------- clean-anchor gate
 def test_clean_anchor_gate_rejects():
     good = _pt("S:0", 5.0, 0.5, 120.0)
