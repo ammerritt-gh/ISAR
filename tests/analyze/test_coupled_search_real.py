@@ -207,9 +207,10 @@ def test_a_hidden_mode_is_kept_and_a_vanishing_branch_is_dropped_under_the_count
 def test_the_extra_unmatched_mode_tail_is_summable_with_prices_off_and_on():
     t0 = time.perf_counter()
     true = [(8.0, 0.4, 40.0), (13.0, 0.4, 40.0)]
-    # seed 17: whether a fifth mode prices or resolves to a coincident twin turns on the optimiser's path,
-    # which moved when recipe /7 started the energy window at 2 g_lo (seed 18 gave a twin)
-    base = t_pair(prep(true, 5, seed=17), true, ["fast:y#0", "fast:y#1"], true, ["b1", "b2"], kind="simultaneous")
+    # whether each surplus mode prices or ends a twin, at zero height or with a singular Hessian turns on the
+    # optimiser's path: under the coupled engine's width coordinate (recipe /7) seeds 12, 13, 16 and 20 of 11-20
+    # price every count, the rest do not (17 and 18, earlier choices, now give a twin or a singular Hessian)
+    base = t_pair(prep(true, 5, seed=12), true, ["fast:y#0", "fast:y#1"], true, ["b1", "b2"], kind="simultaneous")
     out = {}
     for name, settings in (("zero", ZERO), ("default", S)):
         snap = replace(base, settings=settings)
