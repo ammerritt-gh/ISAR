@@ -133,6 +133,8 @@ SETTING_TABLE = (
     ("close_call_nats", "hidden", 2.0), ("evidence_hysteresis_nats", "hidden", 0.1),
     ("stop_margin_nats", "hidden", 5.0), ("linewidth_ratio", "hidden", 2.0), ("full_search", "hidden", False),
     ("full_search_max_count", "hidden", 4),
+    ("width_tolerance_ln", "hidden", 0.7), ("intensity_tolerance_ln", "hidden", 1.0),
+    ("link_threshold", "hidden", 9.0), ("tie_margin", "hidden", 2.0),
 )
 
 
