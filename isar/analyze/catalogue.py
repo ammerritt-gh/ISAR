@@ -34,7 +34,7 @@ function-local import.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from typing import Callable
 
@@ -445,10 +445,10 @@ class ResolvedPrior:
     :meth:`isar.analyze.prior.SpectrumPrior.ln_qe_width` uses; ``mu`` and ``sigma`` are ``None``.
 
     ``kind == "softlog"`` is the recipe's softened log-uniform width density
-    ``1/(x + mu) / ln((hi + mu)/mu)`` with ``mu`` the knee (meV) and ``sigma`` ``None``. It is
-    normalised on ``[0, hi]`` like :meth:`isar.analyze.prior.SpectrumPrior.ln_width`, so the
-    campaign path and the fast pass share one width density (its mass on ``[lo, hi]`` is 1 less the
-    ~0.002-nat mass below the Γ floor, which is not renormalised).
+    ``1/(x + mu) / ln((hi + mu)/(lo + mu))`` with ``mu`` the knee (meV) and ``sigma`` ``None``. It is
+    normalised exactly on ``[lo, hi]`` like :func:`isar.analyze.prior.ln_width_given`, so the
+    campaign path and the fast pass share one width density. :meth:`logpdf_given` and
+    :meth:`ppf_given` cut ``hi`` at a mode's width ceiling (recipe /7: ``min(4, omega0)``).
     ``origin_detail`` carries the constraint-origin string when transport supplied it (what the
     STAT eligibility rules read)."""
 
@@ -483,7 +483,8 @@ class ResolvedPrior:
             span = self.hi - self.lo
             return -math.log(span) if span > 0 else 0.0
         if self.kind == "softlog":
-            return -math.log(v + self.mu) - math.log(math.log((self.hi + self.mu) / self.mu))
+            return (-math.log(v + self.mu)
+                    - math.log(math.log((self.hi + self.mu) / (self.lo + self.mu))))
         if self.kind == "energy_ramp":
             return self.energy.log_pdf(v)
         if self.kind == "qe_width":
@@ -494,15 +495,28 @@ class ResolvedPrior:
             return float("-inf")            # prior mass entirely outside the bounds
         return float(dist.logpdf(v)) - math.log(z)
 
+    def _under(self, ceiling: float) -> "ResolvedPrior":
+        """This width prior cut at ``ceiling`` (its mode's width ceiling): the same density renormalised
+        on ``[lo, min(hi, ceiling)]``."""
+        hi = min(self.hi, float(ceiling))
+        return self if hi >= self.hi else replace(self, hi=hi)
+
+    def logpdf_given(self, value: float, ceiling: float) -> float:
+        """:meth:`logpdf` of a width given its mode's ceiling: proper on ``[lo, min(hi, ceiling)]``."""
+        cut = self._under(ceiling)
+        return float("-inf") if not cut.lo < cut.hi else cut.logpdf(value)
+
+    def ppf_given(self, u: float, ceiling: float) -> float:
+        """:meth:`ppf` of a width given its mode's ceiling (the sampler of :meth:`logpdf_given`)."""
+        cut = self._under(ceiling)
+        return cut.lo if not cut.lo < cut.hi else cut.ppf(u)
+
     def ppf(self, u: float) -> float:
         """Inverse CDF of the truncated prior on [lo, hi] — the dynesty prior transform."""
         u = min(max(float(u), 0.0), 1.0)
         if self.kind == "flat":
             return self.lo + u * (self.hi - self.lo)
         if self.kind == "softlog":
-            # shortcut: this inverts the CDF truncated to [lo, hi], so the sampled density exceeds
-            # logpdf by -ln(1 - mass below lo), ~0.0016 nats per free width; upgrade if that
-            # offset ever matters between the Laplace and nested lanes.
             return (self.lo + self.mu) * ((self.hi + self.mu) / (self.lo + self.mu)) ** u - self.mu
         if self.kind == "energy_ramp":
             return float(self.energy.ppf(u))
@@ -534,8 +548,24 @@ class PriorBundle:
 
     params: tuple[ResolvedPrior, ...]
 
+    @cached_property
+    def _width_links(self) -> dict:
+        """``{Gamma index: omega0 index}`` for every width with a same-prefix energy in the bundle: that
+        width's prior is conditional on its mode's width ceiling ``min(p.hi, omega0)`` (recipe /7).
+        A width whose energy is not in the bundle (hard-fixed) stays unconditional on ``p.hi``."""
+        index = {p.name: i for i, p in enumerate(self.params)}
+        return {i: index[p.name[:-len("Gamma")] + "omega0"] for i, p in enumerate(self.params)
+                if p.name.endswith(".Gamma") and p.name[:-len("Gamma")] + "omega0" in index}
+
+    def _width_term(self, i: int, named_values: dict) -> float:
+        p = self.params[i]
+        j = self._width_links.get(i)
+        if j is None:
+            return p.logpdf(named_values[p.name])
+        return p.logpdf_given(named_values[p.name], float(named_values[self.params[j].name]))
+
     def logpdf(self, named_values: dict) -> float:
-        return float(sum(p.logpdf(named_values[p.name]) for p in self.params))
+        return float(sum(self._width_term(i, named_values) for i in range(len(self.params))))
 
     def by_name(self) -> dict:
         return {p.name: p for p in self.params}
@@ -602,7 +632,7 @@ class PriorBundle:
         Laplace lane of the ordered prior; :meth:`transform_ordered` is its sampler."""
         from isar.analyze.prior import ordered_energy_log_prior
 
-        total = float(sum(p.logpdf(named_values[p.name]) for p in self._ungrouped_priors))
+        total = float(sum(self._width_term(i, named_values) for i in self._ungrouped_positions))
         for g, density in zip(self._energy_group_indices, self._group_densities):
             total += ordered_energy_log_prior(
                 [named_values[self.params[i].name] for i in g], density)
@@ -618,10 +648,15 @@ class PriorBundle:
 
         u = np.asarray(u, dtype=float)
         out = np.empty(len(self.params), dtype=float)
+        links = self._width_links
         for i in self._ungrouped_positions:
-            out[i] = self.params[i].ppf(u[i])
+            if i not in links:
+                out[i] = self.params[i].ppf(u[i])
         for g, density in zip(self._energy_group_indices, self._group_densities):
             out[g] = ordered_energy_transform(u[g], density)
+        for i in self._ungrouped_positions:     # widths last: each is drawn given its mode's energy
+            if i in links:
+                out[i] = self.params[i].ppf_given(u[i], out[links[i]])
         return out
 
     @property
@@ -722,8 +757,6 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=(),
                 resolved.append(_validated(name, d.kind, mu, sigma, lo, hi, "identity"))
         elif suffix == "Gamma":
             if settings.width_kind == "flat" or settings.legacy_v4:
-                # shortcut: normalised over [lo, hi], SpectrumPrior over [0, cap]; the unrenormalised
-                # mass below the floor is lo/cap, ~5e-5 nats, like the softlog width's.
                 resolved.append(ResolvedPrior(name, "flat", None, None, lo, hi, "default_flat_width"))
             else:
                 resolved.append(ResolvedPrior(name, "softlog", settings.width_knee, None,

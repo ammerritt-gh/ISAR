@@ -295,7 +295,7 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
             "mode_energy_order": [[sampled[i] for i in g] for g in prior_bundle._energy_groups()],
             "omega_loglike_term": None,
         }
-        semantics_id = "isar.catalogue_prior_bundle_nested_prior/4"
+        semantics_id = "isar.catalogue_prior_bundle_nested_prior/5"
     else:
         prior_specification = {
             "prior_kind": "optimizer_bound_data_dependent",
@@ -316,8 +316,16 @@ def bayesian_posterior(hyp, ctx, fit_result, *, prior=None, prior_bundle=None,
         }
         semantics_id = "isar.optimizer_bound_nested_prior/1"
 
+        zmap = prob.zmap
+
         def ptform(u):
-            return lows + np.asarray(u) * spans
+            out = lows + np.asarray(u) * spans
+            if zmap is not None:     # recipe /7: each width is uniform on [g_lo, its mode's ceiling]
+                for k, (_a, g, g_lo, _lf) in enumerate(zmap.pairs):
+                    out[g] = g_lo + float(u[g]) * (zmap.ceiling(out, k) - g_lo)
+            return out
+        if zmap is not None:
+            prior_specification["width_ceiling"] = "each width uniform on [g_lo, min(4 meV, omega0)]"
 
     try:
         prior_fingerprint = semantics_fingerprint(semantics_id, prior_specification)

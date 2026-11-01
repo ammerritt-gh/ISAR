@@ -70,13 +70,13 @@ def _check_parity(ctx, ps, width_flat):
             peaks.append((full[pre + ".omega0"], values.get(pre + ".Gamma"), full[pre + ".h"]))
         want = sp.ln_prior(peaks, full.get("elastic.h"), full.get("bg.BG"))
         got = bundle.logpdf_ordered(values)
-        # a flat width is normalised on [lo, cap] by the bundle and [0, cap] by SpectrumPrior: the
-        # same unrenormalised mass below the floor as the softlog width's, ln(cap / (cap - lo)) each
-        extra = sum(math.log(sp.bounds("Gamma")[1] / (p.hi - p.lo)) for p in bundle.params
-                    if p.origin == "default_flat_width")
-        assert got - want == pytest.approx(extra, abs=1e-9), e.label
-        assert extra < 1e-3
-        assert (extra > 0) == (width_flat and any(p.name.endswith(".Gamma") for p in bundle.params))
+        # recipe /7: one width measure, a proper density on [g_lo, min(4, omega0)] in the bundle and in
+        # SpectrumPrior alike (the /6 mass below the floor, ln(cap / (cap - lo)) per flat width, is gone)
+        assert got - want == pytest.approx(0.0, abs=1e-9), e.label
+        for p in bundle.params:
+            if p.name.endswith(".Gamma"):
+                assert (p.lo, p.hi) == pytest.approx((sp.g_lo, sp.bounds("Gamma")[1])), (e.label, p.name)
+                assert p.origin == ("default_flat_width" if width_flat else "default_softlog")
         n_checked += 1
     assert n_checked >= 4        # bg, elastic+bg, stokes+bg, elastic+stokes+bg (delta twins add more)
 

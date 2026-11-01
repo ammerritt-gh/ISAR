@@ -104,10 +104,17 @@ def test_cached_prior_groups_preserve_hard_fixed_ordered_problem(monkeypatch, de
         first = bundle.params[group[0]]
         assert first.kind == "energy_ramp"
         expected[group] = prior.ordered_energy_transform(u[group], first.energy)
+        # recipe /7: a width is drawn (and priced) given its own mode's energy, whose ceiling is min(hi, omega0)
+        omega_of = {i: names.index(p.name[:-len("Gamma")] + "omega0") for i, p in enumerate(bundle.params)
+                    if p.name.endswith(".Gamma") and p.name[:-len("Gamma")] + "omega0" in names}
+        for i, j in omega_of.items():
+            expected[i] = bundle.params[i].ppf_given(u[i], expected[j])
         actual = transform(u)
         np.testing.assert_array_equal(actual, expected)
         values = dict(zip(names, actual))
-        reference = sum(p.logpdf(values[p.name]) for i, p in enumerate(bundle.params) if i not in group)
+        reference = sum((p.logpdf_given(values[p.name], values[names[omega_of[i]]]) if i in omega_of
+                         else p.logpdf(values[p.name]))
+                        for i, p in enumerate(bundle.params) if i not in group)
         reference += prior.ordered_energy_log_prior(actual[group], first.energy)
         assert bundle.logpdf_ordered(values) == reference
         assert math.isfinite(loglike(actual))
