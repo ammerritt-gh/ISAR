@@ -13,7 +13,7 @@ import pytest
 from isar.analyze.coupled import linking as lk
 from isar.analyze.coupled.settings import InterSettings
 from isar.session import writer
-from isar.session.inter_spectra import records
+from isar.session.inter_spectra import linking, records
 
 UNIT, OTHER = "exp1:12:a03", "exp1:13:a03"
 
@@ -92,3 +92,14 @@ def test_an_empty_scope_is_refused_and_nothing_is_written(tmp_path):
     with pytest.raises(writer.PayloadError):
         writer.save_links(tmp_path, _result(), scope=[], batch=None, stage=None)
     assert records.read_links(tmp_path) == ()
+
+
+def test_previous_for_continues_the_newest_record_covering_every_scan(tmp_path):
+    # A series link must continue the series record, not a newer one-scan link that drops other temperatures' branches.
+    series, one = _named(1, 4), replace(_named(1, 4), stamps={UNIT: "s2"})
+    writer.save_links(tmp_path, series, scope=["exp1:12", "exp1:13"], batch=None, stage=None)
+    writer.save_links(tmp_path, one, scope=["exp1:12"], batch=None, stage=None)
+    assert linking.previous_for(tmp_path, ["exp1:12", "exp1:13"]) == (series, 4)
+    assert linking.previous_for(tmp_path, ["exp1:12"]) == (one, 4)
+    assert linking.previous_for(tmp_path, ["exp1:12", "exp1:14"]) == (one, 4)
+    assert linking.previous_for(tmp_path, ["exp1:14"]) == (None, 4)

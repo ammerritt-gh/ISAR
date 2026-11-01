@@ -253,11 +253,13 @@ def inputs_for(root, units: Sequence[str], *, held: Mapping[str, Held] | None = 
 
 
 def previous_for(root, scans: Collection[str]) -> tuple[core.LinkResult | None, int]:
-    """The newest saved link result covering one of ``scans``, and the next branch-name number: one past every
-    stored record's (``B1`` when nothing is stored)."""
+    """The saved link result to continue from, and the next branch-name number: one past every stored record's
+    (``B1`` when nothing is stored). Prefers the newest record whose scope covers every scan, so a series link keeps
+    branches seen only at other temperatures; else the newest record overlapping any of them."""
     lines = inter_records.read_links(root)
     nxt = max((line.next_name for line in lines), default=1)
-    mine = [line for line in lines if set(line.scope) & set(scans)]
+    want = set(scans)
+    mine = [line for line in lines if want <= set(line.scope)] or [line for line in lines if set(line.scope) & want]
     return (inter_records.read_link_payload(root, mine[-1]) if mine else None), nxt
 
 
