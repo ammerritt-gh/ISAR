@@ -145,6 +145,7 @@ def test_with_no_matched_slot_the_screens_act_as_in_the_fast_pass(start):
     snap = hidden_snapshot(3.0)
     spec, _, plain = _engines(snap)
     base = fast_pass._Engine(spec.ctx, spec.fs, structures=STRUCT)
+    base.width_ceiling_active = False      # S1U1 transitional: S1U2 removes this line with the flag
     b0, _ = base.fit(base.variant(2, True, True), start, "x")
     b1, _ = plain.fit(plain.variant(2, True, True), start, "x")
     assert (b1.status, b1.limit, b1.reason) == (b0.status, b0.limit, b0.reason)
@@ -310,10 +311,10 @@ def test_the_ledger_tells_solutions_apart_by_every_other_coordinate():
 
 # ---- D6 the constructed seed --------------------------------------------------------------------------------
 def test_the_seed_splits_the_pair_when_the_low_fit_crosses_its_labels():
-    """A third start off its branch (2 meV): the low fit's labels cross, so its last mode is not the merged one.
+    """A third start off its branch (16 meV): the low fit's labels cross, so its last mode is not the merged one.
     Every seed must still carry the pair at 8 meV and the third mode at its branch, 20 meV."""
     spec, eng, _ = _engines(_three_mode_snapshot(), ("b1", "b2", None))
-    start = [(8.0, 0.4, 40.0, False), (8.0, 0.4, 3.0, False), (2.0, 0.4, 25.0, False)]
+    start = [(8.0, 0.4, 40.0, False), (8.0, 0.4, 3.0, False), (16.0, 0.4, 25.0, False)]
     eng.seed_hidden(3, [("neighbour", start)])
     seeds = [b for b in eng.basins() if b.family == "hidden"]
     assert seeds

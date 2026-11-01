@@ -228,7 +228,7 @@ def test_a_constrained_mode_leaves_the_ordered_energy_group():
     assert [len(g) for g in model.groups] == [1, 1]
     flat = sp.ln_energies([4.0]) + sp.ln_energies([9.0])
     assert flat == pytest.approx(sp.ln_energies([4.0, 9.0]) - math.log(2))
-    rest = (sp.ln_width(0.3) + sp.ln_height(50.0) + sp.ln_height(40.0) + sp.ln_height(100.0)
+    rest = (sp.ln_width_at(0.3, 4.0) + sp.ln_height(50.0) + sp.ln_height(40.0) + sp.ln_height(100.0)
             + sp.ln_background(4.0) + model.soft_priors[0][1].logpdf(0.6))
     assert eng.ln_prior(model, theta) == pytest.approx(flat + rest, abs=1e-9)
     twin = plain.model(plain.variant(2, True, True), (0,))
@@ -399,18 +399,19 @@ def test_posterior_curvature_in_a_narrow_width_does_not_depend_on_the_step(gamma
     eng = _engine(_one_peak(gamma=0.2), 1)
     model = eng.model(eng.variant(1, True, True), ())
     theta = np.array([6.0, gamma, 120.0, 200.0, 5.0])
-    f, lo, hi = eng.objective(model, theta)
-    span = hi[1] - lo[1]
+    f, lo, hi = eng.objective(model, theta)        # recipe /7: f lives in z, the width as t in [0, 1]
+    z0 = eng.zmap(model).to_z(theta)
+    t0, floor = z0[1], eng.zmap(model).step_floor(theta)[1]      # the engine's own Laplace step floor
 
-    def along(g):
-        z = theta.copy()
-        z[1] = g
+    def along(t):
+        z = z0.copy()
+        z[1] = t
         return f(z)
 
     curv = []
     for rel in (1e-4, 3e-4):                 # Laplace's own step rule, at its two rel_steps
-        step = rel * max(gamma, 1e-2 * span)
-        curv.append(prior.hessian_fd(lambda v: along(v[0]), np.array([gamma]), [step])[0, 0])
+        step = rel * max(t0, floor)
+        curv.append(prior.hessian_fd(lambda v: along(v[0]), np.array([t0]), [step])[0, 0])
     # A branch switch or a blend inside the stencil moves the curvature by O(1). The narrow-pole
     # rendering's round-off (~1e-8 in f, measured) alone moves it ~2% at the 2e-5 meV step.
     assert curv[1] == pytest.approx(curv[0], rel=0.03)

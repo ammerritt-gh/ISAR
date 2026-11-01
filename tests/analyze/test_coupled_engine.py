@@ -102,7 +102,9 @@ def test_zero_price_entries_reproduce_the_solo_evidence(k):
     ctx = _spectrum(modes)
     s = fast_pass.FastPassSettings(mode_ceiling=k)
     start = [(e + 0.3, g, h, False) for e, g, h in modes]
-    base = _priced(fast_pass._Engine(ctx, s), k, start)
+    solo = fast_pass._Engine(ctx, s)
+    solo.width_ceiling_active = False      # S1U1 transitional: S1U2 removes this line with the flag
+    base = _priced(solo, k, start)
     assert base.status in ("ok", "ok_boundary")
 
     def coupled(**kw):

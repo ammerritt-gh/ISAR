@@ -840,6 +840,7 @@ def test_the_coupled_refit_carries_the_central_qe_as_a_nuisance():
     ctx = replace(ctx0, counts=np.random.default_rng(3).poisson(mean).astype(float))
     fs = FastPassSettings(mode_ceiling=1)
     base = fast_pass._Engine(ctx, fs)
+    base.width_ceiling_active = False      # S1U1 transitional: S1U2 removes this line with the flag
     slot = cc.MatchedDensity(base.sp.energy, "u", [], {})
     eng = R._Labelled(ctx, fs, [slot])
     v = next(v for v in eng.variants[1] if v.qe and v.elastic and v.background)

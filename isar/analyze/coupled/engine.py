@@ -335,6 +335,8 @@ class CoupledEngine(fast_pass._Engine):
     engine's finite-difference calls exactly.
     """
 
+    width_ceiling_active = False           # S1U1 transitional: the coupled engine still fits widths in meV (S1U2 removes)
+
     def __init__(self, ctx, settings, slots, *, n_exchangeable=(), continuous=False, screen=False, gradients=True,
                  **kw):
         super().__init__(ctx, settings, **kw)

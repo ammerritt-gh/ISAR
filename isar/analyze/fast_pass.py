@@ -55,8 +55,9 @@ HINT_EXCLUDE_FWHM = 0.5       # a card peak hint this close (x FWHM) to a seed p
 HINT_GAMMA_FWHM = 0.3         # a hint's starting width (x FWHM)
 RESTART_SPREAD = (0.3, 0.7, 0.3)   # restart jitter: omega0 sd (x FWHM), ln Gamma sd, h +- fraction
 BROAD_STEP_MEV = 3.0
-BROAD_WIDTHS_MEV = (1.5, 4.0, 10.0)
-BROAD_HEIGHT_FRAC = 0.04      # a broad addition's height (x height ceiling)
+BROAD_WIDTHS_MEV = (1.5, 4.0)  # the lone width cap is 4 meV: a wider start would only be clipped to it
+WIDTH_STEP_FLOOR_MEV = 0.2    # Laplace's step floor for a width (meV): the 1e-2 x 20 meV it had before recipe /7
+BROAD_HEIGHT_FRAC = 0.04     # a broad addition's height (x height ceiling)
 MOVE_FWHM = 0.5
 WIDTH_FACTORS = (1 / 3, 3)
 SHOULDER_FWHM = 1.5
@@ -133,6 +134,8 @@ class PeakResult:
     confident: bool
     deletion_impact: float           # visibility-grade units (design 2.6), others held fixed
     manual_fit: bool                 # near elastic or overdamped -> flagged for manual fitting
+    at_width_cap: bool = False       # (recipe /7) Gamma sits at its mode's ceiling: the mode "wants to be
+                                     #   broader than a lone spectrum may claim"; absent in older records
 
 @dataclass(frozen=True)
 class ModelResult:
@@ -299,6 +302,7 @@ class _Model:
     bg: int | None
     omit: frozenset                   # positions with no recipe factor: pinned or soft-constrained
     soft_priors: list                 # (position, ResolvedPrior) truncated Gaussian of each soft coordinate
+    zmap: "_ZMap | None" = None       # the optimiser coordinate of the widths (built by _Engine.zmap)
     groups: list = field(default_factory=list)   # energy positions of each group of exchangeable modes
     basins: list = field(default_factory=list)
     qe_h: int | None = None           # position of qe.h (None: no central QE)
@@ -689,9 +693,87 @@ def _refuse_changed_search(old: dict, new: dict) -> None:
                              f"{', '.join(RECLASSIFIABLE)} can be reclassified (rerun the fast pass)")
 
 
+class _ZMap:
+    """The optimiser coordinate of one model's widths (recipe /7). Each mapped mode's Gamma is fitted as
+    ``t`` in [0, 1] on ``[g_lo, ceiling(omega0)]``; ``theta`` stays in meV everywhere else. The z-space
+    log density is ``ln_prior(theta) + ln_jac(theta)``, so the objective is ``F_theta - ln_jac``.
+    Mapped: every free, non-delta Gamma (default-prior and soft-constrained alike). ``active`` False:
+    the identity (legacy_v4, or ``engine.width_ceiling_active`` False). Kink at omega0 = 4: right
+    derivative."""
+
+    def __init__(self, engine, model):
+        self.free = model.free
+        self.active = bool(engine.width_ceiling_active and not engine.prior_s.legacy_v4)
+        self.lo, self.hi = model.lo[self.free].astype(float), model.hi[self.free].astype(float)
+        free_set = {int(i): n for n, i in enumerate(self.free)}
+        self.mapped = []            # (mode m, pos_a, pos_g, lifted, g_lo)
+        if self.active:
+            for m, (a, g, _c) in enumerate(model.modes):
+                if g in free_set and m not in model.delta:
+                    self.mapped.append((m, a, g, bool(engine.lifted_of(model, m)), float(model.lo[g])))
+                    self.lo[free_set[g]], self.hi[free_set[g]] = 0.0, 1.0
+        self._k = {m: k for k, (m, *_rest) in enumerate(self.mapped)}
+        self.gmap = prior.GammaMap([(a, g, lo, lf) for _m, a, g, lf, lo in self.mapped], engine.prior_s)
+
+    def mapped_mode(self, m: int) -> bool:
+        return m in self._k
+
+    def ceiling(self, theta, m) -> float:
+        return self.gmap.ceiling(theta, self._k[m])
+
+    def clip(self, theta) -> np.ndarray:
+        """``theta`` with each mapped Gamma pulled under its mode's ceiling (a start never outside it)."""
+        for k, (_m, _a, g, _lf, _lo) in enumerate(self.mapped):
+            if np.isfinite(theta[g]):
+                theta[g] = min(theta[g], self.gmap.ceiling(theta, k))
+        return theta
+
+    def to_z(self, theta) -> np.ndarray:
+        return self.gmap.to_z(theta)[self.free] if self.mapped else np.asarray(theta, float)[self.free]
+
+    def to_theta(self, z, template) -> np.ndarray:
+        t = np.array(template, dtype=float)
+        t[self.free] = z
+        return self.gmap.to_theta(t) if self.mapped else t
+
+    def ln_jac(self, theta) -> float:
+        return self.gmap.ln_jac(theta) if self.mapped else 0.0
+
+    def grad_to_z(self, theta, dF_dtheta) -> np.ndarray:
+        """Gradient over z (free order) of ``F_z = F_theta - ln_jac`` from ``dF_dtheta`` (full vector)."""
+        dF = np.asarray(dF_dtheta, dtype=float)
+        if not self.mapped:
+            return dF[self.free].copy()
+        return (self.gmap.jac(theta).T @ dF - self.gmap.d_ln_jac(theta))[self.free]
+
+    def cov_to_theta(self, theta, cov_z) -> np.ndarray:
+        if not self.mapped:
+            return np.asarray(cov_z, dtype=float)
+        J = self.gmap.jac(theta)[np.ix_(self.free, self.free)]
+        return J @ np.asarray(cov_z, dtype=float) @ J.T
+
+    def step_floor(self, theta) -> np.ndarray:
+        """Laplace's absolute step floor per free coordinate (NaN: its default). A mapped width's is the
+        meV scale it had before the coordinate changed, ``WIDTH_STEP_FLOOR_MEV``, in ``t`` units."""
+        out = np.full(self.free.size, np.nan)
+        where = {int(i): n for n, i in enumerate(self.free)}
+        for k, (_m, _a, g, _lf, g_lo) in enumerate(self.mapped):
+            out[where[g]] = WIDTH_STEP_FLOOR_MEV / (self.gmap.ceiling(theta, k) - g_lo)
+        return out
+
+    def at_cap(self, theta, m) -> bool:
+        """The mode's Gamma sits at its ceiling (t >= 1 - 1e-6, the pin tolerance)."""
+        if m not in self._k:
+            return False
+        _m, _a, g, _lf, g_lo = self.mapped[self._k[m]]
+        return prior.t_from_gamma(float(theta[g]), g_lo, self.ceiling(theta, m)) >= 1.0 - 1e-6
+
+
 class _Engine:
     """One spectrum's fast pass. ``run`` searches; ``conclude`` tallies and reports, from any state
     (so a stopped search still reports what it priced)."""
+
+    width_ceiling_active = True      # False: the widths are fitted in meV on the static box (identity z-map)
 
     def __init__(self, ctx, settings: FastPassSettings, peaks=(), structures=None,
                  progress: ProgressFn | None = None):
@@ -799,6 +881,39 @@ class _Engine:
     def basins(self):
         return [b for m in list(self.models.values()) if m is not None for b in m.basins]
 
+    # ---- the width ceiling (recipe /7) -------------------------------------------------------------
+    def lifted_of(self, model, m: int) -> bool:
+        """Whether mode ``m`` of ``model`` has the lifted width ceiling (a coupled engine's hook)."""
+        return False
+
+    def zmap(self, model) -> _ZMap:
+        if model.zmap is None:
+            model.zmap = _ZMap(self, model)
+        return model.zmap
+
+    def _conditional_widths(self) -> bool:
+        return self.width_ceiling_active and not self.prior_s.legacy_v4
+
+    def _ln_width(self, model, theta, m: int) -> float:
+        """The width factor of mode ``m``: conditional on its energy's ceiling (recipe /7)."""
+        a, g, _c = model.modes[m]
+        if not self._conditional_widths():
+            return self.sp.ln_width(theta[g])
+        return self.sp.ln_width_at(theta[g], theta[a], lifted=self.lifted_of(model, m))
+
+    def _ln_soft(self, model, theta) -> float:
+        """The soft-constrained coordinates' truncated Gaussians; a soft width is cut at its mode's ceiling
+        (the same measure as the default width prior)."""
+        gamma_of = {g: m for m, (_a, g, _c) in enumerate(model.modes)}
+        lp = 0.0
+        for i, p in model.soft_priors:
+            m = gamma_of.get(i)
+            if m is not None and self._conditional_widths() and m not in model.delta:
+                lp += p.logpdf_given(float(theta[i]), self.zmap(model).ceiling(theta, m))
+            else:
+                lp += p.logpdf(float(theta[i]))
+        return lp
+
     # ---- the model mean --------------------------------------------------------------------------
     def units(self, modes, peaks):
         """(unit column, UnitPeak) per (omega0, Gamma) mode; the uncached ones from ONE batched
@@ -869,6 +984,10 @@ class _Engine:
         composite = hyp.build()
         names = composite.param_names()
         bounds = prior.mode_bounds(names, cctx, self.prior_s)
+        if not self._conditional_widths() and not self.prior_s.legacy_v4:
+            # no width ceiling (the coupled engine until S1U2): the widths keep the lifted box
+            bounds = [(lo_, self.prior_s.width_cap) if n.endswith(".Gamma") else (lo_, hi_)
+                      for n, (lo_, hi_) in zip(names, bounds)]
         lo, hi = np.array(bounds, dtype=float).T
         constraints = getattr(cctx, "constraints", None)
         fixed_pos, fixed_vals = loop._hard_fixed(constraints, names)
@@ -935,6 +1054,7 @@ class _Engine:
         ok = np.isfinite(theta)
         theta[ok] = np.clip(theta[ok], model.lo[ok], model.hi[ok])
         theta[model.fixed_pos] = model.fixed_vals
+        self.zmap(model).clip(theta)        # a width starts under its mode's ceiling
         missing = [int(i) for i in model.free if not np.isfinite(theta[i])]
         if missing:
             theta[missing] = 0.0
@@ -976,18 +1096,19 @@ class _Engine:
         return res
 
     def _trf(self, model, theta0, family):
-        free = model.free
-        lo, hi = model.lo[free], model.hi[free]
+        """TRF in the z coordinate (widths as ``t`` in [0, 1]); ``res.x`` is z, ``zmap(model).to_theta``
+        maps it back."""
+        zm = self.zmap(model)
+        lo, hi = zm.lo, zm.hi
 
         def residual(z):
-            t = theta0.copy()
-            t[free] = z
+            t = zm.to_theta(z, theta0)
             r = poisson_residuals(self.y, self.mean(model, t))
             if model.soft:
                 r = np.concatenate([r, [(t[i] - mu) / sd for i, mu, sd in model.soft]])
             return np.nan_to_num(r, nan=1e100, posinf=1e100, neginf=-1e100)
 
-        return self._least_squares(residual, np.clip(theta0[free], lo, hi), lo, hi, family)
+        return self._least_squares(residual, np.clip(zm.to_z(theta0), lo, hi), lo, hi, family)
 
     def fit(self, variant, modes, family, linear=None):
         """Fit ``modes`` ([(omega0, Gamma, h | None, delta)]) in ``variant`` by TRF, canonicalise,
@@ -1004,8 +1125,7 @@ class _Engine:
         res = self._trf(model, theta0, family)
         if res is None:
             return None
-        theta = theta0.copy()
-        theta[model.free] = res.x
+        theta = self.zmap(model).to_theta(res.x, theta0)
         model, theta = self._canonical(model, theta)
         if model is None:
             return None
@@ -1360,9 +1480,9 @@ class _Engine:
         (``model.groups``; a group of one is the single penalised energy factor g(E))."""
         sp, omit = self.sp, model.omit
         lp = sum(sp.ln_energies([theta[a] for a in grp]) for grp in model.groups)
-        for a, g, c in model.modes:
+        for m, (a, g, c) in enumerate(model.modes):
             if g not in omit:
-                lp += sp.ln_width(theta[g])
+                lp += self._ln_width(model, theta, m)
             if c not in omit:
                 lp += sp.ln_height(theta[c])
         if model.el is not None and model.el not in omit:
@@ -1373,13 +1493,14 @@ class _Engine:
             lp += sp.ln_height(theta[model.qe_h])
         if model.qe_w is not None and model.qe_w not in omit:
             lp += sp.ln_qe_width(theta[model.qe_w])
-        return lp + sum(p.logpdf(float(theta[i])) for i, p in model.soft_priors)
+        return lp + self._ln_soft(model, theta)
 
     def objective(self, model, theta):
-        """f(z) = cost/2 - sat - ln prior on the free coordinates, +inf outside the box; with
-        ``theta`` supplying the fixed coordinates. Returns (f, lo, hi)."""
-        free = model.free
-        lo, hi = model.lo[free], model.hi[free]
+        """f(z) = cost/2 - sat - ln prior - ln_jac on the free coordinates in the z coordinate (the
+        widths as ``t`` in [0, 1]), +inf outside the box; with ``theta`` supplying the fixed
+        coordinates. Returns (f, lo, hi), the box in z."""
+        zm = self.zmap(model)
+        lo, hi = zm.lo, zm.hi
         tol = 1e-10 * np.maximum(np.abs(lo) + np.abs(hi), 1.0)
         template = np.array(theta, dtype=float)
 
@@ -1387,12 +1508,11 @@ class _Engine:
             z = np.asarray(z, dtype=float)
             if np.any(z < lo - tol) or np.any(z > hi + tol):
                 return math.inf
-            t = template.copy()
-            t[free] = np.clip(z, lo, hi)     # a bound transform can round a few ulps outside
+            t = zm.to_theta(np.clip(z, lo, hi), template)   # a bound transform can round a few ulps outside
             lp = self.ln_prior(model, t)
             if not math.isfinite(lp):
                 return math.inf
-            return 0.5 * self.cost(model, t) - self.sat - lp
+            return 0.5 * self.cost(model, t) - self.sat - lp - zm.ln_jac(t)
 
         return f, lo, hi
 
@@ -1404,9 +1524,12 @@ class _Engine:
 
     def laplace(self, b, f, z, lo, hi, rel_step=1e-4):
         fg = self.objective_and_gradient(b.model, b.theta)
+        zm = self.zmap(b.model)
+        floor = zm.step_floor(zm.to_theta(z, b.theta)) if zm.mapped else None
         if fg is None:
-            return prior.laplace_log_evidence(f, z, lo, hi, rel_step=rel_step)
-        return prior.laplace_log_evidence(f, z, lo, hi, rel_step=rel_step, grad=_gradient_of(fg[0]))
+            return prior.laplace_log_evidence(f, z, lo, hi, rel_step=rel_step, step_floor=floor)
+        return prior.laplace_log_evidence(f, z, lo, hi, rel_step=rel_step, grad=_gradient_of(fg[0]),
+                                          step_floor=floor)
 
     def price_all(self):
         """Step 6 for every pending basin, until none is left (pricing can add basins)."""
@@ -1424,7 +1547,7 @@ class _Engine:
         """The posterior optimiser (L-BFGS-B on the free coordinates scaled to order one) from ``theta``."""
         f, lo, hi = self.objective(model, theta)
         fg = self.objective_and_gradient(model, theta)
-        z0 = theta[model.free]
+        z0 = self.zmap(model).to_z(theta)
         scale = np.maximum(np.abs(z0), 1.0)
         options = {"maxiter": self.s.posterior_maxiter, "ftol": 1e-11, "gtol": 1e-5,
                    "maxfun": 20 * (z0.size + 1) * self.s.posterior_maxiter}
@@ -1446,9 +1569,9 @@ class _Engine:
         f, lo, hi = self.objective(model, b.theta)
         res = self._posterior(model, b.theta)
         b.posterior_iterations = res.nit
+        zm = self.zmap(model)
         z = np.clip(res.x, lo, hi)
-        point = b.theta.copy()
-        point[model.free] = z
+        point = zm.to_theta(z, b.theta)
         if res.status == 1:
             b.status = "no_evidence"
             b.reason = f"posterior optimiser iteration limit ({s.posterior_maxiter})"
@@ -1467,7 +1590,9 @@ class _Engine:
             return
         b.status, b.ln_z, b.theta_map = lap.status, float(lap.ln_z), point
         b.ln_prior = float(self.ln_prior(model, point))
-        b.cov_free, b.boundary_method, b.objective = lap.cov, lap.boundary_method, f
+        # the Laplace covariance is in z; the stored one is in meV (delta method at the mode)
+        b.cov_free = None if lap.cov is None else zm.cov_to_theta(point, lap.cov)
+        b.boundary_method, b.objective = lap.boundary_method, f
         span = hi - lo
         b.pinned = tuple(model.names[i] for i, zi, l, h, w in zip(model.free, z, lo, hi, span)
                          if zi - l <= 1e-6 * w or h - zi <= 1e-6 * w)
@@ -1600,7 +1725,13 @@ class _Engine:
         model, ctx = b.model, self.ctx
         names = model.names
         prob = loop.build_problem(model.hyp, model.cctx, x0=dict(zip(names, point)))
-        prob.bounds = [(float(l), float(h)) for l, h in zip(model.lo, model.hi)]
+        prob.zmap = None            # this Problem only maps the at-limit flags; the engine fitted in its own z
+        zm = self.zmap(model)
+        hi = np.array(model.hi, dtype=float)
+        for m, (_a, g, _c) in enumerate(model.modes):          # a width's upper edge is its mode's ceiling
+            if zm.mapped_mode(m):
+                hi[g] = zm.ceiling(point, m)
+        prob.bounds = [(float(l), float(h)) for l, h in zip(model.lo, hi)]
         free = model.free
         br = backends.BackendResult(
             x=np.asarray(point, dtype=float), success=True, message=b.message, n_eval=b.nfev,
@@ -1702,7 +1833,12 @@ class _Engine:
         mean = self.mean(model, t)
         sd = None if cov is None else np.sqrt(np.clip(np.diag(cov), 0.0, None))
         free = model.free.tolist()
+        zm = self.zmap(model)
         out, grads = [], []
+
+        def upper(i, j):     # the mode's own upper edge of coordinate j (a width's is its ceiling)
+            return zm.ceiling(t, i) if j == model.modes[i][1] and zm.mapped_mode(i) else model.hi[j]
+
         for i, (a, g, c) in enumerate(model.modes):
             delta = i in model.delta
             e, gam, h = float(t[a]), float(t[g]), float(t[c])
@@ -1724,7 +1860,7 @@ class _Engine:
                     if j not in free:
                         continue
                     step = 1e-4 * max(1.0, abs(val))
-                    step = -step if val + step > model.hi[j] else step   # inward at the bound
+                    step = -step if val + step > upper(i, j) else step   # inward at the bound
                     moved = (e + step, gam) if j == a else (e, gam + step)
                     ds, db = self._area_per_h(peak, *moved)
                     grad_s[j], grad_b[j] = h * (ds - per_s) / step, h * (db - per_b) / step
@@ -1746,7 +1882,7 @@ class _Engine:
                     return "boundary_limited"
                 if model.names[j] in b.pinned:
                     return "boundary_limited"
-                if sd[j] >= (model.hi[j] - model.lo[j]) / math.sqrt(12.0):
+                if sd[j] >= (upper(i, j) - model.lo[j]) / math.sqrt(12.0):
                     return "undetermined"
                 return "constrained"
 
@@ -1759,7 +1895,8 @@ class _Engine:
                 corr_omega0_Gamma=corr, regime="underdamped",
                 status={"omega0": status(a, "omega0"), "Gamma": status(g, "Gamma"),
                         "height": status(c, "height"), "area": status(c, "area")},
-                confident=False, deletion_impact=impact, manual_fit=False))
+                confident=False, deletion_impact=impact, manual_fit=False,
+                at_width_cap=zm.at_cap(t, i)))
             extras["peaks"].append({"omega0": e, "Gamma": gam, "deletion_impact": impact,
                                     "corr_omega0_gamma": corr})
         if cov is not None and grads:                  # count 0 has no peak to correlate
@@ -1830,9 +1967,9 @@ class _Engine:
             spreads = []
             for b in basins:
                 if prob[id(b)] >= s.material_p and b.objective is not None:
-                    z = b.theta_map[b.model.free]
-                    lap = self.laplace(b, b.objective, z, b.model.lo[b.model.free],
-                                       b.model.hi[b.model.free], rel_step=3e-4)
+                    zm = self.zmap(b.model)
+                    lap = self.laplace(b, b.objective, zm.to_z(b.theta_map), zm.lo, zm.hi,
+                                       rel_step=3e-4)
                     if lap.status == "no_evidence":
                         log.info("fast pass: %s has no evidence at the wider step (%s)",
                                  b.model_id, lap.reason)

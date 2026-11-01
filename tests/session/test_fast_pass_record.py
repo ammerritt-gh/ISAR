@@ -38,7 +38,7 @@ MODEL_KEYS = {
 PEAK_KEYS = {
     "index", "omega0", "Gamma", "delta", "height", "area_stokes", "area_both", "sigma_omega0",
     "sigma_Gamma", "sigma_height", "sigma_area", "area_status", "corr_omega0_Gamma", "regime",
-    "status", "confident", "deletion_impact", "manual_fit"}
+    "status", "confident", "deletion_impact", "manual_fit", "at_width_cap"}
 
 
 def _prior(n, variants=4):
