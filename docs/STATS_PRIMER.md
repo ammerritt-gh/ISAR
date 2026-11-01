@@ -221,7 +221,10 @@ The **fast pass** (§2.2) prices every model one way **[Partial]**: a Laplace ap
 
 - **Coordinates.** A peak's amplitude coordinate is its convolved height h (§8), the maximum of its
   continuous convolved Stokes-side profile, so the flat height prior (§2.1) is a genuine prior on h.
-  ω₀ and Γ run over 0 to 20 meV (ω₀ from 1e-3 meV). The area is derived from h, ω₀ and Γ.
+  ω₀ runs over 0 to 20 meV (from 2e-3 meV) and a mode's Γ over 0 to min(4 meV, ω₀) (§2.1, recipe /7),
+  fitted as the coordinate t = (Γ − Γ_lo)/(c − Γ_lo) in [0, 1], c = min(4, ω₀), so the box is the
+  prior's own support; the Laplace curvature is taken in that coordinate (Jacobian included) and
+  reported in meV by the delta method. The area is derived from h, ω₀ and Γ.
 - **Curvature.** The optimiser (bounded trust-region least squares on the signed Poisson-deviance
   residuals) finds the fit; the evidence is then taken at the posterior mode, likelihood times prior,
   with the finite-difference Hessian of minus (log-likelihood + log-prior) in the same coordinates:
@@ -374,7 +377,7 @@ python docs/stats/make_figures.py --only akaike --workspace <path-to-mvp_zone_te
 How many peaks a spectrum holds is a model-selection question, so it is decided the way §2 decides
 everything: by evidence, with the Occam penalty paid out of the priors. That penalty is only as
 honest as the priors. The **mode prior recipe** (`isar/analyze/prior.py`, version
-`isar.mode-prior-recipe/6`) is one rule, set before fitting and identical for every spectrum.
+`isar.mode-prior-recipe/7`) is one rule, set before fitting and identical for every spectrum.
 Starting values may come from the data (a seed is not a prior).
 
 **Empirical Bayes, for amplitudes only.** Recipe /4 built every bound from declared quantities and
@@ -389,8 +392,8 @@ Widths and energies stay declared.
 
 | Parameter | Prior | Built from |
 |---|---|---|
-| mode energy E0 (`omega0`) | flat times the near-zero penalty, renormalised, and ordered on `(1e-3, min(20, highest fitted energy))` meV: no penalty at and above one resolution FWHM w, rising 10 nats per w to a 7.5-nat ceiling at w/4 and below | the fit window; the resolution FWHM |
-| mode width Γ | `1/(Γ + 0.12 meV)` on `(0, 20)` meV, normalised on `[0, 20]` (a softened log-uniform: equal weight per factor of ten, finite at zero, overdamped widths allowed); a delta mode has no width factor | a tenth of the resolution FWHM as the knee; the 20 meV cap |
+| mode energy E0 (`omega0`) | flat times the near-zero penalty, renormalised, and ordered on `(max(1e-3, 2 Γ_lo), min(20, highest fitted energy))` meV (Γ_lo = min(1e-3 meV, w/100), so every width range is non-empty): no penalty at and above one resolution FWHM w, rising 10 nats per w to a 7.5-nat ceiling at w/4 and below | the fit window; the resolution FWHM |
+| mode width Γ | `1/(Γ + 0.12 meV)` on `[Γ_lo, c(E0)]`, `c = min(4 meV, E0)`, normalised on its own range (a softened log-uniform: equal weight per factor of ten, finite at zero; no mode of a lone spectrum is wider than 4 meV or than its own energy, so none is overdamped); a delta mode has no width factor | a tenth of the resolution FWHM as the knee; the 4 meV lone cap (a fixed number of the recipe, to be tuned by the operator later) |
 | mode / elastic height h | flat on `[0, 1.2 x max count]` | the spectrum's highest count |
 | flat background (counts per point) | flat on `[0, max count]` | the spectrum's highest count |
 | quasi-elastic area (IN8's fixed-width component, `QuasiElastic`) | flat on `(0, scale x exposure x resolution FWHM)` (the v4 rule; out of this recipe's scope) | the exposure, the resolution width |
@@ -403,9 +406,9 @@ reference exposure. The engine's columns are normalised to unit maximum, so h is
 coefficient and the flat prior is a genuine prior on h, with no Jacobian. `max count` is the
 highest kept count at the reference exposure, `max(y_i / exposure_scale_i)`, floored at one count;
 NaN counts are dropped and a spectrum with no finite count is held upstream, never given a default
-prior. The width support is `[0, 20]` in the density while the fit's lower bound stays the
-`GAMMA_FLOOR` of 1e-3 meV; the density's mass below the floor (about 1.6e-3, 0.002 nats) is not
-renormalised. The anti-Stokes partner is still derived from its Stokes mode, never given a prior
+prior. The width density is normalised on the optimiser's own interval `[Γ_lo, c]` (recipe /7;
+recipes /5 and /6 normalised on `[0, 20]` and left the mass below the floor, about 1.6e-3, 0.002
+nats, unrenormalised). The anti-Stokes partner is still derived from its Stokes mode, never given a prior
 (§2, hard rule 2).
 
 **The energy floor, reversed.** Version 3 of the recipe started the energy prior at half a
@@ -456,7 +459,7 @@ it read). The version bump, and a later change to any ramp default (the recipe d
 guidelines signature as `prior_recipe_settings`), marks every stored per-scan and analyzer-file
 fast pass, and every deep pass, stale: it is redone when next asked for, never deleted. A pooled
 master is the exception: it is carried while its member set and predictive contract are unchanged,
-so a recipe change does not mark it stale; force the masters to refit them under /6.
+so a recipe change does not mark it stale; force the masters to refit them under /7.
 
 **The central quasi-elastic component (BL43LXU only).** Every BL43LXU model is the elastic line, one
 central quasi-elastic component (QE), the phonons and an optional flat background; the QE is not a
@@ -533,6 +536,28 @@ box mass 0.1585 puts it right. A Hessian that is not positive definite is `no_ev
 no linear-limit branch). Laplace is not promised accurate for a prior-dominated coordinate; it is
 not priced as if it did not spread beyond the support.
 
+**Recipe /7: the width ceiling.** History of the width prior: /5 gave it `1/(Γ + knee)` on 0 to 20 meV;
+/6 left it and added the energy penalty; /7 (operator, 2026-11-01: a lone spectrum may not fit an
+overdamped mode, "Γ at most min(4 meV, ω₀)") makes the support depend on the mode's own energy. The
+width given its mode is a proper density on `[Γ_lo, c(E0)]`, `c = min(4 meV, E0)` with no floor (the
+energy window starts at 2 Γ_lo so the range is never empty), zero above, and the same measure in every
+path that fits or samples a mode: the fast pass, the classic maximum-likelihood lane (bootstrap,
+profile and MINOS refits, the deep pass's published refit), the deep pass's sampler (each width is
+drawn given its mode's energy, after the energies), the opt-in Bayes tier and a soft-constrained width
+(its truncated Gaussian is cut at `min(hi, c)`). The optimiser coordinate is
+`t = (Γ − Γ_lo)/(c − Γ_lo)` in [0, 1]; the log density in (E0, t) carries the Jacobian
+`ln(c − Γ_lo)`. Stored, shown and exported values stay Γ in meV. For a mode at 10 meV the 4 meV
+ceiling costs `ln L(20) − ln L(4) = 0.37` nats of normalisation against /6 (`L(c) = ln((c + k)/(Γ_lo
++ k))`, 1.63 against 1.26), a further 0.21 nats for a mode at 2 meV. A mode whose width sits on its
+ceiling (`t >= 1 − 1e-6`) is recorded as `at_width_cap` ("wants to be broader than a lone spectrum
+may claim") beside the existing overdamped reading, which a mode below 4 meV keeps (its Γ equals E0).
+At E0 = 4 meV exactly the ceiling has a kink: the right derivative is used (the objective is
+continuous there). The old 20 meV is the **lifted** ceiling (`PriorSettings.width_cap`): the
+inter-spectra pass uses it for a mode linked to a branch its neighbours carry; no solo fit does, so
+under /7 a larger `width_cap` moves only that lifted ceiling. The recipe version is hashed into the
+guidelines signature, so every fast pass stored under /6 is stale and is refitted when queued; nothing
+stored is rewritten.
+
 **Support stencil repair (2026-10-28).** Finite-difference steps are capped by each support
 span, and stencil centres move inward whenever necessary, including for a mode just outside
 the rail tolerance. The rail tolerance still determines the boundary-gradient correction; it
@@ -540,7 +565,8 @@ does not decide whether an objective may be evaluated outside its support.
 
 **The sensitivity arms.** `SENSITIVITY_ARMS` names the five alternatives the recipe is checked
 against, plus itself: `margin_1.05` and `margin_3` (the amplitude margin), `width_flat` (a flat
-width prior), `width_cap_40` (a 40 meV cap) and `today_v4` (recipe /4 in the height coordinate:
+width prior), `width_cap_40` (a 40 meV cap; under /7 it moves only the lifted ceiling, not a lone
+spectrum's) and `today_v4` (recipe /4 in the height coordinate:
 heights and background `scale x exposure`, width flat on `[1e-3, 5]`). Changing the margin from 1.05
 to 3 costs 1.05 nats per extra peak in the Occam factor (`ln(3/1.05)`), the figure the design
 quotes. The check itself, on the real spectra, is run before the beamtime and reported to the
@@ -585,8 +611,9 @@ free have one label copy, so a k! test must use equal heights or free all of eac
 parameters, or it cannot tell right from wrong.
 
 **Status [Implemented; sensitivity check run].** The recipe, the ordered prior, the near-zero
-energy penalty (recipe /6), the box-rule Laplace, the softened log-uniform width and the signature
-are implemented and tested. The fitter's
+energy penalty (recipe /6), the per-mode width ceiling (recipe /7, in the fast pass, the classic lane,
+the deep pass's sampler and the Bayes tier; the coupled refit joins it in the next change), the
+box-rule Laplace, the softened log-uniform width and the signature are implemented and tested. The fitter's
 bounds come from the recipe (`loop.build_problem` reads `prior.mode_bounds`, which resolves
 `prior.resolve_prior_for`, so the TRF box and the Laplace box are one source). The fast pass's
 Laplace evidence takes its prior from the same recipe (`SpectrumPrior`), as do both evidence lanes
