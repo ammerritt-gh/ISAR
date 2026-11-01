@@ -120,8 +120,8 @@ Each line names the failure it prevents.
   `modes.csv` and campaigns read. `save_inter` never touches `session.json`, `results.csv` or a fast solo fit.
 - **ISAR never writes an anchor, a pick, a lock or a setting on its own** (AGENTS.md hard rule 1). They are
   entries of `intake/inter_spectra.jsonl`, written only by the GUI in process through `isar/intake/inter_values.py`.
-- **The machine store is append-only, has one writer and deletes nothing.** `save_inter` appends under the
-  workspace write lock and writes the index last, so a payload that no index line names is never read.
+- **The machine store is append-only, has one writer and deletes nothing.** `save_inter` and `save_links` append
+  under the workspace write lock and write the index last, so a payload that no index line names is never read.
 - **One resolver decides the fit in use.** `isar/session/inter_spectra/authority.py` (`resolve`, `effective`)
   serves the export, the run report and the read facade, so the views cannot disagree. A user pick and a
   machine acceptance are ordered by the intake `seq`, never by wall-clock time.
@@ -406,8 +406,9 @@ Paths are relative to the workspace folder. Every line is one JSON object.
 | File | Written by | Holds |
 |---|---|---|
 | `intake/inter_spectra.jsonl` | the GUI, in process, through `isar/intake/inter_values.py` | user values: kinds `anchor`, `pick`, `lock`, `settings`; append-only, the latest wins |
-| `report/inter_spectra.jsonl` | `save_inter` only | the machine index: `batch_start`, `refit`, `stage` and `batch_end` lines; append-only |
+| `report/inter_spectra.jsonl` | `save_inter` and `save_links` | the machine index: `batch_start`, `refit`, `stage` and `batch_end` lines, and `link` lines (one saved mode-linking result each); append-only |
 | `report/inter_spectra/refits/<batch_id>.jsonl` | `save_inter` only | one payload per refit with a payload: `schema`, `fit`, `unit`, `came_in`, `came_out`, `overlay`; read by byte offset |
+| `report/inter_spectra/links/<link_id>.jsonl` | `save_links` only | one payload per `link` line: `link` and `result` (the linking result as JSON, `isar.mode-links/1`); read by byte offset |
 
 Example lines, with synthetic values:
 
@@ -431,6 +432,14 @@ the branches not observed in it under `dormant`) and its `overlay`, so a history
 overlay carries the calibration, resolution and temperature the refit was made with (`calib`, `T`), so a locked
 or older refit is drawn and exported in its own context, never in a later fast solo fit's.
 
+A `link` line names the scan keys it covers, the fits it was made from (`made_from`: fit and inputs hash per spectrum)
+and their stamps, the next branch-name number, and where its payload is. A new branch's name continues the store's
+names, so a result saved after another never refuses on names; its ids stay.
+
+```json
+{"schema": "isar.inter-log/1", "kind": "link", "link": "l3a9f10c2e7d4", "at": "2026-11-02T09:14:03.000000+00:00", "scope": ["exp1:12", "exp1:13"], "batch": null, "stage": null, "made_from": {"exp1:12:a03": ["fast", "9d2c4e1f0a7b"], "exp1:13:a03": ["fast", "7a1b3c5d9e0f"]}, "stamps": {"exp1:12:a03": "5b0c1d2e3f4a", "exp1:13:a03": "6c1d2e3f4a5b"}, "next_name": 4, "digest": "0f1e2d3c4b5a6978", "counts": {"spectra": 56, "branches": 3, "ties": 1, "contradictions": 0, "excluded": 0}, "payload": ["l3a9f10c2e7d4.jsonl", 0, 18342]}
+```
+
 ## 7. Code locations
 
 | Module | Owns |
@@ -452,7 +461,8 @@ or older refit is drawn and exported in its own context, never in a later fast s
 | `isar/session/inter_spectra/rings.py` | anchored rings and seams |
 | `isar/session/inter_spectra/schedule.py` | simultaneous terms and conflict-free parallel groups |
 | `isar/session/inter_spectra/preview.py` | the batch preview line and the reason Start waits |
-| `isar/session/inter_spectra/records.py` | the machine store's reader |
+| `isar/session/inter_spectra/records.py` | the machine store's reader, and links |
+| `isar/session/inter_spectra/linking.py` | mode linking, session side: the fits in use and what a link leaves out and why, the temperature series, the link queue item's run (`run_link`) |
 | `isar/session/inter_spectra/authority.py` | the one resolver of the fit in use |
 | `isar/session/inter_spectra/runner.py` | the batch runner: rings, rounds, sweeps and acceptance hand-over; `_Run.assign`, the stage-1 pool that feeds each spectrum's search as its own jobs return |
 | `isar/analyze/coupled/tasks.py` | the task port a candidate's pricing sends its inner work through, and the worker side's engine cache |
@@ -460,7 +470,7 @@ or older refit is drawn and exported in its own context, never in a later fast s
 | `tools/inter_ring1.py` | opens the anchored batch headless and stops at the end of ring 1's stage 1; shared by the two measurement tools below |
 | `tools/inter_gradient_compare.py` | compares the gradient path with the finite-difference path on picked real-shaped jobs, per class (`summary.txt`, `table.md`, `compare.json` with `--out`) |
 | `tools/inter_screen_calibration.py` | shadow run of ring 1's stage 1: screen errors, count-total errors and shadow decisions (`calibration.json`, `calibration.md` with `--out`) |
-| `isar/session/writer.py` | `save_inter`, the one writer of the machine store |
+| `isar/session/writer.py` | `save_inter` and `save_links`, the one writer of the machine store |
 | `isar/session/analysis_service.py` | runs an `inter` queue item in the analysis process |
 | `isar/session/analysis_queue.py` | the queue's bookkeeping for `inter` items |
 | `isar/intake/inter_spectra.py` | the user values, read (`fold`, `read_user`) |
@@ -640,7 +650,7 @@ the lifted ceiling of 20 meV: "Sure".
 - Skipping is within one batch only (no cross-batch skip): a rerun of an interrupted batch repeats its work.
 - The fast pass's own six-mode peak-count ceiling is not changed by this work (noted, not built). On the finish-line copy, 10 of its 28 fast passes reached it.
 - After the degenerate-QE rule (IS23), a BL43LXU fast pass stored by older code is stale (the recipe version `isar.central-qe-recipe/2`): the analysis queue refits it when asked, and a batch refuses a member without a current fast pass until then. Stored results are not rewritten; an experiment changes only when its fast pass is re-run.
-- After the fast-pass width cap (IS27, recipe `isar.mode-prior-recipe/7`), every fast pass stored by older code is stale: the analysis queue refits it when asked, and a batch refuses a member without a current fast pass until it is re-run. Stored results are not rewritten.
+- After the fast-pass width cap (IS27, recipe `isar.mode-prior-recipe/7`), every fast pass stored by older code is stale: the analysis queue refits it when asked, and a batch refuses a member without a current fast pass until it is re-run. Stored results are not rewritten. Mode linking leaves such a spectrum out with the reason "fitted with an older fitting recipe; run its fast pass again".
 
 ## 10. Measured so far
 
