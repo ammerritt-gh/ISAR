@@ -150,6 +150,14 @@ class GuiStore:
     def set_auto_fast_pass(self, flag: bool) -> None:
         self._data["auto_fast_pass"] = bool(flag)
 
+    def auto_link(self) -> bool:
+        """Whether modes are linked automatically when a scan's fast passes finish; off until the user turns it on."""
+        val = self._data.get("auto_link")
+        return val if isinstance(val, bool) else False
+
+    def set_auto_link(self, flag: bool) -> None:
+        self._data["auto_link"] = bool(flag)
+
     # ---- campaign setup form (GUI Pass 3) ----------------------------------
     def campaign_form(self) -> dict:
         """The remembered campaign setup form (goal/spec/tier/budget/seed), or ``{}``."""

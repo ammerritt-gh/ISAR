@@ -189,6 +189,23 @@ def test_a_non_bool_auto_fast_pass_reads_as_on(tmp_path):
     assert GuiStore.load(tmp_path).auto_fast_pass() is True
 
 
+def test_auto_link_defaults_off_and_round_trips_both_ways(tmp_path):
+    store = GuiStore.load(tmp_path)
+    assert store.auto_link() is False                           # off until the user turns it on
+    store.set_auto_link(True)
+    store.save()
+    reloaded = GuiStore.load(tmp_path)
+    assert reloaded.auto_link() is True
+    reloaded.set_auto_link(False)
+    reloaded.save()
+    assert GuiStore.load(tmp_path).auto_link() is False
+
+
+def test_a_non_bool_auto_link_reads_as_off(tmp_path):
+    (tmp_path / "gui.state.json").write_text(json.dumps({"auto_link": "yes"}), encoding="utf-8")
+    assert GuiStore.load(tmp_path).auto_link() is False
+
+
 def test_saved_group_slots_create_replace_restore_and_free_order(tmp_path):
     store = GuiStore.load(tmp_path)
     assert store.free_slot() == 1
