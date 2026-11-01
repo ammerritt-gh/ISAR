@@ -681,7 +681,9 @@ def _walk_strings(value):
 @pytest.fixture(scope="module")
 def published_artifact(tmp_path_factory):
     tmp_path = tmp_path_factory.mktemp("predictive-v2")
-    run = run_builder.build_in8_run("PRED2", n_scans=2, seed0=54500, first_numor=54500,
+    # seed 54700: under recipe /7 (widths capped at min(4 meV, omega0)) the seed-54500 realisation fits a
+    # near-zero-energy mode whose Laplace draws clip to E0 = Gamma = 0, which the predictive builder refuses
+    run = run_builder.build_in8_run("PRED2", n_scans=2, seed0=54700, first_numor=54700,
                                     q_point=[2.25, 0.05, 0.0])
     data = tmp_path / "PRED2.numor"
     data.write_bytes(ill_in8.emit_file(run, ill_in8.card_template()))

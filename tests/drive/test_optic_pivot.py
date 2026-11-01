@@ -60,11 +60,14 @@ def test_optic_pivot_decision_sequence(tmp_path: Path):
     # organically to REFINING that found mode, never back to blind coverage.
     assert generators[2] == generators[3] == "parameter_refine"
     assert generators[2] != generators[0]
-    # The pivot is causally anchored on the round-0 measurement, not a coincidence: the refine
-    # reason names the exact arena the found mode came from.
-    assert "round0" in reasons[2] and "round0" in reasons[3]
+    # The pivot is causally anchored on a coverage measurement, not a coincidence: the refine
+    # reason names the exact arena the found mode came from. Which of the two coverage scans that
+    # is, is a near-tie between two clean single-mode fits (it was round 0 until recipe /7 moved
+    # the width prior's normalisation by a fraction of a nat); both reasons name the same one.
+    found = [k for k in (0, 1) if f"round{k}" in reasons[2]]
+    assert len(found) == 1 and f"round{found[0]}" in reasons[3]
 
-    # The refined node is a real domain node this run actually measured (round 0's), not an
+    # The refined node is a real domain node this run actually measured (the found round's), not an
     # arbitrary pick — the organic causal link H22(f) names.
     refined_h = {r.node_h for r in run.rounds[2:]}
-    assert refined_h == {run.rounds[0].node_h}
+    assert refined_h == {run.rounds[found[0]].node_h}

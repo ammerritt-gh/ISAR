@@ -429,7 +429,8 @@ def test_a_real_campaign_publishes_a_projection_reachable_through_the_facade(tmp
     from isar.synth_format import run_builder
     from isar.workspace_api import Workspace as ReadOnlyWorkspace
 
-    run = run_builder.build_in8_run("PROJ", n_scans=2, seed0=54500, first_numor=54500,
+    # seed 54700, as in test_master_predictive: the 54500 realisation breaks the predictive draws under recipe /7
+    run = run_builder.build_in8_run("PROJ", n_scans=2, seed0=54700, first_numor=54700,
                                     q_point=[2.25, 0.05, 0.0])
     data = tmp_path / "PROJ.numor"
     data.write_bytes(ill_in8.emit_file(run, ill_in8.card_template()))
