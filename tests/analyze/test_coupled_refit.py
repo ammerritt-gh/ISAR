@@ -685,6 +685,15 @@ def test_a_refit_without_a_release_sigma_hands_no_conditional_precision_to_its_n
     assert [n["code"] for n in spec.notes] == ["neighbour_precision_unavailable"]
 
 
+def test_held_from_fit_given_its_window_needs_no_context():
+    # a linking reader has no fit context; the window it passes is the one the context gives
+    true = [(9.0, 0.5, 40.0)]
+    with_ctx = R.held_from_fit(record(true), unit="x", fit="fast", inputs=None, context=spectrum(true), T=100.0)
+    alone = R.held_from_fit(record(true), unit="x", fit="fast", inputs=None, context=None, T=100.0,
+                            window=with_ctx.window)
+    assert alone == with_ctx
+
+
 def test_a_missing_seam_guard_widens_the_tolerance_instead_of_vanishing():
     link = Link("q", "a", "b", 0.1, None, "hkl")
     ok, lost = _ring_mate("b", 14.0), _ring_mate("b", 14.0)
