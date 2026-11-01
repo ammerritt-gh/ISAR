@@ -748,6 +748,12 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=(),
                              f"({lo!r}, {hi!r}); evidence needs a proper prior — bound the "
                              f"parameter in prior.mode_bounds or declare a ParamPrior for it")
         suffix = name.split(".", 1)[-1]
+        if suffix == "Gamma":
+            # a hard-fixed energy is in no bundle factor to condition on, so its ceiling is cut here,
+            # whatever prior the width then carries (transported, declared or default)
+            energy = name[:-len("Gamma")] + "omega0"
+            if energy in excluded and energy in hard:
+                hi = min(hi, width_ceiling(float(hard[energy]), settings=settings))
         if name in soft:
             mu, sigma = float(soft[name][0]), float(soft[name][1])
             resolved.append(_validated(name, "gaussian", mu, sigma, lo, hi,
@@ -762,10 +768,6 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=(),
                 sigma = _resolve_value(d.sigma, ctx, what=f"{name} sigma")
                 resolved.append(_validated(name, d.kind, mu, sigma, lo, hi, "identity"))
         elif suffix == "Gamma":
-            # a hard-fixed energy is in no bundle factor to condition on, so its ceiling is cut here
-            energy = name[:-len("Gamma")] + "omega0"
-            if energy in excluded and energy in hard:
-                hi = min(hi, width_ceiling(float(hard[energy]), settings=settings))
             if settings.width_kind == "flat" or settings.legacy_v4:
                 resolved.append(ResolvedPrior(name, "flat", None, None, lo, hi, "default_flat_width"))
             else:

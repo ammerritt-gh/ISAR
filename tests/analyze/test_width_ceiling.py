@@ -183,6 +183,23 @@ def test_a_legacy_v4_width_is_not_capped_by_its_energy():
     assert bundle.logpdf_ordered(out) > -math.inf
 
 
+def test_a_hard_fixed_omega0_caps_a_soft_width_prior_too():
+    # omega0 pinned at 2 meV, Gamma under a transported Gaussian centred at 3: the cut holds for it as well
+    cons = ParamConstraints(hard={"phonon.omega0": 2.0}, soft={"phonon.Gamma": (3.0, 1.0)})
+    ctx = _ctx(np.full(X.size, 100.0), constraints=cons)
+    hyp = next(h for h in catalogue.enumerate_count_structures(ctx, 1) if h.label == "elastic+stokes+bg")
+    bundle = evidence.candidate_bundle(hyp, ctx)
+    names = [p.name for p in bundle.params]
+    p = bundle.by_name()["phonon.Gamma"]
+    assert p.kind == "gaussian" and p.hi == pytest.approx(2.0)
+    draws = np.array([bundle.transform_ordered(u) for u in np.random.default_rng(5).random((2000, len(names)))])
+    assert draws[:, names.index("phonon.Gamma")].max() <= 2.0 + 1e-12
+    named = dict(zip(names, draws[0]))
+    assert bundle.logpdf_ordered({**named, "phonon.Gamma": 2.5}) == -math.inf
+    assert bundle.logpdf_ordered({**named, "phonon.Gamma": 1.5}) > -math.inf
+    assert quad(lambda g: math.exp(p.logpdf(g)), p.lo, 2.0)[0] == pytest.approx(1.0, abs=1e-6)
+
+
 def test_the_energy_window_keeps_every_width_range_non_empty():
     for fwhm in (1e-3, 0.05, 0.5, 1.5):
         sp = prior.resolve_prior(np.array([0, 3, 250, 7.0]), np.linspace(-16, 20, 50), fwhm=fwhm)
