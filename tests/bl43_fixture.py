@@ -179,7 +179,8 @@ def _temperature_optional_card(dest: Path) -> Path:
     reader through ``card.SHIPPED_FORMATS``; the shipped card itself is not touched."""
     from isar.parsers import sp8_bl43
     raw = Path(sp8_bl43._CARD_PATH).read_bytes().decode("utf-8")
-    edits = ((r"_(?P<T_K>\d+(?:p\d+)?)K_(?P<hkl_nominal>", r"_(?:(?P<T_K>\d+(?:p\d+)?)K_)?(?P<hkl_nominal>"),
+    edits = ((r"_(?:(?P<T_K>\d+(?:p\d+)?)K|(?P<room_T>RT))_(?P<hkl_nominal>",
+              r"_(?:(?:(?P<T_K>\d+(?:p\d+)?)K|(?P<room_T>RT))_)?(?P<hkl_nominal>"),
              (r"(?P<specfile>spec\d+)_T(?P<T_K>\d+(?:p\d+)?)K__scan_",
               r"(?P<specfile>spec\d+)_(?:T(?P<T_K>\d+(?:p\d+)?)K_)?_scan_"))
     for before, after in edits:

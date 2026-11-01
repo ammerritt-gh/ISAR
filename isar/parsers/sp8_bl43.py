@@ -66,6 +66,7 @@ _QUANT = 1e-3                  # meV: bins closer than this are the same bin / a
 _KEV_PER_ORDER = 1.977         # incident energy per silicon reflection order (keV)
 _HASHED_BASE = 1_000_000_000   # hashed scan numbers sit above any real scan number
 _OFF_SHARE_WARN = 0.10         # more reported non-integer bins than this share of the valid ones: a warning
+ROOM_TEMPERATURE_K = 300.0     # `RT` in a file name (users' request, 2026-11-01)
 
 # .var names -> fact names
 _VAR_SCAN = {"silicon_order": ("si_order", int), "meV_bin_size": ("bin_meV", float),
@@ -425,6 +426,8 @@ def parse_set(file_set, card: Card) -> list[scan.ScanRecord]:
     from_name: dict = {"scan_label": file_set.key}
     if "T_K" in fn and _number(fn["T_K"]) is not None:
         from_name["T_K"] = float(fn["T_K"])
+    elif fn.get("room_T") and "T_K" not in header_facts and "T_K" not in var_scan:
+        from_name["T_K"] = ROOM_TEMPERATURE_K        # a stand-in only: a file's own temperature is no conflict
     if "hkl_nominal" in fn and isinstance(fn["hkl_nominal"], list):
         from_name["hkl_nominal"] = _as_floats(fn["hkl_nominal"])
     if "scan_numbers" in fn:

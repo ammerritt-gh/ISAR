@@ -11,8 +11,8 @@
 # One scan is a SET of files, one per analyzer (28 analyzers: a03-a09, a14-a20, a25-a31, a35-a41).
 # ISAR turns each set into one scan with one spectrum per analyzer. Two layouts are read:
 #   * CsV3Sb5 layout: <stem>_aNN beside <stem>.var (the beamline's processed output). The file name
-#     carries the sample, the temperature and the NOMINAL arm-centre HKL of the scan; no analyzer's
-#     own HKL, no scan number.
+#     carries the sample, the temperature (`300K`, or `RT` for room temperature, read as 300 K) and the
+#     NOMINAL arm-centre HKL of the scan; no analyzer's own HKL, no scan number.
 #   * Ba122 layout: spec1_T<T>K__scan_<n>_A<a>_Q_<h>_<k>_<l>_inel.dat (the group's export macro):
 #     three columns, no monitor, and the scan, temperature, analyzer and that analyzer's HKL in the name.
 # A header written at the top of an analyzer file (`# hkl 0.5 0.5 3`, `# T_K 302`, `# agaph_mm 60`,
@@ -81,16 +81,16 @@ min_fit_points = 6              # fewer usable points than this -> non-result (u
 # Each measurement pattern is matched against the whole file name and must name `set` (the scan's
 # key, shared by every analyzer file of the scan) and `analyzer`. `sample`, `T_K`, `hkl_nominal`,
 # `hkl`, `specfile` and `scan_numbers` groups become facts (a number is written `0p5` for 0.5 and `m0p5`
-# for -0.5). `specfile` (the SPEC file name, e.g. spec1) names the experiment a scan came from, and
+# for -0.5); a `room_T` group (`RT` in the name) gives T_K = 300. `specfile` (the SPEC file name, e.g. spec1) names the experiment a scan came from, and
 # `scan_numbers` lists the scans a file holds: one number is a single scan, several a file the
 # beamline already summed (passed over when its individual scans are in the same folder).
 measurement = [
-    '(?P<set>(?P<sample>.+?)_(?P<T_K>\d+(?:p\d+)?)K_(?P<hkl_nominal>m?\d+(?:p\d+)?_m?\d+(?:p\d+)?_m?\d+(?:p\d+)?)(?:_[A-Za-z0-9]+)*)_a(?P<analyzer>\d{2})',
+    '(?P<set>(?P<sample>.+?)_(?:(?P<T_K>\d+(?:p\d+)?)K|(?P<room_T>RT))_(?P<hkl_nominal>m?\d+(?:p\d+)?_m?\d+(?:p\d+)?_m?\d+(?:p\d+)?)(?:_[A-Za-z0-9]+)*)_a(?P<analyzer>\d{2})',
     '(?P<set>(?P<specfile>spec\d+)_T(?P<T_K>\d+(?:p\d+)?)K__scan_(?P<scan_numbers>\d+(?:_\d+)*))_A(?P<analyzer>\d{1,2})_Q_(?P<hkl>m?\d+(?:p\d+)?_m?\d+(?:p\d+)?_m?\d+(?:p\d+)?)_inel\.dat',
 ]
 sidecar = ["{set}.var"]         # beside the analyzer files: bin size, silicon order, per-analyzer efficiency
 # Never measurements: peak-position lists, the summed file (the bare stem) and the resolution curves
-# (`sarf_*`, in rf/, which discovery finds inside the imported folder). `*_sum` assumes that
+# (`sarf_*`, in rf/ or another folder below the imported one, where discovery finds them). `*_sum` assumes that
 # stem ends in `_sum`; for another name, add its file name here, e.g. "Smp_tot".
 ignore = ["*.pkpos", "*_sum", "sarf_*"]
 
