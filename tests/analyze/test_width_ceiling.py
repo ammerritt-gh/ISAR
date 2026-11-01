@@ -381,11 +381,11 @@ def test_the_nested_sampler_draws_widths_under_their_ceiling_without_a_bundle():
     ctx, hyp = _classic([(2.5, 5.0, 60.0)], scale=2.0)
     fit = loop.fit_hypothesis(hyp, ctx)
     res = bayes.bayesian_posterior(hyp, ctx, fit, n_live=40, dlogz=5.0, max_iter=400)
-    if res.parameter_samples.size:
-        names = list(res.parameter_names)
-        g = res.parameter_samples[:, names.index("phonon.Gamma")]
-        om = res.parameter_samples[:, names.index("phonon.omega0")]
-        assert np.all(g <= np.minimum(4.0, om) + 1e-9)
+    assert res.parameter_samples.size, "the sampler returned no samples"
+    names = list(res.parameter_names)
+    g = res.parameter_samples[:, names.index("phonon.Gamma")]
+    om = res.parameter_samples[:, names.index("phonon.omega0")]
+    assert np.all(g <= np.minimum(4.0, om) + 1e-9)
 
 
 def test_the_transitional_flag_gives_the_old_coordinate():
