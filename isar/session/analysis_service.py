@@ -12,17 +12,20 @@ Process::
 stdout/stderr streams; their deep timings travel in progress events through the item pipe instead.
 The GUI runner retains every protocol line in its queue log. stdout carries the protocol and nothing
 else; stderr is free text, never parsed. Exit 0 after ``bye``; exit 2 when ``<root>`` holds no ``card.policy.toml`` (one ``log``
-error line, no ``ready``). Four test-only options, hidden from ``--help``: ``--fit-target``,
-``--save-target``, ``--inter-target`` and ``--inter-save-target`` (``<module>:<function>``; defaults
-:func:`isar.session.file_fit.fit_file`, :func:`isar.session.writer.save_results`,
-:func:`isar.session.inter_spectra.runner.run_batch` and :func:`isar.session.writer.save_inter`). The fit
-target's module also provides ``FileItem``, the inter target's ``BatchItem``.
+error line, no ``ready``). Six test-only options, hidden from ``--help``: ``--fit-target``,
+``--save-target``, ``--inter-target``, ``--inter-save-target``, ``--link-target`` and ``--link-save-target``
+(``<module>:<function>``; defaults :func:`isar.session.file_fit.fit_file`, :func:`isar.session.writer.save_results`,
+:func:`isar.session.inter_spectra.runner.run_batch`, :func:`isar.session.writer.save_inter`,
+:func:`isar.session.inter_spectra.linking.run_link` and :func:`isar.session.writer.save_link_payloads`). The fit
+target's module also provides ``FileItem``, the inter target's ``BatchItem``, the link target's ``LinkItem``.
 
 Commands (stdin, one UTF-8 JSON object per line)::
 
     {"op": "start", "item_id", "unit_key", "pass": "fast"|"deep", "cores": int >= 1}
     {"op": "start", "item_id", "unit_key": "inter:<batch_id>:batch", "pass": "inter", "cores": int >= 1,
      "batch": {"batch_id", "members": [spectrum keys], ...the BatchSpec json}}
+    {"op": "start", "item_id", "unit_key": "link:<link_id>:link", "pass": "link", "cores": 1,
+     "link": {"link_id", "scans": [scan keys], "series": bool, "reason"}}
     {"op": "stop", "item_id"}   {"op": "hold_writes"}   {"op": "release_writes"}
     {"op": "shutdown"}          {"op": "ping"}
 
@@ -35,6 +38,7 @@ Events (stdout, one JSON object per line, flushed per line)::
     {"ev": "members", "item_id", "t", **the runner's member map}   inter only: each member's state
     {"ev": "result", "item_id", "unit_key", "pass", "status", "reason", "saving"}     inter adds "event": start|stage|end
     {"ev": "saved", "item_id", "unit_key", "pass", "status", "reason"}     inter adds "keys", "refused"
+                                                                          link adds "link", "new"
     {"ev": "save_failed", "item_id", "unit_key", "pass", "error"}
     {"ev": "finished", "item_id", "end": "completed"|"stopped"|"failed", "reason"}
     {"ev": "writes_held"}   {"ev": "writes_released"}
@@ -69,6 +73,9 @@ The rules the consumer may rely on:
   A batch whose item ended, was stopped or failed without sending its ``end`` payload gets one written by the
   service (state ``stopped`` or ``failed``) with no event of its own; a batch whose start was never saved
   gets none (the save refuses an unknown batch, logged at info).
+* A link item occupies the pseudo-member ``link:all``, so a second link start while one runs is refused like a
+  same-unit start. Its result is saved by the link save function (its own group, arrival order kept), and its
+  ``saved`` event carries the link id and whether the record is new.
 
 Top-level imports are stdlib only: every item process re-imports this module as ``__mp_main__`` under
 spawn, and analysis imports here would add to every item's start. The fitting stack loads in the item
@@ -99,8 +106,12 @@ FIT_TARGET = "isar.session.file_fit:fit_file"
 SAVE_TARGET = "isar.session.writer:save_results"
 INTER_TARGET = "isar.session.inter_spectra.runner:run_batch"
 INTER_SAVE_TARGET = "isar.session.writer:save_inter"
+LINK_TARGET = "isar.session.inter_spectra.linking:run_link"
+LINK_SAVE_TARGET = "isar.session.writer:save_link_payloads"
+LINK_LOCK = "link:all"                      # the pseudo-member a link item occupies; same literal as analysis_queue
 POLICY_NAME = "card.policy.toml"            # isar.session.workspace.POLICY_NAME, not imported (stdlib only)
-PASSES = ("fast", "deep", "inter")
+PASSES = ("fast", "deep", "inter", "link")
+_ITEM_CLASS = {"inter": "BatchItem", "link": "LinkItem"}      # the item class a target module provides, by pass
 JOIN_S = 5.0                                # an ended or killed item's process is reaped within this
 # One BLAS thread per process: driver._THREAD_ENV's names and rule, kept here because importing driver
 # would load the fitting stack into every item's __mp_main__.
@@ -272,7 +283,7 @@ def _item_main(fit_spec: str, root: str, fields: tuple, conn, ack_conn=None) -> 
         module, fit = _target(fit_spec)
         extra = {} if ack_conn is None else {"ack": _ack_reader(ack_conn),
                                              "members": lambda ev: conn.send(("members", dict(ev)))}
-        fit(Path(root), (module.FileItem if ack_conn is None else module.BatchItem)(*fields),
+        fit(Path(root), getattr(module, _ITEM_CLASS.get(fields[2], "FileItem"))(*fields),
             progress=lambda ev: conn.send(("progress", dict(ev))),
             emit=lambda r: conn.send(("result", dataclasses.asdict(r))), **extra)
         conn.send(("end",))
@@ -323,11 +334,12 @@ class _Writer(threading.Thread):
     """The one writer: a FIFO of results, saved in arrival order (every waiting result in one ``save_fn``
     call), and the write hold, which keeps the workspace write lock between saves for a folder copy."""
 
-    def __init__(self, root: Path, save_fn, emit, inter_save_fn) -> None:
+    def __init__(self, root: Path, save_fn, emit, inter_save_fn, link_save_fn) -> None:
         super().__init__(name="analysis-writer", daemon=True)
         from isar.session import atomic, writer       # the service process only, never an item's __mp_main__
         self._lock, self._busy, self._stale = atomic.workspace_write_lock, atomic.WorkspaceBusy, writer.ProjectionStale
-        self._root, self._save_fn, self._inter_save_fn, self._emit = root, save_fn, inter_save_fn, emit
+        self._root, self._save_fn, self._emit = root, save_fn, emit
+        self._inter_save_fn, self._link_save_fn = inter_save_fn, link_save_fn
         self._cv = threading.Condition()
         self._jobs: deque[_Job] = deque()
         self._hold = self._held = self._closing = False
@@ -414,19 +426,21 @@ class _Writer(threading.Thread):
                 self._emit({"ev": "log", "level": "warning", "text": f"still waiting to hold writes: {exc}"})
 
     def _save(self, batch: list[_Job]) -> None:
-        # Consecutive jobs of one kind go to one save call, so arrival order holds across the two save functions.
+        # Consecutive jobs of one group go to one save call, so arrival order holds across the save functions.
         run: list[_Job] = []
         for job in batch:
-            if run and _is_inter(run[0]) != _is_inter(job):
+            if run and _group(run[0]) != _group(job):
                 self._save_run(run)
                 run = []
             run.append(job)
         self._save_run(run)
 
     def _save_run(self, batch: list[_Job]) -> None:
-        inter = _is_inter(batch[0])
+        group = _group(batch[0])
+        inter, link = group == "inter", group == "link"
+        save = {"inter": self._inter_save_fn, "link": self._link_save_fn}.get(group, self._save_fn)
         try:
-            verdicts = (self._inter_save_fn if inter else self._save_fn)(self._root, [j.payload for j in batch])
+            verdicts = save(self._root, [j.payload for j in batch])
         except self._stale as exc:          # saved; the projections wait for the next save
             verdicts = exc.verdicts
             self._emit({"ev": "log", "level": "warning",
@@ -443,11 +457,13 @@ class _Writer(threading.Thread):
                     quiet = job.pass_kind == "inter_end" and why.startswith("unknown batch")
                     (log.info if quiet else self._warn)(
                         f"{job.unit_key}: the {job.pass_kind.replace('_', ' ')} record was not saved: {why}")
-            elif not isinstance(why, str) and (why is None or inter):
+            elif not isinstance(why, str) and (why is None or inter or link):
                 event = {"ev": "saved", "item_id": job.item_id, "unit_key": job.unit_key,
                          "pass": job.pass_kind, "status": job.status, "reason": job.reason}
                 if inter:
                     event.update(keys=list(why["accepted"]), refused=len(why["refused"]))
+                if link:
+                    event.update(link=why["link"], new=why["new"])
                 self._emit(event)
             else:
                 self._emit({"ev": "save_failed", "item_id": job.item_id, "unit_key": job.unit_key,
@@ -468,8 +484,11 @@ class _Writer(threading.Thread):
             log.info("ack %s for %s not delivered (%s)", job.token, job.unit_key, exc)
 
 
-def _is_inter(job: _Job) -> bool:
-    return job.pass_kind in ("inter", "inter_end")
+def _group(job: _Job) -> str:
+    """The save call a job goes to: the batch group, the link group or the file group."""
+    if job.pass_kind in ("inter", "inter_end"):
+        return "inter"
+    return "link" if job.pass_kind == "link" else "file"
 
 
 class _Item:
@@ -494,12 +513,14 @@ class _Service:
     # ~20% of a typical fast item.
 
     def __init__(self, root: Path, fit_spec: str, save_fn, emit, inter_spec: str = INTER_TARGET,
-                 inter_save_fn=None) -> None:
-        self.root, self.fit_spec, self.inter_spec, self.emit = root, fit_spec, inter_spec, emit
+                 inter_save_fn=None, link_spec: str = LINK_TARGET, link_save_fn=None) -> None:
+        self.root, self.fit_spec, self.emit = root, fit_spec, emit
+        self.inter_spec, self.link_spec = inter_spec, link_spec
         self.ctx = multiprocessing.get_context("spawn")
         self.running: dict[str, _Item] = {}
         self.used: set[str] = set()
-        self.writer = _Writer(root, save_fn, emit, inter_save_fn or _target(INTER_SAVE_TARGET)[1])
+        self.writer = _Writer(root, save_fn, emit, inter_save_fn or _target(INTER_SAVE_TARGET)[1],
+                              link_save_fn or _target(LINK_SAVE_TARGET)[1])
 
     def serve(self, commands) -> int:
         self.writer.start()
@@ -556,7 +577,13 @@ class _Service:
             return
         unit, kind, cores = cmd.get("unit_key"), cmd.get("pass"), cmd.get("cores")
         batch = cmd.get("batch")
-        members = (unit,) if kind != "inter" else self._members(batch)
+        obj = {"inter": batch, "link": cmd.get("link")}.get(kind)      # the batch or link object the item receives
+        if kind == "inter":
+            members = self._members(batch)
+        elif kind == "link":
+            members = self._link_members(unit, obj)
+        else:
+            members = (unit,)
         held = self._held(members) if isinstance(members, tuple) else None
         same = next((it.item_id for it in self.running.values() if it.unit_key == unit), None)
         why = (f"item id {iid} is already used in this service" if iid in self.used else
@@ -573,7 +600,7 @@ class _Service:
                f"{unit} already has a running item ({same})" if same is not None else None)
         self.used.add(iid)
         if why is None:
-            why = self._launch(iid, unit, kind, cores, batch)
+            why = self._launch(iid, unit, kind, cores, obj, members)
         if why is not None:
             self.emit({"ev": "finished", "item_id": iid, "end": "failed", "reason": why})
 
@@ -588,6 +615,20 @@ class _Service:
             return "invalid start: batch.members is not a non-empty list of spectrum keys"
         return tuple(members)
 
+    @staticmethod
+    def _link_members(unit, link) -> tuple[str, ...] | str:
+        """The link item's occupied pseudo-member, or the reason its link object is not usable."""
+        if not isinstance(link, dict) or not isinstance(link.get("link_id"), str) or not link["link_id"]:
+            return "invalid start: a link item needs a link object with a link_id"
+        if unit != f"link:{link['link_id']}:link":
+            return f"invalid start: unit_key {unit!r} is not link:{link['link_id']}:link"
+        scans = link.get("scans")
+        if not (isinstance(scans, list) and scans and all(isinstance(s, str) and ":" in s for s in scans)):
+            return "invalid start: link.scans is not a non-empty list of scan keys"
+        if not isinstance(link.get("series"), bool):
+            return "invalid start: link.series is not true or false"
+        return (LINK_LOCK,)
+
     def _held(self, members: tuple[str, ...]) -> tuple[str, str] | None:
         """``(member, item_id)`` of the first member a running item occupies, or None."""
         for m in members:
@@ -596,14 +637,15 @@ class _Service:
                     return m, it.item_id
         return None
 
-    def _launch(self, iid: str, unit: str, kind: str, cores: int, batch: dict | None = None) -> str | None:
+    def _launch(self, iid: str, unit: str, kind: str, cores: int, obj: dict | None,
+                members: tuple[str, ...]) -> str | None:
         """Start the item's process in its own job; the refusal reason when it could not start."""
         read, write = self.ctx.Pipe(duplex=False)
         inter = kind == "inter"
         ack_read, ack_write = self.ctx.Pipe(duplex=False) if inter else (None, None)
-        fields = (iid, unit, kind, cores, *((batch,) if inter else ()))
-        proc = self.ctx.Process(target=_item_main, args=(self.inter_spec if inter else self.fit_spec,
-                                                         str(self.root), fields, write, ack_read),
+        fields = (iid, unit, kind, cores, *(() if obj is None else (obj,)))
+        spec = {"inter": self.inter_spec, "link": self.link_spec}.get(kind, self.fit_spec)
+        proc = self.ctx.Process(target=_item_main, args=(spec, str(self.root), fields, write, ack_read),
                                 name=f"isar-item-{iid}", daemon=False)
         try:
             proc.start()
@@ -620,8 +662,8 @@ class _Service:
         if job is not None and not job.assign(proc.pid):
             job.close()
             job = None
-        self.running[iid] = _Item(iid, unit, kind, proc, read, job, tuple(batch["members"]) if inter else (unit,),
-                                  batch["batch_id"] if inter else None, ack_write)
+        self.running[iid] = _Item(iid, unit, kind, proc, read, job, members,
+                                  obj["batch_id"] if inter else None, ack_write)
         self.emit({"ev": "started", "item_id": iid, "pid": proc.pid})
         return None
 
@@ -815,6 +857,8 @@ def main(argv=None) -> int:
     parser.add_argument("--save-target", default=SAVE_TARGET, help=argparse.SUPPRESS)
     parser.add_argument("--inter-target", default=INTER_TARGET, help=argparse.SUPPRESS)
     parser.add_argument("--inter-save-target", default=INTER_SAVE_TARGET, help=argparse.SUPPRESS)
+    parser.add_argument("--link-target", default=LINK_TARGET, help=argparse.SUPPRESS)
+    parser.add_argument("--link-save-target", default=LINK_SAVE_TARGET, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.log:
         _redirect_stderr(args.log)
@@ -828,7 +872,9 @@ def main(argv=None) -> int:
         os.environ.setdefault(name, "1")
     _module, save_fn = _target(args.save_target)
     _module, inter_save_fn = _target(args.inter_save_target)
-    return _Service(root, args.fit_target, save_fn, emit, args.inter_target, inter_save_fn).serve(_read_commands())
+    _module, link_save_fn = _target(args.link_save_target)
+    return _Service(root, args.fit_target, save_fn, emit, args.inter_target, inter_save_fn,
+                    args.link_target, link_save_fn).serve(_read_commands())
 
 
 if __name__ == "__main__":
