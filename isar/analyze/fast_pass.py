@@ -1737,7 +1737,8 @@ class _Engine:
             str(model.hyp.label), prob.composite, prob.costv, prob.n_used, prob.k, br,
             prior_omega=getattr(ctx, "prior_omega", None),
             acoustic_omega=getattr(ctx, "acoustic_omega", None), penalty=prob.penalty,
-            hard_fixed=prob.is_hard_fixed, T=getattr(ctx, "T", None), ctx=model.cctx)
+            hard_fixed=prob.is_hard_fixed, T=getattr(ctx, "T", None), ctx=model.cctx,
+            prior_settings=self.prior_s)
         fit.identity = getattr(model.hyp, "identity", None)
         fit.variant = loop.DELTA_VARIANT if model.delta else None
         if b.status == "degenerate_twin":

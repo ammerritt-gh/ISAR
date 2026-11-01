@@ -377,6 +377,20 @@ def test_result_flags_gamma_at_bound():
     assert res2.gamma_at_bound is False
 
 
+def test_a_legacy_v4_width_is_flagged_against_its_own_ceiling():
+    """legacy_v4 widths run to GAMMA_MAX_V4 whatever omega0: Gamma 3 at omega0 2 is not at its bound,
+    while under the recipe /7 default it is past min(4, omega0)."""
+    from isar.analyze.prior import PriorSettings
+    comp = CompositeModel([PhononDHO(), ConstantBackground()])
+    br = BackendResult(x=np.array([2.0, 3.0, 300.0, 10.0]), success=True, message="ok", n_eval=10,
+                       covariance=None, covariance_ok=False, at_limit={}, merrors=None)
+    v4 = loop.result_from_backend("stokes+bg", comp, lambda th: 5.0, n_used=20, k=4, br=br,
+                                  prior_settings=PriorSettings(legacy_v4=True))
+    assert v4.gamma_at_bound is False
+    assert loop.result_from_backend("stokes+bg", comp, lambda th: 5.0, n_used=20, k=4,
+                                    br=br).gamma_at_bound is True
+
+
 # --- catalogue constrained variants as additional candidates (SCENE-1 PR-c) -------------------
 def _near_degenerate_ctx(n=81):
     """A phonon whose ω₀ sits below the resolution width — the near-degenerate case."""

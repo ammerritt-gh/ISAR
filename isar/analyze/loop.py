@@ -794,7 +794,8 @@ def _minimize_profiled(prob, *, minos=False) -> BackendResult:
 
 def result_from_backend(label, composite, costv, n_used, k, br,
                         *, prior_omega=None, acoustic_omega=None, penalty=None,
-                        hard_fixed=False, T=None, ctx=None) -> StructureFitResult:
+                        hard_fixed=False, T=None, ctx=None,
+                        prior_settings=None) -> StructureFitResult:
     """Build a :class:`StructureFitResult` from a backend result, reading the *raw,
     separated* convergence/covariance/profile signals (not the lossy combined success).
 
@@ -807,7 +808,8 @@ def result_from_backend(label, composite, costv, n_used, k, br,
     scalar ω₀/Γ are the PRIMARY mode's (nearest ``prior_omega`` if given, else largest
     height). Single-phonon fits are unchanged (one mode, itself primary). A mode's
     ``amplitude_intrinsic`` (the lineshape's A behind the height) needs the scan context ``ctx``;
-    without one it is NaN."""
+    without one it is NaN. ``prior_settings``: the recipe the fit was bounded by (``None``: the
+    default), whose width ceiling the Γ-at-bound flag reads."""
     theta = np.asarray(br.x, dtype=float)
     cov = br.covariance if br.covariance_ok else None
     errs = np.sqrt(np.diag(cov)) if cov is not None else None
@@ -881,7 +883,8 @@ def result_from_backend(label, composite, costv, n_used, k, br,
                                                br.covariance_ok, EPS_OMEGA0))
     analysis_usable = optimizer_converged
 
-    gamma_at_bound = _gamma_at_bound([m["gamma"] for m in modes], [m["omega0"] for m in modes])
+    gamma_at_bound = _gamma_at_bound([m["gamma"] for m in modes], [m["omega0"] for m in modes],
+                                     settings=prior_settings)
 
     return StructureFitResult(
         label=label, k=k, ndof=ndof, cost=cost, cost_per_dof=cost_per_dof,
