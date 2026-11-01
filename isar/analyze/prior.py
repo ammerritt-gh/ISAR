@@ -144,7 +144,7 @@ class PriorSettings:
 
     amplitude_margin: peak and elastic heights flat on [0, margin x max count]  (1.2; check 1.05, 3).
     width_kind: "softlog" -> density 1/(Gamma + width_knee) on [g_lo, ceiling]; "flat" -> uniform.
-    width_knee: meV (0.12).  width_cap: meV (20; check 40): the LIFTED ceiling, the widest a mode
+    width_knee: meV (0.12).  width_cap: meV (20): the LIFTED ceiling, the widest a mode
         a neighbour-carried branch vouches for may be; a lone spectrum's mode stops at
         min(WIDTH_CAP_LONE_MEV, width_cap, its own omega0) (:func:`width_ceiling`).
     energy_cap: meV, E0 ordered on (energy_floor, min(energy_cap, max fitted E)].
