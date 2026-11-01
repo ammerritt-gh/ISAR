@@ -698,12 +698,11 @@ class _ZMap:
     ``t`` in [0, 1] on ``[g_lo, ceiling(omega0)]``; ``theta`` stays in meV everywhere else. The z-space
     log density is ``ln_prior(theta) + ln_jac(theta)``, so the objective is ``F_theta - ln_jac``.
     Mapped: every free, non-delta Gamma (default-prior and soft-constrained alike). ``active`` False:
-    the identity (legacy_v4, or ``engine.width_ceiling_active`` False). Kink at omega0 = 4: right
-    derivative."""
+    the identity (legacy_v4). Kink at omega0 = 4: right derivative."""
 
     def __init__(self, engine, model):
         self.free = model.free
-        self.active = bool(engine.width_ceiling_active and not engine.prior_s.legacy_v4)
+        self.active = engine._conditional_widths()
         self.lo, self.hi = model.lo[self.free].astype(float), model.hi[self.free].astype(float)
         free_set = {int(i): n for n, i in enumerate(self.free)}
         self.mapped = []            # (mode m, pos_a, pos_g, lifted, g_lo)
@@ -772,8 +771,6 @@ class _ZMap:
 class _Engine:
     """One spectrum's fast pass. ``run`` searches; ``conclude`` tallies and reports, from any state
     (so a stopped search still reports what it priced)."""
-
-    width_ceiling_active = True      # False: the widths are fitted in meV on the static box (identity z-map)
 
     def __init__(self, ctx, settings: FastPassSettings, peaks=(), structures=None,
                  progress: ProgressFn | None = None):
@@ -892,7 +889,8 @@ class _Engine:
         return model.zmap
 
     def _conditional_widths(self) -> bool:
-        return self.width_ceiling_active and not self.prior_s.legacy_v4
+        # legacy_v4's widths are flat on (GAMMA_FLOOR, GAMMA_MAX_V4), not conditional on omega0
+        return not self.prior_s.legacy_v4
 
     def _ln_width(self, model, theta, m: int) -> float:
         """The width factor of mode ``m``: conditional on its energy's ceiling (recipe /7)."""
@@ -984,10 +982,6 @@ class _Engine:
         composite = hyp.build()
         names = composite.param_names()
         bounds = prior.mode_bounds(names, cctx, self.prior_s)
-        if not self._conditional_widths() and not self.prior_s.legacy_v4:
-            # no width ceiling (the coupled engine until S1U2): the widths keep the lifted box
-            bounds = [(lo_, self.prior_s.width_cap) if n.endswith(".Gamma") else (lo_, hi_)
-                      for n, (lo_, hi_) in zip(names, bounds)]
         lo, hi = np.array(bounds, dtype=float).T
         constraints = getattr(cctx, "constraints", None)
         fixed_pos, fixed_vals = loop._hard_fixed(constraints, names)

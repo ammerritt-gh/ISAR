@@ -8,7 +8,6 @@ import pytest
 from scipy.integrate import quad
 
 from isar.analyze import catalogue, evidence, fast_pass, loop, prior
-from isar.analyze.components import CompositeModel, ConstantBackground, Elastic, PhononDHO
 from isar.analyze.context import ScanContext
 from isar.analyze.fast_pass import FastPassSettings
 from isar.analyze.prior import PriorSettings
@@ -386,18 +385,3 @@ def test_the_nested_sampler_draws_widths_under_their_ceiling_without_a_bundle():
     g = res.parameter_samples[:, names.index("phonon.Gamma")]
     om = res.parameter_samples[:, names.index("phonon.omega0")]
     assert np.all(g <= np.minimum(4.0, om) + 1e-9)
-
-
-def test_the_transitional_flag_gives_the_old_coordinate():
-    ctx = _spectrum([(2.5, 0.6, 60.0)])
-    eng = fast_pass._Engine(ctx, FastPassSettings(mode_ceiling=1))
-    eng.width_ceiling_active = False
-    model = eng.model(eng.variant(1, True, True), ())
-    zm = eng.zmap(model)
-    assert not zm.active and not zm.mapped and model.hi[model.modes[0][1]] == 20.0     # the lifted box
-    theta = np.array([2.5, 6.0, 60.0, 150.0, 4.0])
-    assert np.array_equal(zm.to_z(theta), theta) and zm.ln_jac(theta) == 0.0
-    assert eng.ln_prior(model, theta) == pytest.approx(eng.sp.ln_energies([2.5]) + eng.sp.ln_width(6.0)
-                                                       + eng.sp.ln_height(60.0) + eng.sp.ln_height(150.0)
-                                                       + eng.sp.ln_background(4.0))
-    assert CompositeModel and PhononDHO and Elastic and ConstantBackground
