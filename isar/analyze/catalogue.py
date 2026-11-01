@@ -547,13 +547,16 @@ class PriorBundle:
     already reduced)."""
 
     params: tuple[ResolvedPrior, ...]
+    width_conditioned: bool = True    # False under legacy_v4: its width support is GAMMA_MAX_V4 whatever omega0
 
     @cached_property
     def _width_links(self) -> dict:
         """``{Gamma index: omega0 index}`` for every width with a same-prefix energy in the bundle: that
         width's prior is conditional on its mode's width ceiling ``min(p.hi, omega0)`` (recipe /7).
         A width whose energy is not in the bundle (hard-fixed) stays unconditional on ``p.hi``, which
-        :func:`resolve_priors` has already cut at that fixed energy's ceiling."""
+        :func:`resolve_priors` has already cut at that fixed energy's ceiling. Empty when not conditioned."""
+        if not self.width_conditioned:
+            return {}
         index = {p.name: i for i, p in enumerate(self.params)}
         return {i: index[p.name[:-len("Gamma")] + "omega0"] for i, p in enumerate(self.params)
                 if p.name.endswith(".Gamma") and p.name[:-len("Gamma")] + "omega0" in index}
@@ -791,7 +794,7 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=(),
         raise ValueError(f"catalogue entry {getattr(entry, 'name', '?')!r} declares priors for "
                          f"parameter suffix(es) {sorted(unmatched)} that match no free "
                          f"parameter of this composite")
-    return PriorBundle(tuple(resolved))
+    return PriorBundle(tuple(resolved), width_conditioned=not settings.legacy_v4)
 
 
 # --------------------------------------------------------------------------- placement rules (SCENE-4 PR 4.2a, commit A4)

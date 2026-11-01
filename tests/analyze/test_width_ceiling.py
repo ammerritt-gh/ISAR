@@ -167,6 +167,23 @@ def test_a_hard_fixed_omega0_caps_its_own_width_in_the_bundle():
     assert bundle.logpdf_ordered({**named, "phonon.Gamma": 1.5}) > -math.inf
 
 
+def test_a_legacy_v4_width_is_not_capped_by_its_energy():
+    # the v4 arm's width support is GAMMA_MAX_V4 whatever omega0: a 2 meV mode may be 3 meV wide
+    ctx = _ctx(np.full(X.size, 100.0))
+    hyp = next(h for h in catalogue.enumerate_count_structures(ctx, 1) if h.label == "elastic+stokes+bg")
+    bundle = evidence.candidate_bundle(hyp, ctx, prior_settings=PriorSettings(legacy_v4=True))
+    names = [p.name for p in bundle.params]
+    by, grid = bundle.by_name(), np.linspace(0.0, 1.0, 4001)
+    u = np.full(len(names), 0.5)
+    u[names.index("phonon.omega0")] = np.interp(2.0, [by["phonon.omega0"].ppf(v) for v in grid], grid)
+    g = by["phonon.Gamma"]
+    u[names.index("phonon.Gamma")] = (3.0 - g.lo) / (g.hi - g.lo)
+    out = dict(zip(names, bundle.transform_ordered(u)))
+    assert out["phonon.omega0"] == pytest.approx(2.0, abs=1e-3)
+    assert out["phonon.Gamma"] == pytest.approx(3.0, abs=1e-9)
+    assert bundle.logpdf_ordered(out) > -math.inf
+
+
 def test_the_energy_window_keeps_every_width_range_non_empty():
     for fwhm in (1e-3, 0.05, 0.5, 1.5):
         sp = prior.resolve_prior(np.array([0, 3, 250, 7.0]), np.linspace(-16, 20, 50), fwhm=fwhm)
