@@ -41,7 +41,7 @@ from typing import Callable
 import numpy as np
 
 from isar.analyze.prior import (EnergyPrior, PriorSettings, QEWidthPrior, energy_prior, qe_width_prior,
-                                resolution_fwhm)
+                                resolution_fwhm, width_ceiling)
 
 from isar.analyze import phonon
 from isar.analyze.components import CentralQE, ConstantBackground, Elastic, PhononDHO, QuasiElastic
@@ -552,7 +552,8 @@ class PriorBundle:
     def _width_links(self) -> dict:
         """``{Gamma index: omega0 index}`` for every width with a same-prefix energy in the bundle: that
         width's prior is conditional on its mode's width ceiling ``min(p.hi, omega0)`` (recipe /7).
-        A width whose energy is not in the bundle (hard-fixed) stays unconditional on ``p.hi``."""
+        A width whose energy is not in the bundle (hard-fixed) stays unconditional on ``p.hi``, which
+        :func:`resolve_priors` has already cut at that fixed energy's ceiling."""
         index = {p.name: i for i, p in enumerate(self.params)}
         return {i: index[p.name[:-len("Gamma")] + "omega0"] for i, p in enumerate(self.params)
                 if p.name.endswith(".Gamma") and p.name[:-len("Gamma")] + "omega0" in index}
@@ -723,6 +724,7 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=(),
     settings = prior_settings or PriorSettings()
     constraints = getattr(ctx, "constraints", None)
     soft = dict(getattr(constraints, "soft", None) or {})
+    hard = dict(getattr(constraints, "hard", None) or {})
     origins = dict(getattr(constraints, "origins", None) or {})
     declared = {p.param: p for p in (entry.parameter_priors if entry is not None else ())}
     excluded = set(exclude)
@@ -756,6 +758,10 @@ def resolve_priors(composite, ctx, bounds, *, entry=None, exclude=(),
                 sigma = _resolve_value(d.sigma, ctx, what=f"{name} sigma")
                 resolved.append(_validated(name, d.kind, mu, sigma, lo, hi, "identity"))
         elif suffix == "Gamma":
+            # a hard-fixed energy is in no bundle factor to condition on, so its ceiling is cut here
+            energy = name[:-len("Gamma")] + "omega0"
+            if energy in excluded and energy in hard:
+                hi = min(hi, width_ceiling(float(hard[energy]), settings=settings))
             if settings.width_kind == "flat" or settings.legacy_v4:
                 resolved.append(ResolvedPrior(name, "flat", None, None, lo, hi, "default_flat_width"))
             else:
