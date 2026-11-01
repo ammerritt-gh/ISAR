@@ -64,6 +64,8 @@ def test_link_scans_links_the_fits_in_use_leaves_out_an_unfitted_analyzer_and_ne
     result = linking.link_scans(ws, scan_keys(ws))
     assert _snapshot(ws) == before                  # linking reads only
     assert set(result.made_from) == set(spectrum_keys(ws)) - {unfitted}
+    inputs, _ = linking.inputs_for(ws, [u for u in spectrum_keys(ws) if u != unfitted])
+    assert inputs and all(li.areas == (10.0, 10.0) and li.sigma_areas == (1.0, 1.0) for li in inputs.values())
     assert result.excluded[unfitted][0] and result.excluded[unfitted][1] is None
     assert result.branches, "the same two modes in every analyzer should link"
 
@@ -93,16 +95,16 @@ def test_a_held_map_and_its_own_source_give_the_same_inputs_as_the_store_read(ws
     assert sourced == read
 
 
-def test_a_recorded_efficiency_scales_only_its_own_spectrum(ws):
-    unit, other = spectrum_keys(ws)[0], spectrum_keys(ws)[1]     # the fixture's files carry their own efficiencies
-    before, _ = linking.inputs_for(ws, [unit, other])
+def test_a_recorded_efficiency_scales_its_spectrum_and_no_efficiency_is_one(ws):
+    unit, other = spectrum_keys(ws)[0], spectrum_keys(ws)[1]
     ws_ = Workspace.open(ws)
     card, session = ws_.load()
-    entry = session.scans[unit]
-    entry.provenance = {**(entry.provenance or {}), "analyzer_facts": {"efficiency": {"value": 0.5}}}
+    for key, facts in ((unit, {"efficiency": {"value": 0.5}}), (other, {})):
+        entry = session.scans[key]
+        entry.provenance = {**(entry.provenance or {}), "analyzer_facts": facts}
     ws_.save(card, session)
-    after, _ = linking.inputs_for(ws, [unit, other])
-    assert after[unit].scale == 2.0 and after[other].scale == before[other].scale
+    inputs, _ = linking.inputs_for(ws, [unit, other])
+    assert inputs[unit].scale == 2.0 and inputs[other].scale == 1.0
 
 
 def test_the_link_item_emits_one_done_result_that_the_writer_saves(ws):
