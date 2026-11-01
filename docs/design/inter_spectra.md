@@ -41,6 +41,7 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | Anchored batch: rings fixed by distance, seams, not reached | Implemented | `isar/session/inter_spectra/rings.py`, `runner.py` | `tests/session/inter_spectra/test_rings.py`, `tests/session/test_inter_spectra_runner.py` |
 | Simultaneous batch: rounds, sweeps, quiet-sweep settling, sweep cap (did not settle) | Implemented | `isar/session/inter_spectra/runner.py`, `schedule.py` | `tests/session/test_inter_spectra_runner.py` |
 | Batch as one queue item (pass kind `inter`), run by the analysis service | Implemented | `isar/session/analysis_service.py`, `analysis_queue.py`, `isar_gui/queue_controller.py` | `tests/session/test_analysis_service.py`, `test_analysis_queue.py`, `tests/gui/test_queue_panel_inter.py` |
+| Mode linking as a queue item (pass kind `link`): one item on the link lock, one core, its result saved by the one writer | Partial: built and tested at the queue and the service; no control starts it yet | `isar/session/analysis_queue.py`, `analysis_service.py`, `isar/session/inter_spectra/linking.py` (`run_link`) | `tests/session/test_analysis_queue.py`, `tests/session/test_link_service.py` |
 | Machine store: index, payloads, one writer under the workspace lock | Implemented | `isar/session/inter_spectra/records.py`, `isar/session/writer.py` (`save_inter`) | `tests/session/test_inter_records.py`, `test_inter_records_gpi.py` |
 | Authority: the fit in use, picks, locks, acceptance, staleness | Implemented | `isar/session/inter_spectra/authority.py` | `tests/session/test_inter_authority.py` |
 | User values (anchors, picks, locks, settings) with checked writers | Implemented | `isar/intake/inter_spectra.py`, `isar/intake/inter_values.py` | `tests/intake/test_inter_user.py` |
@@ -471,8 +472,8 @@ names, so a result saved after another never refuses on names; its ids stay.
 | `tools/inter_gradient_compare.py` | compares the gradient path with the finite-difference path on picked real-shaped jobs, per class (`summary.txt`, `table.md`, `compare.json` with `--out`) |
 | `tools/inter_screen_calibration.py` | shadow run of ring 1's stage 1: screen errors, count-total errors and shadow decisions (`calibration.json`, `calibration.md` with `--out`) |
 | `isar/session/writer.py` | `save_inter` and `save_links`, the one writer of the machine store |
-| `isar/session/analysis_service.py` | runs an `inter` queue item in the analysis process |
-| `isar/session/analysis_queue.py` | the queue's bookkeeping for `inter` items |
+| `isar/session/analysis_service.py` | runs an `inter` and a `link` queue item in the analysis process |
+| `isar/session/analysis_queue.py` | the queue's bookkeeping for `inter` and `link` queue items |
 | `isar/intake/inter_spectra.py` | the user values, read (`fold`, `read_user`) |
 | `isar/intake/inter_values.py` | the checked writers of the user values |
 | `isar/workspace_api/inter_spectra.py` | the read facade the GUI and notebooks use |
