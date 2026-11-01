@@ -233,3 +233,9 @@ def test_a_link_item_on_a_generated_workspace_runs_the_real_targets_through_the_
     assert set(records.read_link_payload(root, line).made_from) == set(spectrum_keys(root))
     assert records.read_log(root).damaged == ()
     assert svc.shutdown() == 0
+
+
+def test_the_link_lock_is_one_literal_in_the_queue_the_service_and_the_linking_module():
+    from isar.session import analysis_queue, analysis_service
+    from isar.session.inter_spectra import linking
+    assert analysis_queue.LINK_LOCK == analysis_service.LINK_LOCK == linking.LINK_LOCK == "link:all"
