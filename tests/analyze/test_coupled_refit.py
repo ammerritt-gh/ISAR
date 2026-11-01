@@ -755,7 +755,10 @@ def test_a_resolution_limited_mode_stays_delta_through_the_continuous_stage(seed
 def test_the_evidence_selected_delta_mask_reaches_the_runner_refinement_and_stays():
     # the split of test 1: pricing selects the two-mode composition with both widths at delta. The runner refines
     # with the Assignment alone (no prices passed): the mask must come with it, and stay through a later sweep.
-    true = [(8.0, 0.3, 30.0), (10.0, 0.3, 30.0)]
+    # Planted resolution-limited: at Gamma 0.3 the masks sat within 0.1 nat, so recipe /7's narrower width range
+    # (about 0.37 nat cheaper per free width) tipped the tie to one free width; at the floor both-delta leads by ~15.
+    from isar.analyze.phonon import GAMMA_FLOOR
+    true = [(8.0, GAMMA_FLOOR, 30.0), (10.0, GAMMA_FLOOR, 30.0)]
     snap = t_pair(spectrum(true, scale=0.08, seed=5), [(9.0, 1.0, 4.0)], ["fast:y#0"], true, ["b1", "b2"])
     a, priced = R.assign(snap)
     win = next(p for p in priced if (p.count, tuple(p.slots)) == (a.count, a.slots))
