@@ -11,6 +11,8 @@ Rules (design steps 4, 6, 7, 8, 10, 13, 16):
   batch over its ``members`` files: it occupies all of them, waits for waiting or running fast items
   on them, and blocks fast and deep items on them while it runs. Fast items start before deep and
   inter items; within a pass the oldest *runnable* item starts first.
+* A link item (one mode-linking run) occupies only ``LINK_LOCK``, so two never run together; it starts
+  with the deep and inter items and takes one core.
 * A file is occupied from the claim until its item settles, saving included. A deep or inter item
   also waits while a fast item for its file waits.
 * A fast item takes one core. A deep or inter item starts only while no fast item runs, claims every
@@ -28,14 +30,15 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Iterable, Literal, Mapping
 
-PassKind = Literal["fast", "deep", "inter"]
+PassKind = Literal["fast", "deep", "inter", "link"]
 ItemState = Literal["waiting", "running", "saving",  # active
                     "done", "done_warning", "already_current", "held", "failed", "stopped"]  # settled
 SkipReason = Literal["current", "waiting", "running"]
 End = Literal["completed", "stopped", "failed"]
 
-_PASSES = ("fast", "deep")                    # the passes ``add`` takes; inter items come from add_inter
-_RESULT_PASSES = ("fast", "deep", "inter")
+LINK_LOCK = "link:all"                        # same literal as session.inter_spectra.linking (a test asserts it)
+_PASSES = ("fast", "deep")                    # the passes ``add`` takes; inter and link come from add_inter, add_link
+_RESULT_PASSES = ("fast", "deep", "inter", "link")
 _ENDS = ("completed", "stopped", "failed")
 _RESULT_STATUSES = ("done", "done_warning", "already_current", "held", "failed")
 _ACTIVE = ("waiting", "running", "saving")
@@ -57,7 +60,7 @@ class ItemView:
     started_at: float | None                 # the caller's clock, from on_started
     progress: Mapping[str, object] | None    # last C-progress dict, verbatim
     progress_at: float | None                # the caller's clock at that progress
-    members: tuple[str, ...] = ()            # the files occupied: (unit_key,) for fast and deep
+    members: tuple[str, ...] = ()            # the files occupied: (unit_key,) for fast and deep, (LINK_LOCK,) for link
 
 
 @dataclass(frozen=True)
@@ -83,6 +86,7 @@ class QueueSnapshot:
     deep: tuple[ItemView, ...]               # active deep items, by seq
     finished: tuple[ItemView, ...]           # settled items, in settle order, until clear_finished()
     inter: tuple[ItemView, ...] = ()         # active batch items, by seq
+    link: tuple[ItemView, ...] = ()          # active link items, by seq
 
 
 class _Result:
@@ -117,7 +121,7 @@ class _Item:
         self.reason: str | None = None
         self.end: str | None = None
         self.end_reason: str | None = None
-        self.results: dict[str, _Result] = {}  # fast and deep: the one result of each pass
+        self.results: dict[str, _Result] = {}  # fast, deep and link: the one result of each pass
         self.saves: list[_Result] = []         # inter: every ring or sweep, in arrival order
         self.started_at: float | None = None
         self.progress: Mapping[str, object] | None = None
@@ -196,6 +200,13 @@ class AnalysisQueue:
         self._items[it.item_id] = it
         return self._view(it)
 
+    def add_link(self, link_id: str, *, automatic: bool = False) -> ItemView:
+        """One mode-linking run over the link lock; always added, like a batch."""
+        self._seq += 1
+        it = _Item(f"{self._prefix}{self._seq}", f"link:{link_id}:link", "link", automatic, self._seq, (LINK_LOCK,))
+        self._items[it.item_id] = it
+        return self._view(it)
+
     def addable(self, unit_keys: Iterable[str], pass_kind: PassKind,
                 current: Mapping[str, frozenset[str]]) -> tuple[str, ...]:
         return tuple(self._classify(unit_keys, pass_kind, current)[0])
@@ -252,10 +263,10 @@ class AnalysisQueue:
             if it is not None:
                 cores = 1
             else:
-                it = self._oldest_runnable(("deep", "inter")) if self._deep_may_start() else None
+                it = self._oldest_runnable(("deep", "inter", "link")) if self._deep_may_start() else None
                 if it is None:
                     break
-                cores = self._deep_share(free)
+                cores = 1 if it.pass_kind == "link" else self._deep_share(free)
             it.state = "running"
             it.cores = cores
             free -= cores
@@ -445,4 +456,5 @@ class AnalysisQueue:
             deep=tuple(self._view(it) for it in active if it.pass_kind == "deep"),
             finished=tuple(self._view(self._items[i]) for i in self._finished),
             inter=tuple(self._view(it) for it in active if it.pass_kind == "inter"),
+            link=tuple(self._view(it) for it in active if it.pass_kind == "link"),
         )

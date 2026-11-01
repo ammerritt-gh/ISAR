@@ -23,7 +23,7 @@ def fin(q, item_id, pass_kind, status="done", reason=None):
 
 def state(q, item_id):
     snap = q.snapshot()
-    for v in snap.fast + snap.deep + snap.inter + snap.finished:
+    for v in snap.fast + snap.deep + snap.inter + snap.link + snap.finished:
         if v.item_id == item_id:
             return v
     raise AssertionError(f"{item_id} not in snapshot")
@@ -483,3 +483,50 @@ def test_random_sequence_keeps_the_invariants():
         elif op == "pause":
             q.resume() if snap.paused else q.pause()
         check_after_starts(snap.cores_in_use)
+
+
+# C-link-queue examples 1-4 (the service's refusal is example 5, in test_link_service.py)
+def test_link_c1_add_link_is_a_pass_on_the_link_lock():
+    q = AnalysisQueue(4)
+    v = q.add_link("l1", automatic=True)
+    assert (v.unit_key, v.pass_kind, v.members, v.automatic) == ("link:l1:link", "link", ("link:all",), True)
+    assert [w.item_id for w in q.snapshot().link] == [v.item_id]
+
+
+def test_link_c2_fast_items_start_first_and_a_link_takes_one_core():
+    q = AnalysisQueue(4)
+    q.add_link("l1")                                               # q1 waits
+    q.add(["A"], "fast", automatic=True, current=NONE)             # q2 waits
+    assert ids(q.next_starts()) == [("q2", "fast", 1)]             # the fast item only
+    assert q.next_starts() == []
+    fin(q, "q2", "fast")
+    q.on_saved("q2", "fast")
+    assert ids(q.next_starts()) == [("q1", "link", 1)]             # one core, though three are idle
+
+
+def test_link_c3_two_link_items_never_run_together():
+    q = AnalysisQueue(4)
+    q.add_link("l1")                                               # q1
+    q.add_link("l2")                                               # q2
+    assert ids(q.next_starts()) == [("q1", "link", 1)]
+    assert state(q, "q2").waiting_on == "q1"
+    fin(q, "q1", "link")
+    q.on_saved("q1", "link")
+    assert ids(q.next_starts()) == [("q2", "link", 1)]
+
+
+def test_link_c4_a_link_settles_done_after_its_save_in_either_order():
+    q = AnalysisQueue(2)
+    q.add_link("l1")
+    q.add_link("l2")
+    assert ids(q.next_starts()) == [("q1", "link", 1)]
+    q.on_result("q1", "link", "done", "summary", saving=True)
+    assert q.on_saved("q1", "link")                                # the answer, then the end
+    assert q.on_finished("q1", "completed", None)
+    assert (state(q, "q1").state, state(q, "q1").reason) == ("done", "summary")
+    assert ids(q.next_starts()) == [("q2", "link", 1)]
+    q.on_result("q2", "link", "done", "summary", saving=True)
+    q.on_finished("q2", "completed", None)                         # the end, then the answer
+    assert state(q, "q2").state == "saving"
+    q.on_saved("q2", "link")
+    assert state(q, "q2").state == "done"
