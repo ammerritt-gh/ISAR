@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "isar"
-version = "0.0.2"
+version = "0.0.3"
 description = "ISAR — automated inelastic-scattering data reduction, review, and triage-fitting pipeline"
 requires-python = ">=3.11"
 dependencies = [
