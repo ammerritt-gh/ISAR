@@ -566,7 +566,8 @@ class PriorBundle:
         j = self._width_links.get(i)
         if j is None:
             return p.logpdf(named_values[p.name])
-        return p.logpdf_given(named_values[p.name], float(named_values[self.params[j].name]))
+        # p.hi already carries any narrower static cap; the cut is min(p.hi, the mode's ceiling)
+        return p.logpdf_given(named_values[p.name], width_ceiling(float(named_values[self.params[j].name])))
 
     def logpdf(self, named_values: dict) -> float:
         return float(sum(self._width_term(i, named_values) for i in range(len(self.params))))
@@ -660,7 +661,7 @@ class PriorBundle:
             out[g] = ordered_energy_transform(u[g], density)
         for i in self._ungrouped_positions:     # widths last: each is drawn given its mode's energy
             if i in links:
-                out[i] = self.params[i].ppf_given(u[i], out[links[i]])
+                out[i] = self.params[i].ppf_given(u[i], width_ceiling(float(out[links[i]])))
         return out
 
     @property

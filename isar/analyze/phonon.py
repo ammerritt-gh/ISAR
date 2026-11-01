@@ -86,17 +86,17 @@ SPLIT_HEIGHT_RATIO = 2.0
 # ----------------------------------------------------------------------------
 # Γ-bound diagnostics
 # ----------------------------------------------------------------------------
-def _gamma_at_bound(gammas, omegas=None) -> bool:
+def _gamma_at_bound(gammas, omegas=None, *, settings=None) -> bool:
     """True if any phonon Γ has railed out — pinned near GAMMA_FLOOR (resolution-limited spike)
     or its upper ceiling (runaway-broad) — so its derived ω₀ interval is not trustworthy.
     The ceiling is GAMMA_MAX, or, given the modes' ``omegas`` (recipe /7), each mode's own
-    ``min(WIDTH_CAP_LONE_MEV, ω₀)``."""
-    from isar.analyze.prior import WIDTH_CAP_LONE_MEV
+    :func:`isar.analyze.prior.width_ceiling` under the fit's prior ``settings``."""
+    from isar.analyze.prior import width_ceiling
     gammas = list(gammas)
     oms = [None] * len(gammas) if omegas is None else list(omegas)
     for g, w in zip(gammas, oms):
         g = float(g)
-        top = GAMMA_MAX if w is None else min(GAMMA_MAX, WIDTH_CAP_LONE_MEV, float(w))
+        top = GAMMA_MAX if w is None else width_ceiling(float(w), settings=settings)
         if g <= GAMMA_BOUND_TOL or g >= top * (1.0 - 1e-3):
             return True
     return False

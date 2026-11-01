@@ -25,7 +25,7 @@ from isar.analyze.components import CentralQE, ConstantBackground, Elastic, Phon
 from isar.analyze.context import ScanContext, effective_exposure, select_exposure
 from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.phonon import EPS_OMEGA0, _phonon_for
-from isar.analyze.prior import WIDTH_CAP_LONE_MEV, mode_bounds
+from isar.analyze.prior import PriorSettings, mode_bounds, width_ceiling
 from isar.analyze.progress import ProgressFn, emitter, relay
 from isar.schema.card import Card
 from isar.schema.scan import Flag, exposure_for
@@ -157,7 +157,13 @@ def _in_window_counts(ctx) -> float:
         return 0.0
 
 
-def _mode_hesse_trusted(mode: dict, *, covariance_ok: bool, counts_ok: bool) -> bool:
+def _fit_prior_settings(fit):
+    """The prior settings ``fit`` recorded (its ``fit_semantics`` recipe); ``None``: the recipe default."""
+    recipe = (getattr(fit, "fit_semantics", None) or {}).get("prior_recipe") or {}
+    return PriorSettings(**recipe["settings"]) if "settings" in recipe else None
+
+
+def _mode_hesse_trusted(mode: dict, *, covariance_ok: bool, counts_ok: bool, settings=None) -> bool:
     """Whether ONE fitted mode's delta-method HESSE σ(ω₀) can be trusted.
 
     The fit-level ``hesse_trusted`` (:func:`_hesse_interval_and_trust`) is the primary mode's
@@ -175,7 +181,8 @@ def _mode_hesse_trusted(mode: dict, *, covariance_ok: bool, counts_ok: bool) -> 
     try:
         sig_ok = sig is not None and np.isfinite(float(sig)) and float(sig) > 0.0
         gamma_ok = gamma is not None and np.isfinite(float(gamma)) \
-            and not _gamma_at_bound([gamma], [mode.get("omega0")] if mode.get("omega0") is not None else None)
+            and not _gamma_at_bound([gamma], [mode.get("omega0")] if mode.get("omega0") is not None else None,
+                                    settings=settings)
     except (TypeError, ValueError):
         return False
     return bool(covariance_ok and counts_ok and sig_ok and gamma_ok)
@@ -1437,9 +1444,10 @@ def _auto_escalation_reasons(prelim, fits, ctx) -> list[str]:
             continue
         value, sigma = float(value), float(sigma)
         if name.endswith(".Gamma"):
-            # the upper edge is this mode's own ceiling, min(4 meV, omega0) (recipe /7)
+            # the upper edge is this mode's own ceiling under the fit's recipe (recipe /7)
             omega0 = best.params.get(name[:-len("Gamma")] + "omega0")
-            top = loop.GAMMA_MAX if omega0 is None else min(loop.GAMMA_MAX, WIDTH_CAP_LONE_MEV, float(omega0))
+            top = loop.GAMMA_MAX if omega0 is None else width_ceiling(
+                float(omega0), settings=_fit_prior_settings(best))
             if min(value - loop.GAMMA_FLOOR, top - value) <= 2.0 * sigma:
                 reasons.append("gamma_within_2sigma_of_bound")
                 break
@@ -1880,8 +1888,10 @@ def fit_one(ctx, card: Card, *, prior, M, seed, structure_labels=None, peaks=Non
         # SELECTED mode's onto the row, so a target certifies on its own chain, never a rival's.
         shared_cov = bool(getattr(best, "covariance_ok", False))
         shared_counts = _in_window_counts(ctx) >= _HESSE_MIN_COUNTS
+        fit_settings = _fit_prior_settings(best)
         modes = [{**dict(m), "hesse_trusted": _mode_hesse_trusted(
-                      dict(m), covariance_ok=shared_cov, counts_ok=shared_counts)}
+                      dict(m), covariance_ok=shared_cov, counts_ok=shared_counts,
+                      settings=fit_settings)}
                  if isinstance(m, dict) else m for m in modes]
     # GUI Phase 0 (additive, no fitting/selection logic touched): the delivered fit's linear
     # amplitudes and the model-selection candidate table. Built from the FINAL selection (``sel``)

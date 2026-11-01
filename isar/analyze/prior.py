@@ -394,14 +394,8 @@ class SpectrumPrior:
         return -math.log(self.background_hi) if 0.0 <= b <= self.background_hi else -math.inf
 
     def ln_width(self, g: float) -> float:
-        s = self.settings
         lo, hi = self._width_support()
-        if not lo <= g <= hi:
-            return -math.inf
-        if s.width_kind == "flat" or s.legacy_v4:
-            return -math.log(hi - lo)
-        return -math.log(g + s.width_knee) - math.log(math.log((hi + s.width_knee)
-                                                              / (lo + s.width_knee)))
+        return ln_width_given(g, hi, lo, self.settings)
 
     def d_ln_width(self, g: float) -> float:
         """d ln_width / d Gamma inside the support (the heights' and background's densities are flat: no
