@@ -36,6 +36,7 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | Width at the floor and the quasi-elastic line: a railed width is a resolution-limited alternative that is priced; a QE line railed at its narrowest width is the elastic line (shared engine); the model line is chosen by evidence beyond the hysteresis margin | Implemented on synthetic spectra | `isar/analyze/coupled/refit.py`, `engine.py`, `rules.py` | `tests/analyze/test_coupled_width_floor.py`, `tests/analyze/test_coupled_search_real.py` |
 | Counts above six: pricing, refinement, the release fit and storage accept a count beyond six; `full_search` prices a stated finite domain as a check | Implemented on synthetic spectra | `isar/analyze/coupled/search.py`, `refit.py`, `isar/session/inter_spectra/runner.py` | `tests/analyze/test_coupled_search_real.py`, `tests/analyze/test_coupled_search.py` |
 | Search, price and resume across the refit pool: the runner feeds each spectrum's search as its own jobs return, caches prices within one batch, sizes the pool to the item's cores (`ISAR_WORKERS`, when set, caps it), keeps every worker busy (a candidate's fits, basins and split nodes run as tasks on the same pool, and idle workers price the searches' likely next promotions ahead), and reports timing in the batch's `end` record | Implemented; the timing is measured in section 10 | `isar/session/inter_spectra/runner.py`, `isar/analyze/coupled/tasks.py`, `tools/inter_timing.py` | `tests/session/test_inter_spectra_runner.py`, `tests/test_inter_timing_tool.py`, `tests/session/test_inter_service_e2e.py` |
+| Mode linking core: branches by grid-wide matching on the peak energy, width and intrinsic intensity of each mode, contradictions, near ties, predictions from neighbours, listed changes (add, split, drop), markers, JSON form | **Partial**: built and tested on synthetic grids; the four tolerances are uncalibrated (section 5); not yet saved, queued or used by a batch | `isar/analyze/coupled/linking.py` | `tests/analyze/test_coupled_linking.py` |
 | Branch identity: persistent ids, loops, returns, cumulative T drift | Implemented | `isar/analyze/coupled/identity.py` | `tests/analyze/test_coupled_identity.py` |
 | Anchored batch: rings fixed by distance, seams, not reached | Implemented | `isar/session/inter_spectra/rings.py`, `runner.py` | `tests/session/inter_spectra/test_rings.py`, `tests/session/test_inter_spectra_runner.py` |
 | Simultaneous batch: rounds, sweeps, quiet-sweep settling, sweep cap (did not settle) | Implemented | `isar/session/inter_spectra/runner.py`, `schedule.py` | `tests/session/test_inter_spectra_runner.py` |
@@ -99,6 +100,17 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
   as a full price.
 - **Promotion**: asking a screened candidate for its full price. The full price replaces the screen in the
   search's ledger; it is never added to it.
+- **Mode linking**: the step that decides which modes of neighbouring spectra are one branch, before any coupled
+  fitting. It chooses links and starting values only; its scores never enter a fit's likelihood.
+- **Linked branch**: modes of two or more spectra that mode linking joined, with one grid-wide name (`B<n>`).
+  An anchored mode is a branch of its own id even alone.
+- **Peak energy E\***: where a mode's unconvolved intensity peaks, meV. For a sharp mode it is omega0; an
+  overdamped or broad mode is matched by E\*, never by its omega0.
+- **Near tie**: two consistent ways of linking whose summed mismatch differs by less than `tie_margin`, reported as
+  one local group (a swap at a crossing, or two rivals for one mode), never forced to one answer.
+- **Contradiction**: a link that would put two modes of one spectrum on one branch, or join two anchored
+  branches. It is reported and refused.
+- **Settled mode**: a mode on a branch that is in no near tie and no contradiction.
 
 ## 3. Invariants
 
@@ -432,6 +444,7 @@ or older refit is drawn and exported in its own context, never in a later fast s
 | `isar/analyze/coupled/rules.py` | the pure decision rules: acceptance order, settling, flag score, the count-first decision |
 | `isar/analyze/coupled/search.py` | one spectrum's adaptive candidate search: seeds, count steps, labelling moves, screens and promotions (`Search.feed`, `_final`, `_rank`), the search record and the shadow record |
 | `isar/analyze/coupled/identity.py` | persistent branch identity across neighbours |
+| `isar/analyze/coupled/linking.py` | mode linking: the pure core, its result and JSON form |
 | `isar/session/inter_spectra/nodes.py` | spectrum keys, series keys and temperatures |
 | `isar/session/inter_spectra/layout.py` | the 4 × 7 analyzer grid and its adjacency |
 | `isar/session/inter_spectra/graph.py` | links, curvature terms and the batch scope |
