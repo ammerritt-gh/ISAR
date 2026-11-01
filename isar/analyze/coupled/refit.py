@@ -350,8 +350,7 @@ class _Labelled(cc.CoupledEngine):
         res = self._trf(model, theta0, family)
         if res is None:
             return None
-        theta = theta0.copy()
-        theta[model.free] = res.x
+        theta = self.zmap(model).to_theta(res.x, theta0)
         cost = self.cost(model, theta)
         if not math.isfinite(cost):
             return None
@@ -1086,12 +1085,6 @@ def _incoming_state(eng, spec: _Spec):
     return model, np.array([float(p[n]) for n in model.names])
 
 
-def _with(theta, free, z):
-    t = theta.copy()
-    t[free] = z
-    return t
-
-
 def _variant_key(v) -> tuple:
     return (v.elastic, v.background, v.qe)
 
@@ -1107,14 +1100,16 @@ def _materially_moved(eng, model, theta, old) -> bool:
                for i in model.free if i not in energies)
 
 
-def _cov(f, model, theta):
-    """Free-coordinate covariance of ``f`` (= objective/2) at theta by the fast pass's Hessian method; None
-    when not positive definite. The Laplace log evidence of this objective is discarded (spec 6)."""
-    free = model.free
-    if free.size == 0:
+def _cov(f, eng, model, theta):
+    """Free-coordinate covariance of ``f`` (= objective/2) at theta by the fast pass's Hessian method, taken in the z
+    coordinate (the widths as ``t`` on their own range, the fast pass's step floor) and mapped back to meV by the
+    delta method; None when not positive definite. The Laplace log evidence of this objective is discarded (spec 6)."""
+    if model.free.size == 0:
         return None
-    return prior.laplace_log_evidence(lambda z: f(_with(theta, free, z)), theta[free], model.lo[free],
-                                      model.hi[free]).cov
+    zm = eng.zmap(model)
+    cov = prior.laplace_log_evidence(lambda z: f(zm.to_theta(z, theta)), zm.to_z(theta), zm.lo, zm.hi,
+                                     step_floor=zm.step_floor(theta) if zm.mapped else None).cov
+    return None if cov is None else zm.cov_to_theta(theta, cov)
 
 
 def _sigmas(model, cov):
@@ -1259,7 +1254,7 @@ def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
         res = eng._trf(model, theta0, "coupled")
         if res is None:
             continue
-        theta = _with(theta0, model.free, res.x)
+        theta = eng.zmap(model).to_theta(res.x, theta0)
         J = eng.J(model, theta)
         if math.isfinite(J) and (best is None or J < best[2]):
             best = (model, theta, J)
@@ -1305,7 +1300,7 @@ def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
 
     # conditional covariance from f_cont = J_i / 2 (spec 4, 6)
     t1 = time.perf_counter()
-    cov = _cov(lambda t: 0.5 * eng.J(model, t), model, theta)
+    cov = _cov(lambda t: 0.5 * eng.J(model, t), eng, model, theta)
     sd, corr = _sigmas(model, cov)
     timing["uncertainty_s"] = time.perf_counter() - t1
 
@@ -1319,7 +1314,7 @@ def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
         res = rel._trf(rel_model, theta0, "release")
         if res is None:
             continue
-        t = _with(theta0, rel_model.free, res.x)
+        t = rel.zmap(rel_model).to_theta(res.x, theta0)
         Jr = rel.J(rel_model, t)
         if math.isfinite(Jr) and (rel_best is None or Jr < rel_best[1]):
             rel_best = (t, Jr)
@@ -1329,7 +1324,7 @@ def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
         t_rel = rel_best[0]
         R_signed = D - rel.cost(rel_model, t_rel)
         R = max(0.0, R_signed)
-        rel_sd, _corr = _sigmas(rel_model, _cov(lambda t: 0.5 * rel.J(rel_model, t), rel_model, t_rel))
+        rel_sd, _corr = _sigmas(rel_model, _cov(lambda t: 0.5 * rel.J(rel_model, t), rel, rel_model, t_rel))
         span = rel_model.hi - rel_model.lo
         rel_railed = {int(i) for i in rel_model.free
                       if min(t_rel[i] - rel_model.lo[i], rel_model.hi[i] - t_rel[i]) <= 1e-6 * span[i]}
@@ -1523,13 +1518,15 @@ def _record(eng, spec, a, model, theta, cov, sd, rel_sd, modes, ids, D, status):
         full[np.ix_(model.free, model.free)] = cov
         full = full[np.ix_(idx, idx)]
     peaks = []
+    zm = eng.zmap(model)
     for dst, src in enumerate(order):
         ai, gi, ci = model.modes[src]
         md = modes[src]
         peaks.append({"index": dst, "omega0": md.omega0, "Gamma": md.gamma, "delta": src in model.delta,
                       "height": md.height, "sigma_omega0": sd.get(ai), "sigma_Gamma": sd.get(gi),
                       "sigma_height": sd.get(ci), "sigma_release": rel_sd.get(ai), "regime": md.regime,
-                      "mode_status": md.status, "branch": ids[src], "confident": md.status != "poorly_determined"})
+                      "mode_status": md.status, "branch": ids[src], "confident": md.status != "poorly_determined",
+                      "at_width_cap": zm.at_cap(theta, src)})
     dec = a.coverage.get("decision") or {}
     cp = dec.get("count_p") or spec.snap.own_record.get("count_probabilities") or {}
     p_k = cp.get(str(a.count))

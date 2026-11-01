@@ -145,7 +145,6 @@ def test_with_no_matched_slot_the_screens_act_as_in_the_fast_pass(start):
     snap = hidden_snapshot(3.0)
     spec, _, plain = _engines(snap)
     base = fast_pass._Engine(spec.ctx, spec.fs, structures=STRUCT)
-    base.width_ceiling_active = False      # S1U1 transitional: S1U2 removes this line with the flag
     b0, _ = base.fit(base.variant(2, True, True), start, "x")
     b1, _ = plain.fit(plain.variant(2, True, True), start, "x")
     assert (b1.status, b1.limit, b1.reason) == (b0.status, b0.limit, b0.reason)

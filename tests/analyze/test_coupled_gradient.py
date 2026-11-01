@@ -121,7 +121,8 @@ def test_the_joint_gradient_is_the_derivative_of_the_value(name):
     for b in priced:
         f, lo, hi = eng.objective(b.model, b.theta)
         fg, _lo, _hi = eng.objective_and_gradient(b.model, b.theta)
-        for where, z in (("mode", b.theta_map[b.model.free]), ("perturbed", _inside(b.theta_map[b.model.free], lo, hi))):
+        z_map = eng.zmap(b.model).to_z(b.theta_map)                # the optimiser coordinate (widths as t)
+        for where, z in (("mode", z_map), ("perturbed", _inside(z_map, lo, hi))):
             v, g = fg(z)
             assert v == f(z)                                       # one value: the objective's own, bit for bit
             if where == "perturbed":
@@ -132,12 +133,14 @@ def test_the_joint_gradient_is_the_derivative_of_the_value(name):
 
 
 @pytest.mark.parametrize("width_kind", ["softlog", "flat"])
-def test_a_split_node_gradient_is_the_derivative_of_its_value(width_kind):
-    # the flat (untransformed) width prior: the ridge acts on Gamma itself, so a missing ridge term shows here
+@pytest.mark.parametrize("e", [8.0, 2.5])
+def test_a_split_node_gradient_is_the_derivative_of_its_value(width_kind, e):
+    # the flat width prior: the ridge acts on s linear in Gamma, so a missing ridge term shows here; at 2.5 meV each
+    # pair width's range ends at its own energy (min(4, omega0)), so the energies carry the ceiling's terms too
     snap = _hidden(prior.PriorSettings(width_kind=width_kind))
     eng = _engine(snap, ("b1", "b2"))
     model = eng.model(eng.variant(2, True, True), ())
-    theta = eng._start(model, [(8.0, 0.4, 40.0, False), (8.2, 0.5, 3.0, False)], {"elastic": 100.0, "bg": 2.0})
+    theta = eng._start(model, [(e, 0.4, 40.0, False), (e + 0.2, 0.5, 3.0, False)], {"elastic": 100.0, "bg": 2.0})
     obj, xi0, _fj, lo, _theta_of = eng.split_problem(model, theta, (0, 1))
     for f in (0.03, 0.5, 0.97):
         g, gv, h2 = obj(f)
@@ -185,7 +188,7 @@ def test_the_qe_width_and_height_gradient():
     f, lo, hi = eng.objective(model, theta)
     fg, _lo, _hi = eng.objective_and_gradient(model, theta)
     for seed in (0, 1):
-        z = _inside(theta[model.free], lo, hi, seed=seed)
+        z = _inside(eng.zmap(model).to_z(theta), lo, hi, seed=seed)
         v, g = fg(z)
         assert v == f(z)
         _agree(g, _fd(f, z), ("qe", seed))
@@ -208,6 +211,13 @@ def test_each_prior_term_derivative_matches_a_difference_of_that_term():
     for st in (prior.PriorSettings(), prior.PriorSettings(width_kind="flat")):
         sp = prior.resolve_prior_for(spec.ctx, st)
         _grid_check(sp.ln_width, sp.d_ln_width, np.linspace(1e-3, 19.9, 97))
+        for om in (2.5, 7.0):                                     # the width given its energy: both partials
+            c = sp.ceiling_at(om)
+            _grid_check(lambda g, om=om: sp.ln_width_at(g, om), lambda g, om=om: sp.d_ln_width_at(g, om)[0],
+                        np.linspace(sp.g_lo + 1e-3, c - 1e-3, 41))
+        for g in (0.3, 1.0):                                      # d/d omega0 on both sides of the 4 meV kink
+            _grid_check(lambda om, g=g: sp.ln_width_at(g, om), lambda om, g=g: sp.d_ln_width_at(g, om)[1],
+                        np.linspace(g + 1e-2, 3.98, 21).tolist() + np.linspace(4.02, 12.0, 11).tolist())
     support = np.linspace(spec.lo + 1e-3, spec.hi - 1e-3, 233)
     for entry in (spec.entry, replace(spec.entry, physical_hi=True)):    # the smoothstep band at each edge, its middle
         _grid_check(entry.ln_weight, entry.d_ln_weight, support)

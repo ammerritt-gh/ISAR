@@ -333,13 +333,16 @@ class CoupledEngine(fast_pass._Engine):
     ``gradients`` (default on): the posterior optimiser, each split node's optimiser and every Laplace curvature they
     take run on one joint evaluation of the objective and its gradient (``objective_and_gradient``); off, the base
     engine's finite-difference calls exactly.
+    ``lifted`` (one bool per slot, default all False): a lifted slot's width ceiling is ``settings.width_cap`` (the
+    old 20 meV) instead of the lone ``min(4, omega0)``; the caller knows which modes a settled link vouches for.
     """
 
-    width_ceiling_active = False           # S1U1 transitional: the coupled engine still fits widths in meV (S1U2 removes)
-
     def __init__(self, ctx, settings, slots, *, n_exchangeable=(), continuous=False, screen=False, gradients=True,
-                 **kw):
+                 lifted=(), **kw):
         super().__init__(ctx, settings, **kw)
+        self.lifted = tuple(bool(x) for x in lifted)
+        if self.lifted and len(self.lifted) != len(slots):
+            raise ValueError(f"coupled refit: {len(self.lifted)} lifted flags for {len(slots)} slots")
         self._s0 = self.s                      # the guard swaps self.s temporarily; the pair rule reads the original
         self.screen = screen                   # every split integral is a screen (its first node set): a screen price
         self.gradients = gradients             # False: the finite-difference pricing (no joint objective and gradient)
@@ -352,8 +355,12 @@ class CoupledEngine(fast_pass._Engine):
         if self.seed_qe:                       # the central QE's start width (BL43LXU), as the fast pass's seed picks it
             self._choose_qe_start()
 
+    def lifted_of(self, model, m: int) -> bool:
+        """Whether slot ``m`` (the model's mode position) has the lifted width ceiling."""
+        return m < len(self.lifted) and self.lifted[m]
+
     @property
-    def n_split_basins(self) -> int:                # one ledger entry per split basin: each counted once
+    def n_split_basins(self) -> int:              # one ledger entry per split basin: each counted once
         return sum(len(d) for d in self._split_done.values())
 
     # ---- a mode hidden under another (S1U1) ---------------------------------------------------------------
@@ -479,35 +486,67 @@ class CoupledEngine(fast_pass._Engine):
         """The node problem of ``split_evidence``: (objective, xi_joint, f_joint, lo, theta_of). ``objective(f)``
         is (g, gv, h2): the node objective g(xi), its joint value and gradient gv(xi) (None with gradients off) and
         the coordinates' upper bounds at that f. g = cost/2 - sat - ln_prior - Jacobians + ridge, in nats.
-        The gradient by the chain rule: H (coordinate of h_i) f dF/dh_i + (1 - f) dF/dh_j - 1/H; a soft-log pair
-        width u = ln(Gamma + knee) (Gamma + knee) dF/dGamma - 1, on its lower bound too (the inward derivative);
-        an untransformed one dF/dGamma; every pair width the ridge's own term on top; every other
-        coordinate its dF/dtheta."""
-        (ai, gi, ci), (aj, gj, cj) = model.modes[pair[0]], model.modes[pair[1]]
+        Coordinates: H = h_i + h_j at h_i's place; each free pair width as s in [0, 1] on its mode's own range
+        [g_lo, c(omega0)] in the generalised log coordinate u (u = ln(Gamma + knee) for the soft-log width prior,
+        which it makes exactly flat, u = Gamma for the flat one): u(Gamma) = u(g_lo) + s R, R = u(c) - u(g_lo),
+        Jacobian ln(dGamma/du) + ln R; every other mapped width as the z map's t; the rest as theta.
+        The gradient by the chain rule: H f dF/dh_i + (1 - f) dF/dh_j - 1/H; a pair width dF/dGamma (dGamma/du) R,
+        less R for the soft-log Jacobian, on its lower bound too (the inward derivative), and its mode's free energy
+        dF/dGamma (dGamma/du) s R' - (soft-log s R') - R'/R, R' = u'(c) c'(omega0); every pair width the ridge's
+        own term on top; the other mapped widths ``_ZMap.grad_to_z``'s chain; every other coordinate its dF/dtheta."""
+        (_ai, _gi, ci), (_aj, _gj, cj) = model.modes[pair[0]], model.modes[pair[1]]
         free = [int(x) for x in model.free]
         coords = [x for x in free if x != cj]                    # ci carries H = h_i + h_j
         pos = {x: n for n, x in enumerate(coords)}
         st = self.sp.settings
         softlog = st.width_kind == "softlog" and not st.legacy_v4
         knee = st.width_knee
-        widths = [g for g in (gi, gj) if g in free]
-        lo, hi = model.lo[coords].astype(float), model.hi[coords].astype(float)
-        if softlog:
-            for g in widths:
-                lo[pos[g]], hi[pos[g]] = math.log(model.lo[g] + knee), math.log(model.hi[g] + knee)
+        zm = self.zmap(model)
+        pw = [(model.modes[m][1], m, model.modes[m][0]) for m in pair if model.modes[m][1] in free]  # (Gamma, slot, omega0)
+        widths = [g for g, _m, _a in pw]
+        other = prior.GammaMap([(a, g, g_lo, lf) for _m, a, g, lf, g_lo in zm.mapped if g not in widths],
+                               self.prior_s)
+        zbox = {x: (lo_, hi_) for x, lo_, hi_ in zip(free, zm.lo, zm.hi)}
+        lo = np.array([zbox[x][0] for x in coords], dtype=float)
+        hi = np.array([zbox[x][1] for x in coords], dtype=float)
+        for g in widths:
+            lo[pos[g]], hi[pos[g]] = 0.0, 1.0
         mid, span = 0.5 * (lo + hi), np.maximum(hi - lo, 1e-9)
         hp, h_hi = pos[ci], float(model.hi[ci])
         wn = [pos[g] for g in widths]
+
+        def u(G):
+            return math.log(G + knee) if softlog else G
+
+        def ceiling(t, g, m, a):
+            """(c, R, R') of a pair width at t: its ceiling, the u range and dR/d omega0."""
+            if zm.mapped_mode(m):
+                c = zm.ceiling(t, m)
+                dc = prior.d_width_ceiling(float(t[a]), lifted=self.lifted_of(model, m), settings=self.prior_s)
+            else:                                                # legacy_v4: the static box
+                c, dc = float(model.hi[g]), 0.0
+            return c, u(c) - u(float(model.lo[g])), (dc / (c + knee) if softlog else dc)
 
         def theta_of(xi, f):
             t = np.array(theta, dtype=float)
             for x, n in pos.items():
                 t[x] = xi[n]
             t[ci], t[cj] = f * xi[hp], (1.0 - f) * xi[hp]
-            if softlog:
-                for g in widths:
-                    t[g] = max(math.exp(xi[pos[g]]) - knee, float(model.lo[g]))
+            if other.pairs:
+                t = other.to_theta(t)                            # energies assigned first: the ceilings read them
+            for g, m, a in pw:
+                c, R, _dR = ceiling(t, g, m, a)
+                v = u(float(model.lo[g])) + xi[pos[g]] * R
+                # the clip only absorbs rounding: exp(ln(lo + knee)) - knee can land a few ulps below lo
+                t[g] = min(max(math.exp(v) - knee if softlog else v, float(model.lo[g])), c)
             return t
+
+        def jacobian(xi, t):
+            jac = math.log(max(xi[hp], 1e-300)) + (other.ln_jac(t) if other.pairs else 0.0)
+            for g, m, a in pw:
+                _c, R, _dR = ceiling(t, g, m, a)
+                jac += math.log(R) + (u(float(model.lo[g])) + xi[pos[g]] * R if softlog else 0.0)
+            return jac
 
         def objective(f):
             h2 = hi.copy()
@@ -523,8 +562,7 @@ class CoupledEngine(fast_pass._Engine):
                 if not math.isfinite(lp):
                     return math.inf
                 ridge = sum(0.5 * SPLIT_RIDGE * ((xi[n] - mid[n]) / span[n]) ** 2 for n in wn)
-                jac = math.log(max(xi[hp], 1e-300)) + (sum(xi[n] for n in wn) if softlog else 0.0)
-                return 0.5 * self.cost(model, t) - self.sat - lp - jac + ridge
+                return 0.5 * self.cost(model, t) - self.sat - lp - jacobian(xi, t) + ridge
 
             def gv(xi):
                 xi = np.asarray(xi, dtype=float)
@@ -536,20 +574,33 @@ class CoupledEngine(fast_pass._Engine):
                 if dF is None:
                     return math.inf, np.zeros(xi.size)
                 ridge = sum(0.5 * SPLIT_RIDGE * ((xi[n] - mid[n]) / span[n]) ** 2 for n in wn)
-                jac = math.log(max(xi[hp], 1e-300)) + (sum(xi[n] for n in wn) if softlog else 0.0)
-                out = dF[coords]
+                full = other.jac(t).T @ dF - other.d_ln_jac(t) if other.pairs else dF
+                out = full[coords]
                 out[hp] = f * dF[ci] + (1.0 - f) * dF[cj] - (1.0 / xi[hp] if xi[hp] > 1e-300 else 0.0)
-                for gw, n in zip(widths, wn):
-                    if softlog:   # d Gamma / du = Gamma + knee; xi >= ln(lo + knee), so theta_of's clip only absorbs rounding
-                        out[n] = math.exp(xi[n]) * dF[gw] - 1.0
-                    out[n] += SPLIT_RIDGE * (xi[n] - mid[n]) / span[n] ** 2
-                return v - jac + ridge, out
+                for gw, m, a in pw:
+                    n = pos[gw]
+                    _c, R, dR = ceiling(t, gw, m, a)
+                    s = xi[n]
+                    w = math.exp(u(float(model.lo[gw])) + s * R) if softlog else 1.0   # dGamma/du, unclipped
+                    out[n] = dF[gw] * w * R - (R if softlog else 0.0) + SPLIT_RIDGE * (s - mid[n]) / span[n] ** 2
+                    if a in pos:                                 # a fixed energy has no coordinate
+                        out[pos[a]] += dF[gw] * w * s * dR - (s * dR if softlog else 0.0) - dR / R
+                return v - jacobian(xi, t) + ridge, out
             return g, (gv if self.gradients else None), h2
 
         t0 = np.array(theta, dtype=float)
-        xi_joint = np.clip(np.array([t0[ci] + t0[cj] if x == ci
-                                     else math.log(max(t0[x], 0.0) + knee) if softlog and x in widths else t0[x]
-                                     for x in coords]), lo, hi)
+        z0 = dict(zip(free, zm.to_z(t0)))
+        x0 = []
+        for x in coords:
+            if x == ci:
+                x0.append(t0[ci] + t0[cj])
+            elif x in widths:
+                g, m, a = next(p for p in pw if p[0] == x)
+                _c, R, _dR = ceiling(t0, g, m, a)
+                x0.append((u(max(float(t0[x]), float(model.lo[x]))) - u(float(model.lo[x]))) / R)
+            else:
+                x0.append(z0[x])
+        xi_joint = np.clip(np.array(x0, dtype=float), lo, hi)
         f_joint = t0[ci] / (t0[ci] + t0[cj]) if t0[ci] + t0[cj] > 1e-12 else 0.5
         return objective, xi_joint, f_joint, lo, theta_of
 
@@ -558,8 +609,9 @@ class CoupledEngine(fast_pass._Engine):
         (h_i = f H, h_j = (1 - f) H, Jacobian H; the height prior as it is) with every other coordinate at its
         conditional Laplace at each f, Gauss-Legendre in f. g = cost/2 - sat - ln_prior - Jacobians, in nats,
         the normalisation of ``prior.laplace_log_evidence`` so split and Laplace basins sum in one logsumexp.
-        The pair's free widths enter as u = ln(Gamma + knee) when their prior is 1/(Gamma + knee) (flat in u,
-        Jacobian +u), with a small ridge so a likelihood-blind width is not numerically singular (``split_problem``).
+        The pair's free widths enter as s in [0, 1] linear in u = ln(Gamma + knee) on their mode's own range
+        [g_lo, c(omega0)] when their prior is 1/(Gamma + knee) (flat in s), with a small ridge so a likelihood-blind
+        width is not numerically singular (``split_problem``).
         With gradients on, each node's optimiser, Laplace curvature and saddle escape run on g's joint gradient."""
         problem = self.split_problem(b.model, theta, pair)
         xi_joint, f_joint = problem[1], problem[2]
@@ -623,9 +675,9 @@ class CoupledEngine(fast_pass._Engine):
                 continue                       # a pinned energy carries no free-coordinate density
             lp += slot.ln_pdf(float(theta[a])) if isinstance(slot, MatchedDensity) \
                 else slot.ln_weight(float(theta[a]))
-        for a, g, c in model.modes:            # non-energy factors exactly as _Engine.ln_prior
+        for m, (a, g, c) in enumerate(model.modes):   # non-energy factors exactly as _Engine.ln_prior
             if g not in omit:
-                lp += sp.ln_width(theta[g])
+                lp += self._ln_width(model, theta, m)
             if c not in omit:
                 lp += sp.ln_height(theta[c])
         if model.el is not None and model.el not in omit:
@@ -636,35 +688,53 @@ class CoupledEngine(fast_pass._Engine):
             lp += sp.ln_height(theta[model.qe_h])
         if model.qe_w is not None and model.qe_w not in omit:
             lp += sp.ln_qe_width(theta[model.qe_w])
-        return lp + sum(p.logpdf(float(theta[i])) for i, p in model.soft_priors)
+        return lp + self._ln_soft(model, theta)
 
     def d_ln_prior(self, model, theta) -> np.ndarray:
         """d ln_prior / d theta over every coordinate, term by term as ``ln_prior`` (inside the support). The
         coupling enters once, through each matched density's V; the heights' and background's densities and the
-        exchangeability count are constant."""
+        exchangeability count are constant. A width's density depends on its mode's energy through the ceiling
+        (recipe /7), so it has an energy partial too; a soft width cut at the ceiling, its normaliser's."""
         sp, omit = self.sp, model.omit
+        cond = self._conditional_widths()
         d = np.zeros(len(theta))
         for (a, _g, _c), slot in zip(model.modes, self.slots):
             if a not in omit:
                 d[a] += slot.d_ln_pdf(float(theta[a])) if isinstance(slot, MatchedDensity) \
                     else slot.d_ln_weight(float(theta[a]))
-        for _a, g, _c in model.modes:
-            if g not in omit:
+        for m, (a, g, _c) in enumerate(model.modes):
+            if g in omit:
+                continue
+            if cond:
+                dg, da = sp.d_ln_width_at(float(theta[g]), float(theta[a]), lifted=self.lifted_of(model, m))
+                d[g] += dg
+                d[a] += da
+            else:
                 d[g] += sp.d_ln_width(float(theta[g]))
         if model.qe_w is not None and model.qe_w not in omit:
             d[model.qe_w] += sp.d_ln_qe_width(float(theta[model.qe_w]))
+        gamma_of = {g: m for m, (_a, g, _c) in enumerate(model.modes)}
         for i, p in model.soft_priors:
             d[i] += _d_logpdf(p, float(theta[i]))
+            m = gamma_of.get(i)
+            if m is not None and cond and m not in model.delta:
+                # the cut normaliser: d ln Z(c)/dc = pdf(c)/Z(c) where the ceiling cuts the soft prior
+                a = model.modes[m][0]
+                c = self.zmap(model).ceiling(theta, m)
+                if c < p.hi:
+                    d[a] -= math.exp(p.logpdf_given(c, c)) * prior.d_width_ceiling(
+                        float(theta[a]), lifted=self.lifted_of(model, m), settings=self.prior_s)
         return d
 
     def objective_and_gradient(self, model, theta):
         """``objective``'s f with its gradient from one joint evaluation (``_value_and_grad``): (fg, lo, hi) with
-        fg(z) = (f, df/dz), (inf, 0) outside the box; None with gradients off (the finite-difference pricing) or
-        ``fd_posterior`` set."""
+        fg(z) = (f, df/dz), (inf, 0) outside the box, in the z coordinate (the widths as ``t`` in [0, 1]):
+        f = F(theta(z)) - ln_jac, its gradient by the chain rule (``_ZMap.grad_to_z``); None with gradients off (the
+        finite-difference pricing) or ``fd_posterior`` set."""
         if not self.gradients or self.fd_posterior:
             return None
-        free = model.free
-        lo, hi = model.lo[free], model.hi[free]
+        zm = self.zmap(model)
+        lo, hi = zm.lo, zm.hi
         tol = 1e-10 * np.maximum(np.abs(lo) + np.abs(hi), 1.0)
         template = np.array(theta, dtype=float)
 
@@ -672,10 +742,9 @@ class CoupledEngine(fast_pass._Engine):
             z = np.asarray(z, dtype=float)
             if np.any(z < lo - tol) or np.any(z > hi + tol):
                 return math.inf, np.zeros(z.size)
-            t = template.copy()
-            t[free] = np.clip(z, lo, hi)
+            t = zm.to_theta(np.clip(z, lo, hi), template)
             v, d = self._value_and_grad(model, t)
-            return (math.inf, np.zeros(z.size)) if d is None else (v, d[free])
+            return (math.inf, np.zeros(z.size)) if d is None else (v - zm.ln_jac(t), zm.grad_to_z(t, d))
 
         return fg, lo, hi
 
@@ -692,12 +761,14 @@ class CoupledEngine(fast_pass._Engine):
             return math.inf, None
         free = set(int(i) for i in model.free)
         peaks = model.variant.peaks
+        zm = self.zmap(model)                        # a width's upper edge is its mode's ceiling (a lifted one: 20)
+        top = {g: zm.ceiling(t, m) for m, (_a, g, _c) in enumerate(model.modes) if zm.mapped_mode(m)}
 
         def shifted(pos):
             v = float(t[pos])
             h = COLUMN_FD_REL * max(abs(v), self.fwhm)
             up, dn = v + h, v - h
-            if up > model.hi[pos]:
+            if up > top.get(pos, model.hi[pos]):
                 up = v
             elif dn < model.lo[pos]:
                 dn = v
@@ -776,12 +847,11 @@ class CoupledEngine(fast_pass._Engine):
     def _trf(self, model, theta0, family):
         if not self.continuous:
             return super()._trf(model, theta0, family)
-        free = model.free
-        lo, hi = model.lo[free], model.hi[free]
+        zm = self.zmap(model)                  # z coordinate, as the base _trf: res.x is z
+        lo, hi = zm.lo, zm.hi
 
         def residual(z):
-            t = theta0.copy()
-            t[free] = z
+            t = zm.to_theta(z, theta0)
             r = fast_pass.poisson_residuals(self.y, self.mean(model, t))
             extra = [math.copysign(math.sqrt(max(p, 0.0)), sg)
                      for _, p, sg in self.penalty_terms(model, t)]
@@ -790,4 +860,4 @@ class CoupledEngine(fast_pass._Engine):
                 r = np.concatenate([r, [(t[i] - mu) / sd for i, mu, sd in model.soft]])
             return np.nan_to_num(r, nan=1e100, posinf=1e100, neginf=-1e100)
 
-        return self._least_squares(residual, np.clip(theta0[free], lo, hi), lo, hi, family)
+        return self._least_squares(residual, np.clip(zm.to_z(theta0), lo, hi), lo, hi, family)

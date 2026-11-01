@@ -183,7 +183,9 @@ def test_the_entry_price_stays_in_the_composition_log_mass():
     theta = np.array([8.0, 0.4, 40.0, 15.0, 0.4, 60.0, 100.0, 2.0])
     edge = spec.lo + 0.3 * spec.band                     # inside the physical edge band: B = B_mid H(0.3)
     at = {e: eng.ln_prior(model, np.where(np.arange(8) == 3, e, theta)) for e in (15.0, edge)}
-    solo = spec.ep.log_pdf(15.0) - spec.ep.log_pdf(edge)
+    # the solo prior's own difference: the energy density, and the width's (its ceiling is min(4, omega0))
+    solo = (spec.ep.log_pdf(15.0) - spec.ep.log_pdf(edge)
+            + eng.sp.ln_width_at(0.4, 15.0) - eng.sp.ln_width_at(0.4, edge))
     B = spec.entry.B
     assert B(15.0) == S.birth_mid and 0 < B(edge) < S.birth_mid
     assert (at[15.0] - at[edge]) - solo == pytest.approx(-(B(15.0) - B(edge)) / 2, abs=1e-6)
@@ -216,7 +218,20 @@ def test_a_lost_branch_is_a_price_and_a_flag():
 
 
 # 4 ---------------------------------------------------------------------------------------------------------
-def test_a_broad_ridge_is_held_by_neighbours_until_the_counts_pin_it():
+class _Lifted(R._Labelled):
+    """Every slot on the lifted width ceiling (20 meV), the hook a settled link fills: under the lone ceiling,
+    min(4, omega0), a 6 meV-wide mode cannot exist and no width up to 4 meV leaves omega0 a ridge."""
+
+    def __init__(self, ctx, settings, slots, **kw):
+        super().__init__(ctx, settings, slots, lifted=(True,) * len(slots), **kw)
+
+
+@pytest.fixture
+def lifted(monkeypatch):
+    monkeypatch.setattr(R, "_Labelled", _Lifted)
+
+
+def test_a_broad_ridge_is_held_by_neighbours_until_the_counts_pin_it(lifted):
     true = [(6.0, 6.0, 10.0)]
     weak = _kept(t_pair(spectrum(true, scale=0.5, seed=2), true, ["b1"], true, ["b1"]))
     strong = _kept(t_pair(spectrum(true, scale=5.0, seed=2), true, ["b1"], true, ["b1"]))
@@ -240,8 +255,9 @@ def test_a_partly_screened_decision_is_marked_partial_in_the_saved_fit():
 def test_a_width_change_is_reported_without_an_energy_score():
     r = _kept(t_pair(spectrum([(8.0, 1.0, 40.0)], seed=10), [(8.0, 0.4, 40.0)], ["b1"], [(8.0, 0.4, 40.0)], ["b1"]))
     assert "linewidth_change" in codes(r) and r.F < S.flag_threshold
-    r = _kept(t_pair(spectrum([(5.0, 7.0, 60.0)], seed=10), [(5.0, 1.0, 60.0)], ["b1"], [(5.0, 1.0, 60.0)], ["b1"]))
-    assert "overdamped_entry" in codes(r)
+    # a mode below 4 meV at its ceiling has Gamma = omega0, the overdamped reading (above 3 meV: not near elastic)
+    r = _kept(t_pair(spectrum([(3.8, 6.0, 60.0)], seed=10), [(3.8, 1.0, 60.0)], ["b1"], [(3.8, 1.0, 60.0)], ["b1"]))
+    assert "overdamped_entry" in codes(r) and r.modes[0].regime == "overdamped"
 
 
 # 6 ---------------------------------------------------------------------------------------------------------
@@ -638,7 +654,7 @@ def test_a_swapped_order_basin_records_its_mode_in_energy_order():
     assert theta[0] == pytest.approx(lo, abs=1e-6) and theta[3] == pytest.approx(hi, abs=1e-6)   # omega0 of mode 1, 2
 
 
-def test_a_poorly_pinned_unmatched_mode_is_not_held_by_neighbours():
+def test_a_poorly_pinned_unmatched_mode_is_not_held_by_neighbours(lifted):     # the broad ridge of test 4
     true = [(6.0, 6.0, 10.0)]
     weak = t_pair(spectrum(true, scale=0.5, seed=2), true, ["fast:y#0"], true, ["b1"])
     r = R.refit(weak, stage="continuous", assignment=R._Spec(weak).skipped())       # slot None: no neighbour factor
@@ -840,7 +856,6 @@ def test_the_coupled_refit_carries_the_central_qe_as_a_nuisance():
     ctx = replace(ctx0, counts=np.random.default_rng(3).poisson(mean).astype(float))
     fs = FastPassSettings(mode_ceiling=1)
     base = fast_pass._Engine(ctx, fs)
-    base.width_ceiling_active = False      # S1U1 transitional: S1U2 removes this line with the flag
     slot = cc.MatchedDensity(base.sp.energy, "u", [], {})
     eng = R._Labelled(ctx, fs, [slot])
     v = next(v for v in eng.variants[1] if v.qe and v.elastic and v.background)
@@ -855,7 +870,8 @@ def test_the_coupled_refit_carries_the_central_qe_as_a_nuisance():
     energy = sum(base.sp.ln_energies([theta[a] for a in grp]) for grp in model.groups)
     ref = base.ln_prior(bmodel, theta) - energy
     assert eng.ln_prior(model, theta) - slot.ln_pdf(float(theta[model.modes[0][0]])) == pytest.approx(ref)
-    sp = base.sp                                                  # and that remainder includes the QE's two factors
-    assert ref == pytest.approx(sp.ln_width(theta[model.modes[0][1]]) + sp.ln_height(theta[model.modes[0][2]])
+    sp = base.sp      # and that remainder includes the QE's two factors and the width given its energy's ceiling
+    assert ref == pytest.approx(sp.ln_width_at(theta[model.modes[0][1]], theta[model.modes[0][0]])
+                                + sp.ln_height(theta[model.modes[0][2]])
                                 + sp.ln_height(theta[model.el]) + sp.ln_background(theta[model.bg])
                                 + sp.ln_height(theta[model.qe_h]) + sp.ln_qe_width(theta[model.qe_w]))

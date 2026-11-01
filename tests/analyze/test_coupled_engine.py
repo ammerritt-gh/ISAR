@@ -102,9 +102,7 @@ def test_zero_price_entries_reproduce_the_solo_evidence(k):
     ctx = _spectrum(modes)
     s = fast_pass.FastPassSettings(mode_ceiling=k)
     start = [(e + 0.3, g, h, False) for e, g, h in modes]
-    solo = fast_pass._Engine(ctx, s)
-    solo.width_ceiling_active = False      # S1U1 transitional: S1U2 removes this line with the flag
-    base = _priced(solo, k, start)
+    base = _priced(fast_pass._Engine(ctx, s), k, start)
     assert base.status in ("ok", "ok_boundary")
 
     def coupled(**kw):
@@ -137,8 +135,7 @@ def test_j_includes_the_soft_constraint_the_optimiser_applies():
     assert model.soft
     theta0 = eng._start(model, [(8.0, 0.5, 60.0, False)], None)
     res = eng._trf(model, theta0, "coupled")
-    theta = theta0.copy()
-    theta[model.free] = res.x
+    theta = eng.zmap(model).to_theta(res.x, theta0)              # res.x is the z coordinate (widths as t)
     a = model.modes[0][0]
     # the soft pull moves the optimum off the data's 8.0 meV; J, the objective _trf minimised, is stationary there
     assert 8.3 < theta[a] < 9.0

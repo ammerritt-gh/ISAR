@@ -30,7 +30,7 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | A mode hidden under another: guard against twin merges, evidence by integrating over the intensity split, undetermined status | Implemented on synthetic spectra, not established on real data | `isar/analyze/coupled/engine.py`, `refit.py` | `tests/analyze/test_coupled_hidden.py` |
 | Candidate search: seeds (each neighbour's own prediction and the spectrum's incoming fit), counts stepped both ways while within the stopping margin, labellings moved within a count, one ledger of distinct fitted basins, and a search record of every candidate and why each direction stopped. No count ceiling and no candidate cap in this pass | Partial: built and tested on synthetic cases; the stopping margin (5 nats) is an uncalibrated start, and the first real-data run is in section 10 | `isar/analyze/coupled/search.py`, `refit.py`, `types.py` | `tests/analyze/test_coupled_search.py`, `tests/analyze/test_coupled_search_real.py` |
 | Screen first, full price for contenders: each count step and labelling move is priced first as a screen (every split integral cut to its first node set); screened candidates are promoted to full prices until no optimistic remainder can change the decision. Seeds and failed screens are always full | Partial: built and tested; the 5-nat allowance is uncalibrated and was checked on one ring-1 shadow run (section 10) | `isar/analyze/coupled/search.py`, `engine.py` (`integrate_split`, `screen`), `refit.py` (`price`) | `tests/analyze/test_coupled_search_screens.py`, `tests/analyze/test_coupled_screen_price.py` |
-| Joint objective and gradient in the coupled pricing (ruling A): analytic derivatives of the Poisson term, heights, background, priors and split coordinates; column differences for mode energies and widths; curvature from differenced gradients; one-pass split polish. The solo fast pass keeps its finite differences | Partial: built and tested; it agrees with the finite-difference path on the real ordinary and bound cases, and two real hidden pairs miss the plan's 0.02-nat reading (section 10), accepted by IS25 | `isar/analyze/coupled/engine.py`, `refit.py`, `isar/analyze/prior.py` (`hessian_from_grad`), `isar/analyze/fast_pass.py` (the hook that returns none) | `tests/analyze/test_coupled_gradient.py` |
+| Joint objective and gradient in the coupled pricing (ruling A): analytic derivatives of the Poisson term, heights, background, priors and split coordinates, in the fast pass's z coordinate (widths as t on their own range, IS27); column differences for mode energies and widths; curvature from differenced gradients; one-pass split polish. The solo fast pass keeps its finite differences | Partial: built and tested; it agrees with the finite-difference path on the real ordinary and bound cases, and two real hidden pairs miss the plan's 0.02-nat reading (section 10), accepted by IS25 | `isar/analyze/coupled/engine.py`, `refit.py`, `isar/analyze/prior.py` (`hessian_from_grad`), `isar/analyze/fast_pass.py` (the hook that returns none) | `tests/analyze/test_coupled_gradient.py` |
 | Count-first decision: a count's total probability over its distinct labellings, a count change held by `evidence_hysteresis_nats`, label confidence judged within the chosen count | Implemented | `isar/analyze/coupled/rules.py` (`decide`), `search.py` | `tests/analyze/test_coupled_rules.py`, `tests/analyze/test_coupled_search_real.py` |
 | Loss price for a branch that disappears: a branch a neighbour predicts in the window and the candidate does not name pays the mirror of the entry price, once per spectrum per snapshot | Partial: its size reuses `birth_edge` and `birth_mid`, uncalibrated | `isar/analyze/coupled/refit.py` (`_Spec.loss_terms`), `engine.py` | `tests/analyze/test_coupled_loss.py` |
 | Width at the floor and the quasi-elastic line: a railed width is a resolution-limited alternative that is priced; a QE line railed at its narrowest width is the elastic line (shared engine); the model line is chosen by evidence beyond the hysteresis margin | Implemented on synthetic spectra | `isar/analyze/coupled/refit.py`, `engine.py`, `rules.py` | `tests/analyze/test_coupled_width_floor.py`, `tests/analyze/test_coupled_search_real.py` |
@@ -251,6 +251,13 @@ identity, and the saved fit keeps the mask through later sweeps. The coupled ref
 screens, among them the rule that a central quasi-elastic line whose width reaches its lower bound is the
 elastic line, so its candidate is the model without a quasi-elastic line (`docs/STATS_PRIMER.md` section 2).
 
+**A width at its ceiling.** The coupled refit allows each mode the width the fast pass allows (ruling IS27): at most
+min(4 meV, ω0), with the width prior proper on that mode's own range, fitted, priced and given its covariance in the
+fast pass's coordinate (the width as a fraction t of its range). A mode a settled link vouches for may be lifted to
+the old 20 meV ceiling (`CoupledEngine(lifted=...)`, one flag per slot; nothing fills it yet, so every slot is lone
+today). A refit's peak whose width sits at its ceiling carries `at_width_cap`, as a fast-pass peak does; a mode below
+4 meV at its ceiling has Γ = ω0 and reads overdamped.
+
 **Flags.** A refit is flagged when its score is above `flag_threshold`, or when it carries any reason other than
 the four notes (`neighbour_precision_unavailable`, `incomplete_comparison`, `release_fit_failed`,
 `errors_unavailable`) and a neighbour-supported split, whatever its score. A split is a repair: it is shown
@@ -275,7 +282,9 @@ seam gives the identity issue.
 
 **Pricing arithmetic.** `refit.price` evaluates a labelling on a joint objective and gradient (`gradients`, on by
 default; `False` keeps the finite differences as before). The analytic parts are the Poisson term, the heights and
-background, the priors (coupling potentials included) and the split coordinates. Each mode's energy and width, and the
+background, the priors (coupling potentials included) and the split coordinates, all in the optimiser's z coordinate
+(each width as t in [0, 1] on its own range, chained back to meV; a split pair's widths as s in [0, 1] on the same
+range in the width prior's log coordinate, so the soft-log prior stays exactly flat there). Each mode's energy and width, and the
 quasi-elastic width, take a finite difference of only that mode's complete height-normalised, resolution-convolved
 column, at a step of `COLUMN_FD_REL` (1e-5) times the larger of the value and the width. Curvature is the full observed
 Hessian, the central difference of the gradient, not a Gauss-Newton form. The split integral runs each node's
@@ -414,8 +423,8 @@ or older refit is drawn and exported in its own context, never in a later fast s
 | `isar/analyze/coupled/types.py` | the core's boundary types, flag codes and severities |
 | `isar/analyze/coupled/engine.py` | the coupled engine: the mode energies, priors and penalties of one refit; the joint objective and gradient (`objective_and_gradient`, `_value_and_grad`); the split integral and its screen (`integrate_split`, `split_evidence`, `_polish`) |
 | `isar/analyze/coupled/refit.py` | one spectrum's two-stage refit, its release fit, flags and error bars; `price`, at a job's depth (full or screen) |
-| `isar/analyze/prior.py` | the Laplace evidence; `hessian_from_grad`, the Hessian as a central difference of a gradient |
-| `isar/analyze/fast_pass.py` | the solo fast pass; its `objective_and_gradient` hook returns nothing, so the solo pass is unchanged |
+| `isar/analyze/prior.py` | the Laplace evidence; `hessian_from_grad`, the Hessian as a central difference of a gradient; the width ceiling and its density (`width_ceiling`, `ln_width_given`) |
+| `isar/analyze/fast_pass.py` | the solo fast pass; its `objective_and_gradient` hook returns nothing, so the solo pass is unchanged; `_ZMap`, the width coordinate t the coupled engine fits in too |
 | `isar/analyze/coupled/rules.py` | the pure decision rules: acceptance order, settling, flag score, the count-first decision |
 | `isar/analyze/coupled/search.py` | one spectrum's adaptive candidate search: seeds, count steps, labelling moves, screens and promotions (`Search.feed`, `_final`, `_rank`), the search record and the shadow record |
 | `isar/analyze/coupled/identity.py` | persistent branch identity across neighbours |
@@ -564,6 +573,18 @@ follow-up that adds it to lookahead tasks in `runner.py`, with no data or format
 tests and the routine checks, with no timing or comparison campaign: "No measuring." Dated 2026-10-31.
 "You get the workers all working, so that when the pool of scans decreases the workers are churning on it as they should." "Inside one candidate we run more." "No measuring." On D1: "D1 accept". On D2: "D2 yes".
 
+**IS27 — A lone spectrum's mode is at most min(4 meV, ω0) wide, in the coupled refit too.** Decides that the width
+cap of the shared prior recipe (`isar.mode-prior-recipe/7`) holds wherever a mode is fitted, so the coupled refit
+fits, prices and takes covariance in the fast pass's measure: each width's prior proper on its own range
+[g_lo, min(4, ω0)], fitted as a fraction of that range. A mode linked to a branch its neighbours carry may have the
+cap lifted to the old 20 meV, its neighbours' width then its prior; only a settled link lifts it (the hook is built,
+the linking that fills it is later work). Rejected: Γ < ω0 alone, which leaves a 10 meV mode free to be 10 meV wide.
+Dated 2026-11-01.
+"we'll need to limit overdamped modes in the fast passes; very large widths are being used to grab extra background
+intensity, and aren't well supported on their own; they should come through as priors from neighboring scans." On
+where: "Everywhere it runs." On the value: "Yes, we can take that limit; we can always tune it later if need be." On
+the lifted ceiling of 20 meV: "Sure".
+
 ## 9. Out of scope and open
 
 **Out of scope, by ruling.**
@@ -602,6 +623,7 @@ tests and the routine checks, with no timing or comparison campaign: "No measuri
 - Skipping is within one batch only (no cross-batch skip): a rerun of an interrupted batch repeats its work.
 - The fast pass's own six-mode peak-count ceiling is not changed by this work (noted, not built). On the finish-line copy, 10 of its 28 fast passes reached it.
 - After the degenerate-QE rule (IS23), a BL43LXU fast pass stored by older code is stale (the recipe version `isar.central-qe-recipe/2`): the analysis queue refits it when asked, and a batch refuses a member without a current fast pass until then. Stored results are not rewritten; an experiment changes only when its fast pass is re-run.
+- After the fast-pass width cap (IS27, recipe `isar.mode-prior-recipe/7`), every fast pass stored by older code is stale: the analysis queue refits it when asked, and a batch refuses a member without a current fast pass until it is re-run. Stored results are not rewritten.
 
 ## 10. Measured so far
 
