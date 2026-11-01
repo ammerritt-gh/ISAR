@@ -25,7 +25,7 @@ from isar.analyze.components import CentralQE, ConstantBackground, Elastic, Phon
 from isar.analyze.context import ScanContext, effective_exposure, select_exposure
 from isar.analyze.descriptor import describe_spectrum
 from isar.analyze.phonon import EPS_OMEGA0, _phonon_for
-from isar.analyze.prior import mode_bounds
+from isar.analyze.prior import WIDTH_CAP_LONE_MEV, mode_bounds
 from isar.analyze.progress import ProgressFn, emitter, relay
 from isar.schema.card import Card
 from isar.schema.scan import Flag, exposure_for
@@ -174,7 +174,8 @@ def _mode_hesse_trusted(mode: dict, *, covariance_ok: bool, counts_ok: bool) -> 
     gamma = mode.get("gamma")
     try:
         sig_ok = sig is not None and np.isfinite(float(sig)) and float(sig) > 0.0
-        gamma_ok = gamma is not None and np.isfinite(float(gamma)) and not _gamma_at_bound([gamma])
+        gamma_ok = gamma is not None and np.isfinite(float(gamma)) \
+            and not _gamma_at_bound([gamma], [mode.get("omega0")] if mode.get("omega0") is not None else None)
     except (TypeError, ValueError):
         return False
     return bool(covariance_ok and counts_ok and sig_ok and gamma_ok)
@@ -1436,7 +1437,10 @@ def _auto_escalation_reasons(prelim, fits, ctx) -> list[str]:
             continue
         value, sigma = float(value), float(sigma)
         if name.endswith(".Gamma"):
-            if min(value - loop.GAMMA_FLOOR, loop.GAMMA_MAX - value) <= 2.0 * sigma:
+            # the upper edge is this mode's own ceiling, min(4 meV, omega0) (recipe /7)
+            omega0 = best.params.get(name[:-len("Gamma")] + "omega0")
+            top = loop.GAMMA_MAX if omega0 is None else min(loop.GAMMA_MAX, WIDTH_CAP_LONE_MEV, float(omega0))
+            if min(value - loop.GAMMA_FLOOR, top - value) <= 2.0 * sigma:
                 reasons.append("gamma_within_2sigma_of_bound")
                 break
     runner_weights = sorted(

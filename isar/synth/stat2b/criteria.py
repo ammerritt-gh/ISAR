@@ -282,6 +282,7 @@ def fit_null_candidates(ctx, *, backend: str = "iminuit") -> list[CandidateEvide
             problem.fixed_pos,
             problem.fixed_vals,
             minos=False,
+            zmap=problem.zmap,
         )
         theta = np.asarray(backend_result.x, dtype=float)
         params = {

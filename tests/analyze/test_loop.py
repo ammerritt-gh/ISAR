@@ -352,6 +352,12 @@ def test_gamma_at_bound_helper():
     assert loop._gamma_at_bound([0.0011, 0.5]) is True       # near the lower floor
     assert loop._gamma_at_bound([loop.GAMMA_MAX * 0.9999]) is True   # runaway broad
     assert loop._gamma_at_bound([0.05, 0.3]) is False        # genuinely fitted widths
+    # recipe /7: with the modes' energies the upper edge is each mode's own ceiling, min(4 meV, omega0)
+    assert loop._gamma_at_bound([3.999], [10.0]) is True     # at the 4 meV lone cap
+    assert loop._gamma_at_bound([1.9995], [2.0]) is True     # a mode below 4 meV caps at its own energy
+    assert loop._gamma_at_bound([1.9], [10.0]) is False      # the same width is free under a higher energy
+    assert loop._gamma_at_bound([1.9], [2.0]) is False       # outside the 1e-3 railed band
+    assert loop._gamma_at_bound([0.3, 3.9], [5.0, 10.0]) is False
 
 
 def test_result_flags_gamma_at_bound():

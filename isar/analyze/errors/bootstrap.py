@@ -105,7 +105,7 @@ def is_bimodal(samples, *, weights=None, grid: int = 256, rel_height: float = 0.
 
 def _refit_replicate(counts_b, composite, x, ctx, theta_fit, bounds, be_names,
                      phonon_i, prim_rank, est, backend, ncall, penalty=None,
-                     fixed_pos=(), fixed_vals=()):
+                     fixed_pos=(), fixed_vals=(), zmap=None):
     """Refit one Poisson draw and reduce it to (ω₀, Γ), or ``None`` if the refit failed.
 
     Warm-starts at the fit; a failed refit is counted (not fatal), matching the serial contract.
@@ -124,7 +124,7 @@ def _refit_replicate(counts_b, composite, x, ctx, theta_fit, bounds, be_names,
     # not the raised certification budget the main fit uses. This keeps the per-scan bootstrap
     # cost unchanged from before the FIX-1 budget bump (which is per-fit, not per-refit).
     br = loop._minimize_fixed(backend, objective, theta_fit, bounds, be_names,
-                              list(fixed_pos), list(fixed_vals), minos=False, ncall=ncall)
+                              list(fixed_pos), list(fixed_vals), minos=False, ncall=ncall, zmap=zmap)
     if not br.success:
         return None
     w0 = np.array([float(br.x[i]) for i in phonon_i])
@@ -143,7 +143,7 @@ def _bootstrap_chunk(args):
     x = ctx.x_used
     return [_refit_replicate(cb, prob.composite, x, ctx, theta_fit, prob.bounds, be_names,
                              phonon_i, prim_rank, est, backend, ncall, prob.penalty,
-                             prob.fixed_pos, prob.fixed_vals)
+                             prob.fixed_pos, prob.fixed_vals, prob.zmap)
             for cb in counts_chunk]
 
 
@@ -216,7 +216,7 @@ def parametric_bootstrap(hyp, ctx, fit_result, *, M: int = 200, seed: int = 1234
         if n_chunks <= 1 or n < _BOOT_PARALLEL_MIN_M:
             return [_refit_replicate(cb, prob.composite, x, ctx, theta_fit, prob.bounds, be_names,
                                      phonon_i, prim_rank, est, backend, ncall, prob.penalty,
-                                     prob.fixed_pos, prob.fixed_vals)
+                                     prob.fixed_pos, prob.fixed_vals, prob.zmap)
                     for cb in counts_list]
         chunks = [counts_list[i::n_chunks] for i in range(n_chunks)]  # round-robin, balanced
         args = [(hyp, ctx, theta_fit, ch, phonon_i, prim_rank, be_names, backend, ncall)

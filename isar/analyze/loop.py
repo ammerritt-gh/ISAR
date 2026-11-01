@@ -31,7 +31,7 @@ from isar.analyze.phonon import (
     assess_success, default_mode_ceiling, enumerate_phonon_structures, greedy_multimode_ic, phonon_structure_ic,
     placed_modes_ic, split_mode_ic,
 )
-from isar.analyze.prior import mode_bounds, recipe_provenance, resolution_fwhm
+from isar.analyze.prior import GammaMap, gamma_from_t, mode_bounds, recipe_provenance, resolution_fwhm, t_from_gamma
 # Re-imported for their module attributes, not for use here: scan_delivery.py and the
 # analyze tests read ``loop.GAMMA_FLOOR`` / ``loop.GAMMA_MAX``.
 from isar.analyze.phonon import GAMMA_FLOOR, GAMMA_MAX  # noqa: F401
@@ -75,6 +75,10 @@ class Problem:
     # at ``theta``'s other values (its amplitudes are the warm start) and returns the DATA cost.
     profiled_pos: list[int] = field(default_factory=list)
     profile: Callable[[np.ndarray], tuple] | None = None
+    # The widths' optimiser coordinate (recipe /7, :class:`~isar.analyze.prior.GammaMap`): each free
+    # Gamma is fitted as t in [0, 1] on [g_lo, min(4, omega0)]; ``bounds`` stay in meV. ``None``: the
+    # widths are fitted on ``bounds`` as given (a Problem built by hand, or one whose bounds a caller replaced).
+    zmap: "GammaMap | None" = None
 
     @property
     def ndof(self) -> int:
@@ -527,6 +531,13 @@ def build_problem(hyp, ctx, *, x0=None) -> Problem:
     bounds = mode_bounds(names, ctx)   # the prior recipe: declared quantities, never the counts
     lo, hi = np.array(bounds, dtype=float).T
     x0 = np.clip(x0, lo, hi)           # a seed outside the recipe's box starts on its edge
+    fixed_set = set(_hard_fixed(getattr(ctx, "constraints", None), names)[0])
+    zmap = GammaMap([(names.index(n[:-len("Gamma")] + "omega0"), i, bounds[i][0], False)
+                     for i, n in enumerate(names)
+                     if n.endswith(".Gamma") and i not in fixed_set
+                     and n[:-len("Gamma")] + "omega0" in names])
+    if zmap.pairs:
+        x0 = zmap.to_theta(zmap.to_z(x0))     # a seed width starts under its mode's ceiling
     est =estimators.get_estimator("baker_cousins")
 
     def costv(theta):
@@ -543,7 +554,8 @@ def build_problem(hyp, ctx, *, x0=None) -> Problem:
                    free_names=names, k=len(names) - len(fixed_pos), n_used=int(x.size),
                    penalty=penalty, fixed_pos=fixed_pos, fixed_vals=fixed_vals,
                    profiled_pos=profiled,
-                   profile=_amplitude_profile(composite, ctx, bounds, profiled, est) if profiled else None)
+                   profile=_amplitude_profile(composite, ctx, bounds, profiled, est) if profiled else None,
+                   zmap=zmap if zmap.pairs else None)
 
 
 def _amplitude_profile(composite, ctx, bounds, profiled, est):
@@ -614,8 +626,50 @@ def _hard_fixed(constraints, names):
     return pos, vals
 
 
+def _merrors_to_theta(merrors, zmap, theta, be_names):
+    """MINOS offsets of a z-space fit in meV: a mapped Gamma's ``(lower, upper)`` offsets in ``t`` are
+    mapped back at the best fit's omega0. shortcut: the ceiling is held at the best fit's omega0, so a
+    Gamma-omega0 profile that moves the ceiling is not followed; upgrade if one is ever wanted."""
+    if not merrors:
+        return merrors
+    out = dict(merrors)
+    for k, (a, g, g_lo, lifted) in enumerate(zmap.pairs):
+        if be_names[g] not in out:
+            continue
+        lower, upper, ok = out[be_names[g]]
+        c = zmap.ceiling(theta, k)
+        t0 = t_from_gamma(float(theta[g]), g_lo, c)
+        at = lambda t: gamma_from_t(min(max(t, 0.0), 1.0), g_lo, c)
+        out[be_names[g]] = (at(t0 + lower) - float(theta[g]), at(t0 + upper) - float(theta[g]), ok)
+    return out
+
+
+def _unmap_result(br, zmap, be_names) -> BackendResult:
+    """A z-space :class:`BackendResult` as meV: ``x`` mapped, the covariance as ``J cov J^T`` (delta
+    method at the best fit), MINOS offsets mapped; ``at_limit`` stays as read in z (a width on its
+    ceiling reads as railed)."""
+    x = zmap.to_theta(br.x)
+    cov = None if br.covariance is None else zmap.cov_to_theta(x, br.covariance)
+    return replace(br, x=x, covariance=cov, merrors=_merrors_to_theta(br.merrors, zmap, x, be_names))
+
+
 def _minimize_fixed(backend, objective, x0, bounds, be_names, fixed_pos, fixed_vals,
-                    *, minos=False, ncall=None) -> BackendResult:
+                    *, minos=False, ncall=None, zmap=None) -> BackendResult:
+    """(``zmap``: fit the widths in the z coordinate of :class:`~isar.analyze.prior.GammaMap` and return
+    meV; ``bounds`` are then the meV bounds, whose mapped Gamma entries the box replaces.)"""
+    if zmap is not None and zmap.pairs:
+        x0 = np.array(x0, dtype=float)
+        if len(fixed_pos):
+            x0[list(fixed_pos)] = np.asarray(fixed_vals, dtype=float)
+        br = _minimize_fixed(backend, lambda z: objective(zmap.to_theta(z)), zmap.to_z(x0),
+                             zmap.box(bounds), be_names, fixed_pos, fixed_vals, minos=minos, ncall=ncall)
+        return _unmap_result(br, zmap, be_names)
+    return _minimize_fixed_theta(backend, objective, x0, bounds, be_names, fixed_pos, fixed_vals,
+                                 minos=minos, ncall=ncall)
+
+
+def _minimize_fixed_theta(backend, objective, x0, bounds, be_names, fixed_pos, fixed_vals,
+                          *, minos=False, ncall=None) -> BackendResult:
     """Minimise a **full-vector** ``objective`` with the coordinates in ``fixed_pos`` frozen to
     ``fixed_vals``, returning a :class:`BackendResult` in **full space** (frozen coords embedded,
     covariance expanded with zero rows/cols — a fixed param has zero variance and zero covariance,
@@ -677,17 +731,23 @@ def _minimize_profiled(prob, *, minos=False) -> BackendResult:
     theta[list(prob.fixed_pos)] = np.asarray(prob.fixed_vals, dtype=float)
     state = {"theta": theta}
     penalty = prob.penalty
+    zm = prob.zmap if prob.zmap is not None and prob.zmap.pairs else None
+    box = prob.bounds if zm is None else zm.box(prob.bounds)        # the optimiser's own box (z for widths)
+
+    def theta_at(zfree_vec):
+        return zfree_vec if zm is None else zm.to_theta(zfree_vec)
 
     def outer_objective(t):
-        th = state["theta"].copy()
-        th[outer] = t
-        th, cost = prob.profile(th)
+        zv = np.array(state["theta"] if zm is None else zm.to_z(state["theta"]))
+        zv[outer] = t
+        th, cost = prob.profile(theta_at(zv))
         state["theta"] = th
         return cost if penalty is None else cost + penalty(th)
 
     if outer:
+        z0 = theta if zm is None else zm.to_z(theta)
         x_outer, success, message, n_eval = backends.iminuit_migrad(
-            outer_objective, theta[outer], [prob.bounds[i] for i in outer],
+            outer_objective, z0[outer], [box[i] for i in outer],
             [_sanitize(names[i]) for i in outer])
         if not success:
             # E.g. a start with a mode's amplitude on zero: the profile is exactly flat along that
@@ -695,35 +755,41 @@ def _minimize_profiled(prob, *, minos=False) -> BackendResult:
             # parameter, the fit before profiling, takes over from the same start.
             br = _minimize_fixed("iminuit", prob.objective, prob.x0, prob.bounds,
                                  [_sanitize(nm) for nm in names], prob.fixed_pos, prob.fixed_vals,
-                                 minos=minos)
+                                 minos=minos, zmap=zm)
             return replace(br, n_eval=br.n_eval + n_eval)
-        theta = state["theta"].copy()
-        theta[outer] = x_outer
+        zv = np.array(state["theta"] if zm is None else zm.to_z(state["theta"]))
+        zv[outer] = x_outer
+        theta = theta_at(zv)
     else:   # a phonon-less structure: every free parameter is an amplitude, solved directly
         success, message, n_eval = True, "True", 0
     theta, _cost = prob.profile(theta)
     n_eval += 1
 
     template = theta.copy()
+    zfull = template if zm is None else zm.to_z(template)
 
     def full_objective(tf):
-        th = template.copy()
-        th[free] = tf
-        return prob.objective(th)
+        zv = zfull.copy()
+        zv[free] = tf
+        return prob.objective(theta_at(zv))
 
     free_names = [_sanitize(names[i]) for i in free]
     pinned = [_sanitize(names[i]) for i in prob.profiled_pos
               if theta[i] <= prob.bounds[i][0] or theta[i] >= prob.bounds[i][1]]
     cov, cov_ok, merrors, n_hesse = backends.iminuit_hesse(
-        full_objective, theta[free], [None if i in prof else prob.bounds[i] for i in free],
+        full_objective, zfull[free], [None if i in prof else box[i] for i in free],
         free_names, fixed=pinned, minos=minos and success)
     cov_full = None
     if cov is not None:
         cov_full = np.zeros((n, n))
         cov_full[np.ix_(free, free)] = cov
-    at_limit = backends._at_limit_map(theta[free], [prob.bounds[i] for i in free], free_names)
-    return BackendResult(theta, success, message, n_eval + n_hesse, cov_full, cov_ok, at_limit,
-                         merrors)
+    at_limit = backends._at_limit_map(zfull[free], [box[i] for i in free], free_names)
+    br = BackendResult(theta, success, message, n_eval + n_hesse, cov_full, cov_ok, at_limit, merrors)
+    if zm is None:
+        return br
+    # theta is the meV point; the covariance and MINOS offsets are in z and map back at it
+    return replace(br, covariance=None if cov_full is None else zm.cov_to_theta(theta, cov_full),
+                   merrors=_merrors_to_theta(merrors, zm, theta, [_sanitize(nm) for nm in names]))
 
 
 def result_from_backend(label, composite, costv, n_used, k, br,
@@ -815,7 +881,7 @@ def result_from_backend(label, composite, costv, n_used, k, br,
                                                br.covariance_ok, EPS_OMEGA0))
     analysis_usable = optimizer_converged
 
-    gamma_at_bound = _gamma_at_bound(m["gamma"] for m in modes)
+    gamma_at_bound = _gamma_at_bound([m["gamma"] for m in modes], [m["omega0"] for m in modes])
 
     return StructureFitResult(
         label=label, k=k, ndof=ndof, cost=cost, cost_per_dof=cost_per_dof,
@@ -841,7 +907,7 @@ def fit_hypothesis(hyp, ctx, *, backend="iminuit", minos=False, x0=None) -> Stru
     else:   # the comparison backends fit every parameter freely
         be_names = [_sanitize(n) for n in prob.free_names]
         br = _minimize_fixed(backend, prob.objective, prob.x0, prob.bounds, be_names,
-                             prob.fixed_pos, prob.fixed_vals, minos=minos)
+                             prob.fixed_pos, prob.fixed_vals, minos=minos, zmap=prob.zmap)
     result = result_from_backend(
         hyp.label,
         prob.composite,

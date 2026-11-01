@@ -69,6 +69,7 @@ def test_omega0_profile_lower_scan_stops_at_the_omega0_floor(monkeypatch):
     best = 0.021
     gamma = loop.GAMMA_FLOOR
     problem = SimpleNamespace(
+        zmap=None,
         free_names=["phonon.omega0", "phonon.Gamma", "phonon.h"],
         bounds=[
             (loop.EPS_OMEGA0, 10.0),
@@ -100,6 +101,7 @@ def test_omega0_profile_fixed_gamma_stops_at_the_omega0_floor(monkeypatch):
     best = 0.021
     gamma = 0.02
     problem = SimpleNamespace(
+        zmap=None,
         free_names=["phonon.omega0", "phonon.Gamma", "phonon.h"],
         bounds=[
             (loop.EPS_OMEGA0, 10.0),
@@ -132,6 +134,7 @@ def test_omega0_profile_with_no_nuisance_left_is_the_cost_at_omega0(monkeypatch)
     # with nothing to minimise over (scipy used to fail on the empty bounds list).
     best = 0.5
     problem = SimpleNamespace(
+        zmap=None,
         free_names=["phonon.omega0", "phonon.Gamma"],
         bounds=[(loop.EPS_OMEGA0, 10.0), (loop.GAMMA_FLOOR, loop.GAMMA_MAX)],
         fixed_pos=[1],
@@ -160,6 +163,7 @@ def test_omega0_profile_near_bootstrap_when_well_counted():
 def _edge_problem(*, od_bounds, gamma, best):
     """A fit pinned against its .omega0 box, with a cost so flat that Δcost=1 is unreachable inside it."""
     problem = SimpleNamespace(
+        zmap=None,
         free_names=["phonon.omega0", "phonon.Gamma", "phonon.h"],
         bounds=[od_bounds, (loop.GAMMA_FLOOR, loop.GAMMA_MAX), (0.0, 1e4)],
         fixed_pos=[1],

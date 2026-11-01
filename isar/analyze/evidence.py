@@ -221,7 +221,11 @@ def _inward_cost_gradients(hyp, ctx, fit_result, pinned, sig_post, free_names):
     for name in pinned:
         i = order.index(name)
         sigma = float(sig_post[free_names.index(name)])
-        step = min(1e-2 * sigma, float(prob.bounds[i][1]) - theta[i])
+        upper = float(prob.bounds[i][1])
+        if prob.zmap is not None:         # a pinned width's upper distance is to its mode's ceiling
+            upper = next((prob.zmap.ceiling(theta, k) for k, (_a, g, _lo, _lf) in enumerate(prob.zmap.pairs)
+                          if g == i), upper)
+        step = min(1e-2 * sigma, upper - theta[i])
         if not (np.isfinite(c0) and np.isfinite(step) and step > 0.0):
             gradients[name] = float("nan")
             continue
@@ -416,7 +420,8 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
     # spent on a real question.
     # `at_limit is not None` keeps the fail-safe honest: an older fit with UNKNOWN pin status
     # must escalate, never take the truncated rung on a name coincidence. The value test against
-    # the FLOOR is load-bearing: Γ has two bounds (phonon.GAMMA_FLOOR and GAMMA_MAX), and only
+    # the FLOOR is load-bearing: Γ has two bounds (phonon.GAMMA_FLOOR and its mode's ceiling,
+    # min(4 meV, ω₀)), and only
     # the floor is the H8 modelling artifact — a Γ railed at the CEILING is a mode broader than
     # the ceiling allows (the full DHO form expresses overdamping; the bound cuts it off), its
     # likelihood gradient at the bound is genuinely nonzero, and an overdamped-vs-two-mode contest
@@ -479,17 +484,26 @@ def structure_evidence(hyp, ctx, fit_result, bundle, *, backend: str = "iminuit"
     prob_names = prob.free_names
     by_name = bundle.by_name()
     prior_idx = [(i, by_name[n]) for i, n in enumerate(prob_names) if n in by_name]
+    zmap = prob.zmap
+    # recipe /7: a mode's width prior is conditional on its ceiling, and the optimiser's z coordinate
+    # adds ln_jac to the log density; the Laplace below is taken with the covariance in meV at the
+    # z-space mode (the delta method gives the same evidence, with the Jacobian cancelling).
+    ceil_k = {} if zmap is None else {g: k for k, (_a, g, _lo, _lf) in enumerate(zmap.pairs)}
 
     def neg2_log_posterior(theta):
         # Exactly-once: the bundle replaces prob.penalty outright (a transport prior appears
         # here as its normalized self, never penalty + prior).
-        lp = sum(p.logpdf(float(theta[i])) for i, p in prior_idx)
+        lp = sum(p.logpdf(float(theta[i])) if i not in ceil_k
+                 else p.logpdf_given(float(theta[i]), zmap.ceiling(theta, ceil_k[i]))
+                 for i, p in prior_idx)
+        if zmap is not None:
+            lp += zmap.ln_jac(theta)
         val = prob.costv(theta) - 2.0 * lp
         return val if np.isfinite(val) else 1e300
 
     be_names = [loop._sanitize(n) for n in prob_names]
     br = loop._minimize_fixed(backend, neg2_log_posterior, prob.x0, prob.bounds, be_names,
-                              prob.fixed_pos, prob.fixed_vals)
+                              prob.fixed_pos, prob.fixed_vals, zmap=zmap)
     map_pinned = [n for n in free_names
                   if (br.at_limit or {}).get(loop._sanitize(n), False)]
     validity["map_refit"] = {"success": bool(br.success),

@@ -79,7 +79,7 @@ def minos_intervals(hyp, ctx, fit_result, *, backend="iminuit") -> dict:
     theta_fit = np.array([fit_result.params[n] for n in names], dtype=float)
     be_names = [loop._sanitize(n) for n in names]
     br = loop._minimize_fixed(backend, _cost_closure(prob, ctx), theta_fit, prob.bounds,
-                              be_names, prob.fixed_pos, prob.fixed_vals, minos=True)
+                              be_names, prob.fixed_pos, prob.fixed_vals, minos=True, zmap=prob.zmap)
     out: dict = {}
     if br.merrors:
         val_by_name = dict(zip(names, (float(v) for v in br.x)))
@@ -97,7 +97,8 @@ def _omega0_profile_crossing(hyp, ctx, fit_result, direction, delta: float = 1.0
     """One independent side of the exact ω₀ profile (picklable worker body)."""
     prob = loop.build_problem(hyp, ctx)
     names = prob.free_names
-    bounds = dict(zip(names, prob.bounds))
+    zm = prob.zmap          # the widths are minimised in the z coordinate: the box [0, 1] follows omega0
+    bounds = dict(zip(names, prob.bounds if zm is None else zm.box(prob.bounds)))
     w_name = next(n for n in names if n.endswith(".omega0"))
     # Params frozen by a branch-conditional hard-fix are held at their values through the whole
     # profile (not re-minimised) — the ω₀ interval must reflect the *conditioned* model.
@@ -108,12 +109,15 @@ def _omega0_profile_crossing(hyp, ctx, fit_result, direction, delta: float = 1.0
     reduced = [n for n in names if n != w_name and n not in fixed_map]   # free: (Γ), h, (QE), BG
     costv = _cost_closure(prob, ctx)
     theta_fit = {n: float(fit_result.params[n]) for n in names}
+    if zm is not None:
+        theta_fit = dict(zip(names, (float(v) for v in zm.to_z(np.array([theta_fit[n] for n in names])))))
 
     def _full(omega0, red):
         vals = {n: float(red[reduced.index(n)]) for n in reduced}
         vals.update(fixed_map)                            # frozen params at their branch values
         vals[w_name] = float(omega0)
-        return np.array([vals[n] for n in names], dtype=float)
+        vec = np.array([vals[n] for n in names], dtype=float)
+        return vec if zm is None else zm.to_theta(vec)
 
     def profile_cost(omega0: float) -> float:
         if omega0 < omega0_edge:
