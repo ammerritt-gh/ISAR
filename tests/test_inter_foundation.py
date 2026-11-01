@@ -61,6 +61,8 @@ CONTRACT = (
       "flag", "why_changed", "accept", "payload"]),
     ("isar.session.inter_spectra.records", "StageLine",
      ["batch", "at", "stage", "index", "round", "progress", "seams", "not_reached"]),
+    ("isar.session.inter_spectra.records", "LinkLine",
+     ["link", "at", "scope", "batch", "stage", "made_from", "stamps", "next_name", "digest", "counts", "payload"]),
     ("isar.session.inter_spectra.records", "BatchInfo",
      ["batch", "number", "at", "batch_kind", "scope", "anchors", "rings", "seams", "settings", "preview", "fixed",
       "unreached", "terms", "metric", "core", "intake_seq", "epochs", "end"]),
