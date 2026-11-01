@@ -702,13 +702,12 @@ def link(inputs: Mapping[str, LinkInput], links: Sequence[Link], settings: Inter
     # 9  markers
     markers = []
     for x in units:
-        sc = inputs[x].scale
         by_branch = {p.branch: (p, lw, la) for p, lw, la in preds[x]}
         for s in S[x]:
             b = labels[x][s.i]
             if inputs[x].at_cap[s.i]:
-                markers.append(Marker(x, "at_cap", s.i, None, f"mode {s.i + 1} sits at the fast-pass width cap: "
-                                      "it wants to be broader than a lone spectrum may claim."))
+                markers.append(Marker(x, "at_cap", s.i, None, f"mode {s.i + 1} sits at the width cap of the fit in use: "
+                                      "it wants to be broader than that cap allows."))
             if b is None:
                 if has_nbr[x]:
                     markers.append(Marker(x, "unlinked", s.i, None,
@@ -726,8 +725,8 @@ def link(inputs: Mapping[str, LinkInput], links: Sequence[Link], settings: Inter
                                       f"mode {s.i + 1} has width {s.w:.2f} meV; its neighbours predict {p.w:.2f} meV."))
             if s.la is not None and la is not None and abs(s.la - la) > math.sqrt(at ** 2 + s.sA ** 2):
                 markers.append(Marker(x, "change", s.i, "intensity",
-                                      f"mode {s.i + 1} has intrinsic intensity {s.a / sc:.3g}; its neighbours "
-                                      f"predict {p.A:.3g}."))
+                                      f"mode {s.i + 1} has intrinsic intensity {s.a:.3g}; its neighbours "
+                                      f"predict {math.exp(la):.3g}."))
     for c in contradictions:
         for u, i in zip(c.units, c.modes):
             markers.append(Marker(u, "contradiction", i, None, c.words))

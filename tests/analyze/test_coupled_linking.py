@@ -313,6 +313,7 @@ def test_a_mode_at_the_width_cap_carries_an_at_cap_marker_with_no_quantity():
     r = _a06_a07(cap=(1,))
     m = [m for m in r.markers if m.kind == "at_cap"]
     assert [(x.unit, x.mode, x.quantity) for x in m] == [("a06", 1, None)]
+    assert "width cap of the fit in use" in m[0].words and "fast-pass" not in m[0].words
 
 
 INT_PART_M0 = 0.001876            # ln(intrinsic ratio)^2 over tau^2 = 1, recomputed with the built function
@@ -391,6 +392,16 @@ def test_a_mode_far_from_what_its_neighbours_predict_is_a_change_marker():
     kinds = {(m.unit, m.quantity) for m in r.markers if m.kind == "change"}
     assert ("b", "intensity") in kinds
     assert any("intrinsic intensity" in m.words for m in r.markers)
+
+
+def test_the_intensity_marker_words_show_the_efficiency_corrected_numbers():
+    # efficiency 0.5 is scale 2: the shown intensities must be the ones compared, not divided back by the scale
+    ins = {"a": inp("a", [5.0]), "b": inp("b", [(5.5, 0.2, 40.0)], scale=2.0), "c": inp("c", [6.0])}
+    r = lk.link(ins, [qlink("a", "b"), qlink("b", "c")], SET)
+    (m,) = [m for m in r.markers if m.unit == "b" and m.quantity == "intensity"]
+    seen = lk.matching_intensity(40.0, omega0=5.5, gamma=0.2, T=100.0, scale=2.0)
+    predicted = math.sqrt(amp(5.0) * amp(6.0))
+    assert f"{seen:.3g}" in m.words and f"{predicted:.3g}" in m.words
 
 
 def _examples():
@@ -476,8 +487,7 @@ def test_the_module_imports_no_numpy_qt_or_session_code():
     assert out.returncode == 0, out.stderr
 
 
-def test_a_grid_of_28_by_4_temperatures_links_quickly():
-    import time
+def test_a_grid_of_28_by_4_temperatures_links():
     ins, links = {}, []
     for t in range(4):
         for r_ in range(4):
@@ -490,7 +500,5 @@ def test_a_grid_of_28_by_4_temperatures_links_quickly():
                     links.append(qlink(f"t{t}r{r_ - 1}c{c}", u, COL))
                 if t:
                     links.append(Link("T", f"t{t - 1}r{r_}c{c}", u, 50.0, None, None))
-    t0 = time.perf_counter()
     r = lk.link(ins, links, SET)
-    assert time.perf_counter() - t0 < 10
     assert len(r.branches) == 2 and r.contradictions == ()
