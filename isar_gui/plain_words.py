@@ -62,11 +62,12 @@ KIND_FIX = {"gpi_rejected": "fix the gpi file, then add the data again or start 
 
 _NO_FOLDER = "no resolution folder is saved"
 NO_CURVES = "No resolution curves yet. Choose the folder that holds them."
-NO_CURVES_TIP = ("ISAR also looks for a folder named rf next to your data and found none.\n"
+NO_CURVES_TIP = ("ISAR also looks in and below the folder you added (for a folder such as rf) and found none.\n"
                  "Choose the folder that holds the measured resolution curves.")
 
 
-_HOLD_NO_FOLDER = re.compile(r"no resolution folder is saved(?:, and no rf/ folder holding curves was found beside [^;]+)?")
+_HOLD_NO_FOLDER = re.compile(r"no resolution folder is saved(?:, and no folder holding curves was found in or below [^;]+"
+                             r"; import the folder that holds both the data and the curves, or locate the curves folder)?")
 
 
 def plain_hold(reason: str | None) -> str:

@@ -6,8 +6,9 @@ each analyzer's HKL, the analyzer slit (``agaph`` x ``agapv``) and the SARF curv
 file on one scalar check (every imported analyzer's ``#Q=`` against the file's ``Q_aNN``, within
 ``Q_TOLERANCE_NM``), because a stale or pasted file may carry a wrong slit and curve set too.
 
-``check_gpi`` runs at every input check (import, run start, a queued single-file fit): it discovers a
-``gpi_files/`` beside the data when no gpi folder is saved, judges every imported scan whose set has a file,
+``check_gpi`` runs at every input check (import, run start, a queued single-file fit): it discovers the
+nearest folder in or below the data that holds ``gpi.<set>`` for an imported set (usually ``gpi_files/``)
+when no gpi folder is saved, judges every imported scan whose set has a file,
 and rewrites ``report/gpi.json`` whole. That report is a check, never a stored value: every reader takes
 the latest one (``entries_in_force``), so a file that later fails, disappears or changes simply contributes
 what it now gives. Imports only the stdlib and ``isar.intake`` at module level; a parser is imported inside
@@ -34,7 +35,6 @@ log = logging.getLogger(__name__)
 Q_TOLERANCE_NM = 0.15     # required agreement, ruling C1: |#Q= - Q_aNN| <= this, in 1/nm
 GPI_CHECK = "report/gpi.json"
 SCHEMA = "isar.gpi-check/1"
-FOLDER_NAME = "gpi_files"
 
 _NUMBER = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
 _NUM = re.compile(_NUMBER)
@@ -228,20 +228,14 @@ class GpiCheck:
         return list(dict.fromkeys(out))            # one line per gpi file, however many scans share it
 
 
-def _discover(root, data_paths) -> str | None:
-    """Save the first ``gpi_files/`` holding a ``gpi.*`` file beside the data as the experiment's gpi folder,
-    only when none is saved; the saved path, else None."""
+def _discover(root, data_paths, sets) -> str | None:
+    """Save the nearest folder in or below the data holding ``gpi.<set>`` for one of ``sets`` as the experiment's
+    gpi folder, only when none is saved; the saved path, else None."""
     if current_settings(root).gpi_folder is not None:
         return None
-    seen = set()
-    for raw in data_paths:
-        p = Path(raw)
-        d = (p if p.is_dir() else p.parent).resolve()
-        g = d / FOLDER_NAME
-        if g in seen or not g.is_dir():
-            continue
-        seen.add(g)
-        if not any(f.is_file() and f.name.startswith("gpi.") for f in g.iterdir()):
+    names = {f"gpi.{s}" for s in sets if s}
+    for d, g in curves.nearby_folders(data_paths, root) if names else ():
+        if not any((g / n).is_file() for n in names):
             continue
         res = save_gpi_folder(root, g, source="discovered", found_beside=str(d))
         if res.ok:
@@ -251,10 +245,10 @@ def _discover(root, data_paths) -> str | None:
     return None
 
 
-def gpi_folder_in_force(root, data_paths) -> tuple[Path | None, str | None]:
-    """The saved gpi folder, after saving a ``gpi_files/`` beside the data as ``discovered`` when none is saved
-    (a saved folder is never switched); and the folder this call saved, for the check to report."""
-    discovered = _discover(root, data_paths)
+def gpi_folder_in_force(root, data_paths, sets) -> tuple[Path | None, str | None]:
+    """The saved gpi folder, after saving the nearest folder holding a ``gpi.<set>`` of ``sets`` as ``discovered``
+    when none is saved (a saved folder is never switched); and the folder this call saved, for the check to report."""
+    discovered = _discover(root, data_paths, sets)
     saved = current_settings(root).gpi_folder
     return (None if saved is None else Path(saved.path)), discovered
 
@@ -342,9 +336,9 @@ def check_gpi(root, card, data_paths, *, by: str, rows: Mapping[str, dict] | Non
     if not scans.applies(card):
         return None
     root = Path(root)
-    discovered = discovered or _discover(root, data_paths)
-    saved = current_settings(root).gpi_folder
     rows = scans.read_scans(root) if rows is None else rows
+    discovered = discovered or _discover(root, data_paths, {row.get("set") for row in rows.values()})
+    saved = current_settings(root).gpi_folder
     entries: dict[str, GpiScan] = {}
     if saved is not None:
         folder, named_cache = Path(saved.path), {}

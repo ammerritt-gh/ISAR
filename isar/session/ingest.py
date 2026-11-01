@@ -75,7 +75,9 @@ def _iter_files(data_paths) -> list[Path]:
 
 
 def _skip(path: Path) -> bool:
-    return path.suffix.lower() in SKIP_SUFFIXES or path.name in WORKSPACE_NAMES
+    # `._*` and `.DS_Store` are macOS metadata; a `._<stem>_aNN` would otherwise match a measurement rule
+    return (path.suffix.lower() in SKIP_SUFFIXES or path.name in WORKSPACE_NAMES
+            or path.name.startswith("._") or path.name == ".DS_Store")
 
 
 def discover(data_paths, card: Card) -> IngestPlan:
@@ -602,7 +604,8 @@ def ingest_batch(card: Card, session, data_paths, *, data_dir=None, workspace_ro
             report.curves = {"error": f"{type(exc).__name__}: {exc}"}
         if intake_scans.applies(card):
             try:
-                gpi_folder, gpi_discovered = intake_gpi.gpi_folder_in_force(workspace_root, data_paths)
+                gpi_folder, gpi_discovered = intake_gpi.gpi_folder_in_force(
+                    workspace_root, data_paths, {fs.key for fs in plan.file_sets})
             except Exception:  # noqa: BLE001 — the gpi check below reports it; the batch goes on
                 log.exception("ingest: gpi folder discovery failed")
 

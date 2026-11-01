@@ -925,7 +925,7 @@ its own, with the reason named; the other analyzers of the scan still fit.
 
 - **CsV3Sb5 layout** (the beamline's processed output): one file per analyzer, named
   `<sample>_<T>K_<h>_<k>_<l>[_<tag>]_aNN` (NN is the analyzer number: 28 analyzers, a03 to a41), with a
-  `<stem>.var` sidecar beside them. The HKL in the stem is the scan's **nominal arm-centre HKL**: it
+  `<stem>.var` sidecar beside them. `RT` in place of `<T>K` means room temperature and is read as 300 K. The HKL in the stem is the scan's **nominal arm-centre HKL**: it
   becomes the scan fact `hkl_nominal`, never an analyzer's Q. The bare `<stem>` summed file and the
   `<stem>.pkpos` peak lists are ignored, not parsed.
 - **Ba122 layout** (the group's export macro): one three-column file per analyzer,
@@ -1069,12 +1069,14 @@ The per-analyzer files carry two energy columns. `meV` is the beamline's calibra
 A scan's slit sets which resolution curve each analyzer uses, and each analyzer's energy zero is fitted
 on its elastic line with that curve. To set this up:
 
-1. Put the `rf/` folder of SARF files inside the imported data folder (or beside an imported file). ISAR
-   finds it at the first import or run when no folder is saved for the experiment, saves it as the experiment's
-   resolution folder and says where it found it. The folder is an experiment setting that ISAR saves and
-   changes only through the GUI, never by editing a file. ISAR never switches a saved folder by itself: an
-   `rf/` it finds beside a later import is listed in `report/curves.json` as another folder that also holds
-   curves.
+1. Keep the folder of SARF files (usually `rf/`) inside the folder you import, at any depth: `rf/` beside
+   the analyzer files, or a beamtime folder holding the data, `resolution_function/rf/` and the gpi folder side
+   by side, imported as a whole. ISAR never looks above the folder you import. It finds the nearest folder
+   holding curves at the first import or run when no folder is saved for the experiment, saves it as the
+   experiment's resolution folder and says where it found it. The folder is an experiment setting that ISAR
+   saves and changes only through the GUI, never by editing a file. ISAR never switches a saved folder by
+   itself: another folder of curves it finds in a later import is listed in `report/curves.json` as another
+   folder that also holds curves.
 2. Declare the slit if you know it: the header lines `agaph_mm` and `agapv_mm`, enter the slit in ISAR
    (the GUI), or let an accepted gpi file give it (see *gpi files beside the scans*). A slit you give is always
    used.
@@ -1111,8 +1113,9 @@ lack: each analyzer's HKL (so its Q), the analyzer slit (`agaph` × `agapv`) and
 scientist used (`sarf_name`). ISAR reads those few lines and nothing else in the file. It takes from a file only
 after the check below, and the check accepts or rejects the whole file.
 
-- **Finding the folder.** A `gpi_files/` folder beside the imported data is saved as the experiment's gpi folder
-  when none is saved, as `rf/` is, and the setup section says *found beside the data* or *chosen by you*. ISAR
+- **Finding the folder.** The nearest folder in or below the imported folder that holds `gpi.<set>` for a scan
+  set being imported (usually `gpi_files/` beside the data; `gpi/ici_gpi_qpos/` in a beamtime folder) is saved
+  as the experiment's gpi folder when none is saved, as the curves folder is, and the setup section says *found beside the data* or *chosen by you*. ISAR
   never switches a saved folder. The *gpi files…* button in the setup section saves the folder you pick at once.
 - **Matching.** `gpi.<set>` belongs to the scan set whose analyzer files are `<set>_aNN`, matched by file name. A
   `problem_name1` inside the file that names another set is noted, not refused.

@@ -21,11 +21,12 @@ def test_group_titles_say_scan_sets_and_name_no_pipeline_stage():
     assert pw.group_title("q_missing", "Q (for steering): analyzers a03 and a04 on 2 scans", "unit") == \
         "Q missing (only campaign planning needs it): analyzers a03 and a04 on 2 scan sets"
     assert pw.group_title("calibration_pending", "Calibration pending: 3 scans", "scan").startswith("Not calibrated yet")
-    long = "Resolution folder: no resolution folder is saved, and no rf/ folder holding curves was found beside C:\\x"
-    assert pw.group_title("resolution_folder", long, "plain") == "Resolution curves: none chosen yet"
+    problem = ("no resolution folder is saved, and no folder holding curves was found in or below C:\\x; "
+               "import the folder that holds both the data and the curves, or locate the curves folder")
+    assert pw.group_title("resolution_folder", f"Resolution folder: {problem}", "plain") == "Resolution curves: none chosen yet"
     assert pw.group_title("files_not_read", "Files not read: 3 files", "plain") == "Files not read: 3 files"   # not scans
-    assert pw.curve_problem("no resolution folder is saved, and no rf/ folder holding curves was found beside C:\\x") \
-        == pw.NO_CURVES and pw.curve_problem("something else") == "something else"
+    assert pw.curve_problem(problem) == pw.NO_CURVES and pw.curve_problem("something else") == "something else"
+    assert pw.plain_hold(f"a03: {problem}") == "a03: no resolution curves chosen yet"
 
 
 def test_an_unread_files_reason_loses_the_exception_and_the_stem():

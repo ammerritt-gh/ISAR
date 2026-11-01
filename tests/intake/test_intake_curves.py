@@ -163,7 +163,8 @@ def test_no_rf_and_no_card_folder_is_a_stated_gap(tmp_path):
     set3.mkdir()
     check = curves.check_curves(root, _card(folder=False), [set3], by="import")
     assert (check.folder, check.source, check.library, check.curves) == (None, "none", None, ())
-    problem = f"no resolution folder is saved, and no rf/ folder holding curves was found beside {set3.resolve()}"
+    problem = (f"no resolution folder is saved, and no folder holding curves was found in or below {set3.resolve()}; "
+               "import the folder that holds both the data and the curves, or locate the curves folder")
     assert check.problem == problem and check.lines() == [f"resolution curves: {problem}"]
 
 
@@ -174,8 +175,8 @@ def test_the_card_folder_that_is_missing_is_reported_as_the_gap_to_locate(tmp_pa
     set4.mkdir()
     check = curves.check_curves(root, _card(), [set4], by="run")
     assert check.source == "card" and check.folder == str(root / "rf") and check.library is None
-    assert check.problem == (f"no resolution folder is saved, and no rf/ folder holding curves was found "
-                             f"beside {set4.resolve()}")
+    assert check.problem.startswith(f"no resolution folder is saved, and no folder holding curves was found "
+                                    f"in or below {set4.resolve()}; ")
 
 
 def test_a_curve_replaced_at_the_same_path_changes_its_identity(tmp_path):

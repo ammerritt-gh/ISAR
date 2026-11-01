@@ -227,9 +227,9 @@ destroying data," and it is enforced in code, not aspirational:
 
 **Tabulated elastic calibration (`tabulated_elastic`; the BL43 format file switches it on).** The folder of measured
 resolution curves, one per analyzer and slit, is the experiment's saved folder (`intake/settings.jsonl`),
-discovered or chosen in the GUI; with none saved, an `rf/` beside the imported data is discovered and
-saved at the first import or run (`isar/intake/curves.py`).
-A `gpi_files/` folder beside the data is discovered the same way for the scan
+discovered or chosen in the GUI; with none saved, the nearest folder holding curves in or below the imported
+folder (usually `rf/`; never above it) is discovered and saved at the first import or run (`isar/intake/curves.py`).
+The nearest folder holding a `gpi.<set>` of an imported set is discovered the same way for the scan
 sets' gpi files (`isar/intake/gpi.py`): an accepted gpi file gives each analyzer's HKL, the slit and the named curve
 set, and `report/gpi.json` records each check. Each curve is identified by its content, and
 `report/curves.json` records the folder in force and what it holds. `calibrations.refresh_tabulated`

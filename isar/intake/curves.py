@@ -1,8 +1,8 @@
 """The BL43 resolution-curve folder: where it is, what it holds, and whether it changed.
 
 ``resolution_location`` gives the folder in force: the saved experiment setting, else the card's folder.
-``check_curves`` runs at each import and run start: it discovers an ``rf/`` beside the data when no folder
-is saved, identifies the folder's curves by content, and writes ``report/curves.json``. Coverage decisions
+``check_curves`` runs at each import and run start: it discovers the nearest folder in or below the imported
+folder that holds curves (usually ``rf/``) when no folder is saved, identifies the folder's curves by content, and writes ``report/curves.json``. Coverage decisions
 are ``isar.calibrate.tabulated``'s helpers; this module locates and identifies only. The read side
 (``read_curve_check``, ``CurveIndex``) is stdlib-only and never loads a parser.
 """
@@ -178,15 +178,51 @@ def resolution_location(card, workspace_root) -> tuple[Path | None, str | None, 
     return None, pattern, "none"
 
 
-def _candidates(data_paths) -> list[tuple[Path, Path]]:
-    """``(data folder, its rf/)`` for each data path in order, de-duplicated by the resolved rf/ folder."""
+def nearby_folders(data_paths, root=None) -> list[tuple[Path, Path]]:
+    """``(data folder, folder)`` for every folder in and below each data path's folder (a file's own folder),
+    nearest first (by depth, then name), de-duplicated by folder. Dot-folders, symlinked folders and the
+    workspace ``root`` are skipped; nothing above a data folder is ever searched."""
+    skip = None if root is None else Path(root).resolve()
     out: list[tuple[Path, Path]] = []
+    seen: set[Path] = set()
     for raw in data_paths:
         p = Path(raw)
         d = (p if p.is_dir() else p.parent).resolve()
-        rf = (d / "rf").resolve()
-        if all(rf != r for _d, r in out):
-            out.append((d, rf))
+        level = [d]
+        while level:
+            below: list[Path] = []
+            for folder in level:
+                if folder in seen or folder == skip:
+                    continue
+                seen.add(folder)
+                out.append((d, folder))
+                try:
+                    with os.scandir(folder) as it:
+                        below += sorted(Path(e.path) for e in it
+                                        if e.is_dir(follow_symlinks=False) and not e.name.startswith("."))
+                except OSError as exc:
+                    log.warning("folder search: %s cannot be listed (%s); skipped", folder, exc)
+            level = below
+    return out
+
+
+def _candidates(data_paths, root, pattern) -> list[tuple[Path, Path]]:
+    """``(data folder, folder)`` for each folder near the data holding a file the pattern names, nearest first."""
+    if not pattern:
+        return []
+    try:
+        rx = re.compile(pattern)
+    except re.error as exc:
+        log.warning("resolution curves: the card's resolution_pattern does not compile (%s)", exc)
+        return []
+    out = []
+    for d, folder in nearby_folders(data_paths, root):
+        try:
+            with os.scandir(folder) as it:
+                if any(e.is_file() and rx.fullmatch(e.name) for e in it):
+                    out.append((d, folder))
+        except OSError as exc:
+            log.warning("resolution curves: %s cannot be listed (%s); skipped", folder, exc)
     return out
 
 
@@ -213,8 +249,9 @@ def _previous_other_folders(root: Path) -> list[OtherFolder]:
 def check_curves(root, card, data_paths, *, by: str) -> CurveCheck | None:
     """Discover, locate, load and identify the folder's curves; write ``report/curves.json``.
 
-    None unless the card's method is ``tabulated_elastic``. An ``rf/`` beside the data is saved as the
-    experiment's folder only when none is saved; a saved folder is never switched here.
+    None unless the card's method is ``tabulated_elastic``. The nearest folder holding curves in or below the
+    data (``nearby_folders``) is saved as the experiment's folder only when none is saved; a saved folder is
+    never switched here.
     """
     got = check_and_load(root, card, data_paths, by=by)
     return None if got is None else got[0]
@@ -227,7 +264,7 @@ def check_and_load(root, card, data_paths, *, by: str) -> tuple[CurveCheck, Load
         return None
     root = Path(root)
     pattern = cfg.get("resolution_pattern")
-    cands = _candidates(data_paths)
+    cands = _candidates(data_paths, root, pattern)
     holds = {rf: _holds_curves(rf, pattern) for _d, rf in cands}
     discovered = None
     if current_settings(root).resolution_folder is None:
@@ -243,9 +280,11 @@ def check_and_load(root, card, data_paths, *, by: str) -> tuple[CurveCheck, Load
     saved = current_settings(root).resolution_folder
     loaded = load_curves(folder, pattern)
     problem = loaded.problem
-    if folder is None or (source == "card" and not folder.is_dir()):     # no saved folder, and nothing beside the data
-        beside = ", ".join(dict.fromkeys(str(d) for d, _rf in cands))
-        problem = f"no resolution folder is saved, and no rf/ folder holding curves was found beside {beside}"
+    if folder is None or (source == "card" and not folder.is_dir()):     # no saved folder, and nothing near the data
+        looked = ", ".join(dict.fromkeys(str((Path(p) if Path(p).is_dir() else Path(p).parent).resolve())
+                                         for p in data_paths))
+        problem = (f"no resolution folder is saved, and no folder holding curves was found in or below {looked}; "
+                   "import the folder that holds both the data and the curves, or locate the curves folder")
 
     in_force = None if folder is None else folder.resolve()
     now = datetime.now(timezone.utc).isoformat(timespec="microseconds")

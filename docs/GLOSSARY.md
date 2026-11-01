@@ -270,8 +270,8 @@ is ISAR saying *"look here yourself"* — which is a feature, not a failure. **N
   (with its *fact source*) against the value you saved for that scan. A user value wins and is what the
   fit uses; saving the file value again withdraws it. A later save supersedes an earlier one, nothing is
   erased, and a value saved for one scan touches no other. The two disagree when both exist and differ.
-- **gpi file** (SPring-8 BL43LXU) — the beamline's hand-edited gnuplot macro `gpi_files/gpi.<scan set>` beside
-  the data. It gives each analyzer's HKL (its Q), the analyzer slit and the resolution curve set (`sarf_name`).
+- **gpi file** (SPring-8 BL43LXU) — the beamline's hand-edited gnuplot macro `gpi.<scan set>`, in a folder such
+  as `gpi_files/` beside the data or `gpi/ici_gpi_qpos/` in the imported beamtime folder. It gives each analyzer's HKL (its Q), the analyzer slit and the resolution curve set (`sarf_name`).
   ISAR takes any of it only when its Q magnitudes agree with the data's `#Q=` values; otherwise nothing from
   that file is used. Not the same as a SARF curve's own `.gpi` summary, the file beside each curve in `rf/` that
   gives its widths. See USING_ISAR's *gpi files beside the scans*.
