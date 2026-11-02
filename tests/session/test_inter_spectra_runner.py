@@ -1281,7 +1281,7 @@ def test_the_chosen_width_mask_survives_the_stage_factor_rewrites(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# the task scheduler: inner work and lookahead on the one pool (S1U3)
+# the task scheduler: inner work on the one pool (S1U3)
 # ---------------------------------------------------------------------------
 class _CountingPool:
     """Stands in for ProcessPoolExecutor in process (threads): records the most tasks submitted and not yet back."""
@@ -1355,7 +1355,7 @@ def _fake_core(monkeypatch, script):
     return core
 
 
-def test_a_requested_task_is_sent_before_any_lookahead_task_and_rank_zero_before_rank_one(monkeypatch):
+def test_rank_zero_tasks_are_sent_before_rank_one_tasks_across_jobs(monkeypatch):
     import pickle
     from concurrent.futures import Future
 
@@ -1369,15 +1369,15 @@ def test_a_requested_task_is_sent_before_any_lookahead_task_and_rank_zero_before
             return self.last
     pool = runner._Pool(_fake_core(monkeypatch, {}), 1)               # one worker: tasks go one at a time
     pool.ex = Hold()
-    sched = runner._Sched(pool, [], lambda k, r: (), None, None)
+    sched = runner._Sched(pool, [], lambda k, r: ())
     sched.ex = pool.ex
-    look = runner._JobPort(sched, "L", None, "lookahead")
-    req = runner._JobPort(sched, "R", None, "requested")
-    look.submit((b"c", "look1", ()), rank=1)
+    other = runner._JobPort(sched, "L", None)
+    req = runner._JobPort(sched, "R", None)
+    other.submit((b"c", "look1", ()), rank=1)
     req.submit((b"c", "req1", ()), rank=1)
     req.submit((b"c", "req0", ()))
-    look.submit((b"c", "look0", ()))
-    sched.live.update((look, req))
+    other.submit((b"c", "look0", ()))
+    sched.live.update((other, req))
     while not sched.events.empty():
         sched._handle(sched.events.get_nowait())
     order = []
@@ -1386,33 +1386,7 @@ def test_a_requested_task_is_sent_before_any_lookahead_task_and_rank_zero_before
         order.append(pool.ex.sent[-1])
         pool.ex.last.set_result(("v", 0.0))
         sched._handle(sched.events.get(timeout=5))
-    assert order == ["req0", "req1", "look0", "look1"], order
-    sched.live.clear()
-
-
-def test_a_requested_task_posted_before_a_choice_is_sent_before_a_ready_lookahead_task(monkeypatch):
-    import pickle
-    from concurrent.futures import Future
-
-    class Hold:                      # records what is sent; the test never completes a task
-        def __init__(self):
-            self.sent = []
-
-        def submit(self, fn, core_name, blob):
-            self.sent.append(pickle.loads(blob)[1])
-            return Future()
-    pool = runner._Pool(_fake_core(monkeypatch, {}), 1)               # one free worker
-    pool.ex = Hold()
-    sched = runner._Sched(pool, [], lambda k, r: (), None, None)
-    sched.ex = pool.ex
-    look = runner._JobPort(sched, "L", None, "lookahead")
-    req = runner._JobPort(sched, "R", None, "requested")
-    look.submit((b"c", "look0", ()))
-    sched._handle(sched.events.get_nowait())                          # the lookahead task is ready in the heap
-    req.submit((b"c", "req0", ()))                                     # the requested job's event is still queued
-    sched.live.update((look, req))
-    sched._fill()
-    assert pool.ex.sent == ["req0"], pool.ex.sent
+    assert sorted(order[:2]) == ["look0", "req0"] and sorted(order[2:]) == ["look1", "req1"], order
     sched.live.clear()
 
 
@@ -1729,9 +1703,27 @@ def test_a_mode_an_applied_change_made_is_labelled_but_not_settled():
     from isar.analyze.coupled.linking import Change
     add = Change("add", None, ("n",), (_pred("n"),))
     split = Change("split", 1, ("a", "c"), (_pred("a"), _pred("c")))
-    out = runner.fitted_links(_links_for(("a", "k"), (True, True), (), (add,)), _modes("a", "k", "n"), {})
+    out = runner.fitted_links(_links_for(("a", "k"), (True, True), (), (add,)), _modes("a", "k", "n"), {}, (0,))
     assert out.labels == ("a", "k", "n") and out.settled == (True, True, False) and out.changes == ()
     # a split's child keeping the original (settled) branch id is unsettled too
-    out = runner.fitted_links(_links_for(("a", "k"), (True, True), (), (split,)), _modes("a", "c", "k"), {})
+    out = runner.fitted_links(_links_for(("a", "k"), (True, True), (), (split,)), _modes("a", "c", "k"), {}, (0,))
     assert out.labels == ("a", "c", "k") and out.settled == (False, False, True) and out.changes == ()
     assert out.settled_branches == {"k"}
+
+
+def test_an_add_and_a_drop_that_net_to_zero_modes_are_both_applied():
+    from isar.analyze.coupled.linking import Change
+    add = Change("add", None, ("n",), (_pred("n"),))
+    drop = Change("drop", 1, ("k",), ())
+    links = _links_for(("a", "k"), (True, True), (), (add, drop))
+    out = runner.fitted_links(links, _modes("a", "n"), {}, (0, 1))     # the mode count did not grow
+    assert out.labels == ("a", "n") and out.settled == (True, False) and out.changes == ()
+    assert runner.fitted_links(links, _modes("a", "k"), {}).changes == (add, drop)    # nothing adopted: both listed
+
+
+def test_an_old_id_equal_to_a_predicted_branch_is_not_an_applied_add():
+    from isar.analyze.coupled.linking import Change
+    old_id, new = Change("add", None, ("b",), (_pred("b"),)), Change("add", None, ("c",), (_pred("c"),))
+    links = _links_for((None,), (False,), (), (old_id, new))
+    out = runner.fitted_links(links, _modes("b", "c"), {}, (1,))      # only the add of c was adopted
+    assert out.labels == (None, "c") and out.settled == (False, False) and out.changes == (old_id,)

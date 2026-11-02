@@ -97,6 +97,12 @@ def stage_factors(snapshot) -> dict:
     return {f.factor_id: f for f in _factors(snapshot, tuple(m.branch for m in snapshot.own.modes))}
 
 
+def _applied(snapshot, slots) -> list:
+    """What the real search records: the listed adds whose branches the chosen slots carry."""
+    L = snapshot.links
+    return [] if L is None else [i for i, c in enumerate(L.changes) if c.kind == "add" and all(b in slots for b in c.branches)]
+
+
 def _assignment(snapshot, slots, *, discrete: str, changed: bool, stopped=None) -> Assignment:
     cands = ({"count": len(slots), "slots": slots, "ln_z": 0.0, "status": "ok", "weight": 1.0},) \
         if discrete == "priced" else ()
@@ -104,7 +110,7 @@ def _assignment(snapshot, slots, *, discrete: str, changed: bool, stopped=None) 
                       origins=tuple("matched" if b is not None else "new_branch" for b in slots),
                       factors=_factors(snapshot, slots), discrete=discrete, triggers=("fake",) if changed else (),
                       candidates=cands, coverage={} if stopped is None else {"stopped": stopped},
-                      search_limited=False, changed=changed, reasons=())
+                      search_limited=False, changed=changed, reasons=(), search={"applied": _applied(snapshot, slots)})
 
 
 def _triggered(snapshot) -> bool:

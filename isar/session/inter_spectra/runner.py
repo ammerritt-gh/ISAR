@@ -40,7 +40,7 @@ import pickle
 import threading
 import time
 from collections import Counter, deque
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field, replace
@@ -258,17 +258,16 @@ class _Pool:
         """Whether ``stream(fn, ...)`` takes the task scheduler: more than one worker, a price, a task-capable core."""
         return self.workers > 1 and fn == "price" and hasattr(self.core, "run_task")
 
-    def stream(self, fn: str, calls: list, more, *, lookahead=None, lookahead_done=None) -> None:
+    def stream(self, fn: str, calls: list, more) -> None:
         """Run ``core.<fn>(*args, **kwargs)`` for each ``(key, args, kwargs)`` of ``calls``, at most ``workers`` in
         flight; as each finishes, call ``more(key, result or the exception it raised)`` in this process, which returns
         the further calls to queue (FIFO, after those queued). Returns when nothing is queued or in flight. A dead
         pool: before anything was sent it raises; mid-stream every unsent call is reported to ``more`` as the
         ``BrokenProcessPool``, the flying ones as they come back, and a call queued after that raises it here.
-        On the task path (``uses_tasks``) each call is a job thread whose inner tasks share the pool, ``more`` still
-        hears of each requested call once, and ``lookahead()`` (offers ``((unit, job key), args)``) and
-        ``lookahead_done(key, price)`` let idle workers price jobs ahead; the other paths ignore both."""
+        On the task path (``uses_tasks``) each call is a job thread whose inner tasks share the pool, and ``more``
+        still hears of each call once."""
         if self.uses_tasks(fn):
-            _Sched(self, calls, more, lookahead, lookahead_done).run()
+            _Sched(self, calls, more).run()
             return
         self._run(fn, calls, more, inline=self.workers <= 1)
 
@@ -352,7 +351,6 @@ class _Pool:
             self.ex = None
 
 
-_ABANDONED = object()      # what a lookahead job's thread reports when the runner abandoned it
 JOIN_S = 2.0               # shortcut: leaving a stream waits this long in all for abandoned job threads, upgrade if a replay glue step ever outlasts it
 
 
@@ -376,11 +374,10 @@ class _Task:
 
 
 class _JobPort:
-    """C-port for one pricing job: its thread submits and waits, the scheduler (the main thread) sends. ``cls`` is
-    "requested" or "lookahead"."""
+    """C-port for one pricing job: its thread submits and waits, the scheduler (the main thread) sends."""
 
-    def __init__(self, sched, key, job, cls) -> None:
-        self.sched, self.key, self.job, self.cls = sched, key, job, cls
+    def __init__(self, sched, key, job) -> None:
+        self.sched, self.key, self.job = sched, key, job
         self.tasks: list[_Task] = []
         self.abandoned = self.submitted = self.ended = False
         self.thread: threading.Thread | None = None
@@ -427,22 +424,18 @@ class _JobPort:
 
 
 class _Sched:
-    """One stream of "price" calls on the task path (main thread): requested calls run as job threads whose inner
-    tasks fill the pool, and spare workers price ``lookahead`` offers. Only this thread touches the heap, the
-    futures and ``more``; job threads talk to it through ``events`` and wait only on their own tasks. At most
-    ``pool._cap()`` tasks are in flight. Priority is at send time: a requested task goes before any lookahead
-    task, a lookahead task only to a free worker with nothing requested waiting, and a running one finishes."""
+    """One stream of "price" calls on the task path (main thread): calls run as job threads whose inner tasks
+    fill the pool. Only this thread touches the heap, the futures and ``more``; job threads talk to it through
+    ``events`` and wait only on their own tasks. At most ``pool._cap()`` tasks are in flight. Priority is at send
+    time: a task a job waits on (rank 0) goes first, then the rest in rank order."""
 
-    def __init__(self, pool, calls, more, lookahead, lookahead_done) -> None:
-        self.pool, self.more, self.lookahead, self.lookahead_done = pool, more, lookahead, lookahead_done
-        self.queue = deque(calls)                  # requested calls not yet started
+    def __init__(self, pool, calls, more) -> None:
+        self.pool, self.more = pool, more
+        self.queue = deque(calls)                  # calls not yet started
         self.events: SimpleQueue = SimpleQueue()   # ("task", t) ("raise", t) ("done", t, fut) ("job", port, result)
-        self.heap: list = []                       # [class, rank, seq, task]: requested 0, lookahead 1
+        self.heap: list = []                       # [rank, seq, task]
         self.seq = itertools.count()
         self.live: set[_JobPort] = set()
-        self.look: dict = {}                       # key -> live lookahead port
-        self.finished: dict = {}                   # key -> (job, price) of a finished lookahead job
-        self.tried: set = set()                    # lookahead keys started once, never started again
         self.inflight: dict = {}                   # task -> future
         self.sent = 0
         self.ex = None
@@ -454,19 +447,16 @@ class _Sched:
     def _starting(self) -> int:
         return sum(1 for p in self.live if not p.submitted and not p.ended)
 
-    def _requested_live(self) -> bool:
-        return any(p.cls == "requested" for p in self.live)
-
     def _push(self, t: _Task) -> None:
         if t.entry is not None:
-            t.entry[3] = None                      # the old entry is skipped when it surfaces
-        t.entry = [0 if t.port.cls == "requested" else 1, t.rank, next(self.seq), t]
+            t.entry[2] = None                      # the old entry is skipped when it surfaces
+        t.entry = [t.rank, next(self.seq), t]
         heapq.heappush(self.heap, t.entry)
 
     def _top(self):
         while self.heap:
             e = self.heap[0]
-            t = e[3]
+            t = e[2]
             if t is None or t.entry is not e or t.state != "queued" or t.dropped or t.port.abandoned:
                 heapq.heappop(self.heap)
                 continue
@@ -480,7 +470,7 @@ class _Sched:
     # -- sending
     def _send(self, e) -> None:
         heapq.heappop(self.heap)
-        t = e[3]
+        t = e[2]
         t.entry = None
         pool = self.pool
         try:
@@ -519,16 +509,12 @@ class _Sched:
             self.queue.extend(self.more(key, exc))
 
     # -- starting jobs
-    def _start_job(self, key, args, kwargs, cls) -> None:
-        port = _JobPort(self, key, args[1], cls)
-        port.thread = threading.Thread(target=self._job_main, args=(port, args, kwargs), daemon=True,
-                                       name=f"price-{cls}")
+    def _start_job(self, key, args, kwargs) -> None:
+        port = _JobPort(self, key, args[1])
+        port.thread = threading.Thread(target=self._job_main, args=(port, args, kwargs), daemon=True, name="price")
         self.live.add(port)
         self.pool.ports.add(port)
-        if cls == "requested":
-            self.pool._note(key, True)
-        else:
-            self.look[key] = port
+        self.pool._note(key, True)
         port.thread.start()
 
     def _job_main(self, port, args, kwargs) -> None:
@@ -536,39 +522,14 @@ class _Sched:
         try:
             result = self.pool.core.price(*args, **kwargs, tasks=port)
         except Abandoned:
-            result = _ABANDONED
+            result = RuntimeError("the price was abandoned")    # only a stream cut off from outside abandons; nobody reads it
         except BaseException as exc:  # noqa: BLE001 — the scheduler hears of every end
             result = exc if isinstance(exc, Exception) else RuntimeError(f"price ended with {exc!r}")
         self.events.put(("job", port, result))
 
     def _start_call(self, call) -> None:
         key, args, kwargs = call
-        fin = self.finished.get(key)
-        if fin is not None and fin[0] == args[1]:  # a late hit: the lookahead job finished after the search chose this call
-            self.queue.extend(self.more(key, fin[1]))
-            return
-        lp = self.look.get(key)
-        if lp is not None and lp.job == args[1]:   # promote the live lookahead job: its tasks now rank as requested
-            del self.look[key]
-            lp.cls = "requested"
-            self.pool._note(key, True)
-            for t in lp.tasks:
-                if t.state == "queued" and not t.dropped:
-                    self._push(t)
-            return
-        self._start_job(key, args, kwargs, "requested")
-
-    def _offer(self) -> bool:
-        """Start one lookahead job when workers are spare; False when no offer is new."""
-        if self.lookahead is None or len(self.look) >= self.pool.workers:
-            return False
-        for key, args in self.lookahead():
-            if key in self.look or key in self.finished or key in self.tried:
-                continue
-            self.tried.add(key)
-            self._start_job(key, args, {}, "lookahead")
-            return True
-        return False
+        self._start_job(key, args, kwargs)
 
     def _drain(self) -> None:
         try:
@@ -582,15 +543,13 @@ class _Sched:
             self._drain()                # a requested task posted since the last choice must rank before it
             if self.pool.broken is not None or self._free() <= 0:
                 return
-            top, idle = self._top(), not self.queue and not self._starting()
-            if top is not None and top[0] == 0 and top[1] == 0:
+            top = self._top()
+            if top is not None and top[0] == 0:
                 self._send(top)
             elif self.queue and self._free() > self._starting():
                 self._start_call(self.queue.popleft())
-            elif top is not None and (top[0] == 0 or idle):
+            elif top is not None:
                 self._send(top)
-            elif idle and self._free() > self._starting() and self._offer():
-                pass
             else:
                 return
 
@@ -633,20 +592,10 @@ class _Sched:
         self.live.discard(port)
         self.pool.ports.discard(port)
         port.ended = True
-        if port.cls == "requested":
-            self.pool._note(port.key, False)
-            if isinstance(result, Exception):
-                log.error("price of %s failed in the pool", port.key, exc_info=result)
-            self.queue.extend(self.more(port.key, result))
-            return
-        self.look.pop(port.key, None)
-        if result is _ABANDONED or isinstance(result, Exception):
-            if isinstance(result, Exception):
-                log.warning("lookahead price of %s failed; it is not cached", port.key, exc_info=result)
-            return
-        self.finished[port.key] = (port.job, result)
-        if self.lookahead_done is not None:
-            self.lookahead_done(port.key, result)
+        self.pool._note(port.key, False)
+        if isinstance(result, Exception):
+            log.error("price of %s failed in the pool", port.key, exc_info=result)
+        self.queue.extend(self.more(port.key, result))
 
     # -- the stream
     def run(self) -> None:
@@ -657,10 +606,10 @@ class _Sched:
         try:
             while True:
                 self._drain()
-                if pool.broken is not None and not self._requested_live() and self.queue:
+                if pool.broken is not None and not self.live and self.queue:
                     raise pool.broken              # calls queued after the pool died reach it as the next map would
                 self._fill()
-                if not self.queue and not self._requested_live():
+                if not self.queue and not self.live:
                     break
                 try:
                     self._handle(self.events.get(timeout=MEMBERS_GAP_S))
@@ -672,7 +621,7 @@ class _Sched:
         pool._tick(True)
 
     def _leave(self) -> None:
-        """Abandon every live job (lookahead ones; the requested ones too when the stream ends by an exception), and
+        """Abandon every live job (any left when the stream ends by an exception), and
         hand the tasks still in flight to the pool's orphans, which no stream waits for."""
         ports = list(self.live)
         for port in ports:
@@ -840,18 +789,16 @@ def snapshot_links(link_now, u: str):
                          tuple(TieSide(g.id, g.kind, tuple(sorted(g.units)), g.alternatives[u]) for g in ties))
 
 
-def fitted_links(links, modes, aliases: Mapping[str, str]):
+def fitted_links(links, modes, aliases: Mapping[str, str], applied: Sequence[int] = ()):
     """The stage's link (``snapshot_links``) read against a spectrum's current modes, so a sweep after a count change
     keeps it: a mode carries its own branch id only when the link's labels name that branch for this spectrum or
     an applied change made it (through the batch's aliases); a prediction alone never labels a mode. Settled follows
-    the link's flag for that branch, except a mode an applied change produced is never settled. A change whose
-    branches the spectrum now carries (an applied add or split) is no longer listed."""
+    the link's flag for that branch, except a mode an applied change produced is never settled. ``applied``: the
+    indices into ``links.changes`` of the changes the spectrum's adopted candidate applied (the search records
+    them); exactly those are applied, and no longer listed."""
     canon = lambda b: aliases.get(b, b)     # noqa: E731
     settled = {canon(b): s for b, s in zip(links.labels, links.settled) if b is not None}
-    # an applied change grew the mode count and its branches are now carried; a prediction alone never proves it
-    grew = len(modes) > len(links.labels)
-    have = {canon(m.branch) for m in modes}
-    applied = [c for c in links.changes if grew and c.branches and all(canon(b) in have for b in c.branches)]
+    applied = [c for i, c in enumerate(links.changes) if i in set(applied)]
     made = {canon(b) for c in applied for b in c.branches}
     labels = tuple(m.branch if canon(m.branch) in settled or canon(m.branch) in made else None for m in modes)
     flags = tuple(b is not None and settled.get(canon(b), False) and canon(b) not in made for b in labels)
@@ -903,6 +850,7 @@ class _Run:
         self.linker = linker or _Linker()
         self.link_prev, self.next_name = None, 1      # the result the next link continues, its next branch number
         self.link_now = None                          # (link id, stage tag, LinkResult) of the stage in progress
+        self.adopted: dict[str, tuple[int, ...]] = {}  # unit -> the listed changes its adopted fit applied, this round
         self.end_link: str | None = None              # the link saved when the batch ended
         self.end_link_error: str | None = None
         self.core, self.target_s = core, target_s
@@ -1266,7 +1214,7 @@ class _Run:
         from isar.analyze.coupled.types import Snapshot
         links = snapshot_links(self.link_now, u)
         if links is not None:
-            links = fitted_links(links, own.modes, self.aliases)     # the link read against this spectrum's own modes
+            links = fitted_links(links, own.modes, self.aliases, self.adopted.get(u, ()))   # read against its own modes
         return Snapshot(snapshot_id=sid, stage_id=stage_id or sid, unit=u, fit_id=self.records_mod.new_fit_id(),
                         context=self.ctx[u], own=own, own_record=self.record_of(u, own.fit), terms=tuple(terms),
                         settings=self.settings, batch_kind=self.kind, fast=self.fast.get(u),
@@ -1574,6 +1522,11 @@ class _Run:
                  "text": "; ".join(str(v) for v in list((f.get("by_unit") or {}).get(k) or ())[:3])}
                 for code, f in (ids.flags or {}).items() if k in f.get("units", ()) and code != "seam_disagreement"]
 
+    def crossing(self, snaps: dict, A: dict) -> dict[str, list[dict]]:
+        """Confident disagreement across a crossing group, per spectrum, as flag reasons (``identity_ambiguous``)."""
+        from isar.analyze.coupled.search import crossing_flags
+        return crossing_flags(snaps, A)
+
     def stage_timing(self, kind: str, index: int, t0: float, width: int, n: int) -> None:
         self.timing["stages"].append({"kind": kind, "index": index, "wall_s": time.perf_counter() - t0,
                                       "width": width, "n_refits": n})
@@ -1664,6 +1617,7 @@ class _Run:
             A, errors = self.assign(snaps, {})
             previous = {**held_frozen, **{k: s.own for k, s in snaps.items() if k in A}}    # amendment 11: own Held too
             ids, refs = self.identity(A, snaps, previous, sid)
+            crossing = self.crossing(snaps, A)
             A, rename = canonical_factors(A, ids, refs, held_frozen)
             self.merge_aliases(rename)
             snaps = {k: _renamed_snapshot(s, rename) for k, s in snaps.items()}
@@ -1679,7 +1633,7 @@ class _Run:
             for k, s in snaps.items():
                 self.note_dormant(ids_after, k, s.fit_id,
                                   () if isinstance(R[k], Exception) else [m.branch for m in R[k].modes])
-            entries = [self.entry(k, snaps[k], R[k], self.identity_flags(ids, k)) for k in snaps]
+            entries = [self.entry(k, snaps[k], R[k], self.identity_flags(ids, k) + crossing.get(k, [])) for k in snaps]
             verdict = self.save_stage("ring", r, entries, seams)
             for k, s in snaps.items():
                 if self.judge(k, R[k], verdict, s.fit_id):
@@ -1772,6 +1726,7 @@ class _Run:
             t_round = time.perf_counter()
             leave(self.take_new_locks(held))
             self.link_stage(f"round{self.rounds}", held)
+            self.adopted = {}                            # the new link lists its changes afresh against the held fits
             snaps = {}
             for k in sorted(active):
                 terms = terms_of(k, held)
@@ -1791,6 +1746,7 @@ class _Run:
                 self.failed[k] = f"analysis error ({type(exc).__name__}: {exc})"
                 active.discard(k)
             ids, refs = self.identity(A, snaps, dict(held), sid)
+            crossing = self.crossing(snaps, A)
             A, rename = canonical_factors(A, ids, refs, {u: h for u, h in held.items() if u not in A})
             self.merge_aliases(rename)
             A = rebuilt_factors(self.core, A, snaps, rename)     # one definition per link, both guards in it
@@ -1808,7 +1764,7 @@ class _Run:
                     break
                 t_sweep = time.perf_counter()
                 leave(self.take_new_locks(held))         # E11: a new lock leaves the sweeps as a fixed neighbour
-                before, before_cost = dict(held), (dict(data), dict(unary))
+                before, before_cost, before_adopted = dict(held), (dict(data), dict(unary)), dict(self.adopted)
                 n = self.sweeps + 1
                 self.stage_name, self.index = "sweep", n
                 self.progress("refine")
@@ -1840,19 +1796,24 @@ class _Run:
                                                               T=self.nodes[k].T,
                                                               dormant=self.note_dormant(ids, k, gs[k].fit_id, r.energies))
                             data[k], unary[k] = r.D, r.unary
+                            self.adopted[k] = tuple((A[k].search or {}).get("applied", ()))
                         elif isinstance(r, Exception) or r.status == "failed":
                             move = math.inf              # rules.settled: a failed block is never quiet
                 if not snaps2:                           # every member left during the round: nothing to save
                     break
                 self.sweeps = n
-                entries = [self.entry(k, snaps2[k], R_all[k], self.identity_flags(ids, k), stage1.pop(k, None))
-                           for k in snaps2]
+                entries = [self.entry(k, snaps2[k], R_all[k], self.identity_flags(ids, k) + crossing.get(k, []),
+                                      stage1.pop(k, None)) for k in snaps2]
                 verdict = self.save_stage("sweep", n, entries, [])
                 for k, snap in snaps2.items():
                     if self.judge(k, R_all[k], verdict, snap.fit_id):
                         self.records[snap.fit_id] = R_all[k].fit
                     elif k in verdict["refused"]:        # E9: every refused member goes back, and the sweep is not quiet
                         held[k] = before[k]
+                        if k in before_adopted:
+                            self.adopted[k] = before_adopted[k]
+                        else:
+                            self.adopted.pop(k, None)
                         for now, was in zip((data, unary), before_cost):
                             if k in was:
                                 now[k] = was[k]
