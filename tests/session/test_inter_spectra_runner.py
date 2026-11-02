@@ -1776,3 +1776,38 @@ def test_a_tie_group_gives_a_side_only_to_its_free_spectrum():
     (side,) = free.ties
     assert (side.group, side.kind, side.units, side.slots) == ("t1", "swap", ("E:1:a", "E:1:b"), ("b2", "b1"))
     assert runner.snapshot_links(None, "E:1:b") is None and runner.snapshot_links(("l0", "ring1", res), "E:9:z") is None
+
+
+def _links_for(labels, settled, predictions=(), changes=()):
+    from isar.analyze.coupled.types import SnapshotLinks
+    return SnapshotLinks("l0", "ring1", tuple(labels), tuple(settled), frozenset(), tuple(predictions), tuple(changes), ())
+
+
+def _pred(branch):
+    from isar.analyze.coupled.linking import Prediction
+    return Prediction(branch, None, 5.0, 1.0, 1.0, 0.1, ())
+
+
+def _modes(*ids):
+    from types import SimpleNamespace
+    return [SimpleNamespace(branch=b) for b in ids]
+
+
+def test_a_prediction_alone_never_labels_a_mode():
+    from isar.analyze.coupled.linking import Change
+    add = Change("add", None, ("b",), (_pred("b"),))
+    links = _links_for((None,), (False,), (_pred("b"),), (add,))
+    out = runner.fitted_links(links, _modes("b"), {})      # an unlinked mode keeping an old id the prediction names
+    assert out.labels == (None,) and out.settled == (False,) and out.changes == (add,)
+
+
+def test_a_mode_an_applied_change_made_is_labelled_but_not_settled():
+    from isar.analyze.coupled.linking import Change
+    add = Change("add", None, ("n",), (_pred("n"),))
+    split = Change("split", 1, ("a", "c"), (_pred("a"), _pred("c")))
+    out = runner.fitted_links(_links_for(("a", "k"), (True, True), (), (add,)), _modes("a", "k", "n"), {})
+    assert out.labels == ("a", "k", "n") and out.settled == (True, True, False) and out.changes == ()
+    # a split's child keeping the original (settled) branch id is unsettled too
+    out = runner.fitted_links(_links_for(("a", "k"), (True, True), (), (split,)), _modes("a", "c", "k"), {})
+    assert out.labels == ("a", "c", "k") and out.settled == (False, False, True) and out.changes == ()
+    assert out.settled_branches == {"k"}

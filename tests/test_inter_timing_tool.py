@@ -62,8 +62,10 @@ def _fake_cfg(ws: Path, triggered) -> None:
     w = Workspace.open(ws)
     card, session = w.load()
     for key in session.scans:
-        session.scans[key].detectors[key.rsplit(":", 1)[1]]["fast_pass"]["fake"] = {
-            "toy": "keep", "triggered": key in triggered}
+        fast = session.scans[key].detectors[key.rsplit(":", 1)[1]]["fast_pass"]
+        fast["fake"] = {"toy": "keep", "triggered": key in triggered}
+        # the shared stub's peak has no energy; a real fast-pass peak does, and the link stage reads it
+        fast["peaks"] = [{"index": 0, "omega0": 5.0, "Gamma": 0.5, "height": 1.0, "confident": True}]
     w.save(card, session)
 
 

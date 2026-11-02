@@ -842,17 +842,20 @@ def snapshot_links(link_now, u: str):
 
 def fitted_links(links, modes, aliases: Mapping[str, str]):
     """The stage's link (``snapshot_links``) read against a spectrum's current modes, so a sweep after a count change
-    keeps it: a mode carries its own branch id when the link names that branch for this spectrum (its labels,
-    predictions or changes, through the batch's aliases); settled follows the link's flag for that branch; a change
-    whose branches the spectrum now carries (an applied add or split) is no longer listed."""
+    keeps it: a mode carries its own branch id only when the link's labels name that branch for this spectrum or
+    an applied change made it (through the batch's aliases); a prediction alone never labels a mode. Settled follows
+    the link's flag for that branch, except a mode an applied change produced is never settled. A change whose
+    branches the spectrum now carries (an applied add or split) is no longer listed."""
     canon = lambda b: aliases.get(b, b)     # noqa: E731
     settled = {canon(b): s for b, s in zip(links.labels, links.settled) if b is not None}
-    named = (set(settled) | {canon(p.branch) for p in links.predictions}
-             | {canon(b) for c in links.changes for b in c.branches})
-    labels = tuple(m.branch if canon(m.branch) in named else None for m in modes)
-    flags = tuple(b is not None and settled.get(canon(b), False) for b in labels)
-    carried = {canon(b) for b in labels if b is not None}
-    changes = tuple(c for c in links.changes if not (c.branches and all(canon(b) in carried for b in c.branches)))
+    # an applied change grew the mode count and its branches are now carried; a prediction alone never proves it
+    grew = len(modes) > len(links.labels)
+    have = {canon(m.branch) for m in modes}
+    applied = [c for c in links.changes if grew and c.branches and all(canon(b) in have for b in c.branches)]
+    made = {canon(b) for c in applied for b in c.branches}
+    labels = tuple(m.branch if canon(m.branch) in settled or canon(m.branch) in made else None for m in modes)
+    flags = tuple(b is not None and settled.get(canon(b), False) and canon(b) not in made for b in labels)
+    changes = tuple(c for c in links.changes if c not in applied)
     return replace(links, labels=labels, settled=flags, changes=changes,
                    settled_branches=frozenset(b for b, s in zip(labels, flags) if b is not None and s))
 
