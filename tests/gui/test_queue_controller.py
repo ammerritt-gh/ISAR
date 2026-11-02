@@ -967,3 +967,164 @@ def test_the_queue_words_cover_every_status_with_a_tooltip_and_active_is_never_s
     assert {s for s, (_w, tone, _t) in QUEUE_STATES.items() if tone is Tone.ACTIVE} == {"running", "saving"}
     assert summary_tone([Tone.OK, Tone.ACTIVE, Tone.IDLE]) is Tone.ACTIVE
     assert summary_tone([Tone.ACTIVE, Tone.WARN]) is Tone.WARN
+
+# ---- mode linking: the link item and the automatic rule (C-link-queue) ---------------------------------------
+def _link_saved(iid, key, link_id="l1", new=True):
+    return {"ev": "saved", "item_id": iid, "unit_key": key, "pass": "link", "status": "done", "reason": None,
+            "link": link_id, "new": new}
+
+
+def _settle_fast(r, key):
+    iid = r.id_of(key, "fast")
+    r.emit(_result(iid, key), _saved(iid, key), _finished(iid))
+    r.wait(lambda: r.item(key) is None)
+
+
+def test_a_link_item_is_sent_with_its_spec_settles_on_the_saved_answer_and_reports_in_the_services_words(rig):
+    r = rig(cores=2)
+    got = []
+    r.ctrl.links_saved.connect(got.append)
+    ok, message = r.ctrl.add_link([SET, SET2], reason="user")
+    assert (ok, message) == (True, "Queued: link modes for 2 scans") and r.lines == [message]
+    (start,) = r.wait_commands("start", 1)
+    link, iid = start["link"], start["item_id"]
+    assert re.fullmatch(r"l[0-9a-f]{12}", link["link_id"])
+    assert link == {"link_id": link["link_id"], "scans": [SET, SET2], "series": False, "reason": "user"}
+    assert start["unit_key"] == f"link:{link['link_id']}:link" and (start["pass"], start["cores"]) == ("link", 1)
+    view = r.ctrl.view()
+    assert [i.item_id for i in view.links] == [iid] and view.batches == () and view.fast == ()
+    assert view.n_running == {"fast": 0, "deep": 0, "inter": 0} and r.ctrl.marks() == {}
+    assert r.ctrl.link_status() == qc.LinkStatus(0, 1, None, False)
+    assert r.ctrl.writes_busy() and r.ctrl.leave_summary().n_running == 1
+
+    words = "Linked 3 branches across 56 spectra"
+    r.emit(_result(iid, start["unit_key"], "link", reason=words), _finished(iid))
+    r.wait(lambda: r.ctrl.view().links[0].status == "saving")
+    assert r.ctrl.link_status() == qc.LinkStatus(0, 1, None, False) and got == []      # not saved, not settled
+    r.emit(_link_saved(iid, start["unit_key"], link["link_id"]))
+    r.wait(lambda: not r.ctrl.view().links)
+    assert got == [(SET, SET2)] and r.saved == []                  # a link saves no analyzer file
+    assert r.ctrl.link_status() == qc.LinkStatus(0, 0, words, True)
+    assert r.lines[-1] == f"Linked modes: {words}"
+    view = r.ctrl.view()
+    assert view.finished == () and view.n_look == 0 and r.ctrl.writes_busy() is None
+
+
+def test_a_failed_or_held_link_item_says_why_and_needs_a_look(rig):
+    r = rig(cores=2)
+    r.ctrl.add_link([SET], reason="user")
+    iid = r.wait_commands("start", 1)[0]["item_id"]
+    r.emit(_finished(iid, "failed", "ValueError: boom"))
+    r.wait(lambda: r.ctrl.view().n_look == 1)
+    assert r.lines[-1] == "Link modes failed: ValueError: boom"
+    assert r.ctrl.link_status() == qc.LinkStatus(0, 0, "ValueError: boom", False)
+    assert r.ctrl.view().finished == () and r.ctrl.view().links == ()
+    r.ctrl.add_link([SET], reason="user")
+    iid = r.wait_commands("start", 2)[1]["item_id"]
+    r.emit(_result(iid, "x", "link", status="held", reason="no fit in use", saving=False), _finished(iid))
+    r.wait(lambda: r.ctrl.view().n_look == 2)
+    assert r.lines[-1] == "Link modes held: no fit in use"
+    assert r.ctrl.link_status().last == "no fit in use"
+
+
+def test_an_identical_waiting_link_item_is_not_queued_twice_and_a_waiting_one_counts_on_leaving(rig):
+    r = rig(cores=2)
+    r.ctrl.pause()
+    assert r.ctrl.add_link([SET, SET2], reason="user")[0]
+    ok, message = r.ctrl.add_link([SET2, SET], reason="user")                  # the same scans, in another order
+    assert (ok, message) == (False, "Link modes for these scans is already queued.")
+    assert r.ctrl.add_link([SET, SET2], reason="user", series=True)[0]         # another request: its own item
+    assert r.ctrl.add_link([SET], reason="user")[0]
+    assert r.ctrl.add_link([], reason="user")[0] is False
+    assert len(r.ctrl.view().links) == 3 and r.ctrl.link_status() == qc.LinkStatus(3, 0, None, False)
+    assert r.ctrl.leave_summary() == qc.LeaveSummary(0, 0, None, 3, 0)
+    assert r.commands("start") == []
+    r.ctrl.bind(None, auto_fast=True)
+    assert r.ctrl.add_link([SET], reason="user") == (False, "no experiment is open")
+
+
+def test_the_automatic_switch_is_remembered_by_bind_signals_its_moves_and_queues_nothing(rig):
+    r = rig(cores=1)
+    seen = []
+    r.ctrl.auto_link_changed.connect(seen.append)
+    assert not r.ctrl.auto_link()                                  # off until asked
+    r.ctrl.set_auto_link(True)
+    r.ctrl.set_auto_link(True)
+    assert seen == [True] and r.ctrl.auto_link() and r.ctrl.view().links == () and r.commands("start") == []
+    r.ctrl.bind(r.root, auto_fast=True, auto_link=False)           # the window re-applies the saved state
+    assert not r.ctrl.auto_link()
+    r.ctrl.bind(r.root, auto_fast=True, auto_link=True)
+    assert r.ctrl.auto_link() and seen == [True]                   # bind sets the state without announcing it
+
+
+def test_with_the_switch_on_the_last_fast_item_of_a_scan_queues_one_series_link_item(rig):
+    r = rig(cores=1)
+    r.ctrl.set_auto_link(True)
+    r.select(A06, A07)
+    r.ctrl.add_selection("fast")
+    r.wait_commands("start", 1)
+    _settle_fast(r, A06)
+    r.wait_commands("start", 2)                                    # a07 took the core
+    assert r.ctrl.view().links == () and r.id_of(A07)             # a07 of the same scan is still active
+    _settle_fast(r, A07)
+    start = r.wait_commands("start", 3)[2]
+    assert start["pass"] == "link" and start["cores"] == 1
+    assert start["link"] == {"link_id": start["link"]["link_id"], "scans": [SET], "series": True, "reason": "auto"}
+    assert "Queued: link modes for 1 scan (added automatically)" in r.lines
+    assert [i.item_id for i in r.ctrl.view().links] == [start["item_id"]]
+
+
+def test_a_waiting_series_link_item_that_lists_the_scan_covers_its_settle_but_one_without_series_does_not(rig):
+    r = rig(cores=2)
+    r.ctrl.set_auto_link(True)
+    r.select(A06, A07, unit(SET2, "a06"))
+    r.ctrl.add_selection("fast")
+    r.wait_commands("start", 2)
+    r.ctrl.add_link([SET, SET2], reason="user", series=True)       # waits: fast items are running
+    (mine,) = r.ctrl.view().links
+    _settle_fast(r, A06)
+    r.wait_commands("start", 3)                                    # the third file took the freed core
+    _settle_fast(r, A07)                                           # SET has no active fast item left, but mine covers it
+    assert [i.item_id for i in r.ctrl.view().links] == [mine.item_id]
+    r.ctrl.remove(mine.item_id)
+    r.ctrl.add_link([SET], reason="user")                          # waiting, but not a series: it does not cover
+    r.select(A08)
+    r.ctrl.add_selection("fast")
+    r.wait_commands("start", 4)
+    _settle_fast(r, A08)
+    assert [(i.status, i.automatic) for i in r.ctrl.view().links] == [("waiting", False), ("waiting", True)]
+
+
+@pytest.mark.parametrize("how", ["already_current", "stopped", "deep"])
+def test_a_settle_that_produced_no_fast_fit_of_its_own_queues_no_link_item(rig, how):
+    r = rig(cores=1)
+    r.ctrl.set_auto_link(True)
+    r.select(A06)
+    r.ctrl.add_selection("deep" if how == "deep" else "fast")
+    iid = r.wait_commands("start", 1)[0]["item_id"]
+    if how == "stopped":
+        r.emit(_finished(iid, "stopped"))
+    elif how == "already_current":
+        r.emit(_result(iid, A06, status="already_current", saving=False), _finished(iid))
+    else:
+        r.emit(_result(iid, A06, "deep"), _saved(iid, A06, "deep"), _finished(iid))
+    r.wait(lambda: r.ctrl.view().finished)
+    assert r.ctrl.view().finished[0].set_key == SET and r.ctrl.view().links == ()
+
+
+def test_a_crash_or_a_shutdown_does_not_queue_a_link_item_for_the_items_it_fails(rig):
+    r = rig(cores=1)
+    r.ctrl.set_auto_link(True)
+    r.select(A06)
+    r.ctrl.add_selection("fast")
+    r.wait_commands("start", 1)
+    r.ctrl._send({"op": "_exit", "code": 3})
+    r.wait(lambda: r.ctrl.view().service == "failed")
+    assert r.ctrl.view().links == () and r.ctrl.view().n_look == 1
+    r.select(A07)
+    r.ctrl.add_selection("fast")                                   # the next add restarts the service
+    r.wait(lambda: r.ctrl.view().service == "ready" and len(r.commands("start")) == 2)
+    done = []
+    r.ctrl.shutdown(lambda: done.append(True))                     # stops a07: failed with no override of its own
+    r.wait(lambda: done)
+    assert not any("link modes" in line.lower() for line in r.lines)

@@ -16,7 +16,9 @@ an ingest or an export is never queued behind the analysis. Times are ``time.mon
 here when an event arrives, never the service's clock. Returned views are frozen; callers never mutate them.
 
 A batch (:meth:`start_inter_batch`) is one ``inter`` item: it appears in :attr:`QueueView.batches`, never in
-the per-file marks.
+the per-file marks. A mode-linking run (:meth:`add_link`) is one ``link`` item: it appears in
+:attr:`QueueView.links` and :meth:`link_status`, also never in the marks. With the automatic switch on, the settle
+of a scan's last fast item queues one series link item for that scan.
 
 A batch's member map (:meth:`batch_members`) is the live view of its spectra: the service's ``members`` events give
 each member's state, the newest started batch's map is kept here (settled when the batch ends abnormally), and
@@ -62,6 +64,7 @@ _PROGRESS_KEYS = ("pass", "phase", "step", "of", "stage", "stages", "kind", "ind
                  "not_reached", "fixed", "total", "failed_reasons", "not_reached_reasons")
 _CRASH = "the analysis process ended unexpectedly; see {log}"
 _UNCONFIRMED = "not confirmed saved; re-add it"
+_BATCHLIKE = ("inter", "link")     # items that are no file: no scan set, no analyzer, no mark
 _MEMBER_STATES = frozenset(("waiting", "fitting", "done", "refused", "failed", "not_reached", "held"))
 
 
@@ -85,7 +88,7 @@ class ItemView:
     set_key: str                  # scan_prefix(unit_key)
     set_label: str                # the scan list's label for set_key; set_key when unknown
     analyzer: str                 # split_key(unit_key)[2]
-    pass_kind: Literal["fast", "deep", "inter"]
+    pass_kind: Literal["fast", "deep", "inter", "link"]
     status: QueueStatus
     reason: str | None            # plain words; None for waiting/running/saving/done
     automatic: bool
@@ -170,6 +173,15 @@ class QueueView:
     service_error: str | None     # plain words with the log path, when service == "failed"
     batches: tuple[BatchView, ...] = ()     # newest first; finished ones stay until clear_finished
     inter: tuple[ItemView, ...] = ()        # the active batch items, by seq
+    links: tuple[ItemView, ...] = ()        # the active link items, by seq
+
+
+@dataclass(frozen=True)
+class LinkStatus:                 # what the link line shows: counts, and the newest settled item's words
+    n_waiting: int
+    n_running: int                # running or saving
+    last: str | None              # the service's words for the newest settled link item; None before any
+    last_ok: bool                 # that item is done (or done with a warning)
 
 
 @dataclass(frozen=True)
@@ -218,11 +230,11 @@ class _Rec:
         self.unit_key = view.unit_key
         self.pass_kind = view.pass_kind
         self.automatic = view.automatic
-        batch = view.pass_kind == "inter"
+        batch = view.pass_kind in _BATCHLIKE
         self.set_key = "" if batch else scan_prefix(view.unit_key)
         self.analyzer = "" if batch else str(split_key(view.unit_key)[2])
-        self.label = label                          # a batch's name ("Inter-spectra batch, started 14:32"); "" for a file
-        self.spec = spec                            # a batch's start object, as the service gets it; None for a file
+        self.label = label                          # a batch's or link item's name ("Inter-spectra batch, started 14:32")
+        self.spec = spec                            # a batch's or link item's start object, as the service gets it
         self.results: dict[str, _Result] = {}       # fast and deep: the one result of each pass
         self.saves: list[_Result] = []              # a batch: every payload's save, in arrival order
         self.final: str | None = None       # the scheduler's settled state, once seen
@@ -264,6 +276,8 @@ class QueueController(QObject):
     results_saved = Signal(tuple)  # tuple[str, ...]: unit keys confirmed saved by one batch of `saved` events
     members_changed = Signal(str)  # item_id of the batch whose member map moved; "" when no batch map is kept
     auto_fast_changed = Signal(bool)   # the switch moved; the window saves it in the GuiStore
+    auto_link_changed = Signal(bool)   # the automatic linking switch moved; the window saves it too
+    links_saved = Signal(tuple)    # tuple[str, ...]: the scan keys of a link item whose result the writer saved
 
     def __init__(self, python_exe: str, intake, scan_list_vm, *, cores: int,
                  blocked: Callable[[], str | None] = lambda: None, parent=None) -> None:
@@ -279,6 +293,7 @@ class QueueController(QObject):
         self._root: Path | None = None
         self._queue: AnalysisQueue | None = None
         self._auto_fast = True
+        self._auto_link = False
         self._recs: dict[str, _Rec] = {}
         self._bind_no = 0
         self._seen_finished = 0                # how many of the scheduler's finished items were noted
@@ -308,13 +323,14 @@ class QueueController(QObject):
         self._intake.worker_changed.connect(self._on_worker_changed)
 
     # ---- binding ---------------------------------------------------------------------------------------
-    def bind(self, root: Path | None, *, auto_fast: bool, keep_waiting: bool = False) -> None:
+    def bind(self, root: Path | None, *, auto_fast: bool, auto_link: bool = False, keep_waiting: bool = False) -> None:
         """Serve the experiment at ``root`` (``None``: none); the same root again changes only the switch. A
         different root forgets everything: the leave flows shut the service down first, so a non-empty queue
         here is a defect and is logged. With ``keep_waiting`` (rename only) the waiting items and the finished
         list stay and the service restarts lazily at the new root."""
         root = None if root is None else Path(root)
         self._auto_fast = bool(auto_fast)
+        self._auto_link = bool(auto_link)
         if root is not None and root == self._root and self._queue is not None:
             pass                        # the same experiment bound again: its queue and service stand
         elif keep_waiting and self._queue is not None and root is not None:
@@ -351,7 +367,7 @@ class QueueController(QObject):
 
     def _has_work(self) -> bool:
         snap = self._queue.snapshot()
-        return bool(snap.fast or snap.deep or snap.inter)
+        return bool(snap.fast or snap.deep or snap.inter or snap.link)
 
     def _drop_service(self) -> None:
         """Kill the service tree now and forget it (an idle one, or a defect path); waiters are released."""
@@ -374,6 +390,26 @@ class QueueController(QObject):
     # ---- reads -----------------------------------------------------------------------------------------
     def auto_fast(self) -> bool:
         return self._auto_fast
+
+    def auto_link(self) -> bool:
+        return self._auto_link
+
+    def link_status(self) -> LinkStatus:
+        """The link line's content: how many link items wait or run, and the service's words for the newest settled
+        one (its summary when done, its reason when held, failed or stopped)."""
+        if self._queue is None:
+            return LinkStatus(0, 0, None, False)
+        snap = self._queue.snapshot()
+        states = [self._status(v, self._recs[v.item_id]) for v in snap.link]
+        last, ok = None, False
+        for v in reversed(snap.finished):               # in settle order: the newest is the last
+            if v.pass_kind == "link":
+                rec = self._recs[v.item_id]
+                status = self._status(v, rec)
+                ok = status in ("done", "done_warning")
+                last = self._reason(v, rec, status) or status
+                break
+        return LinkStatus(states.count("waiting"), len(states) - states.count("waiting"), last, ok)
 
     def _label(self, set_key: str) -> str:
         snap = self._list.snapshot
@@ -414,7 +450,7 @@ class QueueController(QObject):
 
     def _name(self, rec: _Rec) -> str:
         """A file's pass in words (``97 K a06 (fast pass)``), or a batch's name."""
-        if rec.pass_kind == "inter":
+        if rec.pass_kind in _BATCHLIKE:
             return rec.label
         return f"{self._label(rec.set_key)} {rec.analyzer} ({rec.pass_kind} pass)"
 
@@ -451,7 +487,7 @@ class QueueController(QObject):
         snap = q.snapshot()
         totals: dict[tuple[str, str], list[int]] = {}
         for rec in self._recs.values():
-            if rec.pass_kind == "inter":
+            if rec.pass_kind in _BATCHLIKE:
                 continue
             t = totals.setdefault((rec.set_key, rec.pass_kind), [0, 0])
             t[1] += 1
@@ -482,10 +518,12 @@ class QueueController(QObject):
                 done, total = totals.get((set_key, kind), (0, 0))
                 groups[kind].append(QueueGroup(set_key, members[0].set_label, all(m.automatic for m in members),
                                                done, total, tuple(members)))
+        links = tuple(self._item(v) for v in snap.link)
+        n_saving += sum(i.status == "saving" for i in links)
         settled = [self._item(v) for v in snap.finished] + [self._stage_item(*s) for s in self._stages]
         n_look = sum(iv.status in _LOOK for iv in settled)       # a failed batch needs a look as much as a file
         fin: dict[tuple[str, str], list[ItemView]] = {}
-        for iv in sorted((i for i in settled if i.pass_kind != "inter"), key=lambda i: i.finished_at or 0.0):
+        for iv in sorted((i for i in settled if i.pass_kind not in _BATCHLIKE), key=lambda i: i.finished_at or 0.0):
             fin.setdefault((iv.set_key, iv.pass_kind), []).append(iv)
         finished = []
         for (set_key, kind), members in fin.items():
@@ -498,7 +536,7 @@ class QueueController(QObject):
             (*snap.inter, *(v for v in snap.finished if v.pass_kind == "inter")), key=lambda v: v.seq, reverse=True))
         return QueueView(True, tuple(groups["fast"]), tuple(groups["deep"]), tuple(finished), n_running, n_waiting,
                          n_saving, n_look, snap.paused, self._blocked(), snap.cores_setting, snap.cores_in_use,
-                         self._service, self._service_error, batches=batches, inter=inter)
+                         self._service, self._service_error, batches=batches, inter=inter, links=links)
 
     def selection(self) -> Selection:
         snap = self._list.snapshot
@@ -593,7 +631,7 @@ class QueueController(QObject):
         now = self._clock()
         running = saving = waiting = deep = batches = batches_waiting = 0
         longest: float | None = None
-        for v in (*snap.fast, *snap.deep, *snap.inter):
+        for v in (*snap.fast, *snap.deep, *snap.inter, *snap.link):
             status = self._status(v, self._recs[v.item_id])
             batch = int(v.pass_kind == "inter")
             if status == "waiting":
@@ -616,7 +654,7 @@ class QueueController(QObject):
         """Why the folder is being written right now, or None."""
         if self._queue is not None:
             snap = self._queue.snapshot()
-            if any(v.state != "waiting" for v in (*snap.fast, *snap.deep, *snap.inter)):
+            if any(v.state != "waiting" for v in (*snap.fast, *snap.deep, *snap.inter, *snap.link)):
                 return "analysis is running: press Pause and wait for the running analyzers to finish"
         if self._holds:
             return "a copy or an export is reading the experiment"
@@ -653,6 +691,29 @@ class QueueController(QObject):
         self._pump()
         return True, message
 
+    def add_link(self, scans: Sequence[str], *, reason: Literal["user", "auto"], series: bool = False) -> tuple[bool, str]:
+        """Queue one mode-linking item for ``scans`` (scan keys); ``series`` links every temperature of their series.
+        An identical item already waiting is not added twice. The id is minted here, as a batch's is."""
+        if self._queue is None:
+            return False, "no experiment is open"
+        scans = tuple(dict.fromkeys(scans))
+        if not scans:
+            return False, "no scans to link modes for"
+        if any(frozenset(self._recs[v.item_id].spec["scans"]) == frozenset(scans)
+               and self._recs[v.item_id].spec["series"] == series
+               for v in self._queue.snapshot().link if v.state == "waiting"):
+            return False, "Link modes for these scans is already queued."
+        spec = {"link_id": "l" + secrets.token_hex(6), "scans": list(scans), "series": series, "reason": reason}
+        n = len(scans)
+        label = f"Link modes for {n} {_plural(n, 'scan', 'scans')}"
+        view = self._queue.add_link(spec["link_id"], automatic=reason == "auto")
+        self._recs[view.item_id] = _Rec(view, spec=spec, label=label)
+        message = f"Queued: {label.lower()}" + (" (added automatically)" if reason == "auto" else "")
+        self.log_line.emit(message)
+        self.changed.emit()
+        self._pump()
+        return True, message
+
     def fast_pass_all_ready(self) -> None:
         keys, _why = self._ready()
         if keys:
@@ -678,7 +739,7 @@ class QueueController(QObject):
         service's ``finished`` event."""
         snap = self._queue.snapshot() if self._queue is not None else None
         running = snap is not None and any(v.item_id == item_id and v.state == "running"
-                                           for v in (*snap.fast, *snap.deep, *snap.inter))
+                                           for v in (*snap.fast, *snap.deep, *snap.inter, *snap.link))
         if not (running and self._send({"op": "stop", "item_id": item_id})):
             log.warning("stop %s: it is not running", item_id)
 
@@ -710,6 +771,14 @@ class QueueController(QObject):
         if on != self._auto_fast:
             self._auto_fast = on
             self.auto_fast_changed.emit(on)
+            self.changed.emit()
+
+    def set_auto_link(self, on: bool) -> None:
+        """Turning it on links nothing already present; it acts on the next fast pass that settles."""
+        on = bool(on)
+        if on != self._auto_link:
+            self._auto_link = on
+            self.auto_link_changed.emit(on)
             self.changed.emit()
 
     def set_cores(self, n: int) -> None:
@@ -771,7 +840,7 @@ class QueueController(QObject):
 
     def _has_waiting(self) -> bool:
         snap = self._queue.snapshot()
-        return any(v.state == "waiting" for v in (*snap.fast, *snap.deep, *snap.inter))
+        return any(v.state == "waiting" for v in (*snap.fast, *snap.deep, *snap.inter, *snap.link))
 
     def _pump(self) -> None:
         """Start the service on the first item that can start, then send each start the scheduler hands out."""
@@ -792,6 +861,8 @@ class QueueController(QObject):
                    "cores": s.cores}
             if s.pass_kind == "inter":
                 cmd["batch"] = self._recs[s.item_id].spec
+            elif s.pass_kind == "link":
+                cmd["link"] = self._recs[s.item_id].spec
             if not self._send(cmd):
                 log.warning("could not send start for %s: the analysis process is not accepting commands", s.item_id)
         if starts:
@@ -901,6 +972,8 @@ class QueueController(QObject):
             rec.answer(pass_kind, True)
             if pass_kind == "inter":
                 self._saved_batch.extend(ev["keys"])        # a batch reports its spectra, not its own key
+            elif pass_kind == "link":
+                self.links_saved.emit(tuple(rec.spec["scans"]))      # no file key: a link item saves no analyzer file
             else:
                 self._saved_batch.append(rec.unit_key)
             if rec.pass_kind == "deep" and pass_kind == "fast" and ev.get("status") in ("done", "done_warning"):
@@ -1004,13 +1077,27 @@ class QueueController(QObject):
         """Note items that settled since the last look: their times, and the Log line step 22 wants."""
         snap = self._queue.snapshot()
         now = self._clock()
+        settled_scans: list[str] = []       # scans whose fast item just settled with a result of its own
         for v in snap.finished[self._seen_finished:]:
             rec = self._recs.get(v.item_id)
             if rec is None or rec.final is not None:
                 continue
             rec.final, rec.finished_at = v.state, now
             self._log_settled(v, rec)
+            if v.pass_kind == "fast" and v.state in ("done", "done_warning", "held", "failed") and rec.override is None:
+                settled_scans.append(rec.set_key)
         self._seen_finished = len(snap.finished)
+        if settled_scans and self._auto_link and self._service == "ready":     # a dying service must not restart itself
+            self._relink(dict.fromkeys(settled_scans), snap)
+
+    def _relink(self, scans, snap) -> None:
+        """The automatic rule: a scan whose fast items have all settled and that no waiting series link covers gets one."""
+        busy = {self._recs[v.item_id].set_key for v in snap.fast}
+        for scan in scans:
+            covered = any(scan in (spec := self._recs[v.item_id].spec)["scans"] and spec["series"]
+                          for v in snap.link if v.state == "waiting")
+            if scan not in busy and not covered:
+                self.add_link([scan], reason="auto", series=True)
 
     def _batch_words(self, v: _SchedItem, rec: _Rec, status: str, reason: str | None) -> str:
         kind = rec.spec["kind"]
@@ -1035,6 +1122,12 @@ class QueueController(QObject):
         reason = self._reason(v, rec, status)
         if rec.pass_kind == "inter":
             self.log_line.emit(self._batch_words(v, rec, status, reason))
+            return
+        if rec.pass_kind == "link":
+            if status in ("done", "done_warning"):
+                self.log_line.emit(f"Linked modes: {reason or 'done'}")
+            else:
+                self.log_line.emit(f"Link modes {status}" + (f": {reason}" if reason else ""))
             return
         what = self._name(rec)
         if status in ("held", "failed"):
@@ -1130,8 +1223,8 @@ class QueueController(QObject):
 
     def _log_unconfirmed(self, why: str) -> None:
         pending = [rec for rec in self._recs.values() if rec.any_pending()]
-        files = self._grouped([rec.unit_key for rec in pending if rec.pass_kind != "inter"])
-        batches = ", ".join(rec.label for rec in pending if rec.pass_kind == "inter")
+        files = self._grouped([rec.unit_key for rec in pending if rec.pass_kind not in _BATCHLIKE])
+        batches = ", ".join(rec.label for rec in pending if rec.pass_kind in _BATCHLIKE)
         named = "; ".join(part for part in (files, batches) if part)
         if named:
             self.log_line.emit(f"Not confirmed saved when {why}: {named}")
