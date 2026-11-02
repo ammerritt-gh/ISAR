@@ -211,6 +211,14 @@ def test_a_crossing_within_the_tie_margin_is_one_swap_group():
     assert not any(any(s) for s in r.settled.values()) and r.contradictions == ()
 
 
+def test_an_anchored_spectrum_lists_no_alternative_and_its_modes_stay_settled_in_a_tie():
+    r = lk.link({"a": inp("a", [5.0, 5.6], anchored=True), "b": inp("b", [5.25, 5.35])}, [qlink("a", "b")], SET)
+    b1, b2 = r.branches
+    (t,) = r.ties
+    assert t.units == ("a", "b") and t.modes == {"b": (0, 1)} and t.alternatives == {"b": (b2.id, b1.id)}
+    assert r.settled["a"] == (True, True) and not any(r.settled["b"])
+
+
 def test_a_wide_crossing_is_no_group():
     r = lk.link({"a": inp("a", [5.0, 6.0]), "b": inp("b", [5.0, 6.0])}, [qlink("a", "b")], SET)
     assert r.ties == () and all(all(s) for s in r.settled.values())

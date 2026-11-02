@@ -224,7 +224,9 @@ class Change:
 
 
 @dataclass(frozen=True)
-class TieGroup:                              # one local near-tie between two linked spectra
+class TieGroup:
+    """One local near-tie between two linked spectra. Each entry of ``alternatives`` is that spectrum's whole labelling
+    if it alone changes; an anchored spectrum has no entry, and its modes are never marked unsettled."""
     id: str
     kind: Literal["swap", "competition"]
     units: tuple[str, str]                   # the link's two spectra, link order
@@ -606,9 +608,12 @@ def link(inputs: Mapping[str, LinkInput], links: Sequence[Link], settings: Inter
                         {mu: relabel(mu, {mode: rb}), ou: relabel(ou, {partner: None})}, d1, d2)))
     groups.sort(key=lambda g: g[:3])
     ties = []
-    for n, (_, _, _, g) in enumerate(groups, 1):
-        t = TieGroup(f"t{n}", g.kind, g.units, dict(sorted(g.modes.items())), g.branches,
-                     dict(sorted(g.alternatives.items())), g.d_best, g.d_alt)
+    for _, _, _, g in groups:
+        kept = [u for u in g.units if not inputs[u].anchored]    # an anchored spectrum's labels are fixed points
+        if not kept:
+            continue
+        t = TieGroup(f"t{len(ties) + 1}", g.kind, g.units, {u: m for u, m in sorted(g.modes.items()) if u in kept},
+                     g.branches, {u: a for u, a in sorted(g.alternatives.items()) if u in kept}, g.d_best, g.d_alt)
         ties.append(t)
         for u, ms in t.modes.items():
             unsettled.update((u, m) for m in ms)
