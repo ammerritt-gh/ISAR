@@ -57,6 +57,7 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | Processing dock: anchors list, direction, preview line, the two Start buttons, the Link modes button and the automatic linking toggle | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/inter_batch_box.py`, `isar_gui/viewmodels/inter_batch.py`, `isar_gui/queue_controller.py` | `tests/gui/test_inter_batch_box.py`, `tests/gui/test_queue_controller.py` |
 | Scan(s) view: flat fit dropdown with Up/Down navigation, Make authoritative, Lock, reasons, error-bar label, waterfall | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/inter_fit_bar.py`, `isar_gui/viewmodels/scans_page.py`, `inter_fits.py` | `tests/gui/test_inter_fit_bar.py`, `test_inter_fits.py`, `test_scans_page_inter.py` |
 | Config > Inter-spectra fitting settings | Implemented | `isar_gui/main_window.py`, `isar_gui/views/inter_settings_dialog.py` | `tests/gui/test_inter_settings_dialog.py` |
+| Analyzer array link marks, the shift- and ctrl-click path gestures, and the analyzer path in the Dispersion view (branch series, markers at E*, one temperature) | Implemented: built and tested offscreen with the real widgets; no person walk-through yet | `isar_gui/viewmodels/analyzer_path.py`, `isar/workspace_api/analyzer_path.py`, `isar/plotspec/path_builders.py`, `isar_gui/views/dispersion_pane.py`, `isar_gui/views/analyzer_array_dock.py` | `tests/workspace_api/test_analyzer_path.py`, `tests/plotspec/test_path_builders.py`, `tests/gui/test_analyzer_path_gestures.py`, `tests/gui/test_analyzer_path_dispersion.py`, `tests/gui/test_link_array_cells.py` |
 | Export and run report show the authoritative fit, labelled | Implemented | `isar/report/export.py`, `isar/report/run_report.py` | `tests/report/test_export_inter.py`, `tests/session/test_run_report_inter.py` |
 | Real-data proof and the timing record | Partial: the proof is written and gated (`ISAR_LETACON_INTER=1`) and not yet run on the real set; the q side is its own module. A finish-line timing run on a copy of the experiment is recorded in section 10; it is not the proof | `proofs/test_letacon_inter_spectra.py`, `proofs/inter_spectra_checks.py`, `proofs/test_letacon_inter_spectra_q.py`, `proofs/inter_spectra_q_checks.py` | `tests/test_inter_spectra_proof_checks.py`, `tests/test_inter_spectra_q_checks.py` |
 
@@ -494,6 +495,12 @@ names, so a result saved after another never refuses on names; its ids stay.
 | `isar_gui/views/inter_fit_bar.py` | the Scan(s) flat fit dropdown, Make authoritative, Lock and Waterfall of fits |
 | `isar_gui/views/inter_settings_dialog.py` | Config > Inter-spectra fitting settings |
 | `isar_gui/main_window.py` | the Config menu entry and the window wiring |
+| `isar_gui/viewmodels/analyzer_array.py` | the analyzer array's picks, its gestures, the cells' link captions and dots, and `path_keys` (the path of the picks) |
+| `isar_gui/views/analyzer_array_dock.py` | the Analyzer array dock: the path line and the Plot path in Dispersion button |
+| `isar/workspace_api/analyzer_path.py` | the analyzer path read: the picks of one scan as stops at cumulative q, the fit in use per stop, the names and markers from the saved links |
+| `isar/plotspec/path_builders.py` | the analyzer path's plot spec, built from plain stops |
+| `isar_gui/viewmodels/analyzer_path.py` | the Dispersion pane's analyzer path: the picks, the line, the spec while the pane shows it |
+| `isar_gui/views/dispersion_pane.py` | the Dispersion view's Plot row: fitted ω̂(q) or the analyzer path |
 
 ## 8. Rulings
 
