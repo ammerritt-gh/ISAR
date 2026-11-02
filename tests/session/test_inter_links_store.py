@@ -45,6 +45,13 @@ def test_the_same_result_for_the_same_scope_is_stored_once(tmp_path):
     assert len(records.read_links(tmp_path)) == 1
 
 
+def test_a_relink_of_unchanged_fits_is_stored_once_whatever_its_name_start(tmp_path):
+    branch = lk.Branch(id="link:exp1:12:a03#0", name="B1", members=((UNIT, 0), (OTHER, 0)))
+    first = writer.save_links(tmp_path, _named(1, 2, branch), scope=["exp1:12"], batch=None, stage=None)
+    again = writer.save_links(tmp_path, _named(2, 2, branch), scope=["exp1:12"], batch=None, stage=None)
+    assert again == first and len(records.read_links(tmp_path)) == 1
+
+
 def test_a_changed_result_is_a_new_record(tmp_path):
     result = _result(made_from={UNIT: ("fast", "h1")}, stamps={UNIT: "s1"})
     first = writer.save_links(tmp_path, result, scope=["exp1:12"], batch=None, stage=None)

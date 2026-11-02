@@ -362,7 +362,8 @@ def _append_link(workspace_root, result: linking.LinkResult, *, scope: Sequence[
     except ValueError as exc:
         raise PayloadError(f"a link result is malformed: {exc}") from exc
     root = Path(workspace_root)
-    digest = hashlib.sha256(json.dumps([sorted(scope), body], sort_keys=True, separators=(",", ":"),
+    content = {k: v for k, v in body.items() if k not in ("name_start", "next_name")}     # provenance, not content
+    digest = hashlib.sha256(json.dumps([sorted(scope), content], sort_keys=True, separators=(",", ":"),
                                        allow_nan=False).encode("utf-8")).hexdigest()[:16]
     logged = records.read_links(root)
     same = [line for line in logged if sorted(line.scope) == sorted(scope)]
