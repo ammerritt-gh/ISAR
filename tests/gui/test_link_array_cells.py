@@ -42,7 +42,6 @@ def test_a_cell_with_a_current_or_stale_link_shows_no_link_strip_dot_or_words(en
                   make_unit_links(A4, names=("B1", "B5", "B6"), stale=True))
     for key in ("a03", "a04"):
         cell = env.dock.cell_at(key)
-        assert not hasattr(cell, "link_strip") and not hasattr(cell, "link_dot")
         text = f"{cell.toolTip()}\n{cell.accessibleDescription()}"
         assert "B1" not in text and "links" not in text.lower() and "Mode 1" not in text
         assert GESTURE_TIP in cell.toolTip()

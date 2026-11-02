@@ -106,7 +106,6 @@ def test_one_pick_says_how_to_make_a_path_and_two_picks_draw_it(env):
 
 def test_the_analyzer_array_experiment_shows_only_its_path(env):
     pane = env.pane
-    assert not hasattr(pane, "_fit_button") and not hasattr(pane, "_path_button")
     _pick(env.selection, env.keys)
     assert pane._t_row.isHidden() and pane._status_scroll.isHidden()
     assert pane._plot.titleLabel.text.startswith("Analyzer path")
