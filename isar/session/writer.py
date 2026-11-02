@@ -267,6 +267,12 @@ def save_inter(workspace_root, payloads: Sequence[dict]) -> list[dict | str]:
                     ended.add(batch)
                 out.append(verdict)
                 continue
+            if event == "links":                   # a batch stage's link: saved under this lock, like any link record
+                lk = p["links"]
+                verdict["link"] = _append_link(root, linking.from_json(lk["result"]), scope=lk["scope"],
+                                               batch=batch, stage=lk["stage"])
+                out.append(verdict)
+                continue
             body = p["stage"]
             fresh = [r for r in {r["fit"]: r for r in body["refits"]}.values() if r["fit"] not in accepts]
             needed = [u for r in fresh if r["status"] in records.ELIGIBLE
@@ -315,7 +321,8 @@ def save_inter(workspace_root, payloads: Sequence[dict]) -> list[dict | str]:
                 staged.add(key)
                 index.append(_line({**head, "kind": "stage", "stage": body["stage"], "index": body["index"],
                                     "round": body.get("round"), "progress": body.get("progress") or {},
-                                    "seams": body.get("seams") or [], "not_reached": body.get("not_reached") or {}}))
+                                    "seams": body.get("seams") or [], "not_reached": body.get("not_reached") or {},
+                                    "link": body.get("link")}))
             _append_lines(root / records.LOG, index)    # index last: a payload no index line names is never read
             for r in body["refits"]:
                 accept = accepts.get(r["fit"])
@@ -333,6 +340,11 @@ def _link_problem(p) -> str | None:
     """Why a link payload cannot be saved (nothing of it is written); None when it can."""
     if not isinstance(p, dict) or p.get("schema") != records.SCHEMA_LINK or p.get("pass") != "link":
         return f"not an {records.SCHEMA_LINK} payload"
+    return _link_block_problem(p)
+
+
+def _link_block_problem(p: dict) -> str | None:
+    """The scope-and-result check shared by a link payload and a batch's ``links`` event block."""
     scope = p.get("scope")
     if not (isinstance(scope, list) and scope and all(isinstance(s, str) for s in scope)):
         return "a link covers no scan"
@@ -442,9 +454,13 @@ def _inter_problem(p) -> str | None:
     if not (isinstance(batch, str) and _BATCH_ID.fullmatch(batch)) or p.get("unit") != f"inter:{batch}:batch" \
             or p.get("pass") != "inter":
         return f"unit {p.get('unit')!r} is not 'inter:<batch>:batch' of a batch id b + 12 hex ({batch!r})"
-    if event not in ("start", "stage", "end") or not isinstance(p.get(event), dict):
-        return f"event {event!r} is not start, stage or end with its block"
+    if event not in ("start", "stage", "links", "end") or not isinstance(p.get(event), dict):
+        return f"event {event!r} is not start, stage, links or end with its block"
     body = p[event]
+    if event == "links":
+        if not isinstance(body.get("stage"), str):
+            return "a links event carries no stage"
+        return _link_block_problem(body)
     if event == "start":
         bad = [k for k, t in _START.items() if not isinstance(body.get(k), t) or isinstance(body.get(k), bool)]
         return f"a start lacks {', '.join(bad)}" if bad else None

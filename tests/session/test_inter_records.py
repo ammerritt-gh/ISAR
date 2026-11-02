@@ -68,6 +68,15 @@ def _stage(batch, refits, index=1):
                       "not_reached": {}}}
 
 
+def _links(batch, stage="ring1", scope=("exp1:12",), result=None):
+    """A batch's ``links`` event: the stage's link result, an empty one unless given."""
+    from isar.analyze.coupled import linking as lk
+    from isar.analyze.coupled.settings import InterSettings
+    result = lk.link({}, (), InterSettings()) if result is None else result
+    return {"schema": records.SCHEMA_SAVE, "unit": f"inter:{batch}:batch", "pass": "inter", "batch": batch,
+            "event": "links", "links": {"stage": stage, "scope": list(scope), "result": lk.to_json(result)}}
+
+
 def _end(batch, state="completed"):
     return {"schema": records.SCHEMA_SAVE, "unit": f"inter:{batch}:batch", "pass": "inter", "batch": batch,
             "event": "end", "end": {"state": state, "reason": None, "done": 1, "failed": 0, "not_reached": [],
@@ -300,3 +309,40 @@ def test_the_fingerprint_file_fit_stamps_is_the_one_save_inter_recomputes(ws):
     fit3 = records.new_fit_id()
     (v,) = writer.save_inter(ws, [_stage(batch, [_refit(other, fit3, None)], index=3)])
     assert v["accepted"] == {other: fit3}
+
+
+# ---------------------------------------------------------------------------
+# a batch's links event and the stage line's link (S4U1)
+# ---------------------------------------------------------------------------
+def test_a_links_event_writes_a_link_line_tagged_with_its_batch_and_stage_and_a_repeat_returns_the_same_id(ws):
+    batch = records.new_batch_id()
+    v = writer.save_inter(ws, [_start(batch), _links(batch, "ring1"), _links(batch, "ring1")])
+    assert v[1]["saved"] is True and v[1]["accepted"] == {} and v[1]["refused"] == {}
+    assert v[2]["link"] == v[1]["link"]
+    (line,) = records.read_links(ws)
+    assert (line.link, line.batch, line.stage, line.scope) == (v[1]["link"], batch, "ring1", ("exp1:12",))
+    assert records.read_link_payload(ws, line) is not None
+    assert records.read_log(ws).damaged == ()
+
+
+def test_a_links_event_for_an_unknown_batch_or_with_a_bad_block_writes_nothing(ws):
+    batch = records.new_batch_id()
+    bad_scope = _links(batch, scope=())
+    bad_result = _links(batch)
+    bad_result["links"]["result"] = {"nonsense": 1}
+    no_stage = _links(batch)
+    del no_stage["links"]["stage"]
+    v = writer.save_inter(ws, [_links(batch), _start(batch), bad_scope, bad_result, no_stage])
+    assert v[0] == f"unknown batch {batch}"
+    assert all(isinstance(x, str) for x in v[2:])
+    assert records.read_links(ws) == ()
+
+
+def test_the_stage_line_reads_back_its_link(ws):
+    unit = spectrum_keys(ws)[0]
+    batch, fit = records.new_batch_id(), records.new_fit_id()
+    stage = _stage(batch, [_refit(unit, fit, _now(ws, [unit])[unit])])
+    stage["stage"]["link"] = "l0123456789ab"
+    plain = _stage(batch, [], index=2)
+    writer.save_inter(ws, [_start(batch), stage, plain])
+    assert [s.link for s in records.read_log(ws).stages] == ["l0123456789ab", None]

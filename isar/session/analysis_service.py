@@ -36,7 +36,7 @@ Events (stdout, one JSON object per line, flushed per line)::
     {"ev": "cores", "item_id", "cores"}        deep only: the item keeps these, the rest are free now
     {"ev": "progress", "item_id", "t", **the C-progress dict}       t: seconds since "started"
     {"ev": "members", "item_id", "t", **the runner's member map}   inter only: each member's state
-    {"ev": "result", "item_id", "unit_key", "pass", "status", "reason", "saving"}     inter adds "event": start|stage|end
+    {"ev": "result", "item_id", "unit_key", "pass", "status", "reason", "saving"}     inter adds "event": start|stage|links|end
     {"ev": "saved", "item_id", "unit_key", "pass", "status", "reason"}     inter adds "keys", "refused"
                                                                           link adds "link", "new"
     {"ev": "save_failed", "item_id", "unit_key", "pass", "error"}
@@ -725,7 +725,7 @@ class _Service:
             return
         ev = {"ev": "result", "item_id": item.item_id, "unit_key": item.unit_key, "pass": r.get("pass_kind"),
               "status": status, "reason": r.get("reason"), "saving": payload is not None}
-        if item.pass_kind == "inter":   # the batch payload's event: start, stage or end
+        if item.pass_kind == "inter":   # the batch payload's event: start, stage, links or end
             ev["event"] = None if payload is None else payload.get("event")
         self.emit(ev)
         if payload is not None:         # after the result event, so its "saved" can only follow it

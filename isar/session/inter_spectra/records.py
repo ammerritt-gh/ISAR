@@ -87,6 +87,7 @@ class RefitLine:
 @dataclass(frozen=True)
 class StageLine:
     batch: str; at: str; stage: str; index: int; round: int | None; progress: dict; seams: tuple; not_reached: dict
+    link: str | None = None                   # the link record the stage's refits used
 
 
 @dataclass(frozen=True)
@@ -139,7 +140,7 @@ def _refit(o: dict) -> RefitLine:
 
 def _stage(o: dict) -> StageLine:
     return StageLine(o["batch"], o["at"], o["stage"], int(o["index"]), o["round"], dict(o["progress"]),
-                     tuple(o["seams"]), dict(o["not_reached"]))
+                     tuple(o["seams"]), dict(o["not_reached"]), o.get("link"))
 
 
 _END_SKIP = ("schema", "kind", "batch")
