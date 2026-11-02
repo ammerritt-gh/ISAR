@@ -21,6 +21,7 @@ from _search_harness import (
     tie,
 )
 
+from isar.analyze.coupled import refit as R
 from isar.analyze.coupled import search as SE
 from isar.analyze.coupled.linking import matching_width
 from isar.analyze.coupled.refit import open_search
@@ -128,6 +129,24 @@ def test_a_split_replaces_the_mode_by_two_branches_with_the_predicted_share_of_i
     ch = split_of(0, "b3", 5.2, "b4", 6.1, A1=0.0)
     job = next(j for j in open_search(snap(links_for(2, changes=[ch]))).next_jobs() if j.count == 3)
     assert job.starts[0].modes[0][2] == pytest.approx(20.0 * SE.DEFAULT_SPLIT_FRACTION)
+
+
+def test_a_settled_mode_with_a_listed_split_keeps_its_lifted_ceiling_in_the_incoming_candidate():
+    # the split unlifts its own two children and nothing else: the incoming candidate keeps b1 (settled) lifted
+    ch = split_of(0, "b1", 5.2, "b3", 6.1)
+    s = open_search(snap(links_for(2, changes=[ch], settled_branches=("b1", "b2"))))
+    jobs = s.next_jobs()
+
+    def lifted(job):
+        return dict(zip(job.slots, R._engine_for(s.spec, s.spec.slot_objects(job.slots), job, False).lifted))
+
+    assert lifted(next(j for j in jobs if (j.count, j.slots) == (2, B12))) == {"b1": True, "b2": True}
+    split = next(j for j in jobs if j.count == 3)
+    assert split.slots == ("b1", "b3", "b2") and split.unlifted == ("b1", "b3")
+    assert lifted(split) == {"b1": False, "b3": False, "b2": True}
+    a, _used, _s = run(snap(links_for(2, changes=[ch], settled_branches=("b1", "b2"))),
+                       Scripted({(3, ("b1", "b3", "b2")): -50.0}))
+    assert (a.count, a.unlifted) == (3, ("b1", "b3"))
 
 
 def test_a_drop_removes_its_mode_and_a_drop_and_a_split_of_one_mode_never_share_a_candidate():

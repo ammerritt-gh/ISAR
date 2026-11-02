@@ -140,7 +140,7 @@ class Search:
         self.content = spec.content_key()
         self.n0, self.inc = spec.n0, spec.incoming
         self.own = tuple((m.omega0, m.gamma, m.height) for m in spec.own.modes)
-        self.attempted: dict[tuple, list] = defaultdict(list)    # (k, labels) -> (split?, energies) started (append-only)
+        self.attempted: dict[tuple, list] = defaultdict(list)    # (k, labels, unlifted) -> (split?, energies) started (append-only)
         self.meta: dict[str, str] = {}                            # job key -> the id of the candidate it was made for
         self.cands: list[dict] = []                               # every listed candidate, in listing order
         self.current: dict[str, tuple] = {}                       # job key -> (job, Priced), feed order
@@ -169,6 +169,13 @@ class Search:
     def _name(self, b):
         """The pool name of branch ``b`` (None: not carried by a conditioning neighbour in this snapshot)."""
         return None if b is None else self.names.get(self.spec.canon(b))
+
+    def _unlifted(self, idx):
+        """The canonical branches the applied adds and splits (``idx``: indices into the link's changes) produce:
+        their slots are new here, so they keep the lone width cap in that candidate."""
+        canon = self.spec.canon
+        return tuple(sorted({canon(b) for i in idx if self.links.changes[i].kind != "drop"
+                             for b in self.links.changes[i].branches}))
 
     def _prediction(self, c, i):
         if i < len(c.predictions):
@@ -273,12 +280,12 @@ class Search:
             starts = [c["start"]]
             if c["count"] != self.n0:               # the saved solo model at that count, when the record has one
                 starts += _record_start(self.spec._record_modes(c["count"]), c["count"], c["slots"], c["start"].modes)
-            made = self._jobs(c["count"], c["slots"], starts, c["id"])
+            made = self._jobs(c["count"], c["slots"], starts, c["id"], self._unlifted(c["changes"]))
             c["jobs"] += [j.key for j in made]
             jobs += made
         return tuple(sorted(jobs, key=lambda j: (j.count, order[self.meta[j.key]], str(j.slots), j.key)))
 
-    def _jobs(self, k, slots, starts, cid):
+    def _jobs(self, k, slots, starts, cid, unlifted):
         """The jobs for the starts not within SAME_START_FWHM of one attempted at their labelling. The fitter reads
         each start in the job's slot order, so a start whose energies do not ascend in it gets a job of its own,
         with its slots in its own energy order (finding aa71ec9548ff1-1)."""
@@ -286,7 +293,7 @@ class Search:
         for st in starts:
             lab, es = _labels(k, slots, st.modes)
             split = st.family == "split"       # a split is not a repeat of its own step: splits dedupe against splits only
-            seen = self.attempted[(k, lab)]
+            seen = self.attempted[(k, lab, unlifted)]
             if any(all(abs(a - b) <= self.tol for a, b in zip(es, x)) for s_, x in seen if s_ == split):
                 continue
             seen.append((split, es))
@@ -300,10 +307,10 @@ class Search:
         for order, group in groups:
             js = tuple(slots[i] for i in order)
             sts = tuple(Start(st.family, tuple(st.modes[i] for i in order)) for st in group)
-            part = json.dumps([k, list(js), [[st.family, [list(m) for m in st.modes]] for st in sts]])
+            part = json.dumps([k, list(js), [[st.family, [list(m) for m in st.modes]] for st in sts], list(unlifted)])
             key = hashlib.sha256((self.content + part).encode("utf-8")).hexdigest()
             self.meta.setdefault(key, cid)
-            jobs.append(PricingJob(self.snap.unit, self.snap.snapshot_id, k, js, key, sts))
+            jobs.append(PricingJob(self.snap.unit, self.snap.snapshot_id, k, js, key, sts, unlifted))
         return jobs
 
     # -- the protocol -------------------------------------------------------------------------------------------
@@ -480,7 +487,8 @@ class Search:
             factors=spec.incident(slots), discrete="priced",
             triggers=tuple("listed:" + c["id"] for c in self.cands), candidates=tuple(cands),
             coverage=coverage, search_limited=limited, changed=bool(d["changed"]), reasons=tuple(d["reasons"]),
-            selected_model=chosen[4] if chosen else None, mask_only=bool(d["mask_only"]), search=search)
+            selected_model=chosen[4] if chosen else None, mask_only=bool(d["mask_only"]),
+            unlifted=() if listed is None else self._unlifted(listed["changes"]), search=search)
 
 
 def drive(search: Search, price_one: Callable[[PricingJob], Priced]) -> tuple[Assignment, tuple[Priced, ...]]:

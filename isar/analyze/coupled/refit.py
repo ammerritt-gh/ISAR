@@ -567,9 +567,8 @@ class _Spec:
         self.n0 = len(self.own.modes)
         L = snap.links
         self.link_pred = {} if L is None else {self.canon(p.branch): p for p in L.predictions}
-        # a settled link lifts the width ceiling; a branch an add or split lists has no settled mode here yet
-        listed = set() if L is None else {self.canon(b) for c in L.changes if c.kind != "drop" for b in c.branches}
-        self.settled = set() if L is None else {self.canon(b) for b in L.settled_branches} - listed
+        # a settled link lifts the width ceiling; a candidate's applied add or split unlifts its own (slot_lifted)
+        self.settled = set() if L is None else {self.canon(b) for b in L.settled_branches}
         self.held_all = {h.unit: h for ti in snap.terms for h in ti.held}
         self.notes: list[dict] = []
         self.factors, self.frozen = self._build_factors()
@@ -787,10 +786,11 @@ class _Spec:
             raise KeyError(f"{unit} carries no branch {branch} in this snapshot")
         return md.omega0
 
-    def slot_lifted(self, b: str | None) -> bool:
-        """Whether a slot naming ``b`` has the lifted width ceiling: only a branch whose mode here is on a settled
-        link. An added, split or crossing-alternative slot names a branch that is not, so it keeps the lone cap."""
-        return b is not None and self.canon(b) in self.settled
+    def slot_lifted(self, b: str | None, unlifted) -> bool:
+        """Whether a slot naming ``b`` has the lifted width ceiling: a branch whose mode here is on a settled link,
+        unless the candidate's own applied add or split produces it (``unlifted``, canonical): that slot is new and
+        keeps the lone cap. Every other slot of the candidate, the incoming fit's included, keeps the lift."""
+        return b is not None and self.canon(b) in self.settled and self.canon(b) not in unlifted
 
     def coupling(self, b: str) -> cc.SlotCoupling | None:
         """The width coupling of a slot naming ``b``: its link prediction, in this snapshot's settings."""
@@ -854,7 +854,7 @@ def _ceiling(fs, k: int):
 def _engine_for(spec: _Spec, objs, job: PricingJob, gradients: bool) -> _Labelled:
     """The job's engine, built the same way by ``price`` and by a pool worker (``run_task``)."""
     eng = _Labelled(spec.ctx, _ceiling(spec.fs, job.count), objs, structures=spec.structures,
-                    gradients=gradients, lifted=tuple(spec.slot_lifted(b) for b in job.slots))
+                    gradients=gradients, lifted=tuple(spec.slot_lifted(b, job.unlifted) for b in job.slots))
     eng.job = job
     return eng
 
@@ -1241,7 +1241,7 @@ def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
                      n["ids"], **n["values"]) for n in spec.notes]
     objs = spec.slot_objects(slots, by_branch)
     eng = _Labelled(spec.ctx, _ceiling(spec.fs, k), objs, continuous=True, structures=spec.structures,
-                    lifted=tuple(spec.slot_lifted(b) for b in slots))
+                    lifted=tuple(spec.slot_lifted(b, a.unlifted) for b in slots))
     old = _incoming_state(eng, spec) if k == spec.n0 else None
 
     # starts: the incoming state, the priced posterior mode (the decision's, ``a.selected_model``) and one
@@ -1332,7 +1332,7 @@ def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
     t2 = time.perf_counter()
     ramp = cc.MatchedDensity(spec.ep, snapshot.unit, [], {})
     rel = _Labelled(spec.ctx, _ceiling(spec.fs, k), [ramp] * k, continuous=True, structures=spec.structures,
-                    lifted=tuple(spec.slot_lifted(b) for b in slots))   # the same ceilings, no coupling
+                    lifted=tuple(spec.slot_lifted(b, a.unlifted) for b in slots))   # the same ceilings, no coupling
     rel_model = rel.model(model.variant, tuple(model.delta))
     rel_best = None
     for theta0 in [theta] + ([old[1]] if old is not None and old[0] is model else []):

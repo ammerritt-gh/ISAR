@@ -162,15 +162,17 @@ def test_the_coupled_prior_differs_from_the_base_only_in_the_width_term_and_its_
 
 
 # (e) the lifted ceiling ----------------------------------------------------------------------------------------------
-def test_only_a_settled_link_lifts_the_ceiling_and_an_added_or_split_slot_keeps_the_cap():
+def test_only_a_settled_link_lifts_the_ceiling_and_an_applied_add_or_split_keeps_the_cap():
     add = Change("add", None, ("b2",), (_pred("b2", 7.0),))
     split = Change("split", 0, ("b3", "b4"), (_pred("b3", 2.9), _pred("b4", 3.1)))
     snap = _snap(_links(settled=["b1", "b2", "b3"], changes=[add, split], preds=[_pred(), _pred("b2", 7.0)]))
     spec = R._Spec(snap)
-    assert [spec.slot_lifted(b) for b in ("b1", "b2", "b3", "b4", None)] == [True, False, False, False, False]
-    assert not R._Spec(_snap(_links(settled=[]))).slot_lifted("b1")             # a tie group: unsettled
-    assert not R._Spec(_snap(None)).slot_lifted("b1")                           # no links
-    job = PricingJob(snap.unit, snap.snapshot_id, 2, ("b1", "b2"), "k", (Start("own", ((3.0, 0.4, 40.0), (7.0, 0.5, 20.0))),))
+    assert [spec.slot_lifted(b, ()) for b in ("b1", "b2", "b3", None)] == [True, True, True, False]   # the incoming fit
+    assert [spec.slot_lifted(b, ("b2", "b3", "b4")) for b in ("b1", "b2", "b3", "b4", None)] == [True, False, False, False, False]
+    assert not R._Spec(_snap(_links(settled=[]))).slot_lifted("b1", ())         # a tie group: unsettled
+    assert not R._Spec(_snap(None)).slot_lifted("b1", ())                       # no links
+    job = PricingJob(snap.unit, snap.snapshot_id, 2, ("b1", "b2"), "k", (Start("own", ((3.0, 0.4, 40.0), (7.0, 0.5, 20.0))),),
+                     unlifted=("b2",))
     eng = R._engine_for(spec, spec.slot_objects(job.slots), job, True)
     assert eng.lifted == (True, False)
     model = eng.model(eng.variant(2, True, True), ())

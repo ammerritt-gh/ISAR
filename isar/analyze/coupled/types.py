@@ -118,6 +118,7 @@ class Assignment:                  # the frozen discrete decision of one spectru
     reasons: tuple[str, ...]       # missing-evidence and failure reasons of the comparison
     selected_model: tuple | None = None   # the winner's Priced.mode (elastic, background, qe, delta mask, theta in slot order): the basin of the evidence-chosen mask; None: the incoming fit's
     mask_only: bool = False        # changed by the width mask alone (same count and labels): a discrete change accepted by the evidence rule, not a relabelling
+    unlifted: tuple[str, ...] = ()   # the adopted candidate's applied add/split branches (canonical): their slots keep the lone width cap
     search: Mapping[str, object] = field(default_factory=dict)   # the full search record (C-search-record); {} from a fake
 
 
@@ -131,6 +132,7 @@ class Start:                       # one optimizer start of a pricing job, in th
 class PricingJob:                  # one composition at one count, with all its starts (the expensive unit of work)
     unit: str; snapshot_id: str; count: int; slots: tuple[str | None, ...]; key: str   # key: hash of everything the price depends on
     starts: tuple[Start, ...] = ()   # empty until S3U2's search; price() requires it non-empty from then on
+    unlifted: tuple[str, ...] = ()   # canonical branches the candidate's applied add or split produces: their slots keep the lone width cap
 
 
 @dataclass(frozen=True)
