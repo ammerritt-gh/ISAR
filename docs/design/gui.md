@@ -416,7 +416,7 @@ G27 replaces the old Waterfall central page with a four-page centre: Scan(s), Pl
 - **Inspector.** The left inspector follows the active spectrum without changing the selected set. It shows “k of n selected” and previous/next controls; stepping changes only the active spectrum. Its Fit section shows stored Fast/Deep state, trust/currentness, model label and mode count; each mode lists energy E₀, linewidth Γ (DHO damping, HWHM), and amplitude h with the stored symmetric or asymmetric interval. Missing uncertainty remains “± —” or “—”, never an invented error. The four existing collapsed tables—Interval ladder, Model candidates, Verdict and Provenance—remain below the Fit section. Pooled masters still show their recorded numbers and fit tables even though they have no Scan(s) curve.
 - **Saved groups and the queue.** Ten fixed slots (1–9 and 0 for group 10) are always visible. Filled slots are saved; an outline marks the selected slot and an asterisk marks edits. Click or press a digit outside a text editor to select a slot and recall its saved selection. Select an empty slot and use Save to populate it; Save replaces an occupied selected slot. Ctrl+digit saves directly. Clear removes the selected bookmark without changing scans or the current selection. No Undo. Ordinary list selection never rewrites a saved group. Partial groups name missing members, and recalling one drops those members with a notice. Scan(s) does not replace the Processing queue: queue buttons still add the selected eligible analyzer files, one item per file, and selection alone adds nothing. Queue order, one writer and saved-result behavior remain G26.
 - **Known limits.** Pooled masters are not plotted in Scan(s); their recorded numbers and tables remain in the inspector. Normalised display needs stored monitor exposure and a calibrated energy axis. A Deep curve from an older chosen record with no recoverable model manifest is unavailable even though its tables remain. An outdated stored curve is displayed with its warning; in Normalised scale it is placed in the current unit's recorded exposure frame and the experiment's frozen R, without a refit. The G27 widget tests use generated workspaces; a human walkthrough at the GUI threshold has not been run. At ten traces on the 1108 × 851 laptop layout, the approved top-right legend overlaps much of the plot; the bounds and controls are usable, but this crowded view still needs the human walkthrough.
-- **Saved mode links.** When Link modes has saved links for a spectrum and its fit in use is the one the links were made on, Scan(s) names each drawn mode in the legend with its branch ("Mode 2 · B3"; "Mode 2 · B2 / B3 (unresolved)" for a split candidate) and writes the branch at the mode's peak energy E* when Peak lines is on. A change or unlinked note is a glyph at E* whose legend text is the note and whose hover text is its full words; the glyph is not drawn for a mode with no curve. Another fit draws with a note naming the fit that owns the names. Stale links keep names, drop glyphs and say "links out of date". A spectrum without a saved link draws as before. The page computes nothing from a link and offers no link editing.
+- **Saved mode links (2026-11-02, S3U4).** When Link modes has saved links for a spectrum and its fit in use is the one the links were made on, every drawn mode is a phonon: its legend row and its peak label read "P3" (the stored name `B3`, shown as P), and a phonon keeps one colour in every spectrum (the trace colours in ascending P number, repeating past ten). The label sits at the mode's peak energy E* when Peak lines is on. A spectrum without current links, or whose record names another fit, is labelled "Mode N" in energy order, and the note line says why ("Phonon names belong to …", or "links out of date"). The Scans menu's **Label modes in energy order** (off by default; its tooltip is one sentence) labels every mode "Mode N" in energy order, colours included, so no P name is drawn; it affects only the mode labels, colours and peak labels, and is saved with the other Scan(s) settings. Link glyphs and their legend rows are gone; the link notes stay in the record for the inter-spectra pass. The page computes nothing from a link and offers no link editing.
 
 **Offscreen acceptance and redraw measurements (2026-10-28).** The real MainWindow passed the generated-data A1–A7 checks at 1108 × 851 and 1920 × 1040 with Segoe UI 9, including keyboard group recall/save, active-only inspector stepping, live-update zoom/selection preservation, nine group slots and legend/end-label bounds (`tests/gui/test_scans_view_acceptance.py`). After the initial ten-spectrum draw, selection replacement / Deep-to-Fast / Offset-to-Overlay redraws, including synchronous viewport painting, measured 0.100 / 0.157 / 0.102 s with Voigt resolution and 0.045 / 0.052 / 0.040 s with the committed tabulated resolution curves. These are build-machine diagnostics against the roughly 0.5 s target, not timing gates or a human acceptance claim.
 
@@ -518,19 +518,17 @@ when several scans are selected. Rulings that bind it:
   first event it reads "starting" and shows no counts. Curves never redraw on a members event: they follow `InterState.changed`,
   so the word "done" can precede the new curve by the reload's lag. The dock changes no fit, acceptance or save and calls no queue verb.
   (`BatchOverlay`, `set_batch_overlay` remain the seam the view model's tests drive by hand.)
-- Link marks (2026-11-02, S3U3). Each cell carries its spectrum's saved mode links, read through `InterState.link_row`: a
-  caption of branch names under the plot (a split candidate reads `B2 / B3?`, unresolved), and a tone dot for the worst
-  note (green when linked with nothing to flag, grey for info, amber for a change or an unlinked mode, red for a contradiction).
-  Names from an out-of-date record are drawn in a darker grey with no dot, and the tooltip says they come from earlier links.
-  A spectrum whose record names a fit other than the one in use shows no names. The words are the facade's; the GUI computes nothing.
+- No link strip (2026-11-02, S3U4). A cell shows no saved-link indicator: the branch-name strip under the plot, its dot and
+  the link lines in the hover are gone, so the cell regains that height. The saved links still decide the path's phonons
+  on the Dispersion view (below).
 - Gestures (2026-11-02, S3U3). Ctrl-click adds or removes a cell, and the picked cells form a path in click order.
   Shift-click on a second analyzer in the same grid row or column selects both and everything between them, in click
   order, skipping and naming any cell with no file; on any other pair nothing is selected and the path line says so.
   Space or Enter with Shift is the same gesture. The cell, grid and caption tooltips name both gestures.
 - Path line and Plot path button (2026-11-02, S3U3). The path line reads `Path: a03 → a04 → a05 (3 analyzers, click order)`.
   **Plot path in Dispersion** is enabled while the picks make a path of two or more analyzers of one scan; otherwise its
-  tooltip says why. Pressing it shows the Dispersion ω(q) view with its Analyzer path choice on, and turns auto-follow off,
-  so the picks that come next do not carry the view back to Scan(s). Building a path never moves the page by itself.
+  tooltip says why. Pressing it shows the Dispersion ω(q) view, which in an analyzer-array experiment is the path, and turns
+  auto-follow off, so the picks that come next do not carry the view back to Scan(s). Building a path never moves the page by itself.
   Tests: `tests/gui/test_analyzer_path_gestures.py`, `test_link_array_cells.py`, `test_analyzer_path_dispersion.py`.
 - Code: `viewmodels/analyzer_array.py` (state), `views/analyzer_cell.py` (cell), `views/analyzer_array_dock.py` (dock),
   `main_window.py` (View > Panels, persistence). Tests: `tests/gui/test_analyzer_array_{vm,dock,window,batch}.py`, `test_inter_words.py`.
@@ -922,14 +920,17 @@ G27 retires Waterfall as a central page. Scan(s) is a per-spectrum 1D view; Plan
 Data lives in (Q₃, E); every 2D view is a projection and must say so on screen, always:
 a persistent legend like `plane (H, 1, 0) × E — integrating |L| < 0.02, |K−1| < 0.02`.
 
-- **Dispersion, analyzer path (2026-11-02, S3U3):** the Dispersion view's **Plot** row switches the pane between the fitted
-  ω̂(q) (the default) and **Analyzer path**, which plots the analyzers picked in the Analyzer array, in click order, for one
-  scan (so one temperature, named in the title). The horizontal axis is the cumulative distance along the path in the scan's
-  own q metric (Å⁻¹ on lattice coordinates, rlu when only hkl is known; the analyzer names are its ticks); the vertical axis is
-  energy transfer. Each branch is a series, joined by a line between path-adjacent stops that both carry it; the change and
-  unlinked markers sit at each mode's peak energy E*. A named or split mode on a current link is drawn at its E*, with its
-  branch line and no whisker, so a broad mode is never drawn at its ω0 and a kink in a branch line is a real departure. Any
-  other mode (unlinked, uncovered, stale link, no E*) is drawn at its ω0 with its stored interval, asymmetric as stored and
+- **Dispersion, analyzer path (2026-11-02, S3U4):** an experiment with an analyzer layout runs no campaign, so its Dispersion
+  ω̂(q) view shows only the **Analyzer path**: the analyzers picked in the Analyzer array, in click order, for one scan (so
+  one temperature, named in the title). There is no Plot row and no fitted plot; any other experiment shows the campaign
+  dispersion plot with no Plot row. With fewer than two analyzers of one scan picked, the empty plot says how to make a
+  path (ctrl-click analyzers in the Analyzer array, or shift-click two in one row or column). The horizontal axis is the
+  cumulative distance along the path in the scan's own q metric (Å⁻¹ on lattice coordinates, rlu when only hkl is known; the
+  analyzer names are its ticks); the vertical axis is energy transfer. Each phonon is one series in its own colour with its
+  P label, joined by a line between path-adjacent stops that both carry it; a lone phonon is one series too, a single point
+  when only one stop carries it. A named mode on a current link is drawn at its peak energy E*, with no whisker, so a broad
+  mode is never drawn at its ω0 and a kink in a phonon line is a real departure. Any
+  other mode (uncovered, stale link, no E*) is drawn at its ω0 with its stored interval, asymmetric as stored and
   a one-sided interval keeping its one side. Each stop draws the fit in use. A click on this plot activates nothing.
 - **Heatmap (item 2):** measured strips render as strips; gaps render as gaps. **No
   interpolation by default.** An optional smoothed/kriged surface is a *model overlay*,

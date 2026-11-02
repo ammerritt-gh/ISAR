@@ -56,9 +56,9 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | Scan list: Anchor, Flag, Lock and Inter-spectra fit columns; Set as anchor, Remove anchor | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/scan_list.py`, `isar_gui/viewmodels/scan_list.py` | `tests/gui/test_inter_scan_list.py` |
 | Processing dock: anchors list, direction, preview line, the two Start buttons, the Link modes button and the automatic linking toggle | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/inter_batch_box.py`, `isar_gui/viewmodels/inter_batch.py`, `isar_gui/queue_controller.py` | `tests/gui/test_inter_batch_box.py`, `tests/gui/test_queue_controller.py` |
 | Scan(s) view: flat fit dropdown with Up/Down navigation, Make authoritative, Lock, reasons, error-bar label, waterfall | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/inter_fit_bar.py`, `isar_gui/viewmodels/scans_page.py`, `inter_fits.py` | `tests/gui/test_inter_fit_bar.py`, `test_inter_fits.py`, `test_scans_page_inter.py` |
-| Branch names and link notes in the Scan(s) view, the scan list's Flag column and the scan inspector: names only on the fit the links were made on; kind-2 and kind-3 notes at each mode's peak energy; out-of-date links keep names and say so; read only, no link editing | Implemented; tested offscreen, no person walk-through yet | `isar_gui/viewmodels/scans_page.py`, `isar/plotspec/builders.py`, `isar_gui/viewmodels/scan_list.py`, `isar_gui/views/scan_inspector.py` | `tests/gui/test_link_scans_page.py`, `tests/plotspec/test_builders_scans.py`, `tests/gui/test_link_scan_list.py`, `tests/gui/test_link_inspector.py` |
+| Phonon labels in the Scan(s) view and the scan inspector: every mode of a spectrum whose links apply is its phonon (P<n>, lone ones included), one colour per phonon; "Label modes in energy order" restores Mode N; names only on the fit the links were made on, and out-of-date links say so. The link notes are drawn nowhere (the record keeps them for S4); the scan list's Flag column holds review flags only; read only, no link editing | Implemented; tested offscreen, no person walk-through yet | `isar_gui/viewmodels/scans_page.py`, `isar/plotspec/builders.py`, `isar_gui/viewmodels/scan_list.py`, `isar_gui/views/scan_inspector.py` | `tests/gui/test_link_scans_page.py`, `tests/plotspec/test_builders_scans.py`, `tests/gui/test_link_scan_list.py`, `tests/gui/test_link_inspector.py` |
 | Config > Inter-spectra fitting settings | Implemented | `isar_gui/main_window.py`, `isar_gui/views/inter_settings_dialog.py` | `tests/gui/test_inter_settings_dialog.py` |
-| Analyzer array link marks, the shift- and ctrl-click path gestures, and the analyzer path in the Dispersion view (branch series, markers at E*, one temperature) | Implemented: built and tested offscreen with the real widgets; no person walk-through yet | `isar_gui/viewmodels/analyzer_path.py`, `isar/workspace_api/analyzer_path.py`, `isar/plotspec/path_builders.py`, `isar_gui/views/dispersion_pane.py`, `isar_gui/views/analyzer_array_dock.py` | `tests/workspace_api/test_analyzer_path.py`, `tests/plotspec/test_path_builders.py`, `tests/gui/test_analyzer_path_gestures.py`, `tests/gui/test_analyzer_path_dispersion.py`, `tests/gui/test_link_array_cells.py` |
+| Analyzer array shift- and ctrl-click path gestures (no link strip), and the analyzer path as the whole Dispersion view of an analyzer-array experiment (one series per phonon at E*, one temperature) | Implemented: built and tested offscreen with the real widgets; no person walk-through yet | `isar_gui/viewmodels/analyzer_path.py`, `isar/workspace_api/analyzer_path.py`, `isar/plotspec/path_builders.py`, `isar_gui/views/dispersion_pane.py`, `isar_gui/views/analyzer_array_dock.py` | `tests/workspace_api/test_analyzer_path.py`, `tests/plotspec/test_path_builders.py`, `tests/gui/test_analyzer_path_gestures.py`, `tests/gui/test_analyzer_path_dispersion.py`, `tests/gui/test_link_array_cells.py` |
 | Export and run report show the authoritative fit, labelled | Implemented | `isar/report/export.py`, `isar/report/run_report.py` | `tests/report/test_export_inter.py`, `tests/session/test_run_report_inter.py` |
 | Real-data proof and the timing record | Partial: the proof is written and gated (`ISAR_LETACON_INTER=1`) and not yet run on the real set; the q side is its own module. A finish-line timing run on a copy of the experiment is recorded in section 10; it is not the proof | `proofs/test_letacon_inter_spectra.py`, `proofs/inter_spectra_checks.py`, `proofs/test_letacon_inter_spectra_q.py`, `proofs/inter_spectra_q_checks.py` | `tests/test_inter_spectra_proof_checks.py`, `tests/test_inter_spectra_q_checks.py` |
 
@@ -109,6 +109,9 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
   fitting. It chooses links and starting values only; its scores never enter a fit's likelihood.
 - **Linked branch**: modes of two or more spectra that mode linking joined, with one grid-wide name (`B<n>`).
   An anchored mode is a branch of its own id even alone.
+- **Phonon**: every fitted mode of a spectrum is one. A mode on a branch carries the branch's name; a mode on no branch
+  is a lone phonon, named from the same counter (`B<n>`, shown `P<n>`). Lone names label only: a lone phonon predicts
+  nothing into its neighbours, and the branches, changes and notes are the same with or without it.
 - **Peak energy E\***: where a mode's unconvolved intensity peaks, meV. For a sharp mode it is omega0; an
   overdamped or broad mode is matched by E\*, never by its omega0.
 - **Near tie**: two consistent ways of linking whose summed mismatch differs by less than `tie_margin`, reported as
@@ -439,7 +442,9 @@ or older refit is drawn and exported in its own context, never in a later fast s
 
 A `link` line names the scan keys it covers, the fits it was made from (`made_from`: fit and inputs hash per spectrum)
 and their stamps, the next branch-name number, and where its payload is. A new branch's name continues the store's
-names, so a result saved after another never refuses on names; its ids stay.
+names, so a result saved after another never refuses on names; its ids stay. The payload's `lone` gives each mode on no
+branch its phonon's name (null on a branch); a payload saved before lone names has no `lone` and reads as out of date
+until Link modes runs again.
 
 ```json
 {"schema": "isar.inter-log/1", "kind": "link", "link": "l3a9f10c2e7d4", "at": "2026-11-02T09:14:03.000000+00:00", "scope": ["exp1:12", "exp1:13"], "batch": null, "stage": null, "made_from": {"exp1:12:a03": ["fast", "9d2c4e1f0a7b"], "exp1:13:a03": ["fast", "7a1b3c5d9e0f"]}, "stamps": {"exp1:12:a03": "5b0c1d2e3f4a", "exp1:13:a03": "6c1d2e3f4a5b"}, "next_name": 4, "digest": "0f1e2d3c4b5a6978", "counts": {"spectra": 56, "branches": 3, "ties": 1, "contradictions": 0, "excluded": 0}, "payload": ["l3a9f10c2e7d4.jsonl", 0, 18342]}
@@ -492,18 +497,18 @@ names, so a result saved after another never refuses on names; its ids stay.
 | `isar_gui/viewmodels/inter_settings.py` | the rows and deltas of the settings dialog |
 | `isar_gui/viewmodels/scan_list.py` | the scan list's Anchor, Flag, Lock and Inter-spectra fit columns |
 | `isar_gui/viewmodels/scans_page.py` | the Scan(s) page's inter-spectra state |
-| `isar/plotspec/builders.py` | the Scan(s) plot's link marks (`ScansMark`): branch names and kind-2 and kind-3 glyphs at each mode's peak energy |
-| `isar_gui/views/scan_inspector.py` | the scan inspector's fit table: the branch name and its notes in the Fast column of each Mode row (the Mode heading is shared with Deep and names nothing) and one link note, on the fit the links were made on |
+| `isar/plotspec/builders.py` | the Scan(s) plot's mode labels (`ScansMark`: a phonon or Mode N at each mode's peak) and the colour of each phonon (`ScansCurve.phonon`) |
+| `isar_gui/views/scan_inspector.py` | the scan inspector's fit table: the phonon of each Mode row in its Fast column (the Mode heading is shared with Deep and names nothing), and one line when the links are out of date or name another fit |
 | `isar_gui/views/inter_batch_box.py` | the Processing dock's inter-spectra box |
 | `isar_gui/views/inter_fit_bar.py` | the Scan(s) flat fit dropdown, Make authoritative, Lock and Waterfall of fits |
 | `isar_gui/views/inter_settings_dialog.py` | Config > Inter-spectra fitting settings |
 | `isar_gui/main_window.py` | the Config menu entry and the window wiring |
-| `isar_gui/viewmodels/analyzer_array.py` | the analyzer array's picks, its gestures, the cells' link captions and dots, and `path_keys` (the path of the picks) |
+| `isar_gui/viewmodels/analyzer_array.py` | the analyzer array's picks, its gestures, and `path_keys` (the path of the picks) |
 | `isar_gui/views/analyzer_array_dock.py` | the Analyzer array dock: the path line and the Plot path in Dispersion button |
-| `isar/workspace_api/analyzer_path.py` | the analyzer path read: the picks of one scan as stops at cumulative q, the fit in use per stop, the names and markers from the saved links |
-| `isar/plotspec/path_builders.py` | the analyzer path's plot spec, built from plain stops |
-| `isar_gui/viewmodels/analyzer_path.py` | the Dispersion pane's analyzer path: the picks, the line, the spec while the pane shows it |
-| `isar_gui/views/dispersion_pane.py` | the Dispersion view's Plot row: fitted ω̂(q) or the analyzer path |
+| `isar/workspace_api/analyzer_path.py` | the analyzer path read: the picks of one scan as stops at cumulative q, the fit in use per stop, the phonon names from the saved links |
+| `isar/plotspec/path_builders.py` | the analyzer path's plot spec, built from plain stops: one series per phonon |
+| `isar_gui/viewmodels/analyzer_path.py` | the Dispersion pane's analyzer path: the picks, the line, the spec while the pane shows it, and the words of an empty plot |
+| `isar_gui/views/dispersion_pane.py` | the Dispersion view of an analyzer-array experiment: the analyzer path alone (no Plot row, no fitted plot) |
 
 ## 8. Rulings
 
