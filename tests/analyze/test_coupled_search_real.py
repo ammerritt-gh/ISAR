@@ -1,4 +1,5 @@
-"""The adaptive search and the count-first decision on the real engine (plan S3U2, tests 13-18 and 20).
+"""The listed-candidate search and the count-first decision on the real engine (plan S3U2 tests 13-17 and 20,
+S4U2 test (i)).
 
 Every spectrum is Poisson counts from DHO modes convolved with the made-up Gaussian resolution of
 ``test_coupled_refit`` (hard rule 10: nothing measured, nothing read from ``real_data``). Each case prices tens of
@@ -11,8 +12,8 @@ import time
 from dataclasses import replace
 
 import pytest
-from _search_harness import job_for, snapshot_for
-from test_coupled_refit import STRUCT, S, _label, held, record, spectrum, t_pair
+from _search_harness import add, job_for, links_for, tie
+from test_coupled_refit import S, _label, held, record, spectrum, t_pair
 
 from isar.analyze.coupled import identity
 from isar.analyze.coupled import refit as R
@@ -55,8 +56,9 @@ def test_a_label_swap_of_two_close_modes_loses_through_the_whole_refit():
     own = [(2.5, 0.3, 40.0), (4.9, 0.3, 40.0)]
     spacing = 2.0 / S.q_slope_meV_per_rlu
     term = TermInput(Term("q-change", ("x", "y"), (spacing,), None, None, "hkl"), (held("x", nb, ["b1", "b2"]),))
-    snap = Snapshot("s", "s", "y", "f1", spectrum(own, seed=21), held("y", own, ["fast:y#0", "fast:y#1"]),
-                    record(own), (term,), S, "anchored")
+    ties = (tie("t0", "swap", ("y", "w"), ("b2", "b1")),)       # the link reports the crossing: both labellings priced
+    snap = Snapshot("s", "s", "y", "f1", spectrum(own, seed=21), held("y", own, ["b1", "b2"]),
+                    record(own), (term,), S, "anchored", links=links_for(2, ties=ties, labels=("b1", "b2")))
     r = R.refit(snap, stage="both")
     a = r.assignment
     z = {tuple(c["slots"]): c["ln_z"] for c in a.candidates if c["count"] == 2 and c["ln_z"] is not None}
@@ -76,11 +78,12 @@ SEVEN = [(3.0, 0.3, 40.0), (5.5, 0.3, 40.0), (8.0, 0.3, 40.0), (10.5, 0.3, 40.0)
          (15.5, 0.3, 40.0), (18.0, 0.3, 40.0)]
 
 
-def _seven(own=None, branches=None):
+def _seven(own=None, links=None):
     own = SEVEN if own is None else own
     p = prep(SEVEN, 8, seed=7)
-    return t_pair(p, own, branches or [f"fast:y#{i}" for i in range(len(own))], SEVEN,
-                  [f"b{i + 1}" for i in range(7)], kind="simultaneous")
+    snap = t_pair(p, own, [f"b{i + 1}" for i in range(len(own))], SEVEN, [f"b{i + 1}" for i in range(7)],
+                  kind="simultaneous")
+    return replace(snap, links=links)
 
 
 def test_a_count_above_six_is_priced_refined_released_and_stored():
@@ -101,15 +104,14 @@ def test_a_count_above_six_is_priced_refined_released_and_stored():
     assert len(r.modes) == 7 and all(m.branch for m in r.modes)
     back = R.held_from_fit(r.fit, unit="y", fit="f1", inputs=None, context=snap.context, T=200.0)
     assert len(back.modes) == 7 and all(m.branch for m in back.modes)
-    # the search asks for count 7 in its seed round (the neighbour carries seven); the whole walk on to 8 and 9
-    # from six modes takes more than ten minutes and is not repeated here
-    snap6 = _seven(SEVEN[:6])
+    # from six modes the link lists the seventh branch: the search asks for count 7 in its one pass
+    snap6 = _seven(SEVEN[:6], links_for(6, changes=[add("b7", 18.0, w=1.7)], labels=tuple(f"b{i + 1}" for i in range(6))))
     first = R.open_search(snap6).next_jobs()
     j7 = next(j for j in first if j.count == 7)
     p7 = R.price(snap6, j7)
     assert p7.status in ("ok", "ok_boundary") and math.isfinite(p7.ln_z), (p7.status, p7.reason)
     print(f"\n14 count 7: direct price {priced_s:.1f} s ({p.status}); seed round from six modes asks "
-          f"{sorted(j.count for j in first)}, its count-7 seed priced ({p7.status}); "
+          f"{sorted(j.count for j in first)}, its count-7 candidate priced ({p7.status}); "
           f"{time.perf_counter() - t0:.1f} s total")
 
 
@@ -123,45 +125,19 @@ EIGHT_RUN = pytest.mark.skipif(not os.environ.get("ISAR_SLOW_EIGHT"),
 
 
 @pytest.mark.parametrize("truth", [FOUR, pytest.param(EIGHT, marks=EIGHT_RUN)], ids=["four", "eight"])
-def test_several_modes_added_at_once_are_reached_through_the_neighbour_seed(truth):
+def test_several_modes_added_at_once_are_reached_through_the_listed_adds(truth):
     t0 = time.perf_counter()
     n = len(truth)
-    snap = t_pair(prep(truth, n + 1, seed=15), truth[:1], ["fast:y#0"], truth, [f"b{i + 1}" for i in range(n)],
-                  kind="simultaneous")
+    L = links_for(1, changes=[add(f"b{i + 1}", truth[i][0], w=1.7) for i in range(1, n)], labels=("b1",))
+    snap = replace(t_pair(prep(truth, n + 1, seed=15), truth[:1], ["b1"], truth, [f"b{i + 1}" for i in range(n)],
+                          kind="simultaneous"), links=L)
     a, priced = R.assign(snap)
     names = tuple(f"b{i + 1}" for i in range(n))
     assert (a.count, a.slots) == (n, names) and a.changed, (a.count, a.slots, decision(a)["count_p"])
-    seeds = {(sd["count"], tuple(sd["slots"])) if isinstance(sd, dict) and "count" in sd else None
-             for sd in a.search["seeds"]}
-    seed_jobs = [c for c in a.candidates if c["source"].startswith("seed:neighbour")]
-    assert any(c["count"] == n and c["ln_z"] is not None for c in seed_jobs), (seeds, a.search["seeds"])
-    assert all(c["ln_z"] is not None for c in a.candidates if c["source"].startswith("seed:"))      # every seed priced
-    first = next(c for c in a.candidates if (c["count"], tuple(c["slots"])) == (n, names))
-    assert first["source"].startswith("seed:")                    # not reached by stepping 1 -> 2 -> ... -> n
+    assert a.search["applied"] == list(range(n - 1))              # every listed add was taken, by its index
+    assert all(c["ln_z"] is not None for c in a.candidates if c["count"] == n)
     print(f"\n15 {n} modes at once: {len(priced)} jobs, count_p {decision(a)['count_p'].get(str(n))}, "
-          f"stopped {a.coverage['stopped']}; {time.perf_counter() - t0:.1f} s")
-
-
-# 16 --------------------------------------------------------------------------------------------------------
-def test_the_adaptive_search_agrees_with_a_full_enumeration_and_prices_fewer_jobs():
-    t0 = time.perf_counter()
-    true = [(8.0, 0.4, 40.0), (12.0, 0.4, 40.0)]
-    snap = t_pair(prep(true, 3, seed=16), true[:1], ["fast:y#0"], true, ["b1", "b2"], kind="simultaneous")
-    ta = time.perf_counter()
-    adaptive, p_adaptive = R.assign(snap)
-    t_adaptive = time.perf_counter() - ta
-    full_snap = replace(snap, settings=replace(S, full_search=True, full_search_max_count=3))
-    tf = time.perf_counter()
-    full, p_full = R.assign(full_snap)
-    t_full = time.perf_counter() - tf
-    assert full.search["domain"] == "full" and not full.coverage["enumeration_truncated"]
-    assert (adaptive.count, adaptive.slots) == (full.count, full.slots) == (2, ("b1", "b2"))
-    pa, pf = decision(adaptive)["count_p"], decision(full)["count_p"]
-    for c in ("1", "2", "3"):
-        assert pa.get(c, 0.0) == pytest.approx(pf.get(c, 0.0), abs=0.05), (c, pa, pf)
-    assert len(p_adaptive) < len(p_full), (len(p_adaptive), len(p_full))
-    print(f"\n16 adaptive {len(p_adaptive)} jobs {t_adaptive:.1f} s vs full {len(p_full)} jobs {t_full:.1f} s; "
-          f"count_p adaptive {pa} full {pf}; {time.perf_counter() - t0:.1f} s")
+          f"chosen {a.search['chosen']}; {time.perf_counter() - t0:.1f} s")
 
 
 # 17 --------------------------------------------------------------------------------------------------------
@@ -174,13 +150,18 @@ def _three(own_modes, own_true_modes, e2, w_nb, *, scale=1.0, settings=S, seed=1
     return t_pair(p, own_modes, ["b1"], nb, ["b1", "b2"], guard=0.0, settings=settings)
 
 
+def _listed(snap, e2):
+    """``snap`` with the link listing the add of b2 at the energy its neighbours carry it (width: 0.4 in 1.5 meV)."""
+    return replace(snap, links=links_for(1, changes=[add("b2", e2, w=1.7)], labels=("b1",)))
+
+
 def _hidden():
     true = [(8.0, 0.4, 40.0), (8.5, 0.4, 8.0)]
-    return _three([(8.0, 0.4, 48.0)], true, 8.5, 8.0)
+    return _listed(_three([(8.0, 0.4, 48.0)], true, 8.5, 8.0), 8.5)
 
 
 def _vanished(scale):
-    return _three([(8.0, 0.4, 40.0)], [(8.0, 0.4, 40.0)], 14.0, 8.0, scale=scale)
+    return _listed(_three([(8.0, 0.4, 40.0)], [(8.0, 0.4, 40.0)], 14.0, 8.0, scale=scale), 14.0)
 
 
 def test_a_hidden_mode_is_kept_and_a_vanishing_branch_is_dropped_under_the_count_first_decision():
@@ -190,6 +171,7 @@ def test_a_hidden_mode_is_kept_and_a_vanishing_branch_is_dropped_under_the_count
     z = {tuple(c["slots"]): c["ln_z"] for c in a.candidates if c["ln_z"] is not None}
     assert (a.count, a.slots, a.changed) == (2, ("b1", "b2"), True), (a.count, a.slots, a.changed, decision(a))
     assert r.status == "accepted", (r.status, r.reason)
+    assert (a.search["chosen"], a.search["applied"]) == ("add:b2", [0])      # the listed add beat the incoming fit
     print(f"\n17 hidden: count_p {decision(a)['count_p']}; (b1,b2) over (b1,) "
           f"{z[('b1', 'b2')] - z[('b1',)]:+.2f} nats; {time.perf_counter() - t0:.1f} s")
     t1 = time.perf_counter()
@@ -201,30 +183,6 @@ def test_a_hidden_mode_is_kept_and_a_vanishing_branch_is_dropped_under_the_count
     assert (weak.count, weak.slots) == (2, ("b1", "b2")), (weak.count, weak.slots, decision(weak)["count_p"])
     print(f"17 vanishing, weak statistics: count_p {decision(weak)['count_p']} (the phantom stays, as S2U2 documents); "
           f"{time.perf_counter() - t2:.1f} s")
-
-
-# 18 --------------------------------------------------------------------------------------------------------
-def test_the_extra_unmatched_mode_tail_is_summable_with_prices_off_and_on():
-    t0 = time.perf_counter()
-    true = [(8.0, 0.4, 40.0), (13.0, 0.4, 40.0)]
-    # whether each surplus mode prices or ends a twin, at zero height or with a singular Hessian turns on the
-    # optimiser's path: under the coupled engine's width coordinate (recipe /7) seeds 12, 13, 16 and 20 of 11-20
-    # price every count, the rest do not (17 and 18, earlier choices, now give a twin or a singular Hessian)
-    base = t_pair(prep(true, 5, seed=12), true, ["fast:y#0", "fast:y#1"], true, ["b1", "b2"], kind="simultaneous")
-    out = {}
-    for name, settings in (("zero", ZERO), ("default", S)):
-        snap = replace(base, settings=settings)
-        out[name] = {k: R.price(snap, job_for(snap, k, (None,) * k)) for k in range(2, 6)}
-        assert all(p.ln_z is not None and math.isfinite(p.ln_z) for p in out[name].values()), \
-            {k: (p.status, p.reason) for k, p in out[name].items()}
-    lz = {n: {k: p.ln_z for k, p in d.items()} for n, d in out.items()}
-    step = {n: {k: lz[n][k + 1] - lz[n][k] for k in range(2, 5)} for n in lz}
-    tail = sum(math.exp(lz["zero"][k] - lz["zero"][2]) for k in range(3, 6))
-    print(f"\n18 steps at zero prices {step['zero']}; at defaults {step['default']}; tail beyond the answer {tail:.4f}; "
-          f"{time.perf_counter() - t0:.1f} s")
-    assert all(d <= -1.0 for d in step["zero"].values()), step["zero"]
-    assert all(d <= -5.0 for d in step["default"].values()), step["default"]
-    assert tail < 0.1
 
 
 # 20 --------------------------------------------------------------------------------------------------------

@@ -174,7 +174,7 @@ class _Labelled(cc.CoupledEngine):
                                                    b.theta.copy(), b.cost, b.ln_like, b.ln_model_prior, b.family,
                                                    b.nfev, b.message))
             elif len(pairs) == 1 and not self._seen_by_another(b, pairs[0]):
-                self.send_split(b.model, self._anchor(b.model, b.theta), pairs[0], cc.SPLIT_NODE_SETS, self.screen)
+                self.send_split(b.model, self._anchor(b.model, b.theta), pairs[0], cc.SPLIT_NODE_SETS)
         return out
 
     def _seen_by_another(self, b, pair) -> bool:
@@ -199,15 +199,15 @@ class _Labelled(cc.CoupledEngine):
             self.port.drop(stale)
 
     @staticmethod
-    def _split_key(model, theta, pair, sets, screen) -> tuple:
-        return _vkey(model.variant), tuple(model.delta), theta.tobytes(), tuple(pair), tuple(sets), bool(screen)
+    def _split_key(model, theta, pair, sets) -> tuple:
+        return _vkey(model.variant), tuple(model.delta), theta.tobytes(), tuple(pair), tuple(sets)
 
-    def send_split(self, model, theta, pair, sets, screen) -> tuple:
-        """Every node task of one split integral, once per key: chain order, sets in order (the first set alone for
-        a screen), the first two sets at rank 0 (every agreement test reads them) and deeper ones at rank 1. A
+    def send_split(self, model, theta, pair, sets) -> tuple:
+        """Every node task of one split integral, once per key: chain order, sets in order, the first two sets
+        at rank 0 (every agreement test reads them) and deeper ones at rank 1. A
         node's ``prepare`` starts it from the nearest node of this integral already solved when it is sent, else
         the joint solution (D1). Returns the integral's key."""
-        key = self._split_key(model, theta, pair, sets, screen)
+        key = self._split_key(model, theta, pair, sets)
         if key in self.split_sent or key in self.splits:
             return key
         f_joint = self.split_problem(model, theta, pair)[2]
@@ -227,7 +227,7 @@ class _Labelled(cc.CoupledEngine):
                     best = (g, got[0][2])
             return ctx, kind, a[:5] + (best,)
 
-        for n_set, n in enumerate(sets[:1] if screen else sets):
+        for n_set, n in enumerate(sets):
             fs, _w, chains = cc.split_set(n, f_joint)
             for i in chains[0] + chains[1]:
                 f = float(fs[i])
@@ -238,16 +238,16 @@ class _Labelled(cc.CoupledEngine):
                 sent[f] = h
         return key
 
-    def split_evidence(self, b, theta, pair, *, sets=cc.SPLIT_NODE_SETS, screen=False):
+    def split_evidence(self, b, theta, pair, *, sets=cc.SPLIT_NODE_SETS):
         """Without a port: today's serial integral. With one (D1): the nodes come from tasks (``send_split``) and
         ``integrate_split`` reads them in today's order. A node that failed is retried once from today's serial
         start (its solved neighbour) when its task started elsewhere; still failing, one ``"split_serial"`` task
         reruns the whole integral serially and its result is final. ``n_split_nodes`` counts each node read and
         each retry. An integral's result is kept per key, so the ABNORMAL retry's re-entry reads the same one."""
         if self.port is None:
-            return super().split_evidence(b, theta, pair, sets=sets, screen=screen)
+            return super().split_evidence(b, theta, pair, sets=sets)
         model = b.model
-        key = self.send_split(model, theta, pair, sets, screen)
+        key = self.send_split(model, theta, pair, sets)
         if key in self.splits:
             return self.splits[key]
         sent = self.split_sent.pop(key)
@@ -273,14 +273,13 @@ class _Labelled(cc.CoupledEngine):
             return out[1]
 
         try:
-            res = cc.split_representative(cc.integrate_split(node, problem[2], sets=sets, screen=screen), problem,
-                                          solved, lnz_at)
+            res = cc.split_representative(cc.integrate_split(node, problem[2], sets=sets), problem, solved, lnz_at)
         except _SplitFallback:
             res = None
         finally:
             self.port.drop([h for f, h in sent.items() if f not in read])
         if res is None:                         # only the serial integral can promise what the serial path finds
-            h = self.port.submit((self.task_ctx, "split_serial", args + (tuple(sets), bool(screen))))
+            h = self.port.submit((self.task_ctx, "split_serial", args + (tuple(sets),)))
             self.handles.append(h)
             res = self.port.wait(h)
             self.n_split_nodes += res.nodes
@@ -733,9 +732,12 @@ class _Spec:
                     [[d.branch, d.last_seen_fit, d.last_seen_unit] for d in h.dormant]]
         # every field of each term (a new Term field is hashed without another edit) and the merged aliases:
         # the loss price names branches canonically, so a price cached before a merge must not be reused after it
-        lk = snap.links          # the settled set is written sorted: a frozenset follows hash order, which differs per process
-        return {"unit": snap.unit, "own": held(snap.own), "batch_kind": snap.batch_kind,
-                "links": None if lk is None else {**asdict(lk), "settled_branches": sorted(lk.settled_branches)},
+        links = None
+        if snap.links is not None:   # the settled set is written sorted: a frozenset follows hash order, which differs per process
+            links = asdict(snap.links)      # the listing order of changes and ties is the linking step's, not part of the price
+            links.update(settled_branches=sorted(snap.links.settled_branches),
+                         changes=sorted(map(repr, links["changes"])), ties=sorted(map(repr, links["ties"])))
+        return {"unit": snap.unit, "own": held(snap.own), "batch_kind": snap.batch_kind, "links": links,
                 "settings": snap.settings.to_values(), "aliases": sorted(snap.aliases.items()),
                 "terms": [[astuple(ti.term), [held(h) for h in ti.held]] for ti in snap.terms]}
 
@@ -768,8 +770,8 @@ class _Spec:
             unit=self.snap.unit, snapshot_id=self.snap.stage_id, count=self.n0, slots=self.incoming,
             origins=self.origins(self.incoming), factors=self.incident(self.incoming), discrete="skipped",
             triggers=(), candidates=(),
-            coverage={"counts_priced": [], "counts_unresolved": {}, "stopped": {}, "full_search": False,
-                      "enumeration_truncated": False, "discrete_skipped": "no_proposed_change"},
+            coverage={"counts_priced": [], "counts_unresolved": {}, "stopped": {},
+                      "discrete_skipped": "no_proposed_change"},
             search_limited=True, changed=False, reasons=())
 
     # -- the slot densities of one composition
@@ -832,7 +834,7 @@ def _ceiling(fs, k: int):
 def _engine_for(spec: _Spec, objs, job: PricingJob, gradients: bool) -> _Labelled:
     """The job's engine, built the same way by ``price`` and by a pool worker (``run_task``)."""
     eng = _Labelled(spec.ctx, _ceiling(spec.fs, job.count), objs, structures=spec.structures,
-                    screen=job.depth == "screen", gradients=gradients)
+                    gradients=gradients)
     eng.job = job
     return eng
 
@@ -881,9 +883,9 @@ def run_task(ctx: bytes, kind: str, args: tuple) -> object:
         starts = [problem[1]] if start is None else [start[1], problem[1]]
         return eng._split_node(problem, f, starts), None if start is None else start[0]
     elif kind == "split_serial":
-        vk, delta, theta, pair, sets, screen = args
+        vk, delta, theta, pair, sets = args
         model = eng.model(eng.variant_of(vk), delta)
-        return eng.split_evidence(_BasinPoint(model, theta), theta, pair, sets=sets, screen=screen)
+        return eng.split_evidence(_BasinPoint(model, theta), theta, pair, sets=sets)
     else:
         raise ValueError(f"unknown task kind {kind!r}")
     return eng.record
@@ -911,8 +913,6 @@ def price(snapshot: Snapshot, job: PricingJob, *, gradients: bool = True,
         raise ValueError(f"job {job.key}: {len(slots)} slots for count {k}")
     if not job.starts:
         raise ValueError(f"job {job.key}: no starts (a job is built by the search, with its starts)")
-    if job.depth not in ("full", "screen"):
-        raise ValueError(f"job {job.key}: depth {job.depth!r} is neither 'full' nor 'screen'")
     spec = _Spec(snapshot)
     loss = spec.loss_terms(slots)           # recorded on every return, even a failed one
     objs = spec.slot_objects(slots)
@@ -920,13 +920,13 @@ def price(snapshot: Snapshot, job: PricingJob, *, gradients: bool = True,
     if bad:
         return Priced(job.key, k, slots, None, "no_evidence", None,
                       f"the neighbour density of {bad[0]} has no verified normaliser", 0, time.perf_counter() - t0,
-                      loss=loss, depth=job.depth)
+                      loss=loss)
     u = sum(b is None for b in slots)
     eng = _engine_for(spec, objs, job, gradients)
     if not eng.variants.get(k):
         return Priced(job.key, k, slots, None, "no_structure", None,
                       f"the card's structures hold no model with {k} modes", 0, time.perf_counter() - t0,
-                      loss=loss, depth=job.depth)
+                      loss=loss)
     sent = {}
     if tasks is not None:
         eng.open_port(tasks, _tasks.pack_context(snapshot, job, gradients))
@@ -965,7 +965,7 @@ def price(snapshot: Snapshot, job: PricingJob, *, gradients: bool = True,
         reason = und.reason if und is not None else _failure_reason(basins, floored=bool(scored))
         status = "degenerate_twin" if twin else "undetermined" if und is not None else "no_evidence"
         return Priced(job.key, k, slots, None, status, None, reason, eng.n_fits, time.perf_counter() - t0,
-                      loss=loss, depth=job.depth)
+                      loss=loss)
 
     def charge(b):
         fixed = set(b.model.fixed_pos)
@@ -981,12 +981,9 @@ def price(snapshot: Snapshot, job: PricingJob, *, gradients: bool = True,
     mode = (v.elastic, v.background, v.qe, tuple(best.model.delta),
             tuple(float(v) for v in best.theta_map))
     records = tuple(_basin_record(b, slots, t) for b, t in zip(priced, terms))
-    # a split basin's term with its evidence cut to the first node set (its screen); None where there is no split
-    screen_terms = tuple(None if getattr(b, "split_sets", None) is None else t - b.ln_z + b.split_sets[0][1]
-                         for b, t in zip(priced, terms))
     peak = _residual_peak(eng, best, [m[1] for m in records[int(np.argmax(terms))][2]])
     return Priced(job.key, k, slots, ln_z, best.status, mode, None, eng.n_fits, time.perf_counter() - t0,
-                  records, loss, peak, depth=job.depth, screen_terms=screen_terms)
+                  records, loss, peak)
 
 
 def _residual_peak(eng, b, energies) -> tuple[float, float]:

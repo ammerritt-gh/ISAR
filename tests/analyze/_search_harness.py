@@ -1,40 +1,48 @@
-"""The scripted pricer and the snapshot builder of the search tests (S3U2 D14). Every value is made up.
+"""The scripted pricer and the snapshot builder of the search tests (S3U2 D14, S4U2). Every value is made up.
 
 ``Scripted(table)`` is a ``price_one`` for ``search.drive``: for a job it returns one basin, at the energies of
 the job's first start, whose ledger mass (``ln_z`` including the labelling weight) is the table value of its
 (count, labels in ascending start energy); unlisted labellings return ``default``. Options script the rest:
 per-count outcomes without a price, a second crossed basin, a basin pinned at fixed energies, several variants
 and a split (placed) pair. ``snapshot_for`` builds a real ``Snapshot`` on a generated spectrum, so ``_Spec``
-works; ``run`` drives a real ``Search`` with a ``Scripted``; ``job_for`` makes the job the search would make
-for one labelling (the incoming fit's values for the incoming labelling, else the neighbours' energies).
+works (``links=`` gives it the linking step's result as one spectrum reads it); ``run`` drives a real ``Search``
+with a ``Scripted``; ``job_for`` makes the job the search would make for one labelling (the incoming fit's values
+for the incoming labelling, else the neighbours' energies).
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+from test_coupled_refit import S, held, record, spectrum
+
 from isar.analyze import fast_pass
 from isar.analyze.coupled import rules
+from isar.analyze.coupled.linking import Change, Prediction
 from isar.analyze.coupled.refit import open_search
-from isar.analyze.coupled.search import Search, drive
-from isar.analyze.coupled.types import Priced, Snapshot, Start, TermInput
+from isar.analyze.coupled.types import (
+    Priced,
+    Snapshot,
+    SnapshotLinks,
+    Start,
+    TermInput,
+    TieSide,
+)
 from isar.session.inter_spectra.graph import Term
-from test_coupled_refit import S, held, record, spectrum
 
 NOQE = (True, True, False)
 
 
 class Scripted:
     def __init__(self, table=None, *, default=-120.0, peak=(20.0, 1.0), outcomes=None, crossed=None, at=None,
-                 variants=None, split=(), screen=None):
+                 variants=None, split=()):
         """table {(k, labels): mass}; default: a mass, or {k: mass} with -120 elsewhere; outcomes {k or (k, labels):
         (status, reason)}; crossed {(k, labels): (crossed labels, mass, also)}: a basin at the same energies under
         the crossed labels (``also`` False: the only basin); at {(k, labels): energies} pins the basin (default:
         where the labelling's first start was, so every start of one labelling reaches one basin); variants
-        {(k, labels): [(variant, mass), ...]}; split: labellings whose first two modes come back as a placed pair;
-        screen {(k, labels): offset}: a split labelling's screen term is its full term plus the offset (default 0). A
-        price echoes the job's depth and carries screen_terms (C-depth): a split basin's screen term, else None;
-        under a screen job the split basin's term is its screen term."""
+        {(k, labels): [(variant, mass), ...]}; split: labellings whose first two modes come back as a placed pair."""
         self.table, self.default, self.peak = dict(table or {}), default, peak
         self.outcomes, self.crossed, self.at = outcomes or {}, crossed or {}, at or {}
-        self.variants, self.split, self.screen = variants or {}, set(split), screen or {}
+        self.variants, self.split = variants or {}, set(split)
         self.M, self.asked = None, []
 
     def value(self, k, labels):
@@ -62,33 +70,59 @@ class Scripted:
         energies = self.at.setdefault((k, labels), tuple(st.modes[i][0] for i in order))
         out = self.outcomes.get((k, labels)) or self.outcomes.get(k)
         if out is not None:
-            return Priced(job.key, k, job.slots, None, out[0], None, out[1], len(job.starts), 0.001, depth=job.depth)
+            return Priced(job.key, k, job.slots, None, out[0], None, out[1], len(job.starts), 0.001)
         basins = [self.basin(k, labels, energies, m, v) for v, m in self.variants.get((k, labels), [])]
         basins = basins or [self.basin(k, labels, energies, self.value(k, labels))]
         if (k, labels) in self.crossed:
             other, mass, also = self.crossed[(k, labels)]
             basins = (basins if also else []) + [self.basin(k, other, energies, mass, tag="crossed")]
-        off, screen = self.screen.get((k, labels), 0.0), job.depth == "screen"
-        split = [b[1].endswith("|split") for b in basins]
-        if screen:
-            basins = [(b[0] + off, *b[1:]) if s else b for b, s in zip(basins, split)]
-        terms = tuple(b[0] + (0.0 if screen else off) if s else None for b, s in zip(basins, split))
         best = max(basins, key=lambda b: b[0])
         lnz = best[0] + rules.ln_w_label(k, sum(b is not None for b in labels), self.M)
         return Priced(job.key, k, job.slots, lnz, "ok", best[4], None, len(job.starts), 0.001, tuple(basins), (),
-                      self.peak, depth=job.depth, screen_terms=terms)
+                      self.peak)
 
 
-def run(snapshot, scripted, *, screens=None):
-    """(Assignment, prices, the Search) of one scripted search; ``screens`` the search's mode (None: refit's entry)."""
-    s = open_search(snapshot) if screens is None else Search(snapshot, screens=screens)
+def run(snapshot, scripted):
+    """(Assignment, prices, the Search) of one scripted search."""
+    s = open_search(snapshot)
     scripted.M = s.M
+    from isar.analyze.coupled.search import drive
     a, used = drive(s, scripted)
     return a, used, s
 
 
+def pred(branch, E, w=1.0, A=10.0, mode=None):
+    """A link prediction (made up): branch ``branch`` at E meV, width w, intrinsic intensity A."""
+    return Prediction(branch, mode, E, w, A, 0.5, ("x",))
+
+
+def add(branch, E, w=1.0, A=10.0):
+    return Change("add", None, (branch,), (pred(branch, E, w, A),))
+
+
+def split_of(mode, b1, E1, b2, E2, A1=10.0, A2=10.0):
+    return Change("split", mode, tuple(sorted((b1, b2))),
+                  tuple(p for p in sorted((pred(b1, E1, A=A1), pred(b2, E2, A=A2)), key=lambda p: p.branch)))
+
+
+def drop(mode):
+    return Change("drop", mode, (), ())
+
+
+def links_for(n, *, changes=(), ties=(), labels=None, predictions=None, settled_branches=()):
+    """The link as one spectrum with ``n`` modes reads it (made up): ``changes`` in the given listing order."""
+    labels = tuple(labels) if labels is not None else (None,) * n
+    preds = predictions if predictions is not None else tuple(p for c in changes for p in c.predictions)
+    return SnapshotLinks("l000000000001", "ring2", labels, (True,) * n, frozenset(settled_branches), tuple(preds),
+                         tuple(changes), tuple(ties))
+
+
+def tie(group, kind, units, slots):
+    return TieSide(group, kind, tuple(units), tuple(slots))
+
+
 def snapshot_for(own, own_branches, neighbours=None, *, curvature=None, settings=S, aliases=None, rec=None,
-                 kind="anchored"):
+                 kind="anchored", links=None):
     """The spectrum y (200 K) with its incoming fit ``own`` [(omega0, Gamma, height)] named ``own_branches``;
     ``neighbours`` {unit: (modes, branches)} each joined to y by a T-change term (100 K); ``curvature``
     ((left modes, branches), (right modes, branches)) adds a curvature triple x-y-z."""
@@ -101,7 +135,7 @@ def snapshot_for(own, own_branches, neighbours=None, *, curvature=None, settings
     prep = spectrum(own or [(8.0, 0.5, 10.0)], ceiling=3)
     return Snapshot(snapshot_id="b:ring1", stage_id="b:ring1", unit="y", fit_id="f00000000000a", context=prep,
                     own=held("y", own, own_branches, T=200.0), own_record=rec or record(own), terms=tuple(terms),
-                    settings=settings, batch_kind=kind, aliases=aliases or {})
+                    settings=settings, batch_kind=kind, aliases=aliases or {}, links=links)
 
 
 def job_for(snapshot, k, slots):
@@ -109,7 +143,7 @@ def job_for(snapshot, k, slots):
     else each matched slot at a neighbour's energy of its branch and each unmatched slot at an incoming mode's
     (or mid-window), heights left to the optimizer."""
     s = open_search(snapshot)
-    s.attempted.clear()                     # its own seeds are not priced: the job is made as if fresh
+    s.attempted.clear()                     # its own incoming job is not priced: the job is made as if fresh
     slots = tuple(slots)
     if (k, slots) == (s.n0, s.inc):
         start = Start("own", tuple((m.omega0, m.gamma, m.height) for m in s.spec.own.modes))
@@ -117,13 +151,13 @@ def job_for(snapshot, k, slots):
         spare = iter([(m.omega0, m.gamma) for m in s.spec.own.modes])
         modes = []
         for b in slots:
-            md = next((m for h in s.neighbours.values() for m in h.modes
+            md = next((m for h in s.spec.held_all.values() for m in h.modes
                        if b is not None and s.spec.canon(m.branch) == s.spec.canon(b)), None)
             e, g = (md.omega0, md.gamma) if md else next(spare, (0.5 * (s.spec.lo + s.spec.hi),
                                                                  fast_pass.LADDER_GAMMA))
             modes.append((e, g, None))
         start = Start("neighbour", tuple(modes))
-    return s._jobs(k, slots, [start], "seed", "test")[0]
+    return s._jobs(k, slots, [start], "test")[0]
 
 
 def ledger(snapshot, priced):
@@ -132,7 +166,6 @@ def ledger(snapshot, priced):
     the decision weighs."""
     s = open_search(snapshot)
     for p in priced:
-        s.meta[p.key] = {"purpose": "seed", "source": "test"}
-        s.current[p.key] = (p, p)           # the ledger reads only the job's key, count and depth
-    s._rebuild()
+        s.meta[p.key] = "test"
+        s.ledger_.file(p, SimpleNamespace(key=p.key))
     return s

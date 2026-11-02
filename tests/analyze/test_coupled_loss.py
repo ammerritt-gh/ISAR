@@ -10,7 +10,7 @@ import math
 from dataclasses import replace
 
 import pytest
-from _search_harness import Scripted, job_for, ledger, run, snapshot_for
+from _search_harness import Scripted, add, job_for, ledger, links_for, run, snapshot_for
 from test_coupled_refit import S, _short, held, spectrum, t_pair
 
 from isar.analyze.coupled import refit as R
@@ -55,9 +55,9 @@ def test_a_lost_branch_pays_the_entry_price_it_would_have_cost_to_appear():
     assert named[0].loss == () and named[0].ln_z == pytest.approx(named[1].ln_z, abs=1e-9)
     # every candidate the search records carries its loss record, a priced one and one with no price alike, and the
     # decision's agrees with the price's (the candidate record is the search's own; the pricer is scripted)
-    # (a scripted table needs a best count: with every labelling equal, each count's total grows with its labellings
-    # and the walk, which has no ceiling, would never stop)
-    a, _used, _s = run(snap, Scripted({(1, ("b1",)): -100.0}, outcomes={(2, ("b1", "b2")): ("no_evidence", "made up")}))
+    # the link lists adding b2, whose price is scripted to fail
+    listed = replace(snap, links=links_for(1, changes=[add("b2", 15.0)]))
+    a, _used, _s = run(listed, Scripted({(1, ("b1",)): -100.0}, outcomes={(2, ("b1", "b2")): ("no_evidence", "made up")}))
     c = next(c for c in a.candidates if tuple(c["slots"]) == ("b1",))
     assert c["loss"] == [list(t) for t in lost.loss] and c["loss_nats"] == pytest.approx(-L / 2)
     unpriced = [c for c in a.candidates if c["ln_z"] is None]

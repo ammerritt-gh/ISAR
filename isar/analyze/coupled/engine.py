@@ -220,15 +220,13 @@ def split_set(n: int, f_joint: float):
     return f, w, ([i for i in order if f[i] >= f_joint], [i for i in order[::-1] if f[i] < f_joint])
 
 
-def integrate_split(node, f_joint, *, sets=SPLIT_NODE_SETS, tol=SPLIT_TOL_NATS, bail=SPLIT_BAIL_NATS,
-                    screen: bool = False) -> SplitResult:
+def integrate_split(node, f_joint, *, sets=SPLIT_NODE_SETS, tol=SPLIT_TOL_NATS, bail=SPLIT_BAIL_NATS) -> SplitResult:
     """ln of the integral over f in (0, 1) of exp(node(f, near)); node returns ln Z_f, or the reason its f failed:
     a reason starting with UNDETERMINED_REASONS makes the whole integral undetermined (never interpolated across),
     any other reason no_evidence with that reason.
     Gauss-Legendre node sets are tried in order; two successive sets within ``tol`` agree. Sets further apart
     than ``bail`` cannot resolve the integrand (a narrow peak in f: the data pin the split): not converged,
-    without trying the larger set. Nodes are solved outward from ``f_joint``, ``near`` the previous node.
-    ``screen``: the first set alone, with no agreement test and no bail (a screen price; its ln Z is that set's)."""
+    without trying the larger set. Nodes are solved outward from ``f_joint``, ``near`` the previous node."""
     done, nodes, d = [], 0, math.nan
     for n in sets:
         f, w, chains = split_set(n, f_joint)
@@ -243,8 +241,6 @@ def integrate_split(node, f_joint, *, sets=SPLIT_NODE_SETS, tol=SPLIT_TOL_NATS, 
                     return SplitResult(None, kind, f"{v}: split node f={f[i]:.4f}", tuple(done), nodes)
                 lz[i], near = v, float(f[i])
         done.append((n, float(logsumexp(lz + np.log(w)))))
-        if screen:
-            return SplitResult(done[-1][1], "ok", "", tuple(done), nodes)
         if len(done) >= 2:
             d = abs(done[-1][1] - done[-2][1])
             if d <= tol:
@@ -337,14 +333,13 @@ class CoupledEngine(fast_pass._Engine):
     old 20 meV) instead of the lone ``min(4, omega0)``; the caller knows which modes a settled link vouches for.
     """
 
-    def __init__(self, ctx, settings, slots, *, n_exchangeable=(), continuous=False, screen=False, gradients=True,
+    def __init__(self, ctx, settings, slots, *, n_exchangeable=(), continuous=False, gradients=True,
                  lifted=(), **kw):
         super().__init__(ctx, settings, **kw)
         self.lifted = tuple(bool(x) for x in lifted)
         if self.lifted and len(self.lifted) != len(slots):
             raise ValueError(f"coupled refit: {len(self.lifted)} lifted flags for {len(slots)} slots")
         self._s0 = self.s                      # the guard swaps self.s temporarily; the pair rule reads the original
-        self.screen = screen                   # every split integral is a screen (its first node set): a screen price
         self.gradients = gradients             # False: the finite-difference pricing (no joint objective and gradient)
         self.fd_posterior = False              # True: the posterior alone on finite differences (refit's ABNORMAL retry)
         self._split_done = {}                  # model -> {basin index: [pair-canonical points of its split solutions]}
@@ -410,7 +405,6 @@ class CoupledEngine(fast_pass._Engine):
         undetermined is ``undetermined``, never given a made-up finite evidence."""
         model = b.model
         self._split_done.get(model, {}).pop(b.index, None)   # a reprice (an improving refit) must not meet its own solution
-        b.split_sets = None                                   # and must not carry the last split's sets
         pairs = self.hidden_pairs(model, b.theta)
         if not pairs:
             super().price(b)
@@ -426,8 +420,7 @@ class CoupledEngine(fast_pass._Engine):
         if self._seen_split(model, key):
             b.status, b.reason = merged
             return
-        res = self.split_evidence(b, self._anchor(model, b.theta), pair, screen=self.screen)
-        b.split_sets = res.sets
+        res = self.split_evidence(b, self._anchor(model, b.theta), pair)
         if res.kind == "not_converged":          # the data pin the split: what Laplace is good at
             super().price(b)
             self._relabel(b)
@@ -604,7 +597,7 @@ class CoupledEngine(fast_pass._Engine):
         f_joint = t0[ci] / (t0[ci] + t0[cj]) if t0[ci] + t0[cj] > 1e-12 else 0.5
         return objective, xi_joint, f_joint, lo, theta_of
 
-    def split_evidence(self, b, theta, pair, *, sets=SPLIT_NODE_SETS, screen=False) -> SplitResult:
+    def split_evidence(self, b, theta, pair, *, sets=SPLIT_NODE_SETS) -> SplitResult:
         """ln of the integral of exp(-g) over the basin, integrating the intensity split f of ``pair``
         (h_i = f H, h_j = (1 - f) H, Jacobian H; the height prior as it is) with every other coordinate at its
         conditional Laplace at each f, Gauss-Legendre in f. g = cost/2 - sat - ln_prior - Jacobians, in nats,
@@ -630,8 +623,7 @@ class CoupledEngine(fast_pass._Engine):
             self.n_split_nodes += 1
             return node(f, near)
 
-        return split_representative(integrate_split(counted, f_joint, sets=sets, screen=screen), problem, solved,
-                                    lnz_at)
+        return split_representative(integrate_split(counted, f_joint, sets=sets), problem, solved, lnz_at)
 
     def _split_node(self, problem, f, starts):
         """One node of the split integral at f: polish, Laplace and saddle escapes from each start in turn.

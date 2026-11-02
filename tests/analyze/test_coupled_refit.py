@@ -18,7 +18,7 @@ from isar.analyze.coupled import engine as cc
 from isar.analyze.coupled import refit as R
 from isar.analyze.coupled import rules
 from isar.analyze.coupled.settings import InterSettings
-from isar.analyze.coupled.types import Held, HeldMode, PricingJob, Snapshot, TermInput
+from isar.analyze.coupled.types import Held, HeldMode, PricingJob, Snapshot, SnapshotLinks, TermInput
 from isar.analyze.estimators import baker_cousins_cost
 from isar.analyze.fast_pass import FastPassSettings
 from isar.schema.steering import ParamConstraints
@@ -596,10 +596,15 @@ def test_two_slot_orders_that_converge_to_one_basin_count_its_evidence_once():
 def _converging(snap, terms, modes):
     """The decision of a search on ``snap`` whose made-up pricer returns, for a job naming b1 and b2 at count 2, one
     basin with b1 at 8.45 and b2 at 8.55 whatever its slot order (term ``terms[slots]``, mode ``modes[slots]``), and
-    for any other job one basin where its first start is, 50 nats behind."""
-    from _search_harness import Scripted
+    for any other job one basin where its first start is, 50 nats behind. The incoming fit is named (b1, b2) and a
+    reported swap tie lists the other slot order, so both are priced."""
+    from _search_harness import Scripted, tie
 
     from isar.analyze.coupled.search import drive
+    named = tuple(replace(m, branch=b) for m, b in zip(snap.own.modes, ("b1", "b2")))
+    snap = replace(snap, own=replace(snap.own, modes=named),
+                   links=SnapshotLinks(None, "ring2", ("b1", "b2"), (True, True), frozenset(), (), (),
+                                       (tie("t0", "swap", ("y", "w"), ("b2", "b1")),)))
     s = R.open_search(snap)
     sc = Scripted(default=-50.0)
     sc.M = s.M

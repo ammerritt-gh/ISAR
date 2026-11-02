@@ -112,7 +112,7 @@ class Assignment:                  # the frozen discrete decision of one spectru
     discrete: str                  # "priced" | "skipped"
     triggers: tuple[str, ...]      # the seed sources the search started from (C-search-record "seeds"), empty when skipped
     candidates: tuple[dict, ...]   # C-search-record rows: one per distinct labelling scored and per attempted job with no price (ln_z None, reason kept); loss: [[branch, expected_meV, deviance], ...], loss_nats = -sum(deviance)/2, 0.0 if none; ln_z the deduplicated mass the decision weighed, weights conditional on the evaluated set
-    coverage: dict                 # C-search-record coverage: counts_priced, counts_unresolved, stopped (the one the runner reads), full_search, enumeration_truncated, decision
+    coverage: dict                 # C-search-record coverage: counts_priced, counts_unresolved, stopped (the one the runner reads), listed, decision
     search_limited: bool           # spec 3 assignment_search_limited
     changed: bool                  # count, association or width mask differs from snapshot.own AND won by the evidence rule (spec 5); a mask counts when it won beyond the hysteresis or the incoming mask has no priced row
     reasons: tuple[str, ...]       # missing-evidence and failure reasons of the comparison
@@ -123,7 +123,7 @@ class Assignment:                  # the frozen discrete decision of one spectru
 
 @dataclass(frozen=True)
 class Start:                       # one optimizer start of a pricing job, in the job's slot order
-    family: str                    # "own" | "neighbour" | "step" | "split" | "residual" | "move" | "full" | "record": the fit's label (statistics only)
+    family: str                    # "own" | "split" | "record": the fit's label (statistics only)
     modes: tuple[tuple[float, float, float | None], ...]   # (omega0 meV, Gamma meV, height or None) per slot; None = solved by Poisson NNLS (engine._start)
 
 
@@ -131,7 +131,6 @@ class Start:                       # one optimizer start of a pricing job, in th
 class PricingJob:                  # one composition at one count, with all its starts (the expensive unit of work)
     unit: str; snapshot_id: str; count: int; slots: tuple[str | None, ...]; key: str   # key: hash of everything the price depends on
     starts: tuple[Start, ...] = ()   # empty until S3U2's search; price() requires it non-empty from then on
-    depth: str = "full"              # "full" | "screen" (C-depth): a screen cuts each split integral to its first node set
 
 
 @dataclass(frozen=True)
@@ -144,8 +143,6 @@ class Priced:
     basins: tuple = ()             # (term, model, modes, qe, mode, slot_mode) per priced basin (refit._basin_record; mode in energy order, slot_mode the same tuple in slot order): slot orders deduplicated; a basin priced by the split integral has the model label suffix "|split" and records its pair at the mean energy and width with H/2 each; from S3U2 each mode may carry sigma_omega0 as a sixth element
     loss: tuple = ()               # ((branch, expected_meV, deviance), ...) sorted by branch: every eligible in-window neighbour branch the candidate does not name, its expected energy and its price L (-L/2 nats, already inside ln_z and every basin term); () = none missing. A function of the snapshot and the slot multiset only; set even when the candidate is unpriced
     residual_peak: tuple[float, float] | None = None   # (omega0 meV, height) of the largest positive standardised residual of the best basin (fast_pass._additions' rule); None when there is no priced basin. S3U2 fills it
-    depth: str = "full"            # the depth of the job this price answers (refit.price echoes it)
-    screen_terms: tuple = ()       # parallel to ``basins``: per basin its term under a screen (first node set), None without a split integral
 
 
 @dataclass(frozen=True)
