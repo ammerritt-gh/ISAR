@@ -475,7 +475,7 @@ def link(inputs: Mapping[str, LinkInput], links: Sequence[Link], settings: Inter
     # 1  candidate pairs of every link; only the link's best matching is offered to the joining
     cands = []                                  # (d, ua, i, ub, j, li, skip index or -1)
     pair_d: list[dict[tuple[int, int], float]] = []
-    matched: list[dict[tuple[int, int], float]] = []
+    link_matching: list[dict[tuple[int, int], float]] = []
     for li, l in enumerate(L):
         pd = {}
         for m in S[l.a]:
@@ -484,15 +484,15 @@ def link(inputs: Mapping[str, LinkInput], links: Sequence[Link], settings: Inter
                 if d <= thr:
                     pd[(m.i, n.i)] = d
         pair_d.append(pd)
-        matched.append(_best_matching(pd, thr))
-        cands += [(d, l.a, i, l.b, j, li, -1) for (i, j), d in matched[li].items()]
+        link_matching.append(_best_matching(pd, thr))
+        cands += [(d, l.a, i, l.b, j, li, -1) for (i, j), d in link_matching[li].items()]
     li_of = {id(l): k for k, l in enumerate(L)}
 
     # 1b  skip pairs across one missing spectrum (a branch both neighbours on a line carry, the middle lacks), among
     #     the modes the two links' matchings left unmatched, matched as a whole the same way
     def free_modes(l, unit):
         side = 0 if unit == l.a else 1
-        taken = {pair[side] for pair in matched[li_of[id(l)]]}
+        taken = {pair[side] for pair in link_matching[li_of[id(l)]]}
         return [s for s in S[unit] if s.i not in taken]
 
     skip_d: list[dict[tuple[int, int], float]] = []
