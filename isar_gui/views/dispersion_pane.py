@@ -28,6 +28,9 @@ from PySide6.QtWidgets import (
 from isar_gui.plotspec_pg import clear_render, render_into
 from isar_gui.views.group_drop import GroupDropMixin
 
+PATH_CAPTION_TIP = ("The path is one scan, so it has one temperature; the plot title gives its T and scan. "
+                    "The Fitted ω̂(q) button brings back the experiment's dispersion.")
+
 
 class DispersionPane(GroupDropMixin, QWidget):
     """ω̂(q) over a :class:`DispersionViewModel`: scatter + overlays + projection legend, a T
@@ -108,6 +111,7 @@ class DispersionPane(GroupDropMixin, QWidget):
             group.addButton(button)
             row_l.addWidget(button)
         self._path_caption = QLabel(row)
+        self._path_caption.setToolTip(PATH_CAPTION_TIP)
         self._path_caption.setVisible(False)
         row_l.addWidget(self._path_caption, 1)
         self.layout().insertWidget(0, row)

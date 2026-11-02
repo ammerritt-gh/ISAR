@@ -100,6 +100,14 @@ def test_the_path_choice_says_why_it_is_off_until_two_analyzers_are_picked(env):
     assert pane._path_button.isEnabled() and pane._path_button.toolTip() == PLOT_TIP
 
 
+def test_the_path_caption_has_a_tooltip_that_says_why_there_is_one_temperature(env):
+    pane, keys = env.pane, env.keys
+    _pick(env.selection, keys[:2])
+    pane._path_button.click()
+    assert not pane._path_caption.isHidden()
+    assert "temperature" in pane._path_caption.toolTip() and "Fitted" in pane._path_caption.toolTip()
+
+
 def test_the_path_is_drawn_and_switching_back_restores_the_fitted_plot(env):
     pane, keys = env.pane, env.keys
     units = []
