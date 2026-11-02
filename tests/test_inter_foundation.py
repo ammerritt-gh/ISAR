@@ -127,7 +127,7 @@ CONTRACT = (
     ("isar.analyze.coupled.linking", "Contradiction", ["units", "modes", "d", "reason", "words"]),
     ("isar.analyze.coupled.linking", "Marker", ["unit", "kind", "mode", "quantity", "words"]),
     ("isar.analyze.coupled.linking", "LinkResult",
-     ["schema", "made_from", "stamps", "branches", "labels", "peak_E", "settled", "predictions", "changes", "ties",
+     ["schema", "made_from", "stamps", "branches", "labels", "lone", "peak_E", "settled", "predictions", "changes", "ties",
       "contradictions", "markers", "excluded", "settings", "name_start", "next_name"]),
     ("isar.analyze.coupled.settings", "SettingDef",
      ["name", "group", "kind", "default", "calibrated", "unit", "minimum", "maximum", "choices", "help",
