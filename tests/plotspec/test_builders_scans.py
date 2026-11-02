@@ -3,7 +3,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from isar.plotspec.builders import ScansCurve, ScansTrace, scans_spec, scans_residual_spec, stack_step
+from isar.plotspec.builders import ScansCurve, ScansMark, ScansTrace, scans_spec, scans_residual_spec, stack_step
 from isar.plotspec import spec as ps
 
 
@@ -102,6 +102,22 @@ def test_zero_guides_are_viewport_lines_and_leave_the_data_unchanged(view):
     assert guided.to_dict()['guides'][-1] == {
         'axis': 'x', 'value': 0.0, 'color': ps.GUIDE_COLOR, 'style': 'dotted'}
     assert 'guides' not in plain.to_dict()
+
+
+def test_link_marks_sit_at_the_peak_energy_and_names_follow_peak_lines():
+    trace = replace(deep_traces()[0], deep=False, marks=(
+        ScansMark(1, 1.5, name='B3'),
+        ScansMark(1, 1.5, kind=ps.MarkerKind.LINK_CHANGE, label='energy differs from neighbours', tooltip='words'),
+        ScansMark(2, 1.0, kind=ps.MarkerKind.LINK_UNLINKED, label='no link to a neighbour'),   # mode 2 has no curve
+        ScansMark(1, 9.0, kind=ps.MarkerKind.LINK_UNLINKED, label='off grid'),                 # outside the grid
+    ))
+    spec = scans_spec(traces=(trace,), view='single', step=0, ylabel='Counts', curves_header=None)
+    [glyph] = spec.markers
+    assert (glyph.kind, glyph.x, glyph.y, glyph.tooltip) == (ps.MarkerKind.LINK_CHANGE, 1.5, 1.5, 'words')
+    [name] = spec.annotations
+    assert (name.text, name.xy) == ('B3', (1.5, 1.5)) and name.tooltip
+    quiet = scans_spec(traces=(trace,), view='single', step=0, ylabel='Counts', curves_header=None, peak_lines=False)
+    assert [m.kind for m in quiet.markers] == [ps.MarkerKind.LINK_CHANGE] and not quiet.annotations
 
 
 def test_new_style_fields_are_optional_in_serialization():

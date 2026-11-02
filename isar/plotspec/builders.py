@@ -551,6 +551,20 @@ class ScansCurve:
 
 
 @dataclass(frozen=True)
+class ScansMark:
+    """A mode's branch name and/or link glyph, placed at its peak energy E* (never omega0 or the curve centre)."""
+    mode: int                           # the mode's curve number (1-based)
+    energy: float                       # E* in meV, from the saved link
+    name: str = ""                      # branch text drawn at the peak, with the Peak lines switch
+    kind: ps.MarkerKind | None = None   # link glyph (change or unlinked); None draws the name alone
+    label: str | None = None
+    tooltip: str | None = None
+
+
+_BRANCH_TIP = "Branch this mode follows, from the saved mode links"
+
+
+@dataclass(frozen=True)
 class ScansTrace:
     identity: str
     note: str | None
@@ -565,6 +579,7 @@ class ScansTrace:
     point_ids: tuple[str, ...] = ()
     manual_mask: np.ndarray | None = None
     tooltip: str | None = None
+    marks: tuple[ScansMark, ...] = ()
 
 
 DEFAULT_STACK_RATIO = 1.1
@@ -666,6 +681,19 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
                     spec.series.append(ps.Series(
                         x=np.array([center, center]), y=np.array([offset, offset + height]),
                         role=ps.Role.COMPONENT, color=ps.CURVE_COLORS[color_key]))
+    for trace, offset in zip(traces, offsets):
+        for mark in trace.marks:
+            curve = next((c for c in trace.curves if c.kind == "mode" and c.number == mark.mode), None)
+            if curve is None:
+                continue                                  # a mode with no drawn curve gets no mark
+            grid = np.asarray(trace.curve_x)
+            if not grid[0] <= mark.energy <= grid[-1]:
+                continue
+            at = (float(mark.energy), offset + float(np.interp(mark.energy, grid, curve.values)))
+            if mark.kind is not None:
+                spec.markers.append(ps.Marker(at[0], at[1], mark.kind, mark.label, tooltip=mark.tooltip))
+            if mark.name and peak_lines:
+                spec.annotations.append(ps.Annotation(mark.name, xy=at, tooltip=_BRANCH_TIP))
     return spec
 
 
