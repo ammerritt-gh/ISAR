@@ -422,9 +422,13 @@ class Search:
             rows = [(b, n) for n, b in enumerate(entry["basins"]) if _mask(b) == d["delta"]
                     and (d["variant"] is None or tuple(b[4][:3]) == d["variant"])]
             chosen = max(rows, key=lambda x: (x[0][0], -x[1]))[0] if rows else None
-        listed = next((c for c in self.cands if c["key"] == key), None)
+        # the candidate whose job found the winning basin: several can share a key (drops of unlinked modes)
+        by_id = {c["id"]: c for c in self.cands}
+        listed = by_id.get(entry["source"]) if d["winner"] and entry is not None else None
+        if listed is None:
+            listed = next((c for c in self.cands if c["key"] == key), None)
         if listed is None and entry is not None:       # a refit's own relabelling: the candidate whose job found it
-            listed = next((c for c in self.cands if c["id"] == entry["source"]), None)
+            listed = by_id.get(entry["source"])
         unpriced = [(j, p) for j, p in self.current.values() if not _priced(p)]
         single = {c["id"] for c in self.cands if len(c["changes"]) <= 1}
         limited = any(self.meta[j.key] in single and p.status not in _QUIET for j, p in unpriced)

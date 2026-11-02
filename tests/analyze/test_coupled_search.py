@@ -369,3 +369,19 @@ def test_a_tie_group_with_an_anchored_end_flags_nothing():
     assert crossing_flags(snaps, _took(a05="cross:t3", a06="incoming")) == {}
     assert crossing_flags(list(snaps.values()), _took(a05="cross:t3")) == {}
     assert crossing_flags({}, {}) == {}
+
+
+def test_applied_names_the_changes_of_the_candidate_whose_job_found_the_winning_basin():
+    # drops of two unlinked modes give one (count, slots) key; the second candidate's job finds the better basin
+    L = links_for(2, changes=[drop(0), drop(1)])
+    sc = Scripted({(2, (None, None)): -100.0, (0, ()): -120.0}, default=-120.0)
+    inner = sc.__call__
+
+    def price(job):
+        if job.count == 1:                                  # drop:1 keeps the 5.6 mode and is the better fit
+            sc.table[(1, (None,))] = -70.0 if job.starts[0].modes[0][0] < 6.0 else -80.0
+        return inner(job)
+    s = open_search(snapshot_for(OWN, [None, None], {"x": X12}, links=L))
+    sc.M = s.M
+    a, _used = SE.drive(s, price)
+    assert a.count == 1 and a.search["applied"] == [1]

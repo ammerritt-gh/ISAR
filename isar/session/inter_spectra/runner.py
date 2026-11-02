@@ -789,13 +789,16 @@ def snapshot_links(link_now, u: str):
                          tuple(TieSide(g.id, g.kind, tuple(sorted(g.units)), g.alternatives[u]) for g in ties))
 
 
-def fitted_links(links, modes, aliases: Mapping[str, str], applied: Sequence[int] = ()):
+def fitted_links(links, modes, aliases: Mapping[str, str], applied: Sequence[int] = (),
+                 link_ids: Sequence[str] | None = None):
     """The stage's link (``snapshot_links``) read against a spectrum's current modes, so a sweep after a count change
     keeps it: a mode carries its own branch id only when the link's labels name that branch for this spectrum or
     an applied change made it (through the batch's aliases); a prediction alone never labels a mode. Settled follows
     the link's flag for that branch, except a mode an applied change produced is never settled. ``applied``: the
     indices into ``links.changes`` of the changes the spectrum's adopted candidate applied (the search records
-    them); exactly those are applied, and no longer listed."""
+    them); exactly those are applied, and no longer listed. ``link_ids``: the branch ids of the link-time modes,
+    by which a remaining drop or split (named by a link-time mode index) follows its mode once an applied change has
+    moved the indices; one whose mode is gone is dropped until the next link."""
     canon = lambda b: aliases.get(b, b)     # noqa: E731
     settled = {canon(b): s for b, s in zip(links.labels, links.settled) if b is not None}
     applied = [c for i, c in enumerate(links.changes) if i in set(applied)]
@@ -803,6 +806,10 @@ def fitted_links(links, modes, aliases: Mapping[str, str], applied: Sequence[int
     labels = tuple(m.branch if canon(m.branch) in settled or canon(m.branch) in made else None for m in modes)
     flags = tuple(b is not None and settled.get(canon(b), False) and canon(b) not in made for b in labels)
     changes = tuple(c for c in links.changes if c not in applied)
+    if applied and link_ids is not None:
+        now = {canon(m.branch): i for i, m in enumerate(modes)}
+        changes = tuple(c if c.mode is None else replace(c, mode=now[canon(link_ids[c.mode])])
+                        for c in changes if c.mode is None or canon(link_ids[c.mode]) in now)
     return replace(links, labels=labels, settled=flags, changes=changes,
                    settled_branches=frozenset(b for b, s in zip(labels, flags) if b is not None and s))
 
@@ -851,6 +858,7 @@ class _Run:
         self.link_prev, self.next_name = None, 1      # the result the next link continues, its next branch number
         self.link_now = None                          # (link id, stage tag, LinkResult) of the stage in progress
         self.adopted: dict[str, tuple[int, ...]] = {}  # unit -> the listed changes its adopted fit applied, this round
+        self.link_ids: dict[str, tuple[str, ...]] = {}  # unit -> the branch ids of its modes when the stage linked
         self.end_link: str | None = None              # the link saved when the batch ended
         self.end_link_error: str | None = None
         self.core, self.target_s = core, target_s
@@ -1214,7 +1222,8 @@ class _Run:
         from isar.analyze.coupled.types import Snapshot
         links = snapshot_links(self.link_now, u)
         if links is not None:
-            links = fitted_links(links, own.modes, self.aliases, self.adopted.get(u, ()))   # read against its own modes
+            links = fitted_links(links, own.modes, self.aliases, self.adopted.get(u, ()),
+                                 self.link_ids.get(u))   # read against its own modes
         return Snapshot(snapshot_id=sid, stage_id=stage_id or sid, unit=u, fit_id=self.records_mod.new_fit_id(),
                         context=self.ctx[u], own=own, own_record=self.record_of(u, own.fit), terms=tuple(terms),
                         settings=self.settings, batch_kind=self.kind, fast=self.fast.get(u),
@@ -1251,6 +1260,7 @@ class _Run:
             raise _Ended("failed", f"linking failed at {tag} ({type(exc).__name__}: {exc}); saved rings are kept")
         self.link_prev, self.next_name = stored, stored.next_name
         self.link_now = (verdict["link"], tag, stored)
+        self.link_ids = {u: tuple(m.branch for m in h.modes) for u, h in relabel.items()}
         for u, h in relabel.items():
             if u in held:
                 held[u] = h
