@@ -130,13 +130,14 @@ def _efficiency(session, unit: str) -> float | None:
     return fact.get("value") if isinstance(fact, dict) else None
 
 
-def _in_use(root, card, session, units: Sequence[str], lines: Mapping) -> tuple[dict, dict]:
-    """(plan, left): each unit's fit in use as (fit, inputs hash, T), and the units left out before a fit is read."""
+def _in_use(root, card, session, units: Sequence[str], lines: Mapping, ns=None) -> tuple[dict, dict]:
+    """(plan, left): each unit's fit in use as (fit, inputs hash, T), and the units left out before a fit is read.
+    ``ns``: the node set the caller already read; None reads it here."""
     from isar.intake import gpi, inputs, scans as intake_scans, store
     from isar.intake.inter_spectra import read_user
     from isar.session.inter_spectra.nodes import read_nodes
 
-    nodes = read_nodes(root).nodes
+    nodes = (read_nodes(root) if ns is None else ns).nodes
     user = read_user(root)
     by_unit: dict[str, list] = {}
     for r in lines.values():
@@ -225,22 +226,25 @@ def _link_input(root, session, unit: str, fit: str, inp: str | None, T: float | 
 
 def inputs_for(root, units: Sequence[str], *, held: Mapping[str, Held] | None = None,
                records: Mapping[str, dict] | None = None, anchors: Collection[str] = (),
-               source: Callable[[str, Held], tuple[dict, float]] | None = None
+               source: Callable[[str, Held], tuple[dict, float]] | None = None, world: tuple | None = None
                ) -> tuple[dict[str, core.LinkInput], dict[str, tuple[str, str | None]]]:
     """Each spectrum's ``LinkInput`` and the spectra left out, with the plain reason and the fit's token.
 
     ``held`` None: the fit in use of each unit, read from the store. ``held`` given: a batch's frozen Held map, whose
     fits are used as they are. A fit not yet stored is read from ``records[fit]``; ``source(unit, held)`` gives a
     batch's own record and resolution FWHM instead of the store (with ``held``). ``anchors``: units whose modes are
-    fixed ids (``LinkInput.anchored``).
+    fixed ids (``LinkInput.anchored``). ``world`` (card, session, nodes) is what the caller already read; None reads it.
     """
     from isar.session.workspace import Workspace
 
     root = Path(root)
-    card, session = Workspace.open(root).load_read_only()
+    if world is None:
+        card, session = Workspace.open(root).load_read_only()
+        world = (card, session, None)
+    card, session, ns = world
     lines = {r.fit: r for r in inter_records.read_log(root).refits}
     if held is None:
-        plan, left = _in_use(root, card, session, units, lines)
+        plan, left = _in_use(root, card, session, units, lines, ns)
     else:
         plan = {u: (h.fit, h.inputs, h.T) for u, h in held.items() if u in units}
         left = {}
@@ -308,11 +312,11 @@ def previous_for(root, scans: Collection[str]) -> tuple[core.LinkResult | None, 
                    branches=tuple(sorted(branches.values(), key=lambda b: b.id))), nxt
 
 
-def widen_to_series(root, scans: Sequence[str]) -> tuple[str, ...]:
+def widen_to_series(root, scans: Sequence[str], *, ns=None) -> tuple[str, ...]:
     """Every scan of the temperature series of each of ``scans`` (its own scan when it has none), natural order."""
     from isar.session.inter_spectra.nodes import _natural, read_nodes
 
-    ns = read_nodes(root)
+    ns = read_nodes(root) if ns is None else ns
     series_of = {n.scan: n.series for n in ns.nodes.values()}
     out: set[str] = set()
     for scan in scans:
@@ -321,21 +325,22 @@ def widen_to_series(root, scans: Sequence[str]) -> tuple[str, ...]:
     return tuple(sorted(out, key=_natural))
 
 
-def link_scans(root, scans: Sequence[str]) -> core.LinkResult:
-    """Link the fits in use of every analyzer of ``scans``, over q and over temperature. Reads only."""
+def link_scans(root, scans: Sequence[str], *, ns=None) -> core.LinkResult:
+    """Link the fits in use of every analyzer of ``scans``, over q and over temperature. Reads only. ``ns``: the
+    node set the caller already read."""
     from isar.session.inter_spectra import graph, layout, nodes, q_provider
     from isar.session.workspace import Workspace
     from isar.intake.inter_spectra import read_inter_settings
 
     root = Path(root)
-    card, _ = Workspace.open(root).load_read_only()
+    card, session = Workspace.open(root).load_read_only()
     settings = read_inter_settings(root)
-    ns = nodes.read_nodes(root)
+    ns = nodes.read_nodes(root) if ns is None else ns
     units = sorted(k for k, n in ns.nodes.items() if n.scan in scans)
     qc = q_provider.q_coordinates(root, units)
     g = graph.build_graph(ns.nodes, ns, scope=units, kinds=frozenset({"q", "T"}), grid=layout.grid_for(card.policy.plugin),
                           coords=qc.points, collinearity_tol=settings.collinearity_tol, q_reasons=qc.reasons)
-    inputs, excluded = inputs_for(root, units)
+    inputs, excluded = inputs_for(root, units, world=(card, session, ns))
     previous, next_name = previous_for(root, scans)
     return core.link(inputs, g.links, settings, previous, next_name=next_name, excluded=excluded)
 
@@ -350,16 +355,18 @@ def _left_words(excluded: Mapping[str, tuple[str, str | None]]) -> str:
 def run_link(workspace_root, item: LinkItem, *, progress, emit) -> None:
     """The link item (the service's ``--link-target``): link the item's scans and emit its one result. Never raises."""
     from isar.session.file_fit import FileResult
+    from isar.session.inter_spectra.nodes import read_nodes
 
     def result(status: str, reason: str, payload: dict | None = None) -> None:
         emit(FileResult(item.item_id, item.unit_key, "link", status, reason, payload))
 
     try:
         scans = tuple(item.link["scans"])
+        ns = read_nodes(workspace_root)                  # the item's one read of the nodes
         if item.link.get("series"):
-            scans = widen_to_series(workspace_root, scans)
+            scans = widen_to_series(workspace_root, scans, ns=ns)
         progress({"pass": "link", "phase": "link"})
-        r = link_scans(workspace_root, scans)
+        r = link_scans(workspace_root, scans, ns=ns)
     except Exception as exc:  # noqa: BLE001 — one item's failure is its result, never the service's
         log.exception("link: %s failed", item.unit_key)
         return result("failed", f"link failed ({type(exc).__name__}: {exc})")

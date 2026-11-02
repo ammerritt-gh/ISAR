@@ -13,7 +13,7 @@ import pytest
 from inter_fixtures import build_inter_workspace, scan_keys, spectrum_keys
 from isar.analyze.prior import PRIOR_RECIPE_VERSION
 from isar.session import writer
-from isar.session.inter_spectra import linking
+from isar.session.inter_spectra import linking, nodes
 from isar.session.workspace import Workspace
 
 
@@ -144,3 +144,27 @@ def test_the_link_item_is_held_for_scans_with_no_fit_and_failed_for_a_bad_item(w
                      progress=lambda d: None, emit=events.append)
     assert [e.status for e in events] == ["held", "failed"]
     assert all(e.payload is None for e in events)
+
+
+def test_a_series_link_item_reads_the_card_and_the_nodes_once_each(ws, monkeypatch):
+    """Prevents: the item re-reading the workspace in each helper (6 card loads and 3 node reads before this rule)."""
+    loads, reads = [], []
+    real_load, real_nodes = Workspace.load_read_only, nodes.read_nodes
+
+    def count_load(self):
+        loads.append(1)
+        return real_load(self)
+
+    def count_nodes(root):
+        reads.append(1)
+        return real_nodes(root)
+
+    monkeypatch.setattr(Workspace, "load_read_only", count_load)
+    monkeypatch.setattr(nodes, "read_nodes", count_nodes)
+    events = []
+    item = linking.LinkItem("i4", "link:l4:link", "link", 1,
+                            {"link_id": "l4", "scans": [scan_keys(ws)[0]], "series": True, "reason": "user"})
+    linking.run_link(ws, item, progress=lambda d: None, emit=events.append)
+    (done,) = events
+    assert (done.status, len(loads), len(reads)) == ("done", 3, 1), done      # card, nodes' own load, the q's
+    assert done.payload["result"] == linking.core.to_json(linking.link_scans(ws, scan_keys(ws)))
