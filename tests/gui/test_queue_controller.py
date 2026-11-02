@@ -1095,6 +1095,21 @@ def test_a_waiting_series_link_item_that_lists_the_scan_covers_its_settle_but_on
     assert [(i.status, i.automatic) for i in r.ctrl.view().links] == [("waiting", False), ("waiting", True)]
 
 
+def test_a_second_scan_settling_while_an_automatic_series_link_waits_joins_that_item(rig):
+    r = rig(cores=2)
+    r.ctrl.set_auto_link(True)
+    r.select(A06, unit(SET2, "a06"))
+    r.ctrl.add_selection("fast")
+    r.wait_commands("start", 2)
+    _settle_fast(r, A06)                                           # SET's auto item queues and waits for the fast item
+    (auto,) = r.ctrl.view().links
+    _settle_fast(r, unit(SET2, "a06"))                             # SET2 settles while that item waits: it joins it
+    (only,) = r.ctrl.view().links
+    assert only.item_id == auto.item_id and only.automatic
+    start = r.wait_commands("start", 3)[2]
+    assert start["link"]["scans"] == [SET, SET2] and start["link"]["series"]
+
+
 @pytest.mark.parametrize("how", ["already_current", "stopped", "deep"])
 def test_a_settle_that_produced_no_fast_fit_of_its_own_queues_no_link_item(rig, how):
     r = rig(cores=1)

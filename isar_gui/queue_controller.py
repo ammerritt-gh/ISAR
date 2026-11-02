@@ -994,6 +994,7 @@ class QueueController(QObject):
         rec = self._recs.get(iid)
         if rec is not None and rec.members is not None and rec.members.ended is None:
             self._end_members(iid, ev["end"], ev.get("reason"))
+        self._sync()                # before the pump: a scan's last settle sees a waiting automatic item, not a started one
         self._pump()
 
     def _ev_members(self, ev: dict) -> None:
@@ -1091,13 +1092,21 @@ class QueueController(QObject):
             self._relink(dict.fromkeys(settled_scans), snap)
 
     def _relink(self, scans, snap) -> None:
-        """The automatic rule: a scan whose fast items have all settled and that no waiting series link covers gets one."""
+        """The automatic rule: a scan whose fast items have all settled and that no waiting series link covers gets one.
+        A waiting automatic series item takes the scan instead (its spec is read only when it starts), so one burst of
+        settles is one link run."""
         busy = {self._recs[v.item_id].set_key for v in snap.fast}
         for scan in scans:
-            covered = any(scan in (spec := self._recs[v.item_id].spec)["scans"] and spec["series"]
-                          for v in snap.link if v.state == "waiting")
-            if scan not in busy and not covered:
+            waiting = [self._recs[v.item_id] for v in self._queue.snapshot().link if v.state == "waiting"]
+            if scan in busy or any(scan in r.spec["scans"] and r.spec["series"] for r in waiting):
+                continue
+            auto = next((r for r in waiting if r.spec["reason"] == "auto" and r.spec["series"]), None)
+            if auto is None:
                 self.add_link([scan], reason="auto", series=True)
+            else:
+                auto.spec["scans"].append(scan)
+                n = len(auto.spec["scans"])
+                auto.label = f"Link modes for {n} {_plural(n, 'scan', 'scans')}"
 
     def _batch_words(self, v: _SchedItem, rec: _Rec, status: str, reason: str | None) -> str:
         kind = rec.spec["kind"]
