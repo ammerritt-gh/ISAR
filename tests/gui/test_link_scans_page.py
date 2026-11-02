@@ -8,10 +8,10 @@ from dataclasses import replace
 import pyqtgraph as pg
 import pytest
 
-from gui.inter_fakes import FakeInterState, make_link_view, make_unit_links
+from gui.inter_fakes import FakeInterState, make_link_view, make_overview, make_unit_links
+from isar.workspace_api.inter_spectra import MarkerView, SpectrumInter
 from isar.plotspec import spec as ps
 from isar.workspace_api import Workspace
-from isar.workspace_api.inter_spectra import MarkerView
 from isar_gui.gui_store import GuiStore
 from isar_gui.viewmodels.scan_list import ScanListViewModel
 from isar_gui.views.scans_page import ScansPage
@@ -119,3 +119,16 @@ def test_a_link_for_another_spectrum_leaves_the_page_exactly_as_before(setup):
     page.flush_redraw()
     assert page._drawn_state.main_spec.to_dict() == before
     assert _mode_names(page.drawn(), TWO_MODE) == ["Mode 1", "Mode 2"]
+
+
+def test_a_refit_that_cannot_be_drawn_leaves_its_names_off_the_solo_curve(setup):
+    page, inter = setup
+    row = SpectrumInter(key=TWO_MODE, fit_id="r2", in_use=True, source="batch", label="Batch 1 · ring 2", flag=None,
+                        locked=False, locked_fit_id=None, lock_stale=False, stale=False, stale_text=None)
+    inter.overview = make_overview(by_key={TWO_MODE: row})    # r2 is in use but not in the log: it cannot be drawn
+    inter.links = make_link_view(make_unit_links(TWO_MODE, names=("B3", "B2"), peak_E=(2.4, 5.6), fit_id="r2",
+                                                 markers=(CHANGE,)))
+    drawn = _select(page, TWO_MODE)
+    assert _mode_names(drawn, TWO_MODE) == ["Mode 1", "Mode 2"]
+    assert not [m for m in page._drawn_state.main_spec.markers if m.kind is ps.MarkerKind.LINK_CHANGE]
+    assert "branch names belong to Batch 1 · ring 2; not drawn here" in _legend(drawn, TWO_MODE)

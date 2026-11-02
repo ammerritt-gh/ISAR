@@ -511,7 +511,7 @@ class ScansPageViewModel(ViewModel):
             link = self.inter.link_row(bundle.key) if self.inter is not None else None
             marks = ()
             if link is not None and curves and link.current and link.names:
-                if shown == 'fast' and fit_id == link.fit_id:
+                if shown == 'fast' and bundle.fit_id == link.fit_id:
                     curves = _named_modes(curves, link)
                     marks = _link_marks(link)
                 else:
