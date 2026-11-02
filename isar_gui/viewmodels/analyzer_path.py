@@ -49,7 +49,7 @@ def _temperature(fact) -> str | None:
 
 
 def _stop(stop) -> dict:
-    return {"x": stop.x, "beamline": stop.beamline, "note": stop.note,
+    return {"x": stop.x, "beamline": stop.beamline, "note": stop.note, "covered": stop.covered,
             "modes": [{"energy": m.energy, "lo": m.lo, "hi": m.hi, "peak_E": m.peak_E, "name": m.name,
                        "unresolved": m.unresolved,
                        "markers": [{"group": mk.group, "label": mk.label, "words": mk.words} for mk in m.markers]}

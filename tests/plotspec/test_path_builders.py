@@ -18,8 +18,8 @@ def _mode(energy, *, name=None, peak_E=None, lo=None, hi=None, unresolved=(), ma
             "unresolved": tuple(unresolved), "markers": list(markers)}
 
 
-def _stop(x, beamline, *modes, note=None):
-    return {"x": x, "beamline": beamline, "note": note, "modes": list(modes)}
+def _stop(x, beamline, *modes, note=None, covered=True):
+    return {"x": x, "beamline": beamline, "note": note, "covered": covered, "modes": list(modes)}
 
 
 def _spec(stops, **kw):
@@ -73,6 +73,14 @@ def test_an_unresolved_split_candidate_is_its_own_series_with_both_names_asked()
     assert list(series.y) == [5.0]
     (note,) = [a for a in spec.annotations if a.xy is not None]
     assert (note.text, note.xy) == ("B2 / B3?", (0.0, 5.0))
+
+
+def test_a_mode_no_current_saved_link_covers_is_not_called_unlinked():
+    spec = _spec([_stop(0.0, "a03", _mode(8.0), covered=False), _stop(0.1, "a04", _mode(4.1, name="B1"))])
+    assert _named(spec, UNLINKED_LABEL) == []                           # Link modes never said it follows no neighbour
+    (series,) = _named(spec, "modes (no saved links)")
+    assert list(series.x) == [0.0] and list(series.y) == [8.0]
+    assert series.tooltip == "Link modes has not covered this analyzer"
 
 
 def test_a_stop_with_no_fit_is_noted_and_an_unavailable_path_is_an_empty_spec_with_its_reason():

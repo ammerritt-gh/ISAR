@@ -167,6 +167,7 @@ def test_names_and_markers_are_drawn_only_while_they_name_the_fit_in_use(root, q
         mode = view.stops[0].modes[0]
         assert (mode.name, mode.peak_E, view.stale) == (expect_name, expect_peak, is_stale), name
         assert bool(mode.markers) == has_marker, name
+        assert view.stops[0].covered == (name == "current"), name      # a stale or other-fit entry covers nothing
     assert view.stale_text is None
     assert analyzer_path(snap, ws, [k0, k1], links=LinkView("r", {k0: stale}, {})).stale_text == LINK_WORDS["stale"]
 

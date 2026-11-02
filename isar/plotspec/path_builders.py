@@ -1,8 +1,9 @@
 """The analyzer path's plot spec (C-link-plotvocab, design 2.5): position along the picked path against energy.
 
 Plain data in. The view model converts the facade's ``PathView`` to the dicts below, so this module imports no
-workspace_api. A stop is ``{"x", "beamline", "note", "modes"}``; a mode is ``{"energy", "lo", "hi", "peak_E", "name",
-"unresolved", "markers"}``; a marker is ``{"group", "label", "words"}`` with group 2 (change) or 3 (unlinked).
+workspace_api. A stop is ``{"x", "beamline", "note", "covered", "modes"}``, ``covered`` true when a current saved link
+covers the fit drawn there; a mode is ``{"energy", "lo", "hi", "peak_E", "name", "unresolved", "markers"}``; a marker
+is ``{"group", "label", "words"}`` with group 2 (change) or 3 (unlinked).
 Modes are drawn at the fit's omega0 with its interval; link markers sit at the mode's peak energy E*, never omega0.
 """
 from __future__ import annotations
@@ -12,6 +13,8 @@ import numpy as np
 from isar.plotspec import spec as ps
 
 UNLINKED_LABEL = "unlinked modes"
+UNSAVED_LABEL = "modes (no saved links)"
+UNSAVED_TIP = "Link modes has not covered this analyzer"
 UNRESOLVED_LABEL = "unresolved (two branches)"
 _GROUP_KIND = {2: ps.MarkerKind.LINK_CHANGE, 3: ps.MarkerKind.LINK_UNLINKED}
 
@@ -38,7 +41,7 @@ def analyzer_path_spec(*, stops, title, xlabel, ylabel, stale_note=None, reason=
     # one corner note for the stale words and the stops' notes: unanchored notes all stack in one corner
     notes = [stale_note] if stale_note else []
     branch_modes: dict[str, list[tuple[int, dict]]] = {}     # branch name -> (stop index, mode), in order
-    unlinked, unresolved = [], []
+    unlinked, unsaved, unresolved = [], [], []
     for i, stop in enumerate(stops):
         if stop["note"]:
             notes.append(f"{stop['beamline']}: {stop['note']}")
@@ -55,7 +58,7 @@ def analyzer_path_spec(*, stops, title, xlabel, ylabel, stale_note=None, reason=
                 spec.annotations.append(ps.Annotation(
                     text=" / ".join(mode["unresolved"]) + "?", xy=(xs[i], mode["energy"])))
             elif mode["name"] is None:
-                unlinked.append(_row(xs[i], mode))
+                (unlinked if stop["covered"] else unsaved).append(_row(xs[i], mode))
             else:
                 branch_modes.setdefault(mode["name"], []).append((i, mode))
     if notes:
@@ -75,6 +78,8 @@ def analyzer_path_spec(*, stops, title, xlabel, ylabel, stale_note=None, reason=
                     role=ps.Role.BRANCH, color=colour))
     if unlinked:
         spec.series.append(_series(unlinked, label=UNLINKED_LABEL, style="muted"))
+    if unsaved:
+        spec.series.append(_series(unsaved, label=UNSAVED_LABEL, style="muted", tooltip=UNSAVED_TIP))
     if unresolved:
         spec.series.append(_series(unresolved, label=UNRESOLVED_LABEL, style="muted"))
     return spec
