@@ -160,7 +160,7 @@ def test_names_and_markers_are_drawn_only_while_they_name_the_fit_in_use(root, q
                    changes=(), ties=())
     stale = replace(ul, stale=True, stale_text=LINK_WORDS["stale"], markers=())   # its names stay, its markers go
     other_fit = replace(ul, fit_id=F1)                                             # the stop draws the fast fit
-    cases = {"current": (ul, False, "B1", e0, True), "stale": (stale, True, "B1", e0, False),
+    cases = {"current": (ul, False, "B1", e0, True), "stale": (stale, True, "B1", None, False),
              "other fit": (other_fit, False, None, None, False)}
     for name, (entry, is_stale, expect_name, expect_peak, has_marker) in cases.items():
         view = analyzer_path(snap, ws, [k0, k1], links=LinkView("r", {k0: entry}, {}))

@@ -927,9 +927,10 @@ a persistent legend like `plane (H, 1, 0) × E — integrating |L| < 0.02, |K−
   scan (so one temperature, named in the title). The horizontal axis is the cumulative distance along the path in the scan's
   own q metric (Å⁻¹ on lattice coordinates, rlu when only hkl is known; the analyzer names are its ticks); the vertical axis is
   energy transfer. Each branch is a series, joined by a line between path-adjacent stops that both carry it; the change and
-  unlinked markers sit at each mode's peak energy E*. Points and branch lines are drawn at the fit's ω0 with its interval, the
-  energy the Scan(s) view draws, so a broad mode's marker can sit off its point by design. Each stop draws the fit in use.
-  A click on this plot activates nothing.
+  unlinked markers sit at each mode's peak energy E*. A named or split mode on a current link is drawn at its E*, with its
+  branch line and no whisker, so a broad mode is never drawn at its ω0 and a kink in a branch line is a real departure. Any
+  other mode (unlinked, uncovered, stale link, no E*) is drawn at its ω0 with its stored interval. Each stop draws the fit
+  in use. A click on this plot activates nothing.
 - **Heatmap (item 2):** measured strips render as strips; gaps render as gaps. **No
   interpolation by default.** An optional smoothed/kriged surface is a *model overlay*,
   toggled explicitly and labeled as a model — the same discipline as everywhere else in ISAR.

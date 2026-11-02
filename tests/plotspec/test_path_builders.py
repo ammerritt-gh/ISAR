@@ -66,13 +66,24 @@ def test_link_markers_sit_at_e_star_with_their_words_and_a_mode_without_e_star_g
     assert mark.tooltip == "Mode 1 follows no neighbour" and mark.label == "no link to a neighbour"
 
 
-def test_an_unresolved_split_candidate_is_its_own_series_with_both_names_asked():
+def test_a_named_mode_and_its_branch_line_sit_at_e_star_with_no_whisker():
+    spec = _spec([_stop(0.0, "a06", _mode(9.7, name="B1", peak_E=0.945, lo=9.5, hi=9.9)),
+                  _stop(0.1, "a07", _mode(1.0, name="B1", peak_E=1.0, lo=0.9, hi=1.1))])
+    (b1,) = _named(spec, "B1")
+    assert list(b1.y) == [0.945, 1.0] and np.allclose(b1.yerr, [0.0, 0.0])   # the broad mode is not drawn at 9.7
+    (line,) = [s for s in spec.series if s.role is ps.Role.BRANCH]
+    assert list(line.y) == [0.945, 1.0]
+    (muted,) = _named(_spec([_stop(0.0, "a03", _mode(4.0, peak_E=3.5, lo=3.9, hi=4.1))]), UNLINKED_LABEL)
+    assert list(muted.y) == [4.0]                                       # unlinked: E* is not its place, omega0 is
+
+
+def test_an_unresolved_split_candidate_is_its_own_series_at_e_star_with_both_names_asked():
     spec = _spec([_stop(0.0, "a03", _mode(5.0, name="B2", unresolved=("B2", "B3"), peak_E=4.9))])
     assert _named(spec, "B2") == []                                     # not a settled branch series
     (series,) = _named(spec, UNRESOLVED_LABEL)
-    assert list(series.y) == [5.0]
+    assert list(series.y) == [4.9]
     (note,) = [a for a in spec.annotations if a.xy is not None]
-    assert (note.text, note.xy) == ("B2 / B3?", (0.0, 5.0))
+    assert (note.text, note.xy) == ("B2 / B3?", (0.0, 4.9))
 
 
 def test_a_mode_no_current_saved_link_covers_is_not_called_unlinked():

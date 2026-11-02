@@ -4,7 +4,8 @@ Plain data in. The view model converts the facade's ``PathView`` to the dicts be
 workspace_api. A stop is ``{"x", "beamline", "note", "covered", "modes"}``, ``covered`` true when a current saved link
 covers the fit drawn there; a mode is ``{"energy", "lo", "hi", "peak_E", "name", "unresolved", "markers"}``; a marker
 is ``{"group", "label", "words"}`` with group 2 (change) or 3 (unlinked).
-Modes are drawn at the fit's omega0 with its interval; link markers sit at the mode's peak energy E*, never omega0.
+A named or split mode (current link, not stale) is drawn at its peak energy E* with no whisker, the energy its link
+matched on; every other mode is drawn at omega0 with its stored interval. Link markers sit at E*, never omega0.
 """
 from __future__ import annotations
 
@@ -16,10 +17,13 @@ UNLINKED_LABEL = "unlinked modes"
 UNSAVED_LABEL = "modes (no saved links)"
 UNSAVED_TIP = "Link modes has not covered this analyzer"
 UNRESOLVED_LABEL = "unresolved (two branches)"
+BRANCH_TIP = "Named modes sit at their peak energy E*, the energy the links matched on; other modes at omega0."
 _GROUP_KIND = {2: ps.MarkerKind.LINK_CHANGE, 3: ps.MarkerKind.LINK_UNLINKED}
 
 
 def _row(x: float, mode: dict) -> tuple[float, float, float]:
+    if mode["peak_E"] is not None and (mode["name"] is not None or mode["unresolved"]):
+        return float(x), float(mode["peak_E"]), 0.0
     lo, hi = mode["lo"], mode["hi"]
     half = (hi - lo) / 2 if lo is not None and hi is not None else 0.0
     return float(x), float(mode["energy"]), max(half, 0.0)
@@ -54,9 +58,10 @@ def analyzer_path_spec(*, stops, title, xlabel, ylabel, stale_note=None, reason=
             if mode["energy"] is None:
                 continue
             if mode["unresolved"]:
-                unresolved.append(_row(xs[i], mode))
+                row = _row(xs[i], mode)
+                unresolved.append(row)
                 spec.annotations.append(ps.Annotation(
-                    text=" / ".join(mode["unresolved"]) + "?", xy=(xs[i], mode["energy"])))
+                    text=" / ".join(mode["unresolved"]) + "?", xy=row[:2]))
             elif mode["name"] is None:
                 (unlinked if stop["covered"] else unsaved).append(_row(xs[i], mode))
             else:
@@ -67,14 +72,14 @@ def analyzer_path_spec(*, stops, title, xlabel, ylabel, stale_note=None, reason=
     for k, (name, placed) in enumerate(branch_modes.items()):
         colour = ps.TRACE_COLORS[k % len(ps.TRACE_COLORS)]
         spec.series.append(_series([_row(xs[i], m) for i, m in placed], label=name,
-                                   symbol=ps.SYMBOLS[k % len(ps.SYMBOLS)], color=colour))
+                                   symbol=ps.SYMBOLS[k % len(ps.SYMBOLS)], color=colour, tooltip=BRANCH_TIP))
         first = {}
         for i, mode in placed:
-            first.setdefault(i, mode)
+            first.setdefault(i, _row(xs[i], mode))
         for i in range(len(stops) - 1):          # a line only between path-adjacent stops that both carry the branch
             if i in first and i + 1 in first:
                 spec.series.append(ps.Series(
-                    x=np.array([xs[i], xs[i + 1]]), y=np.array([first[i]["energy"], first[i + 1]["energy"]]),
+                    x=np.array([xs[i], xs[i + 1]]), y=np.array([first[i][1], first[i + 1][1]]),
                     role=ps.Role.BRANCH, color=colour))
     if unlinked:
         spec.series.append(_series(unlinked, label=UNLINKED_LABEL, style="muted"))

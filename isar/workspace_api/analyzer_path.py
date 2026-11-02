@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 class PathMode:
     mode: int                              # 0-based index in the fit in use (ascending omega0)
     energy: float | None                   # omega0 (meV) with its interval: where the mode is drawn
-    peak_E: float | None                   # E* (meV): the energy the links matched on; None unless the links name this fit
+    peak_E: float | None                   # E* (meV): the energy the links matched on; None unless a current link names this fit
     lo: float | None
     hi: float | None
     width: float | None                    # Gamma (meV)
@@ -74,8 +74,9 @@ def _place(view: ArrayView, row: SpectrumRow) -> tuple[str, str]:
 
 def _mode(i: int, mode, ul: UnitLinks | None) -> PathMode:
     named = ul is not None
+    at_E = named and not ul.stale           # a stale record's E* is not drawn: its mode stays at omega0
     return PathMode(
-        mode=i, energy=mode.energy.value, peak_E=ul.peak_E[i] if named else None,
+        mode=i, energy=mode.energy.value, peak_E=ul.peak_E[i] if at_E else None,
         lo=mode.energy.lo, hi=mode.energy.hi, width=mode.linewidth.value,
         name=ul.names[i] if named else None, unresolved=ul.unresolved[i] if named else (),
         markers=tuple(m for m in ul.markers if m.mode == i) if named else ())
