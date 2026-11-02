@@ -70,16 +70,6 @@ class BatchOverlay:                      # C-cell-marks
 
 
 @dataclass(frozen=True)
-class CellLinks:                         # C-link-cell: one spectrum's saved links, as its cell's strip shows them
-    caption: str                         # branch names in mode order; "no branch linked" when none
-    tip: str                             # the hover: the caption's basis, then each note's words from the facade
-    severity: str | None                 # the worst note's severity ("info", "warn", "serious"); None when no note
-    changes: int                         # group 2 notes: a change, a width at its cap, a contradiction
-    unlinked: int                        # group 3 notes: a mode no neighbour links to
-    stale: bool                          # the record is out of date: the names are old and carry no notes
-
-
-@dataclass(frozen=True)
 class CellPlot:
     token: tuple                         # (key, revision, fit_id, scale, curve drawn, reference): redraw only when it changes
     x: np.ndarray = field(compare=False)
@@ -113,7 +103,6 @@ class CellState:
     beamline_zero: bool = False          # the energy axis is the beamline's file axis, not a fitted zero
     stale_tip: str | None = None
     batch: BatchMark | None = None       # C-cell-marks
-    links: CellLinks | None = None       # C-link-cell: None when no saved link names this spectrum's fit
 
 
 @dataclass(frozen=True)
@@ -472,7 +461,6 @@ class AnalyzerArrayViewModel(ViewModel):
             hkl_c, q_c = hkl_cell(c.hkl), fact_cell(c.q_abs, with_unit=False)
             q_text = "" if key is None else f"|Q| {q_c.text} nm⁻¹" if c.q_abs.value is not None else "|Q| —"
             inter = self.inter.row(key) if (self.inter is not None and key) else None
-            links = _cell_links(self.inter.link_row(key)) if (self.inter is not None and key) else None
             if self.y_mode == "shared":
                 y_range = (0.0, limit) if plot is not None and limit is not None else None
             else:
@@ -489,7 +477,7 @@ class AnalyzerArrayViewModel(ViewModel):
                 plot=plot, y_range=y_range, x_range=x_range,
                 fit_label=d.fit_label if plot is not None else None, beamline_zero=d.beamline_zero,
                 stale_tip=d.stale_tip or (inter.stale_text if inter and inter.lock_stale else None),
-                batch=marks.get(key) if key else None, links=links))
+                batch=marks.get(key) if key else None))
 
         x_label, x_tip = _step_label("In plane — 2θ increases ←", "analyzer", view.in_plane)
         y_label, y_tip = _step_label("Out of plane ↑", "row", view.out_of_plane)
@@ -595,29 +583,6 @@ def _unit_words(scale: str) -> str:
 
 def _tail(keys) -> list[str]:
     return [k.rsplit(":", 1)[-1] for k in keys]
-
-
-_SEVERITY_RANK = {"info": 1, "warn": 2, "serious": 3}
-
-
-def _cell_links(ul) -> CellLinks | None:
-    """A cell's link strip from the facade's view of its spectrum (``UnitLinks``). None when no saved link names the
-    fit in use; the words are the facade's, never computed here (hard rule 7)."""
-    if ul is None or not ul.names:
-        return None
-    labels = [" / ".join(pair) + "?" if pair else name for name, pair in zip(ul.names, ul.unresolved)]
-    caption = " · ".join(label for label in labels if label) or "no branch linked"
-    changes = sum(m.group == 2 for m in ul.markers)
-    unlinked = sum(m.group == 3 for m in ul.markers)
-    counts = [f"{n} {noun}{'' if n == 1 else 's'}" for n, noun in ((changes, "change note"),
-                                                                  (unlinked, "unlinked mode")) if n]
-    if ul.stale:
-        head = f"Links: {caption} (branch names from earlier links; {ul.stale_text or ''})"
-    else:
-        head = f"Links: {caption}" + (f" ({', '.join(counts)})" if counts else "")
-    severity = max((m.severity for m in ul.markers), key=_SEVERITY_RANK.__getitem__, default=None)
-    return CellLinks(caption, "\n".join([head, *(m.words for m in ul.markers)]), severity,
-                     changes, unlinked, ul.stale)
 
 
 def path_keys(cells, picks) -> tuple[str, ...]:
