@@ -69,9 +69,11 @@ class Selection(QObject):
         self._order = order
 
     def set(self, keys: Iterable[str], *, clicked: str | None = None,
-            origin: str = ORIGIN_OTHER, extend: bool = False, first: str | None = None) -> None:
-        """Replace the keys, or with ``extend`` add to and remove from them (Ctrl). ``first`` leads the picks."""
-        self._request("set", tuple(keys), clicked, origin, extend, first)
+            origin: str = ORIGIN_OTHER, extend: bool = False, first: str | None = None,
+            picked: Sequence[str] | None = None) -> None:
+        """Replace the keys, or with ``extend`` add to and remove from them (Ctrl). ``first`` leads the picks;
+        ``picked`` gives the picks' order outright (a shift-run's click order) and overrides ``first``."""
+        self._request("set", tuple(keys), clicked, origin, extend, first, picked)
 
     def clear(self, origin: str = ORIGIN_OTHER) -> None:
         self.set((), origin=origin)
@@ -117,11 +119,14 @@ class Selection(QObject):
         old_keys, old_active, old_picks = self._keys, self._active, self._picks
         origin = ORIGIN_STEP
         if operation == "set":
-            keys, clicked, origin, extend, first = args
+            keys, clicked, origin, extend, first, picked = args
             self._keys = self._ordered(keys)
             self._active = clicked if clicked in self._keys else (self._keys[0] if self._keys else None)
-            lead = first if first in self._keys else (clicked if not extend and clicked in self._keys else None)
-            self._picks = self._picked(self._keys, self._picks if extend else (), lead)
+            if picked is not None:
+                self._picks = self._picked(self._keys, picked, None)
+            else:
+                lead = first if first in self._keys else (clicked if not extend and clicked in self._keys else None)
+                self._picks = self._picked(self._keys, self._picks if extend else (), lead)
         elif operation == "active":
             self._active = args[0]
         elif operation == "step":

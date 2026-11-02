@@ -61,6 +61,19 @@ def test_picks_alone_changing_emits_quietly_and_identical_call_does_not():
     assert changes == []
 
 
+def test_picked_sets_the_pick_order_and_leaves_the_default_alone():
+    selection = Selection(order=lambda keys: [key for key in "abcde" if key in keys])
+    selection.set(["a", "b", "c"], clicked="a")
+    selection.set(["a", "c", "d"], clicked="d", origin=ORIGIN_ARRAY, picked=["d", "c", "a", "z"])
+    assert selection.keys == ("a", "c", "d") and selection.picks == ("d", "c", "a")   # given order, no lead, no stranger
+    selection.set(["a", "b", "c", "d"], clicked="d", picked=["c", "b", "a", "d"])
+    assert selection.picks == ("c", "b", "a", "d") and selection.active == "d"
+    selection.set(["b", "c"], clicked="c", picked=["c"])                                # unpicked keys follow in list order
+    assert selection.picks == ("c", "b")
+    selection.set(["b", "d"], clicked="d")                                              # no picked: the lead rule as before
+    assert selection.picks == ("d", "b")
+
+
 def test_array_origin_is_a_plain_origin_and_selection_change_is_unchanged():
     selection = Selection()
     changes = []
