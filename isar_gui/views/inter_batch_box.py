@@ -9,12 +9,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
-from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-                               QPushButton, QRadioButton, QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QButtonGroup, QCheckBox, QHBoxLayout, QLabel, QListWidget,
+                               QListWidgetItem, QPushButton, QRadioButton, QToolButton, QVBoxLayout, QWidget)
 
 from isar_gui.selection import identity
-from isar_gui.viewmodels.inter_batch import (DIRECTIONS, BoxState, anchored_request, box_state, simultaneous_request,
-                                             wanted_requests)
+from isar_gui.viewmodels.inter_batch import (DIRECTIONS, NO_EXPERIMENT, BoxState, anchored_request, box_state,
+                                             link_scans, simultaneous_request, wanted_requests)
+from isar_gui.views.queue_panel import _SwitchLabel
 
 DIRECTION_CHOICES = (
     ("q", "Spread in q", "Spread in q: all analyzers of each anchor's scan."),
@@ -30,6 +31,14 @@ REMOVE_TIP = "Take the selected anchors off the list. Their fits are kept."
 ANCHORED_TIP = "Refit outward from the anchors, one ring of neighbours at a time. The anchors keep their fits."
 SIMULTANEOUS_TIP = ("Refit the selected spectra together, each against its neighbours in the selection, until the "
                     "fits settle.")
+LINK_TIP = ("Mode linking: match the modes of the scans selected in the scan list across the analyzer grid and "
+            "across temperature, "
+            "using the fit in use of each spectrum. One short item of the analysis queue; it changes no fit.")
+LINK_AUTO_TEXT = "Link modes after each fast pass"
+LINK_AUTO_TIP = ("When on, after the last fast pass of a scan settles, ISAR links the modes of every scan of that "
+                 "scan's temperature series (all analyzers, all temperatures). Off by default; belongs to this "
+                 "experiment; turning it on links nothing already present; it never changes a fit.")
+LINK_LINE_TIP = "What the last link-modes item did, in the service's words."
 
 
 def _show_control(button: QPushButton, control, tip: str, reason: QLabel | None = None) -> None:
@@ -42,6 +51,7 @@ def _show_control(button: QPushButton, control, tip: str, reason: QLabel | None 
 
 class InterBatchBox(QWidget):
     batch_requested = Signal(object)        # a BatchRequest the user started; the window queues it
+    link_requested = Signal(object)         # the scan keys of a Link modes click; the window queues one link item
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -62,6 +72,20 @@ class InterBatchBox(QWidget):
 
         self._body = QWidget(self)
         self._body.setObjectName("inter_box_body")
+        self._link_modes = QPushButton("Link modes", self._body)
+        self._link_modes.setObjectName("inter_link_modes")
+        self._link_modes.setToolTip(LINK_TIP)
+        self._link_modes.clicked.connect(self._link_selected_scans)
+        self._link_reason = self._line("inter_link_reason", "Why Link modes is greyed.")
+        self._link_auto = QCheckBox(self._body)
+        self._link_auto.setObjectName("inter_link_auto")
+        self._link_auto.setAccessibleName(LINK_AUTO_TEXT)
+        self._link_auto.setToolTip(LINK_AUTO_TIP)
+        self._link_auto.clicked.connect(self._on_link_auto)
+        self._link_auto_text = _SwitchLabel(LINK_AUTO_TEXT, self._link_auto)
+        self._link_auto_text.setObjectName("inter_link_auto_text")
+        self._link_auto_text.setToolTip(LINK_AUTO_TIP)
+        self._link_line = self._line("inter_link_line", LINK_LINE_TIP)
         self._anchors_heading = QLabel("Anchors", self._body)
         self._anchors_heading.setToolTip(ANCHORS_TIP)
         self._anchors = QListWidget(self._body)
@@ -112,6 +136,13 @@ class InterBatchBox(QWidget):
         body = QVBoxLayout(self._body)
         body.setContentsMargins(12, 0, 0, 0)
         body.setSpacing(2)
+        link = QHBoxLayout()                # one row: the box's height is the queue's room
+        link.addWidget(self._link_modes)
+        link.addWidget(self._link_auto, 0, Qt.AlignmentFlag.AlignTop)
+        link.addWidget(self._link_auto_text, 1)
+        body.addLayout(link)
+        body.addWidget(self._link_reason)
+        body.addWidget(self._link_line)
         body.addWidget(self._anchors_heading)
         body.addWidget(self._anchors)
         buttons = QHBoxLayout()
@@ -203,8 +234,13 @@ class InterBatchBox(QWidget):
                           n_selected=len(selection), n_addable=len(scan_list.anchorable_keys()),
                           n_selected_anchors=len(chosen), anchored=previews.get("anchored"),
                           simultaneous=previews.get("simultaneous"), note=inter.error,
-                          anchored_error=errors.get("anchored"), simultaneous_error=errors.get("simultaneous"))
+                          anchored_error=errors.get("anchored"), simultaneous_error=errors.get("simultaneous"),
+                          n_selected_scans=len(link_scans(selection)),
+                          link_status=self._controller.link_status() if self._controller is not None else None)
         self._apply(state)
+        self._link_auto.setEnabled(bound)
+        self._link_auto.setToolTip(LINK_AUTO_TIP if bound else NO_EXPERIMENT)
+        self._link_auto.setChecked(bound and self._controller.auto_link())
         missing = [req for req in wanted if previews.get(req.kind) is None and errors.get(req.kind) is None]
         if missing:
             inter.request_preview(missing[0])   # one at a time: InterState keeps only the newest request
@@ -214,8 +250,10 @@ class InterBatchBox(QWidget):
         _show_control(self._remove, state.remove, REMOVE_TIP)
         _show_control(self._start_anchored, state.anchored, ANCHORED_TIP, self._anchored_reason)
         _show_control(self._start_simultaneous, state.simultaneous, SIMULTANEOUS_TIP, self._simultaneous_reason)
+        _show_control(self._link_modes, state.link, LINK_TIP, self._link_reason)
         for label, text in ((self._anchored_line, state.anchored_line),
-                            (self._simultaneous_line, state.simultaneous_line), (self._note, state.note)):
+                            (self._simultaneous_line, state.simultaneous_line), (self._note, state.note),
+                            (self._link_line, state.link_line)):
             label.setText(text)
             label.setVisible(bool(text))
 
@@ -272,3 +310,10 @@ class InterBatchBox(QWidget):
 
     def _start_simultaneous_batch(self) -> None:
         self.batch_requested.emit(simultaneous_request(self._scan_list.selected_spectra()))
+
+    def _link_selected_scans(self) -> None:
+        self.link_requested.emit(link_scans(self._scan_list.selected_spectra()))
+
+    def _on_link_auto(self, on: bool) -> None:
+        if self._controller is not None:
+            self._controller.set_auto_link(bool(on))

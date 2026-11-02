@@ -18,10 +18,12 @@ from bl43_fixture import KEY_A
 from gui.inter_fakes import FakeInterState, make_overview, make_preview
 from gui.inter_helpers import assert_described
 from isar.workspace_api.inter_spectra import BatchRequest
+from isar_gui.queue_controller import LinkStatus
 from isar_gui.selection import identity
-from isar_gui.viewmodels.inter_batch import (ADD_OFF, CANNOT_START, NO_ANCHORS, NO_EXPERIMENT, REMOVE_OFF,
-                                             PREVIEW_FAILED, TOO_FEW_SELECTED, WORKING, Control, anchored_request,
-                                             box_state, simultaneous_request, wanted_requests)
+from isar_gui.viewmodels.inter_batch import (ADD_OFF, CANNOT_START, NO_ANCHORS, NO_EXPERIMENT, NO_SCANS_TO_LINK,
+                                             REMOVE_OFF, PREVIEW_FAILED, TOO_FEW_SELECTED, WORKING, Control,
+                                             anchored_request, box_state, link_scans, link_state, link_text,
+                                             simultaneous_request, wanted_requests)
 from isar_gui.viewmodels.scan_list import ScanListViewModel
 from isar_gui.views.inter_batch_box import InterBatchBox
 
@@ -68,16 +70,31 @@ def test_a_preview_is_asked_for_only_when_its_precondition_holds():
 
 # ---- the real widgets ----------------------------------------------------------------------------
 class FakeQueue(QObject):
-    """The queue controller's data side: ``view()`` with ``bound`` and ``blocked``, and ``changed``."""
+    """The queue controller's data side: ``view()`` with ``bound`` and ``blocked``, the linking switch and its
+    status, and ``changed``."""
     changed = Signal()
 
     def __init__(self) -> None:
         super().__init__()
         self.bound = True
         self.blocked: str | None = None
+        self.auto = False
+        self.auto_calls: list[bool] = []
+        self.status = LinkStatus(0, 0, None, False)
 
     def view(self):
         return SimpleNamespace(bound=self.bound, blocked=self.blocked)
+
+    def auto_link(self) -> bool:
+        return self.auto
+
+    def set_auto_link(self, on: bool) -> None:
+        self.auto_calls.append(on)
+        self.auto = on
+        self.changed.emit()
+
+    def link_status(self) -> LinkStatus:
+        return self.status
 
 
 def _publish(inter, *, revision, anchors=()) -> None:
@@ -252,3 +269,45 @@ def test_every_control_in_the_box_is_described(made):
     box, _, inter, _ = made
     _publish(inter, revision="2", anchors=(A[3],))
     assert_described(box)
+
+
+# ---- mode linking: the group above the anchors ----------------------------------------------
+def test_link_modes_is_greyed_with_its_reason_and_the_link_line_carries_the_services_words():
+    assert link_state(bound=False, blocked=None, n_scans=1) == Control(False, NO_EXPERIMENT)
+    assert link_state(bound=True, blocked=CAMPAIGN, n_scans=1) == Control(False, CAMPAIGN)
+    assert link_state(bound=True, blocked=None, n_scans=0) == Control(False, NO_SCANS_TO_LINK)
+    assert link_state(bound=True, blocked=None, n_scans=2) == Control(True, None)
+    assert link_scans((f"{KEY_A}:a03", f"{KEY_A}:a04")) == (KEY_A,)
+    assert _state().link_line == "" and _state(link_status=LinkStatus(0, 0, None, False)).link_line == ""
+    assert _state(link_status=LinkStatus(1, 2, "3 links kept", True)).link_line == (
+        "Link modes: 2 running, 1 waiting.\nLast link modes: 3 links kept")
+
+
+def test_link_modes_is_greyed_until_a_scan_is_selected_and_sends_each_scan_of_the_selection_once(made):
+    box, vm, _, _ = made
+    assert not box._link_modes.isEnabled() and box._link_modes.toolTip() == NO_SCANS_TO_LINK
+    assert box._link_reason.text() == NO_SCANS_TO_LINK
+    vm.select_keys((A[3], A[4]))                               # two analyzers of one scan
+    assert box._link_modes.isEnabled() and box._link_reason.isHidden()
+    sent = []
+    box.link_requested.connect(sent.append)
+    box._link_modes.click()
+    assert sent == [(KEY_A,)]
+
+
+def test_the_linking_switch_sets_the_controllers_state_and_follows_it(made):
+    box, _, _, controller = made
+    assert not box._link_auto.isChecked() and box._link_auto.isEnabled()
+    box._link_auto.click()
+    assert controller.auto_calls == [True] and box._link_auto.isChecked()
+    controller.bound = False
+    controller.changed.emit()
+    assert not box._link_auto.isEnabled() and not box._link_auto.isChecked()
+
+
+def test_the_link_line_is_hidden_until_the_controller_has_a_link_item_to_report(made):
+    box, _, _, controller = made
+    assert box._link_line.isHidden()
+    controller.status = LinkStatus(0, 1, None, False)
+    controller.changed.emit()
+    assert box._link_line.text() == "Link modes: 1 running, 0 waiting." and not box._link_line.isHidden()

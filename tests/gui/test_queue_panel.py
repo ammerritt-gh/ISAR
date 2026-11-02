@@ -20,7 +20,7 @@ import isar_gui.status_words as sw
 from inter_fixtures import build_inter_workspace, spectrum_keys
 from isar.workspace_api import scan_list as facade
 from isar_gui.main_window import MainWindow
-from isar_gui.queue_controller import FinishedGroup, ItemView, QueueGroup, QueueView, Selection
+from isar_gui.queue_controller import FinishedGroup, ItemView, LinkStatus, QueueGroup, QueueView, Selection
 from isar_gui.session import Session
 from isar_gui.theme import DEEP, QUEUE_STATES
 from isar_gui.viewmodels.scan_list import _status_cell
@@ -97,6 +97,12 @@ class Stub(QObject):
 
     def auto_fast(self):
         return self._auto
+
+    def auto_link(self):
+        return False
+
+    def link_status(self):
+        return LinkStatus(0, 0, None, False)
 
     def __getattr__(self, name):                 # an action: record it
         if name in ("add_selection", "remove", "stop", "pause", "resume", "clear_finished", "show", "set_auto_fast"):
