@@ -92,6 +92,12 @@ def test_a_mode_no_current_saved_link_covers_is_drawn_as_a_saved_link_gap_with_i
     assert series.tooltip == "Link modes has not covered this analyzer"
 
 
+def test_the_path_view_runs_past_its_last_stop_so_the_legend_sits_clear_of_the_data():
+    spec = _spec([_stop(0.0, "a03", _mode(4.0)), _stop(0.1, "a04", _mode(4.1)), _stop(0.3, "a05", _mode(4.2))])
+    assert spec.meta["x_pad_to"] > 0.3 + 0.05                          # room for the legend past the last analyzer
+    assert spec.x_ticks == [(0.0, "a03"), (0.1, "a04"), (0.3, "a05")]  # the ticks stay on the analyzers
+
+
 def test_a_stop_with_no_fit_is_noted_and_an_unavailable_path_is_an_empty_spec_with_its_reason():
     spec = _spec([_stop(0.0, "a03", note="no fit to draw"), _stop(0.1, "a04", _mode(4.1))])
     assert [a.text for a in spec.annotations] == ["a03: no fit to draw"]

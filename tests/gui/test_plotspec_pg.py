@@ -469,3 +469,13 @@ def test_the_analyzer_path_legend_sits_over_its_data():
     glw, plot = _new_plot()
     legend = render_into(plot, analyzer_path_spec(stops=[stop], title='', xlabel='', ylabel='')).legend
     assert legend.zValue() > 9                                      # the P1 marker is never hidden under the box
+
+
+def test_the_analyzer_path_view_autoranges_past_its_last_stop_so_the_legend_has_room():
+    mode = {'energy': 4.0, 'lo': None, 'hi': None, 'peak_E': None, 'name': 'P1'}
+    stops = [{'x': 0.0, 'beamline': 'a03', 'note': None, 'modes': [mode]},
+             {'x': 0.3, 'beamline': 'a05', 'note': None, 'modes': [mode]}]
+    glw, plot = _new_plot()
+    render_into(plot, analyzer_path_spec(stops=stops, title='', xlabel='', ylabel=''))
+    (_, x_hi), _ = plot.getViewBox().childrenBounds()
+    assert x_hi > 0.3 + 0.05                                        # past the last analyzer, which keeps no tick

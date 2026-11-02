@@ -44,6 +44,10 @@ def analyzer_path_spec(*, stops, title, xlabel, ylabel, stale_note=None, reason=
         spec.annotations.append(ps.Annotation(text=reason))
         return spec
     xs = [float(stop["x"]) for stop in stops]
+    if xs:   # room for the legend past the last analyzer
+        # shortcut: a quarter of the span with a 0.05 floor, enough at 1108 x 851; a pixel-sized pad would need the view width
+        lo, hi = min(xs), max(xs)
+        spec.meta["x_pad_to"] = hi + max(0.25 * (hi - lo), 0.05)
     spec.x_ticks = [(x, stop["beamline"]) for x, stop in zip(xs, stops)]
     # one corner note for the stale words and the stops' notes: unanchored notes all stack in one corner
     notes = [stale_note] if stale_note else []

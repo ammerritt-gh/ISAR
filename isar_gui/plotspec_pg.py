@@ -587,6 +587,9 @@ def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
                                         dotted=guide.style == "dotted"), movable=False)
         line.setZValue(0)
         rs._add_data(line, ignore_bounds=not guide.include_in_bounds)
+    if "x_pad_to" in spec.meta:  # unpainted: only its x widens the autorange, the room the path's legend sits in
+        rs._add_data(pg.LinearRegionItem(values=(spec.meta["x_pad_to"],) * 2, movable=False,
+                                         brush=pg.mkBrush(None), pen=pg.mkPen(None)))
     for b in spec.bands:
         _draw_band(rs, b, legend_entries)
     for s in spec.series:
