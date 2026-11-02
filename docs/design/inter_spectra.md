@@ -52,6 +52,7 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | Calibration of the settings | Partial: five rows calibrated on synthetic tracks; the other rows uncalibrated (section 5) | `isar/analyze/coupled/settings.py` | — |
 | Amplitude coupling (a prior on mode amplitude) | Planned: not coupled. Amplitude stays free, there is no amplitude setting, and the amplitude-prior test was not run in planning | — | — |
 | Read facade, Qt-free and read-only | Implemented | `isar/workspace_api/inter_spectra.py` | `tests/workspace_api/test_inter_facade.py` |
+| Link read facade: each spectrum's newest saved link record read against the fits in use (names, stale, markers, changes, ties); the fit in use per unit | Implemented: built and tested; no view draws the names or markers yet | `isar/workspace_api/inter_spectra.py`, `isar/session/inter_spectra/records.py` (`newest_link_by_scan`) | `tests/workspace_api/test_link_view.py` |
 | Scan list: Anchor, Flag, Lock and Inter-spectra fit columns; Set as anchor, Remove anchor | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/scan_list.py`, `isar_gui/viewmodels/scan_list.py` | `tests/gui/test_inter_scan_list.py` |
 | Processing dock: anchors list, direction, preview line, the two Start buttons, the Link modes button and the automatic linking toggle | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/inter_batch_box.py`, `isar_gui/viewmodels/inter_batch.py`, `isar_gui/queue_controller.py` | `tests/gui/test_inter_batch_box.py`, `tests/gui/test_queue_controller.py` |
 | Scan(s) view: flat fit dropdown with Up/Down navigation, Make authoritative, Lock, reasons, error-bar label, waterfall | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/inter_fit_bar.py`, `isar_gui/viewmodels/scans_page.py`, `inter_fits.py` | `tests/gui/test_inter_fit_bar.py`, `test_inter_fits.py`, `test_scans_page_inter.py` |
@@ -478,6 +479,7 @@ names, so a result saved after another never refuses on names; its ids stay.
 | `isar/intake/inter_spectra.py` | the user values, read (`fold`, `read_user`) |
 | `isar/intake/inter_values.py` | the checked writers of the user values |
 | `isar/workspace_api/inter_spectra.py` | the read facade the GUI and notebooks use |
+| `isar/workspace_api/inter_spectra.py` | the saved mode links read by `link_view` (the newest record of each spectrum's scan, its stale rule and the fit in use by `fits_in_use`) |
 | `isar/report/export.py` | `isar export`: the `inter` pass and the authoritative marks |
 | `isar/report/run_report.py` | the run report: the authoritative fit in the markdown and HTML |
 | `isar_gui/inter_words.py` | the plain words the views show |

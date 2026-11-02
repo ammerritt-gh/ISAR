@@ -137,6 +137,8 @@ WORKSPACE_API_ALLOWED = {
     # would admit ``isar.session.inter_spectra.runner``, which the facade must never import.
     "isar.intake.inter_spectra",
     "isar.analyze.coupled.settings",
+    # ``fit_stamp``: the one stamp definition the link read recomputes for its stale test; stdlib-only core.
+    "isar.analyze.coupled.linking",
     "isar.session.inter_spectra.nodes",
     "isar.session.inter_spectra.graph",
     "isar.session.inter_spectra.records",

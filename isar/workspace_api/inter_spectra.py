@@ -6,12 +6,15 @@ for the fit in use. The GUI and the notebooks read through here.
 from __future__ import annotations
 
 import hashlib
+import logging
+import math
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from isar.analyze.coupled.linking import Change, LinkResult, Marker, TieGroup, fit_stamp
 from isar.analyze.coupled.settings import InterSettings
 from isar.intake import gpi, inputs, scans as intake_scans, store
 from isar.intake.inter_spectra import FAST, InterUser, read_inter_settings, read_user
@@ -31,6 +34,7 @@ from isar.session.workspace import POLICY_NAME, SESSION_NAME, STATE_NAME
 
 from .views import FitView
 
+log = logging.getLogger(__name__)
 Severity = Literal["info", "warn", "serious"]    # info: a repair (neighbour-supported split); warn; serious: tension, unresolved identity, did not settle
 
 
@@ -395,3 +399,231 @@ def batch_preview(root, req: BatchRequest) -> BatchPreview:
     if req.kind == "anchored" and req.direction == "q" and not qc.points:
         can_start, reason = False, _no_q_points(grid, qc)
     return BatchPreview(can_start, None if can_start else reason, tuple(sorted(scope)), pv.text, (*pv.notes, *notes))
+
+
+# ---------------------------------------------------------------------------
+# saved mode links (C-link-view): each spectrum's newest record, judged against the fits in use now
+# ---------------------------------------------------------------------------
+LINK_WORDS = {
+    "stale": "made from fits that have changed since: run Link modes again",
+    "change": "{} differs from neighbours", "at_cap": "at the width cap (wants to be broader)",
+    "unlinked": "no link to a neighbour", "contradiction": "links contradict each other",
+    "add": "{} is expected near {:.1f} meV here, but no mode of this spectrum follows it",
+    "split": "Mode {} may be two branches, {} and {}; not settled", "drop": "Mode {} follows no neighbour",
+    "swap": "{} and {} are nearly tied at this crossing", "competition": "Mode {} may follow {} or {}; nearly tied",
+}
+MarkerName = Literal["change", "at_cap", "unlinked", "contradiction"]
+_MARK_GROUP = {"change": 2, "at_cap": 2, "contradiction": 2, "unlinked": 3}          # design 2.4
+_MARK_SEVERITY = {"change": "warn", "at_cap": "info", "unlinked": "warn", "contradiction": "serious"}
+
+
+@dataclass(frozen=True)
+class MarkerView:
+    kind: MarkerName; group: Literal[2, 3]; mode: int | None; quantity: Literal["energy", "width", "intensity"] | None
+    label: str; words: str; severity: Severity
+
+
+@dataclass(frozen=True)
+class ChangeView:                                    # a listed change (design 2.2): reported, not applied
+    kind: Literal["add", "split", "drop"]; mode: int | None; names: tuple[str, ...]; energy: float | None; words: str
+
+
+@dataclass(frozen=True)
+class TieView:
+    id: str; names: tuple[str, ...]; units: tuple[str, ...]; words: str
+
+
+@dataclass(frozen=True)
+class UnitLinks:
+    unit: str; link_id: str; at: str                 # the record it came from ("" for no record)
+    stale: bool; stale_text: str | None              # the record is out of date
+    current: bool                                    # this spectrum's own fit in the record is still the one in use
+    fit_id: str | None                               # the fit in use now; names index its modes
+    names: tuple[str | None, ...]                    # per mode, None = unlinked; () unless current
+    peak_E: tuple[float, ...]                        # per mode, the E* the link matched on (meV); () unless current
+    unresolved: tuple[tuple[str, ...], ...]          # per mode, both names of a split candidate, else ()
+    settled: tuple[bool, ...]                        # () unless current
+    markers: tuple[MarkerView, ...]                  # () when stale or not current
+    changes: tuple[ChangeView, ...]                  # () when stale or not current
+    ties: tuple[TieView, ...]                        # () when stale or not current
+
+
+@dataclass(frozen=True)
+class BranchView:
+    name: str; id: str; members: tuple[tuple[str, int], ...]     # (unit, 0-based mode index)
+
+
+@dataclass(frozen=True)
+class LinkView:
+    revision: str                                    # "" exactly when there is nothing to show
+    by_unit: Mapping[str, UnitLinks]                 # spectra a saved link covers; all others are absent
+    branches: Mapping[str, BranchView]               # by name, over the records read
+
+
+@dataclass(frozen=True)
+class _LinkNow:
+    fits: Mapping[str, str | None]                   # the fit in use now
+    inputs: Mapping[str, str | None]                 # each unit's inputs hash now
+    stamps: Mapping[str, str | None]                 # the fit in use's stamp (None: no fit, or its peaks unreadable)
+
+
+def _session_scans(root: Path) -> Mapping:
+    try:
+        return load_shared(root / SESSION_NAME).scans
+    except FileNotFoundError:
+        return {}
+
+
+def _in_use(c: _Ctx, scans: Mapping, unit: str) -> str | None:
+    r = c.res.get(unit)                 # units with a refit, pick or lock; the rest are their solo fit
+    if r is not None:
+        return r.fit
+    return FAST if authority.has_fast_solo(scans.get(unit), unit) else None
+
+
+def _modes(rec: dict | None) -> list[tuple[float, float, float | None]] | None:
+    """A fit's stored (omega0, Gamma, area) per peak; None when they cannot be read or are not sound (the session
+    refuses such a spectrum with no token, so its record never names one)."""
+    if not rec:
+        return None
+    try:
+        modes = [(float(p["omega0"]), float(p["Gamma"]), p.get("area_stokes")) for p in rec.get("peaks") or ()]
+    except (KeyError, TypeError, ValueError) as exc:
+        log.warning("a stored fit's peaks cannot be read: %s", exc)
+        return None
+    if not all(math.isfinite(o) and o > 0 and math.isfinite(g) and g > 0 for o, g, _ in modes):
+        return None
+    return modes
+
+
+def _stamp_now(c: _Ctx, scans: Mapping, unit: str, fit: str | None, now: Mapping[str, str | None]) -> str | None:
+    """The stamp the session gives a link of this fit (``session.inter_spectra.linking._in_use``)."""
+    if fit is None:
+        return None
+    if fit == FAST:
+        entry = scans.get(unit)
+        rec = ((entry.detectors or {}).get(unit.rsplit(":", 1)[1]) or {}).get("fast_pass") if entry else None
+        recorded = ((entry.provenance or {}).get("fit_inputs") or {}).get("hash") if entry else None
+        inputs_ = recorded if now.get(unit) is not None and recorded != now[unit] else now.get(unit)
+    else:
+        line = c.lines.get(fit)
+        payload = None if line is None else records.read_payload(c.root, line)
+        rec = ((payload or {}).get("overlay") or {}).get("fast_pass")
+        inputs_ = line.inputs if line is not None and line.inputs is not None else now.get(unit)
+    modes = _modes(rec)
+    return None if modes is None else fit_stamp(fit, inputs_, modes)
+
+
+def _link_now(root: Path, units: Collection[str]) -> _LinkNow:
+    c = _load(root)
+    scans = _session_scans(root)
+    now = {**c.now, **_inputs_now(root, [u for u in units if u not in c.now])}
+    fits = {u: _in_use(c, scans, u) for u in units}
+    return _LinkNow(fits, now, {u: _stamp_now(c, scans, u, fits[u], now) for u in units})
+
+
+def fits_in_use(root, units: Collection[str]) -> dict[str, str]:
+    """unit -> the fit id in use now ("fast" or a refit id); a unit with none is absent."""
+    root = Path(root)
+    c, scans = _load(root), _session_scans(root)
+    out: dict[str, str] = {}
+    for unit in units:
+        fit = _in_use(c, scans, unit)
+        if fit is not None:
+            out[unit] = fit
+    return out
+
+
+def _fresh(R: LinkResult, unit: str, now: _LinkNow) -> bool:
+    """A spectrum's own entry of a record names the fit in use, its inputs and its stamp."""
+    fit, h = R.made_from[unit]
+    cur = now.inputs.get(unit)
+    return (now.fits.get(unit) == fit and (h is None or cur is None or h == cur)
+            and R.stamps.get(unit) == now.stamps.get(unit))
+
+
+def _stale(R: LinkResult, now: _LinkNow) -> bool:
+    """A record is out of date when a fit it names has changed, or a spectrum it left out now reads differently."""
+    return (not all(_fresh(R, u, now) for u in R.made_from)
+            or any(token != now.stamps.get(u) for u, (_, token) in R.excluded.items()))
+
+
+def _marker(m: Marker) -> MarkerView:
+    return MarkerView(m.kind, _MARK_GROUP[m.kind], m.mode, m.quantity, LINK_WORDS[m.kind].format(m.quantity), m.words,
+                      _MARK_SEVERITY[m.kind])
+
+
+def _change(ch: Change, names: Mapping[str, str]) -> ChangeView:
+    if ch.kind == "add":
+        p, name = ch.predictions[0], names[ch.branches[0]]
+        return ChangeView("add", None, (name,), p.E, LINK_WORDS["add"].format(name, p.E))
+    if ch.kind == "split":
+        a, b = names[ch.branches[0]], names[ch.branches[1]]
+        return ChangeView("split", ch.mode, (a, b), None, LINK_WORDS["split"].format(ch.mode + 1, a, b))
+    return ChangeView("drop", ch.mode, (), None, LINK_WORDS["drop"].format(ch.mode + 1))
+
+
+def _tie(g: TieGroup, names: Mapping[str, str]) -> TieView:
+    a, b = names[g.branches[0]], names[g.branches[1]]
+    if g.kind == "swap":
+        return TieView(g.id, (a, b), g.units, LINK_WORDS["swap"].format(a, b))
+    contested = next(ms[0] for ms in g.modes.values() if len(ms) == 1)     # the one mode on one side
+    return TieView(g.id, (a, b), g.units, LINK_WORDS["competition"].format(contested + 1, a, b))
+
+
+def _unit_links(line: records.LinkLine, R: LinkResult, unit: str, now: _LinkNow, stale: bool,
+                names: Mapping[str, str]) -> UnitLinks:
+    text, fit = (LINK_WORDS["stale"] if stale else None), now.fits.get(unit)
+    if unit not in R.made_from or not _fresh(R, unit, now):
+        return UnitLinks(unit, line.link, line.at, stale, text, False, fit, (), (), (), (), (), (), ())
+    changes = R.changes.get(unit, ())
+    unresolved = [() for _ in R.labels[unit]]
+    for ch in changes:
+        if ch.kind == "split":
+            unresolved[ch.mode] = tuple(names[b] for b in ch.branches)
+    return UnitLinks(
+        unit, line.link, line.at, stale, text, True, fit,
+        tuple(None if b is None else names[b] for b in R.labels[unit]), tuple(R.peak_E[unit]), tuple(unresolved),
+        tuple(R.settled[unit]),
+        () if stale else tuple(_marker(m) for m in R.markers if m.unit == unit),
+        () if stale else tuple(_change(ch, names) for ch in changes),
+        () if stale else tuple(_tie(g, names) for g in R.ties if unit in g.units))
+
+
+def link_view(root, units: Collection[str] | None = None) -> LinkView:
+    """The saved mode links per spectrum: the newest record of its scan, read against the fits in use now. Reads only.
+
+    ``units`` narrows the spectra. A record whose payload cannot be read covers nothing (the reader logs it).
+    """
+    root = Path(root)
+    want = None if units is None else set(units)
+    newest = records.newest_link_by_scan(records.read_links(root),
+                                         None if want is None else {u.rsplit(":", 1)[0] for u in want})
+    payloads: dict[str, LinkResult | None] = {}          # each record is read once
+    for line in newest.values():
+        if line.link not in payloads:
+            payloads[line.link] = records.read_link_payload(root, line)
+    read = {line.link: (line, payloads[line.link]) for line in newest.values() if payloads[line.link] is not None}
+    if not read:
+        return LinkView("", {}, {})
+    now = _link_now(root, sorted({u for _, R in read.values() for u in (*R.made_from, *R.excluded)}))
+    by_unit: dict[str, UnitLinks] = {}
+    for scan, line in newest.items():
+        if line.link not in read:
+            continue
+        _, R = read[line.link]
+        names, stale = {b.id: b.name for b in R.branches}, _stale(R, now)
+        for unit in (*R.made_from, *R.excluded):
+            if unit.rsplit(":", 1)[0] == scan and (want is None or unit in want):
+                by_unit[unit] = _unit_links(line, R, unit, now, stale, names)
+    branches: dict[str, BranchView] = {}
+    for _, R in read.values():
+        for b in R.branches:
+            old = branches.get(b.name)
+            members = set(b.members) | (set(old.members) if old else set())
+            branches[b.name] = BranchView(b.name, b.id, tuple(sorted(members)))
+    if not by_unit and not branches:
+        return LinkView("", {}, {})
+    revision = hashlib.sha256(repr((sorted(by_unit.items(), key=lambda kv: kv[0]),
+                                    sorted(branches.items(), key=lambda kv: kv[0]))).encode("utf-8")).hexdigest()[:16]
+    return LinkView(revision, by_unit, branches)

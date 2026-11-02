@@ -35,8 +35,9 @@ from .scene_view import (Curve, GapEntry, HypothesisEntry, HypothesisMap, ModeMa
 from .agenda_view import (AgendaRevisionView, FreshnessReport, agenda_revision, read_transitions)
 from .decision_view import latest_decision
 from .inter_spectra import (
-    BatchPreview, BatchRequest, BatchSummary, FitEntry, FlagInfo, FlagReason, InterOverview, SpectrumInter,
-    batch_preview, fit_view_of, inter_history, inter_overview,
+    BatchPreview, BatchRequest, BatchSummary, BranchView, ChangeView, FitEntry, FlagInfo, FlagReason, InterOverview,
+    LinkView, MarkerView, SpectrumInter, TieView, UnitLinks,
+    batch_preview, fit_view_of, fits_in_use, inter_history, inter_overview, link_view,
 )
 from .spectra import (
     AMPLITUDE_HEADING, CACHE_SIZE, CURVE_UNAVAILABLE, DEEP_DOES_NOT_REBUILD,
@@ -151,15 +152,23 @@ __all__ = [
     "BatchPreview",
     "BatchRequest",
     "BatchSummary",
+    "BranchView",
+    "ChangeView",
     "FitEntry",
     "FlagInfo",
     "FlagReason",
     "InterOverview",
+    "LinkView",
+    "MarkerView",
     "SpectrumInter",
+    "TieView",
+    "UnitLinks",
     "batch_preview",
     "fit_view_of",
+    "fits_in_use",
     "inter_history",
     "inter_overview",
+    "link_view",
     "normalisation_reference",
     "nearest_power_of_ten",
     "normalised_points",
