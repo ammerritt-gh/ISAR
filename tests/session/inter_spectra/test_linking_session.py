@@ -129,7 +129,9 @@ def test_the_link_item_emits_one_done_result_that_the_writer_saves(ws):
     linking.run_link(ws, item, progress=lambda d: None, emit=events.append)
     (done,) = events
     assert done.status == "done" and done.pass_kind == "link", done
-    assert done.reason.startswith("2 scans, 6 spectra: 6 phonons,")
+    assert done.reason.startswith("2 scans, 6 spectra: 6 phonons")
+    assert "tie" not in done.reason and "contradiction" not in done.reason     # kept in the record, not the line
+    assert "ties" in done.payload["result"] and "contradictions" in done.payload["result"]
     (saved,) = writer.save_link_payloads(ws, [done.payload])
     assert saved["saved"] and saved["new"]
 

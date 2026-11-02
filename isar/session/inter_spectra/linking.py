@@ -366,8 +366,7 @@ def run_link(workspace_root, item: LinkItem, *, progress, emit) -> None:
     if not r.made_from:
         return result("held", f"no spectrum of these scans has a usable fit{_left_words(r.excluded)}")
     phonons = len(r.branches) + sum(n is not None for names in r.lone.values() for n in names)   # linked and lone
-    summary = (f"{len(scans)} scans, {len(r.made_from)} spectra: {phonons} phonons, {len(r.ties)} near "
-               f"tie{'' if len(r.ties) == 1 else 's'}, {len(r.contradictions)} contradictions"
-               f"{_left_words(r.excluded)}")
+    # Ties and contradictions stay in the saved record and the log (writer.py counts), not in the line.
+    summary = f"{len(scans)} scans, {len(r.made_from)} spectra: {phonons} phonons{_left_words(r.excluded)}"
     result("done", summary, {"schema": inter_records.SCHEMA_LINK, "unit": item.unit_key, "pass": "link",
                              "result": core.to_json(r), "scope": list(scans), "batch": None, "stage": None})
