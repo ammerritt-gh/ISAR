@@ -43,7 +43,7 @@ class PathStop:
     internal: str                          # "A4"; "" when the layout does not place the analyzer
     x: float | None                        # cumulative distance along the path, in the view's metric
     modes: tuple[PathMode, ...]
-    note: str | None                       # why a stop has no modes to draw
+    note: str | None                       # why a stop has no modes, or that it draws a fit other than the one picked
 
 
 @dataclass(frozen=True)
@@ -129,7 +129,11 @@ def analyzer_path(snapshot: ScanListSnapshot, ws, keys: Sequence[str], *,
         named = ul is not None and ul.current and ul.names and ul.fit_id == bundle.fit_id
         fast = bundle.summaries["fast"]
         modes = tuple(_mode(i, m, ul if named else None) for i, m in enumerate(fast.modes))
-        note = None if modes else (bundle.not_drawn.text if bundle.not_drawn is not None else "no fit to draw")
+        wanted = choice.get(r.key, "fast")
+        fallback = (f"fit {wanted} cannot be drawn; showing the Fast solo fit, without branch names"
+                    if wanted != bundle.fit_id else None)
+        why = None if modes else (bundle.not_drawn.text if bundle.not_drawn is not None else "no fit to draw")
+        note = "; ".join(n for n in (fallback, why) if n) or None
         beamline, internal = _place(view, r)
         stops.append(PathStop(r.key, beamline, internal, x, modes, note))
     if not any(s.modes for s in stops):

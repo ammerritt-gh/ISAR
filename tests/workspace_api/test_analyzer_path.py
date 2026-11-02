@@ -169,3 +169,22 @@ def test_names_and_markers_are_drawn_only_while_they_name_the_fit_in_use(root, q
         assert bool(mode.markers) == has_marker, name
     assert view.stale_text is None
     assert analyzer_path(snap, ws, [k0, k1], links=LinkView("r", {k0: stale}, {})).stale_text == LINK_WORDS["stale"]
+
+
+def test_a_picked_refit_that_cannot_be_drawn_is_noted_and_its_names_are_not_drawn(root, q_points, monkeypatch):
+    ws, snap = _snapshot(root)
+    k0, k1 = spectrum_keys(root)[:2]
+    _accept_refit(root, k0, F1)
+    assert inter_values.pick_fit(root, k0, F1).ok
+    monkeypatch.setattr("isar.workspace_api.spectra.fit_views", lambda w, fits: {u: (None, "Refit") for u in fits})
+    e0 = spectrum_bundles(ws, [snap.spectrum(k0)])[0].summaries["fast"].modes[0].energy.value
+    mark = MarkerView("unlinked", 3, 0, None, LINK_WORDS["unlinked"], "no link", "warn")
+    ul = UnitLinks(unit=k0, link_id="l1", at=LINK_AT, stale=False, stale_text=None, current=True, fit_id=F1,
+                   names=("B1",), peak_E=(e0,), unresolved=((),), settled=(True,), markers=(mark,),
+                   changes=(), ties=())
+    view = analyzer_path(snap, ws, [k0, k1], links=LinkView("r", {k0: ul}, {}))
+    stop = view.stops[0]
+    assert stop.note == f"fit {F1} cannot be drawn; showing the Fast solo fit, without branch names"
+    assert _energies(stop) == _energies(analyzer_path(snap, ws, [k0, k1]).stops[0])   # the solo's modes
+    assert all(m.name is None and m.peak_E is None and not m.markers for m in stop.modes)
+    assert view.stops[1].note is None
