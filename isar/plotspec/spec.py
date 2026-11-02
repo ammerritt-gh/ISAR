@@ -41,8 +41,8 @@ SYMBOLS = ("o", "s", "t", "d", "p", "h", "star", "t1", "t2", "t3")
 CURVE_COLORS = {"total": "#222222", "elastic": "#7f7f7f",
                 "quasielastic": "#8c564b", "background": "#999999",
                 **{f"mode{i + 1}": color for i, color in enumerate(TRACE_COLORS[:6])}}
-# Phonons: the trace colours without index 7, the grey that is the Elastic line's colour. Nine, ascending P.
-PHONON_COLORS = TRACE_COLORS[:7] + TRACE_COLORS[8:]
+# Phonons: the trace colours without index 7 (the Elastic line's grey), plus a dark teal. Ten, ascending P.
+PHONON_COLORS = TRACE_COLORS[:7] + TRACE_COLORS[8:] + ("#00695c",)
 
 
 # ---------------------------------------------------------------------------

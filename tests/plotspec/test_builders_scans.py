@@ -133,15 +133,15 @@ def test_a_phonon_is_one_colour_in_every_trace_in_ascending_number_and_energy_or
     assert ps.CURVE_COLORS['mode1'] in {s.color for s in plain.series if s.label == 'Mode 1'}
 
 
-def test_phonons_get_nine_colours_none_of_them_the_elastic_grey_and_repeat_past_nine():
+def test_phonons_get_ten_colours_none_of_them_the_elastic_grey_and_repeat_past_ten():
     ones = np.ones(3)
-    curves = tuple(ScansCurve(f'P{k}', 'mode', k, ones, phonon=f'B{k}') for k in range(1, 11))
+    curves = tuple(ScansCurve(f'P{k}', 'mode', k, ones, phonon=f'B{k}') for k in range(1, 12))
     trace = ScansTrace('a03', None, np.arange(3.), ones, ones, np.ones(3, dtype=bool), np.arange(3.), curves,
                        False, True)
     spec = scans_spec(traces=(trace,), view='single', step=0, ylabel='Counts', curves_header=None)
-    colour = {s.label: s.color for s in spec.series if s.label in {f'P{k}' for k in range(1, 11)}}
+    colour = {s.label: s.color for s in spec.series if s.label in {f'P{k}' for k in range(1, 12)}}
     assert ps.CURVE_COLORS['elastic'] not in colour.values()
-    assert len({colour[f'P{k}'] for k in range(1, 10)}) == 9 and colour['P10'] == colour['P1']
+    assert len({colour[f'P{k}'] for k in range(1, 11)}) == 10 and colour['P11'] == colour['P1']
 
 
 def test_new_style_fields_are_optional_in_serialization():
