@@ -97,6 +97,23 @@ def mismatch(f: Factor, u: float) -> float:
 
 
 # ---- energy densities ---------------------------------------------------------------------------
+_GL = np.polynomial.legendre.leggauss(256)   # the width normaliser's rule (nodes, weights) on [-1, 1]: 1e-8 at tau_w 0.1, 1e-14 at the default 0.3
+
+
+@dataclass(frozen=True)
+class SlotCoupling:
+    """What a matched slot's width density needs from the link prediction (S4U3; S4U5 adds the intensity's fields).
+    w_star: the neighbours' predicted ``matching_width`` (meV, resolution included); fwhm: this spectrum's
+    resolution R; tau_w: ``width_tolerance_ln``; C: ``penalty_cap`` (deviance); knee: the width prior's knee k;
+    g_lo: the width's lower bound."""
+    w_star: float
+    fwhm: float
+    tau_w: float
+    C: float
+    knee: float
+    g_lo: float
+
+
 @dataclass
 class MatchedDensity:
     """p(E) = 1_W g(E) exp(-V(E)/2) / Z on W = [lo, hi]: ONE normaliser of the product of every
@@ -109,6 +126,8 @@ class MatchedDensity:
     keep_ramp: bool = True
     ln_z: float = field(init=False)
     status: str = field(init=False, default="ok")
+    coupling: SlotCoupling | None = None      # the width density centred on the neighbours' prediction (None: today's terms)
+    _lnf: dict = field(init=False, default_factory=dict, repr=False)   # ceiling -> ln F(c), the width normaliser
 
     def _u(self, f: Factor, e: float) -> float:
         return sum(a * (e if k == self.me else self.frozen[k]) for k, a in zip(f.members, f.a))
@@ -120,6 +139,12 @@ class MatchedDensity:
         return -(self.ep.penalty(e) if self.keep_ramp else 0.0) - 0.5 * self.V(e)
 
     def __post_init__(self):
+        cp = self.coupling
+        if cp is not None and not (all(math.isfinite(x) for x in (cp.w_star, cp.fwhm, cp.tau_w, cp.C, cp.knee, cp.g_lo))
+                                   and cp.w_star > 0 and cp.fwhm > 0 and cp.tau_w > 0 and cp.C >= 0
+                                   and math.isfinite(self.ln_f(max(4.0, 2.0 * cp.g_lo)))):
+            self.status, self.ln_z = "no_evidence", math.nan   # never a silent flat fallback
+            return
         lo, hi = float(self.ep.lo), float(self.ep.hi)
         pts = []
         for f in self.factors:                # split at each factor's predicted centre
@@ -149,6 +174,52 @@ class MatchedDensity:
         dv = sum(sum(a for k, a in zip(f.members, f.a) if k == self.me) * d_potential(f, self._u(f, e))
                  for f in self.factors)
         return -(self.ep.d_penalty(e) if self.keep_ramp else 0.0) - 0.5 * dv
+
+    # ---- the width density (S4U3) ------------------------------------------------------------------------------
+    # p_w(G | c) = g(u) / ((G + k) F(c)) on [g_lo, c], u = ln(matching_width(G, R) / w*) / tau_w, g = exp(-P(u)/2),
+    # P the Welsch potential at cap C, F(c) = int g(u(G)) dG / (G + k): proper, and the base density when C = 0.
+    def _g(self, G):
+        """(u, ln g) at the widths ``G`` (array or float)."""
+        cp = self.coupling
+        u = np.log(np.hypot(2.0 * G, cp.fwhm) / cp.w_star) / cp.tau_w
+        return u, 0.5 * cp.C * np.expm1(-0.5 * u * u)
+
+    def ln_f(self, c: float) -> float:
+        """ln F(c), a 256-node Gauss-Legendre rule in v = ln(G + k), memoised per ceiling."""
+        v = self._lnf.get(c)
+        if v is None:
+            cp = self.coupling
+            a, b = math.log(cp.g_lo + cp.knee), math.log(c + cp.knee)
+            x, w = _GL
+            _u, lg = self._g(np.exp(0.5 * (b - a) * x + 0.5 * (a + b)) - cp.knee)
+            v = math.log(0.5 * (b - a) * float(w @ np.exp(lg)))
+            if len(self._lnf) > 4096:
+                self._lnf.clear()
+            self._lnf[c] = v
+        return v
+
+    @property
+    def has_width(self) -> bool:
+        return self.coupling is not None and self.status == "ok"
+
+    def ln_width(self, G: float, c: float) -> float:
+        """ln p_w(G | c); -inf outside [g_lo, c]."""
+        cp = self.coupling
+        if not cp.g_lo <= G <= c:
+            return -math.inf
+        return float(self._g(G)[1]) - math.log(G + cp.knee) - self.ln_f(c)
+
+    def d_ln_width(self, G: float, c: float) -> float:
+        """d ln p_w / dG inside the support."""
+        cp = self.coupling
+        u = float(self._g(G)[0])
+        du = 4.0 * G / ((4.0 * G * G + cp.fwhm ** 2) * cp.tau_w)
+        return -0.5 * cp.C * u * math.exp(-0.5 * u * u) * du - 1.0 / (G + cp.knee)
+
+    def d_ln_width_dc(self, G: float, c: float) -> float:
+        """d ln p_w / dc at fixed G: only the normaliser moves with the ceiling."""
+        cp = self.coupling
+        return -math.exp(float(self._g(c)[1]) - math.log(c + cp.knee) - self.ln_f(c))
 
     @cached_property
     def centre(self) -> float:
@@ -657,6 +728,20 @@ class CoupledEngine(fast_pass._Engine):
                            key=lambda c: c[0])
         return "fail", why
 
+    def _coupled_width(self, model, theta, m: int):
+        """(slot, ceiling) when mode ``m``'s width term is its slot's coupled density, else None (today's term)."""
+        slot = self.slots[m]
+        if not (isinstance(slot, MatchedDensity) and slot.has_width and self._conditional_widths()):
+            return None
+        c = prior.width_ceiling(float(theta[model.modes[m][0]]), lifted=self.lifted_of(model, m), settings=self.prior_s)
+        return (slot, c) if c > slot.coupling.g_lo else None
+
+    def _ln_width(self, model, theta, m: int) -> float:
+        cw = self._coupled_width(model, theta, m)
+        if cw is None:
+            return super()._ln_width(model, theta, m)
+        return cw[0].ln_width(float(theta[model.modes[m][1]]), cw[1])
+
     def ln_prior(self, model, theta) -> float:
         sp, omit = self.sp, model.omit
         if len(model.modes) != len(self.slots):
@@ -698,7 +783,13 @@ class CoupledEngine(fast_pass._Engine):
             if g in omit:
                 continue
             if cond:
-                dg, da = sp.d_ln_width_at(float(theta[g]), float(theta[a]), lifted=self.lifted_of(model, m))
+                cw = self._coupled_width(model, theta, m)
+                if cw is None:
+                    dg, da = sp.d_ln_width_at(float(theta[g]), float(theta[a]), lifted=self.lifted_of(model, m))
+                else:                              # the ceiling moves with omega0 only below the 4 meV kink
+                    dg = cw[0].d_ln_width(float(theta[g]), cw[1])
+                    da = cw[0].d_ln_width_dc(float(theta[g]), cw[1]) * prior.d_width_ceiling(
+                        float(theta[a]), lifted=self.lifted_of(model, m), settings=self.prior_s)
                 d[g] += dg
                 d[a] += da
             else:
@@ -819,17 +910,31 @@ class CoupledEngine(fast_pass._Engine):
         """[(term id, deviance, sign)] of this block's J_i beyond D_i, each term once; the sign
         (of the factor residual u) makes the TRF residual sign(u) sqrt(P), smooth through u = 0."""
         out = []
-        for m, ((a, _g, _c), slot) in enumerate(zip(model.modes, self.slots)):
+        for m, ((a, g, _c), slot) in enumerate(zip(model.modes, self.slots)):
             e = float(theta[a])
             if isinstance(slot, MatchedDensity):
                 out += [(f.factor_id, potential(f, slot._u(f, e)), slot._u(f, e))
                         for f in slot.factors]
+                cw = None if g in model.omit else self._coupled_width(model, theta, m)
+                if cw is not None:       # the full width density, normaliser included: V_w = -2 ln p_w - 2 B_w >= 0
+                    out.append((f"width:{m}", -2.0 * cw[0].ln_width(float(theta[g]), cw[1])
+                                - 2.0 * self._width_floor(model, m, cw[0]), 1.0))
                 ramp = slot.ep.penalty(e) if slot.keep_ramp else 0.0
             else:
                 out.append((f"entry:{m}", slot.B(e), 1.0))
                 ramp = slot.ep.penalty(e)
             out.append((f"ramp:{m}", 2.0 * ramp, 1.0))
         return out
+
+    def _width_floor(self, model, m: int, slot) -> float:
+        """B_w, an analytic lower bound of -ln p_w over the slot's box, so the width term of J is never negative and
+        the TRF residual sqrt(V_w) needs no clamp: P >= 0, G >= g_lo, g >= exp(-C/2) and F(c) >= exp(-C/2) L(c) with
+        L(c) = ln((c + k)/(g_lo + k)) nondecreasing in c, taken at the ceiling of the omega0 box's lower edge."""
+        cp = slot.coupling
+        cmin = prior.width_ceiling(float(model.lo[model.modes[m][0]]), lifted=self.lifted_of(model, m),
+                                   settings=self.prior_s)
+        L = max(math.log((cmin + cp.knee) / (cp.g_lo + cp.knee)), 1e-12)
+        return math.log(cp.g_lo + cp.knee) + math.log(L) - 0.5 * cp.C
 
     def J(self, model, theta) -> float:
         # the soft-constraint squares are the residuals _trf applies, so acceptance and covariance see its objective

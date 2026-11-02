@@ -223,7 +223,8 @@ class _Lifted(R._Labelled):
     min(4, omega0), a 6 meV-wide mode cannot exist and no width up to 4 meV leaves omega0 a ridge."""
 
     def __init__(self, ctx, settings, slots, **kw):
-        super().__init__(ctx, settings, slots, lifted=(True,) * len(slots), **kw)
+        kw["lifted"] = (True,) * len(slots)        # whatever the refit passes: this stands in for a settled link
+        super().__init__(ctx, settings, slots, **kw)
 
 
 @pytest.fixture

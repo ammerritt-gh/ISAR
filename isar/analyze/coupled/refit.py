@@ -565,6 +565,11 @@ class _Spec:
                               physical_hi=self.physical_hi)
         self.own = snap.own
         self.n0 = len(self.own.modes)
+        L = snap.links
+        self.link_pred = {} if L is None else {self.canon(p.branch): p for p in L.predictions}
+        # a settled link lifts the width ceiling; a branch an add or split lists has no settled mode here yet
+        listed = set() if L is None else {self.canon(b) for c in L.changes if c.kind != "drop" for b in c.branches}
+        self.settled = set() if L is None else {self.canon(b) for b in L.settled_branches} - listed
         self.held_all = {h.unit: h for ti in snap.terms for h in ti.held}
         self.notes: list[dict] = []
         self.factors, self.frozen = self._build_factors()
@@ -782,9 +787,24 @@ class _Spec:
             raise KeyError(f"{unit} carries no branch {branch} in this snapshot")
         return md.omega0
 
+    def slot_lifted(self, b: str | None) -> bool:
+        """Whether a slot naming ``b`` has the lifted width ceiling: only a branch whose mode here is on a settled
+        link. An added, split or crossing-alternative slot names a branch that is not, so it keeps the lone cap."""
+        return b is not None and self.canon(b) in self.settled
+
+    def coupling(self, b: str) -> cc.SlotCoupling | None:
+        """The width coupling of a slot naming ``b``: its link prediction, in this snapshot's settings."""
+        p = self.link_pred.get(self.canon(b))
+        st, tau = self.snap.settings, self.snap.settings.width_tolerance_ln
+        if p is None or not p.w > 0 or not tau > 0 or self.fs.prior is not None and self.fs.prior.legacy_v4:
+            return None
+        return cc.SlotCoupling(p.w, self.fwhm, tau, st.penalty_cap, (self.fs.prior or prior.PriorSettings()).width_knee,
+                               self.sp.g_lo)
+
     def slot_objects(self, slots, factors=None):
         """One MatchedDensity per matched slot (``factors``: the frozen definitions to use, by branch;
-        default this snapshot's), one Entry per unmatched slot; neighbour values from this snapshot."""
+        default this snapshot's; the width coupling from the link prediction), one Entry per unmatched slot;
+        neighbour values from this snapshot."""
         out = []
         for b in slots:
             if b is None:
@@ -792,7 +812,7 @@ class _Spec:
                 continue
             fs_ = list(self.factors.get(b, []) if factors is None else factors.get(b, []))
             frozen = {k: self.held_value(k, b) for f in fs_ for k in f.members if k != self.snap.unit}
-            out.append(cc.MatchedDensity(self.ep, self.snap.unit, fs_, frozen))
+            out.append(cc.MatchedDensity(self.ep, self.snap.unit, fs_, frozen, coupling=self.coupling(b)))
         return out
 
 
@@ -834,7 +854,7 @@ def _ceiling(fs, k: int):
 def _engine_for(spec: _Spec, objs, job: PricingJob, gradients: bool) -> _Labelled:
     """The job's engine, built the same way by ``price`` and by a pool worker (``run_task``)."""
     eng = _Labelled(spec.ctx, _ceiling(spec.fs, job.count), objs, structures=spec.structures,
-                    gradients=gradients)
+                    gradients=gradients, lifted=tuple(spec.slot_lifted(b) for b in job.slots))
     eng.job = job
     return eng
 
@@ -1220,7 +1240,8 @@ def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
     notes = [_reason(n["code"], "a neighbour's precision is unavailable; its guard is the window width / sqrt(12)",
                      n["ids"], **n["values"]) for n in spec.notes]
     objs = spec.slot_objects(slots, by_branch)
-    eng = _Labelled(spec.ctx, _ceiling(spec.fs, k), objs, continuous=True, structures=spec.structures)
+    eng = _Labelled(spec.ctx, _ceiling(spec.fs, k), objs, continuous=True, structures=spec.structures,
+                    lifted=tuple(spec.slot_lifted(b) for b in slots))
     old = _incoming_state(eng, spec) if k == spec.n0 else None
 
     # starts: the incoming state, the priced posterior mode (the decision's, ``a.selected_model``) and one
@@ -1292,7 +1313,7 @@ def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
     P, U = {}, {}
     unary = sum(((theta[i] - mu) / sd) ** 2 for i, mu, sd in model.soft)   # J counts the soft squares once
     for tid, p, _sign in eng.penalty_terms(model, theta):
-        if tid.startswith(("entry:", "ramp:")):
+        if tid.startswith(("entry:", "ramp:", "width:")):
             unary += p
         else:
             P[tid] = p
@@ -1310,7 +1331,8 @@ def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
     # release fit: the same count with no inter-spectra potential and no entry price, own ramp kept (spec 6)
     t2 = time.perf_counter()
     ramp = cc.MatchedDensity(spec.ep, snapshot.unit, [], {})
-    rel = _Labelled(spec.ctx, _ceiling(spec.fs, k), [ramp] * k, continuous=True, structures=spec.structures)
+    rel = _Labelled(spec.ctx, _ceiling(spec.fs, k), [ramp] * k, continuous=True, structures=spec.structures,
+                    lifted=tuple(spec.slot_lifted(b) for b in slots))   # the same ceilings, no coupling
     rel_model = rel.model(model.variant, tuple(model.delta))
     rel_best = None
     for theta0 in [theta] + ([old[1]] if old is not None and old[0] is model else []):
