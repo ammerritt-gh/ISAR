@@ -760,15 +760,34 @@ def canonical_factors(A: Mapping, ids, refs: Mapping, outside: Mapping) -> tuple
 
 
 # ---- one batch --------------------------------------------------------------------------------------------
-def relabelled(h, labels):
+def relabelled(h, labels, branches=(), aliases: Mapping[str, str] | None = None):
     """``h`` with each linked mode under its link branch id (``labels`` per mode, ascending omega0; None = on no
-    branch: the mode keeps its persistent id). A dormant record whose id a mode now carries is dropped, as
-    ``_renamed`` does. ``h`` itself when ``labels`` is None."""
+    branch: the mode keeps its persistent id, unless that id is (through ``aliases``) one of the link's ``branches``
+    or another mode's label: then it is a birth and gets a new id, so no unlinked mode is priced on a branch).
+    A dormant record whose id a mode now carries is dropped, as ``_renamed`` does. ``h`` itself when ``labels``
+    is None."""
+    from isar.analyze.coupled.identity import new_branch_id
     if labels is None:
         return h
     if len(labels) != len(h.modes):
         raise ValueError(f"{h.unit}: {len(labels)} link labels for {len(h.modes)} modes")
-    modes = tuple(replace(m, branch=b) if b is not None else m for m, b in zip(h.modes, labels))
+    aliases = aliases or {}
+    canon = lambda b: aliases.get(b, b)     # noqa: E731
+    linked = {canon(b) for b in (*branches, *labels) if b is not None}
+    avoid = linked | {canon(m.branch) for m in h.modes}
+    modes, used = [], set(linked)
+    for i, (m, b) in enumerate(zip(h.modes, labels)):
+        if b is not None:
+            m = replace(m, branch=b)
+        elif canon(m.branch) in used:           # a link branch, or an id an earlier mode of this spectrum kept
+            new = new_branch_id(f"fast:{h.unit}" if h.fit == "fast" else h.fit, i)
+            while canon(new) in avoid:
+                new += "'"
+            avoid.add(new)
+            m = replace(m, branch=new)
+        used.add(canon(m.branch))
+        modes.append(m)
+    modes = tuple(modes)
     names = {m.branch for m in modes}
     return replace(h, modes=modes, dormant=tuple(d for d in h.dormant if d.branch not in names))
 
@@ -1252,7 +1271,8 @@ class _Run:
             if not verdict.get("saved"):
                 raise _Ended("failed", f"could not save the links of {tag}: {verdict.get('error')}")
             stored = self.linker.stored(self.root, verdict["link"])     # names are final once saved
-            relabel = {u: relabelled(h, stored.labels.get(u)) for u, h in state.items()}
+            branches = tuple(b.id for b in stored.branches)
+            relabel = {u: relabelled(h, stored.labels.get(u), branches, self.aliases) for u, h in state.items()}
         except (_Ended, EOFError, ConnectionError):
             raise
         except Exception as exc:  # noqa: BLE001 — a batch that ignored its links would silently be the old search

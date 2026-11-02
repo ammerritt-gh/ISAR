@@ -263,6 +263,19 @@ def test_a_listed_change_that_cannot_be_composed_is_skipped_with_its_reason():
     assert next(x for x in s.skipped if x["id"] == "add:b1")["change"] == 0
 
 
+def test_the_incoming_labels_follow_the_link_when_a_branch_moves_to_another_mode():
+    """Ring 2: b1 moves from y's mode 0 to mode 1. After the runner's relabel the search's incoming candidate names
+    b1 on mode 1 and nothing on mode 0, so the unlinked mode is priced on no branch."""
+    from test_coupled_refit import held
+
+    from isar.session.inter_spectra.runner import relabelled
+    h = relabelled(held("y", OWN, ["b1", "q"], T=200.0), (None, "b1"), ("b1", "b2"))
+    ids = [m.branch for m in h.modes]
+    assert len(set(ids)) == 2 and ids[1] == "b1"
+    s = open_search(snapshot_for(OWN, ids, {"x": X12, "z": Z36}, links=links_for(2, labels=(None, "b1"))))
+    assert s.inc == (None, "b1")
+
+
 # (f) count first ---------------------------------------------------------------------------------------------------
 def test_a_count_wins_by_the_mass_summed_over_its_listed_labellings_beyond_the_hysteresis():
     eps = 0.1

@@ -1597,7 +1597,10 @@ def test_a_link_saved_by_another_writer_between_rings_never_fails_the_batch(tmp_
     assert [b.name for b in linker.calls[2][3].branches] == [b.name for b in ring2.branches]
 
 
-def test_a_mode_on_no_branch_keeps_its_persistent_id_and_the_lone_name_rides_to_the_next_stage(tmp_path):
+def test_a_mode_on_no_branch_leaves_the_anchors_branch_and_the_lone_name_rides_to_the_next_stage(tmp_path):
+    """y's high mode carried "q", but the link puts it on no branch while the anchor's q is a branch of the link: it
+    is born under a fresh id, so it is not coupled to the anchor's q (a kept id the link does not use stays:
+    ``test_a_mode_the_link_leaves_unlinked_gives_up_a_branch_the_link_uses``)."""
     ws, x, y, z = _chain(tmp_path, ({"toy": "keep"},) * 3)
     w = Workspace.open(ws)
     card, session = w.load()
@@ -1616,7 +1619,7 @@ def test_a_mode_on_no_branch_keeps_its_persistent_id_and_the_lone_name_rides_to_
     spec = _anchored(ws, [x])
     Bench(ws).run(spec, linker=linker)
     p = {r.unit: p for r, p in _lines(ws, spec.batch_id)}[y]
-    assert [m["branch"] for m in p["came_in"]["own"]["modes"]] == ["link:" + y + "#0", "q"]      # "q" is untouched
+    assert [m["branch"] for m in p["came_in"]["own"]["modes"]] == ["link:" + y + "#0", f"fast:{y}#1"]   # not "q"
     assert p["came_in"]["links"]["labels"] == ["link:" + y + "#0", None]
     assert "B9" not in p["came_out"]["assignment"]["slots"]                                       # no name enters a fit
     assert linker.calls[1][3].lone[y] == (None, "B9")                                              # ring 2 continues it
@@ -1659,6 +1662,34 @@ def test_relabelled_takes_link_ids_for_linked_modes_only():
     assert runner.relabelled(r, ("n", None)) == r                                                    # idempotent
     with pytest.raises(ValueError, match="3 link labels for 2 modes"):
         runner.relabelled(h, ("a", "b", "c"))
+
+
+def test_a_mode_the_link_leaves_unlinked_gives_up_a_branch_the_link_uses():
+    """Ring 2: B1 moves from mode 0 to mode 1. Mode 0 keeps no id the link uses, directly or through an alias, so
+    no two modes carry one branch; a kept id the link does not use stays."""
+    mk = lambda ids: fakes.held_from_fit({"peaks": [{"omega0": 4.0, "branch": ids[0]},    # noqa: E731
+                                                    {"omega0": 8.0, "branch": ids[1]}]},
+                                         unit="u", fit="f1", inputs=None, context=None, T=None)
+    r = runner.relabelled(mk(("B1", "q")), (None, "B1"), ("B1", "B2"))
+    assert [m.branch for m in r.modes] == ["f1#0", "B1"]
+    assert runner.relabelled(r, (None, "B1"), ("B1", "B2")) == r                                    # idempotent
+    r = runner.relabelled(mk(("old", "q")), (None, "B1"), ("B1", "B2"), {"old": "B2"})             # B2 another's branch
+    assert r.modes[0].branch not in ("old", "B1", "B2") and r.modes[1].branch == "B1"
+    r = runner.relabelled(mk(("p", "q")), (None, "B1"), ("B1",))
+    assert [m.branch for m in r.modes] == ["p", "B1"]                                              # p is no link branch
+
+
+def test_a_mode_a_later_ring_leaves_unlinked_is_held_on_no_branch(tmp_path):
+    """Ring 1 links y's mode to B; ring 2's link leaves y's frozen refit unlinked while x and z carry B: z is
+    conditioned on y under a fresh id, so no coupling ties z's B to y's unlinked mode."""
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"},) * 3)
+    lab = lambda u, n, h: ["B" if n == 1 or u != y else None for _m in h.modes]   # noqa: E731
+    spec = _anchored(ws, [x])
+    Bench(ws).run(spec, linker=fakes.ScriptedLinker(lab))
+    p = next(p for r, p in _lines(ws, spec.batch_id) if r.unit == z)["came_in"]
+    assert p["links"]["stage"] == "ring2" and p["links"]["labels"] == ["B"]
+    held_y = [m["branch"] for t in p["terms"] for h in t["held"] if h["unit"] == y for m in h["modes"]]
+    assert len(held_y) == 1 and held_y[0] != "B"
 
 
 def test_a_tie_group_gives_a_side_only_to_its_free_spectrum():
