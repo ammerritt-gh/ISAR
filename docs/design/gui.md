@@ -519,7 +519,7 @@ when several scans are selected. Rulings that bind it:
   (`BatchOverlay`, `set_batch_overlay` remain the seam the view model's tests drive by hand.)
 - Link marks (2026-11-02, S3U3). Each cell carries its spectrum's saved mode links, read through `InterState.link_row`: a
   caption of branch names under the plot (a split candidate reads `B2 / B3?`, unresolved), and a tone dot for the worst
-  note (amber for a change or an unlinked mode, red for a contradiction, grey for info, none when nothing needs flagging).
+  note (green when linked with nothing to flag, grey for info, amber for a change or an unlinked mode, red for a contradiction).
   Names from an out-of-date record are drawn in a darker grey with no dot, and the tooltip says they come from earlier links.
   A spectrum whose record names a fit other than the one in use shows no names. The words are the facade's; the GUI computes nothing.
 - Gestures (2026-11-02, S3U3). Ctrl-click adds or removes a cell, and the picked cells form a path in click order.
