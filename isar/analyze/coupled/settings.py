@@ -96,7 +96,7 @@ SETTING_DEFS: tuple[SettingDef, ...] = (
     _row("width_tolerance_ln", "hidden", "float", 0.7, None, 0, 5,
          "Mode linking: how far a mode's width may differ between neighbours, as the natural log of the ratio (0.7 is about a factor of two), before it counts as one full tolerance.", strict=True),
     _row("intensity_tolerance_ln", "hidden", "float", 1.0, None, 0, 5,
-         "Mode linking: how far a mode's integrated intensity may differ between neighbours, as the natural log of the ratio (1 is about a factor of 2.7), before it counts as one full tolerance.", strict=True),
+         "Mode linking: how far a mode's intrinsic intensity (Bose-corrected, divided by the analyzer's efficiency) may differ between neighbours, as the natural log of the ratio (1 is about a factor of 2.7), before it counts as one full tolerance.", strict=True),
     _row("link_threshold", "hidden", "float", 9.0, None, 0, 1000,
          "Mode linking: two modes of neighbouring spectra are linked as one branch only when their summed mismatch in energy, width and intensity, each in squared tolerances, is at most this.", strict=True),
     _row("tie_margin", "hidden", "float", 2.0, None, 0, 100,
