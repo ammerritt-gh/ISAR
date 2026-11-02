@@ -390,6 +390,61 @@ def test_a_vanished_branch_name_is_never_reused():
     assert [b.name for b in back.branches] == ["B2"]
 
 
+def _pair_with_lone():
+    """Two spectra on one q line: the 5 and 7 meV modes link, the 9.5 meV mode of u2 is on no branch."""
+    ins = {"u1": inp("u1", [5.0, 7.0]), "u2": inp("u2", [5.0, 7.0, 9.5])}
+    return ins, [qlink("u1", "u2")]
+
+
+def test_a_lone_mode_is_named_from_the_same_counter_after_the_branches_and_the_record_keeps_it():
+    ins, links = _pair_with_lone()
+    r = lk.link(ins, links, SET)
+    assert [b.name for b in r.branches] == ["B1", "B2"]
+    assert r.lone == {"u1": (None, None), "u2": (None, None, "B3")} and r.labels["u2"][2] is None
+    assert r.next_name == 4 and r.name_start == 1
+    assert lk.from_json(lk.to_json(r)) == r
+
+
+def test_lone_names_are_unique_across_two_scans_and_continue_the_experiment_counter():
+    ins, links = _pair_with_lone()
+    first = lk.link(ins, links, SET)
+    second = lk.link({"v1": inp("v1", [3.0]), "v2": inp("v2", [3.0, 11.0])}, [qlink("v1", "v2")], SET,
+                     next_name=first.next_name)
+    assert second.branches[0].name == "B4" and second.lone == {"v1": (None,), "v2": (None, "B5")}
+    names = [b.name for r in (first, second) for b in r.branches]
+    names += [n for r in (first, second) for v in r.lone.values() for n in v if n is not None]
+    assert sorted(names) == ["B1", "B2", "B3", "B4", "B5"]
+
+
+def test_a_lone_name_survives_a_relink_of_an_unchanged_spectrum_and_costs_no_number():
+    ins, links = _pair_with_lone()
+    p = lk.link(ins, links, SET)
+    again = lk.link(ins, links, SET, p, next_name=p.next_name)
+    assert again.lone["u2"][2] == "B3" and again.next_name == p.next_name
+    changed = dict(ins, u1=inp("u1", [5.0, 7.0], fit="f-new"))       # u1's fit changed; u2 is unchanged
+    r = lk.link(changed, links, SET, p, next_name=p.next_name)
+    assert r.lone["u2"][2] == "B3" and r.next_name == p.next_name
+
+
+def test_a_lone_mode_adds_no_branch_change_or_marker_beyond_the_drop_it_always_was():
+    ins, links = _pair_with_lone()
+    r = lk.link(ins, links, SET)
+    assert [b.name for b in r.branches] == ["B1", "B2"]
+    assert [(c.kind, c.mode) for c in r.changes["u2"]] == [("drop", 2)]
+    assert [(m.unit, m.mode, m.kind) for m in r.markers] == [("u2", 2, "unlinked")]
+
+
+def test_a_record_saved_before_lone_names_reads_with_none_and_a_relink_names_its_lone_modes():
+    ins, links = _pair_with_lone()
+    p = lk.link(ins, links, SET)
+    old = lk.to_json(p)
+    del old["lone"]
+    read = lk.from_json(old)
+    assert read.lone == {}
+    again = lk.link(ins, links, SET, read, next_name=read.next_name)
+    assert again.lone["u2"][2] == "B4" and again.next_name == read.next_name + 1
+
+
 # ---- predictions, markers, determinism, JSON ----------------------------------------------------
 def test_a_mode_far_from_what_its_neighbours_predict_is_a_change_marker():
     ins = {"a": inp("a", [5.0]), "b": inp("b", [5.5]), "c": inp("c", [6.0])}

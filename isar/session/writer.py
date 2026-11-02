@@ -345,6 +345,22 @@ def _link_problem(p) -> str | None:
     return None
 
 
+def _renumbered(result: linking.LinkResult, start: int) -> linking.LinkResult:
+    """The names this run allocated (``B<n>``, n from its ``name_start`` up) continue from ``start``, the store's counter."""
+    names = [b.name for b in result.branches] + [n for v in result.lone.values() for n in v]
+    if result.name_start == start or not any(n is not None and int(n[1:]) >= result.name_start for n in names):
+        return result
+    shift = start - result.name_start
+
+    def renamed(name):
+        return name if name is None or int(name[1:]) < result.name_start else f"B{int(name[1:]) + shift}"
+
+    return dataclasses.replace(
+        result, branches=tuple(dataclasses.replace(b, name=renamed(b.name)) for b in result.branches),
+        lone={u: tuple(renamed(n) for n in v) for u, v in result.lone.items()},
+        name_start=start, next_name=result.next_name + shift)
+
+
 def _append_link(workspace_root, result: linking.LinkResult, *, scope: Sequence[str], batch: str | None,
                  stage: str | None) -> str:
     """One link record: its payload, then its index line. The caller holds the workspace write lock.
@@ -370,13 +386,7 @@ def _append_link(workspace_root, result: linking.LinkResult, *, scope: Sequence[
     if same and same[-1].digest == digest:
         return same[-1].link
     next_name = max((line.next_name for line in logged), default=1)
-    new = [b.id for b in result.branches if int(b.name[1:]) >= result.name_start]
-    if new and result.name_start != next_name:
-        names = {bid: f"B{next_name + k}" for k, bid in enumerate(new)}
-        result = dataclasses.replace(
-            result, branches=tuple(dataclasses.replace(b, name=names[b.id]) if b.id in names else b
-                                   for b in result.branches),
-            name_start=next_name, next_name=next_name + len(new))
+    result = _renumbered(result, next_name)
     link = records.new_link_id()
     name = f"{link}.jsonl"
     blob = _line({"link": link, "result": linking.to_json(result)})

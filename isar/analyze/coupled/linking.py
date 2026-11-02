@@ -262,6 +262,7 @@ class LinkResult:
     stamps: dict[str, str]                           # unit -> LinkInput.stamp
     branches: tuple[Branch, ...]                     # ordered by name number
     labels: dict[str, tuple[str | None, ...]]        # unit -> branch id per mode; None = on no branch
+    lone: dict[str, tuple[str | None, ...]]          # unit -> per mode: the name of a mode on no branch (a lone phonon), else None
     peak_E: dict[str, tuple[float, ...]]             # unit -> E* (meV) per mode; where a view draws a mode's link markers
     settled: dict[str, tuple[bool, ...]]             # per mode: on a branch, in no tie group, in no contradiction
     predictions: dict[str, tuple[Prediction, ...]]   # unit -> every branch a neighbour carries (sorted by branch id)
@@ -507,10 +508,10 @@ def link(inputs: Mapping[str, LinkInput], links: Sequence[Link], settings: Inter
     # 4  names
     prev_by_id = {b.id: b for b in previous.branches} if previous else {}
     voters: dict[str, set] = {}
+    unchanged = {u for u in units if previous is not None
+                 and previous.made_from.get(u) == (inputs[u].held.fit, inputs[u].held.inputs)
+                 and previous.stamps.get(u) == inputs[u].stamp}
     if previous:
-        unchanged = {u for u in units
-                     if previous.made_from.get(u) == (inputs[u].held.fit, inputs[u].held.inputs)
-                     and previous.stamps.get(u) == inputs[u].stamp}
         for p in previous.branches:
             v = {(u, i) for u, i in p.members if u in unchanged and i < len(inputs[u].held.modes)}
             v |= {(u, i) for u in units for i, m in enumerate(inputs[u].held.modes) if m.branch == p.id}
@@ -563,6 +564,18 @@ def link(inputs: Mapping[str, LinkInput], links: Sequence[Link], settings: Inter
     # 5  labels
     label_of = {k: ident[dsu.find(k)][0] for k in keys if dsu.find(k) in ident}
     labels = {u: tuple(label_of.get((u, s.i)) for s in S[u]) for u in units}
+    # 5b  lone phonons: a mode on no branch is still a phonon, named from the same counter after the branches. The
+    #     names label only: nothing above or below reads them. A mode of an unchanged spectrum keeps its earlier name.
+    lone = {u: [None] * len(S[u]) for u in units}
+    k_lone = 0
+    for u, i in sorted((k for k in keys if label_of.get(k) is None), key=lambda k: (E_of(k), k)):
+        old = previous.lone.get(u, ()) if u in unchanged else ()
+        if i < len(old) and old[i] is not None:
+            lone[u][i] = old[i]
+        else:
+            lone[u][i] = f"B{next_name + k_new + k_lone}"
+            k_lone += 1
+    lone = {u: tuple(v) for u, v in lone.items()}
     unsettled: set = set()
 
     # 6  near ties, over the direct accepted pairs of one link
@@ -741,7 +754,7 @@ def link(inputs: Mapping[str, LinkInput], links: Sequence[Link], settings: Inter
         schema=LINK_SCHEMA,
         made_from={u: (inputs[u].held.fit, inputs[u].held.inputs) for u in units},
         stamps={u: inputs[u].stamp for u in units},
-        branches=branches, labels=labels,
+        branches=branches, labels=labels, lone=lone,
         peak_E={u: tuple(s.E for s in S[u]) for u in units},
         settled=settled,
         predictions={u: tuple(p for p, _, _ in preds[u]) for u in units},
@@ -749,7 +762,7 @@ def link(inputs: Mapping[str, LinkInput], links: Sequence[Link], settings: Inter
         contradictions=tuple(sorted(contradictions, key=lambda c: (c.units, c.modes))),
         markers=tuple(markers),
         excluded={u: (str(v[0]), v[1]) for u, v in sorted((excluded or {}).items())},
-        settings=settings.to_values(), name_start=next_name, next_name=next_name + k_new)
+        settings=settings.to_values(), name_start=next_name, next_name=next_name + k_new + k_lone)
 
 
 # ---- JSON --------------------------------------------------------------------------------------
@@ -799,6 +812,7 @@ def from_json(d: dict) -> LinkResult:
         branches=tuple(Branch(_need(b, "id", "branch"), _need(b, "name", "branch"),
                               tuple(_tup(m) for m in _need(b, "members", "branch"))) for b in g("branches")),
         labels=unit_map("labels", _tup), peak_E=unit_map("peak_E", _tup), settled=unit_map("settled", _tup),
+        lone={u: _tup(v) for u, v in (d.get("lone") or {}).items()},     # a record saved before lone names has none
         predictions=unit_map("predictions", lambda v: tuple(_pred(p) for p in v)),
         changes=unit_map("changes", lambda v: tuple(
             Change(_need(c, "kind", "change"), _need(c, "mode", "change"), _tup(_need(c, "branches", "change")),

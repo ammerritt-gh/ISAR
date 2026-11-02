@@ -293,16 +293,18 @@ def previous_for(root, scans: Collection[str]) -> tuple[core.LinkResult | None, 
 
     made_from: dict = {}
     stamps: dict = {}
+    lone: dict = {}
     branches: dict[str, core.Branch] = {}
     for link_id, res in used.items():
         made_from |= {u: v for u, v in res.made_from.items() if newest_for_its_scan(u, link_id)}
         stamps |= {u: v for u, v in res.stamps.items() if newest_for_its_scan(u, link_id)}
+        lone |= {u: v for u, v in res.lone.items() if newest_for_its_scan(u, link_id)}
         for b in res.branches:                              # oldest first: the newest record's name wins
             kept = {m for m in b.members if newest_for_its_scan(m[0], link_id)}
             prior = branches[b.id].members if b.id in branches else ()
             branches[b.id] = core.Branch(b.id, b.name, tuple(sorted({*prior, *kept})))
     top = list(used.values())[-1]
-    return replace(top, made_from=made_from, stamps=stamps, next_name=nxt,
+    return replace(top, made_from=made_from, stamps=stamps, lone=lone, next_name=nxt,
                    branches=tuple(sorted(branches.values(), key=lambda b: b.id))), nxt
 
 

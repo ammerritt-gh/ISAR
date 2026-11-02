@@ -98,6 +98,16 @@ def test_new_branches_continue_the_stores_names_and_keep_their_ids(tmp_path):
     assert records.read_links(tmp_path)[-1].link == link and records.read_links(tmp_path)[-1].next_name == 5
 
 
+def test_a_lone_name_from_this_run_is_renumbered_with_the_branches_on_save(tmp_path):
+    writer.save_links(tmp_path, _result(next_name=4), scope=["exp1:12"], batch=None, stage=None)
+    branch = lk.Branch(id="link:exp1:12:a03#0", name="B1", members=((UNIT, 0), (OTHER, 0)))
+    lone = _result(branches=(branch,), lone={UNIT: ("B2", None), OTHER: (None,)}, name_start=1, next_name=3)
+    writer.save_links(tmp_path, lone, scope=["exp1:13"], batch=None, stage=None)
+    stored = records.read_link_payload(tmp_path, records.read_links(tmp_path)[-1])
+    assert stored.branches == (replace(branch, name="B4"),) and stored.lone == {UNIT: ("B5", None), OTHER: (None,)}
+    assert (stored.name_start, stored.next_name) == (4, 6)
+
+
 def test_a_result_naming_no_new_branch_is_stored_as_it_is(tmp_path):
     writer.save_links(tmp_path, _result(next_name=4), scope=["exp1:12"], batch=None, stage=None)
     writer.save_links(tmp_path, _named(1, 1), scope=["exp1:13"], batch=None, stage=None)
