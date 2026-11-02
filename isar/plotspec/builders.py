@@ -652,7 +652,9 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
     rank = {"total": 0, "elastic": 1, "quasielastic": 2, "mode": 3, "background": 4}
     curves = [(curve, trace, offset) for trace, offset in zip(traces, offsets)
               for curve in trace.curves]
-    curves.sort(key=lambda item: (rank[item[0].kind], item[0].number or 0))
+    # Phonons sort by their P number, so the legend reads P1, P2, P3 whatever the energy order.
+    curves.sort(key=lambda item: (rank[item[0].kind],
+                                  int(item[0].phonon[1:]) if item[0].phonon else item[0].number or 0))
     # A phonon keeps one colour in every spectrum: the plot's trace colours, given in ascending P number.
     phonons = sorted({c.phonon for c, _, _ in curves if c.phonon}, key=lambda p: int(p[1:]))
     for curve, trace, offset in curves:

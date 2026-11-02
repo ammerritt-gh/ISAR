@@ -496,6 +496,10 @@ class _GroupedLegend(pg.LegendItem):
         self.setGeometry(0, 0, size.width(), size.height())
 
 
+# The Curves block's fixed rows; every other row there is a mode (a phonon's P name or "Mode N").
+_FIXED_CURVE_ROWS = frozenset(("Total", "Elastic", "Quasielastic", "QE"))
+
+
 def _populate_legend(legend, entries, names) -> None:
     # Keep legacy entries in order; each named group occupies one consecutive block.
     blocks = []
@@ -527,7 +531,7 @@ def _populate_legend(legend, entries, names) -> None:
             short = name if len(name) <= 48 else name[:23] + "…" + name[-24:]
             if isinstance(legend, _GroupedLegend):
                 # Total gets a row; elastic/QE share the next. Modes start below them.
-                if columns == 2 and name.startswith("Mode ") and not modes_started:
+                if columns == 2 and name not in _FIXED_CURVE_ROWS and not modes_started:
                     cell += cell % 2
                     modes_started = True
                 span = 3 if columns == 1 or name == "Total" else 1

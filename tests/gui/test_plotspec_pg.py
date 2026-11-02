@@ -415,3 +415,31 @@ def test_scans_legend_compacts_curves_and_keeps_duplicate_spectra(qtbot, tmp_pat
         assert not left.sceneBoundingRect().intersects(right.sceneBoundingRect())
     assert plot.sceneBoundingRect().contains(legend.sceneBoundingRect())
     assert glw.grab().save(str(tmp_path / 'legend.png'))
+
+
+def test_scans_legend_lists_phonons_in_p_order(qtbot):
+    from PySide6.QtWidgets import QApplication
+    from isar.plotspec.builders import ScansCurve, ScansTrace, scans_spec
+
+    x = np.linspace(-5, 20, 51)
+    ones = np.ones_like(x)
+    # Mode 1 is phonon P3 here: the phonon rows must follow their P numbers, not the energy order.
+    curves = (ScansCurve('Total', 'total', None, ones), ScansCurve('Elastic', 'elastic', None, ones),
+              ScansCurve('QE', 'quasielastic', None, ones)) + tuple(
+        ScansCurve(f'P{p}', 'mode', n, ones, phonon=f'B{p}') for n, p in ((1, 3), (2, 1), (3, 2)))
+    trace = ScansTrace('a03 · 97 K', None, x, ones, ones, np.ones_like(x, dtype=bool), x, curves, False, True)
+    spec = scans_spec(traces=(trace,), view='offset', step=2, ylabel='Counts', curves_header='Curves · Fast')
+    glw, plot = _new_plot()
+    qtbot.addWidget(glw)
+    glw.setBackground('w')
+    glw.resize(600, 500)
+    rendered = render_into(plot, spec)
+    glw.show()
+    QApplication.processEvents()
+    legend = rendered.legend
+    labels = [label for _, label in legend.items]
+    assert [label.text for label in labels] == ['a03 · 97 K', 'Total', 'Elastic', 'QE', 'P1', 'P2', 'P3']
+    elastic, qe, p1, p2, p3 = labels[2:]
+    assert elastic.pos().y() == qe.pos().y() < p1.pos().y()
+    assert p1.pos().y() == p2.pos().y() < p3.pos().y()
+    assert elastic.pos().x() == p1.pos().x() < qe.pos().x() == p2.pos().x()
