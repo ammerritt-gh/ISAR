@@ -349,6 +349,10 @@ def _marker_style(kind: MarkerKind):
         return "t", "orange", "orange", 12
     if kind is MarkerKind.VERDICT_HELD:
         return "s", _GREY_03, None, 11
+    if kind is MarkerKind.LINK_CHANGE:
+        return "+", "#6a3d9a", None, 14
+    if kind is MarkerKind.LINK_UNLINKED:
+        return "t1", "#1b9e77", "#1b9e77", 11
     return "o", _GREY_03, _GREY_03, 9
 
 
@@ -361,6 +365,8 @@ def _draw_marker(rs: RenderedSpec, m, label, legend_entries: list) -> None:
     )
     scatter.setZValue(9 if m.kind in (
         MarkerKind.POOLED_WARNING, MarkerKind.POOLED_UNCERTIFIED) else 6)
+    if m.tooltip is not None:
+        scatter.setToolTip(m.tooltip)
     rs._add_data(scatter)
     if label is not None:
         legend_entries.append((scatter, label))
@@ -609,6 +615,8 @@ def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
 
     plot_item.setLabel("bottom", spec.xlabel)
     plot_item.setLabel("left", spec.ylabel)
+    # A spec without ticks resets the axis: DispersionPane re-renders different specs into one PlotItem.
+    plot_item.getAxis("bottom").setTicks([[(float(x), t) for x, t in spec.x_ticks]] if spec.x_ticks else None)
     plot_item.setTitle(spec.title)
 
     plot_item._isar_rendered = rs
