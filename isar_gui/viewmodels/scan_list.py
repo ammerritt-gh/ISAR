@@ -17,7 +17,7 @@ from isar.workspace_api.analyzer_array import layout_for
 from isar.workspace_api.spectra import NOT_JUDGED_TEXT, SpectraCache
 from isar.workspace_api.scan_list import (ATTENTION_NOT_READ, Fact, Mark, PooledRow, ScanListSnapshot, ScanSetRow,
                                           SpectrumRow, UnreadFile, natural_key, scan_list)
-from isar.workspace_api.inter_spectra import SpectrumInter, is_flagged
+from isar.workspace_api.inter_spectra import MarkerView, SpectrumInter, UnitLinks, is_flagged
 from isar_gui import status_words
 from isar_gui.inter_words import COLUMN_TIPS, COLUMN_TITLES, SEVERITY_WORDS, reason_sentence
 from isar_gui.selection import ORIGIN_LIST, ORIGIN_OTHER, Selection
@@ -56,6 +56,7 @@ HEADER_TIPS = {
     "inter": COLUMN_TIPS["fit"],
 }
 _SEVERITY_TONE = {"info": Tone.OK, "warn": Tone.WARN, "serious": Tone.ERR}
+_SEVERITY_ORDER = ("info", "warn", "serious")      # the worst of several marks is the last
 _STATE_KEY = "scan_list"
 _DASH = "—"
 REMOVED_TIP = ("Removed from the list: hidden here, from the Scans page and from the selection, but its data and "
@@ -187,14 +188,18 @@ def _anchor_cell(anchored: bool) -> Cell:
     return Cell("anchor", COLUMN_TIPS["anchor"], Tone.OK)
 
 
-def _flag_cell(row: SpectrumInter | None) -> Cell:
-    if row is None or not is_flagged(row.flag):
+def _flag_cell(row: SpectrumInter | None, markers: tuple[MarkerView, ...] = ()) -> Cell:
+    notes = [m.words for m in markers]          # the link notes: reported on hover, never a review-list flag
+    if row is not None and is_flagged(row.flag):
+        flag = row.flag
+        head = (f"Score {_score(flag.score)}: cost of coupling {_score(flag.cost_of_coupling)} plus the largest link "
+                f"mismatch {_score(flag.link_mismatch)}.")
+        lines = [head, *(reason_sentence(r.code, r.detail) for r in flag.reasons), *notes]
+        return Cell(SEVERITY_WORDS[flag.severity], "\n".join(lines), _SEVERITY_TONE[flag.severity])
+    if not markers:
         return Cell("")
-    flag = row.flag
-    head = (f"Score {_score(flag.score)}: cost of coupling {_score(flag.cost_of_coupling)} plus the largest link "
-            f"mismatch {_score(flag.link_mismatch)}.")
-    lines = [head, *(reason_sentence(r.code, r.detail) for r in flag.reasons)]
-    return Cell(SEVERITY_WORDS[flag.severity], "\n".join(lines), _SEVERITY_TONE[flag.severity])
+    worst = max((m.severity for m in markers), key=_SEVERITY_ORDER.index)
+    return Cell(f"links: {len(markers)}", "\n".join(notes), _SEVERITY_TONE[worst])
 
 
 def _lock_cell(row: SpectrumInter | None) -> Cell:
@@ -349,6 +354,15 @@ class ScanListViewModel(ViewModel):
     def _inter_row(self, key: str) -> SpectrumInter | None:
         return None if self._inter is None else self._inter.row(key)
 
+    def link_for(self, key: str) -> UnitLinks | None:
+        """A spectrum's saved mode links as the facade reads them; None when no saved link covers it."""
+        return None if self._inter is None else self._inter.link_row(key)
+
+    def _link_markers(self, key: str) -> tuple[MarkerView, ...]:
+        """The link notes a spectrum shows; a stale record's links show none (its fits have changed since)."""
+        link = self.link_for(key)
+        return () if link is None or link.stale else link.markers
+
     def _anchored(self) -> frozenset[str]:
         return frozenset() if self._inter is None else frozenset(self._inter.anchors)
 
@@ -362,6 +376,9 @@ class ScanListViewModel(ViewModel):
         if row is not None:
             words += (["flagged"] if is_flagged(row.flag) else []) + (["locked"] if row.locked else [])
             words += [row.label] if row.in_use else []
+        markers = self._link_markers(key)
+        words += ["link note"] if markers else []
+        words += ["unlinked"] if any(m.kind == "unlinked" for m in markers) else []
         return words
 
     def anchorable_keys(self) -> tuple[str, ...]:
@@ -421,7 +438,8 @@ class ScanListViewModel(ViewModel):
         on |= {c for c in SHOWN_BY_DEFAULT if self.column_present(c)}
         anchored = self._anchored()
         states = [i for i in (self._inter_row(r.key) for r in rows) if i is not None]
-        lit = {"anchor": any(r.key in anchored for r in rows), "flag": any(is_flagged(s.flag) for s in states),
+        lit = {"anchor": any(r.key in anchored for r in rows),
+               "flag": any(is_flagged(s.flag) for s in states) or any(self._link_markers(r.key) for r in rows),
                "lock": any(s.locked for s in states), "inter": any(s.in_use for s in states)}
         on |= {c for c in INTER_COLUMNS if lit[c]}
         return {c for c in on if c not in self._hidden}
@@ -798,7 +816,7 @@ class ScanListViewModel(ViewModel):
             "file": (Cell(sp.file_name, sp.file_path or sp.file_name) if sp.file_name
                      else Cell(_DASH, "the analyzer's file cannot be told")),
             "anchor": _anchor_cell(self.is_anchor(sp.key)),
-            "flag": _flag_cell(self._inter_row(sp.key)),
+            "flag": _flag_cell(self._inter_row(sp.key), self._link_markers(sp.key)),
             "lock": _lock_cell(self._inter_row(sp.key)),
             "inter": _fit_cell(self._inter_row(sp.key)),
         }
@@ -810,14 +828,20 @@ class ScanListViewModel(ViewModel):
         anchored = self._anchored()
         rows = [self._inter_row(sp.key) for sp in spectra]
         n = len(spectra)
-        severities = [r.flag.severity for r in rows if r is not None and is_flagged(r.flag)]
+        flags = [self._flag_severities(sp.key) for sp in spectra]
         return {
             "anchor": _count_cell(sum(sp.key in anchored for sp in spectra), n, "are anchors"),
-            "flag": _count_cell(len(severities), n, "are flagged for review",
-                                summary_tone(_SEVERITY_TONE[s] for s in severities)),
+            "flag": _count_cell(sum(bool(f) for f in flags), n, "are flagged for review or have a link note",
+                                summary_tone(_SEVERITY_TONE[s] for f in flags for s in f)),
             "lock": _count_cell(sum(r is not None and r.locked for r in rows), n, "are locked"),
             "inter": _count_cell(sum(r is not None and r.in_use for r in rows), n, "use an inter-spectra fit"),
         }
+
+    def _flag_severities(self, key: str) -> list[str]:
+        """The severities that light a spectrum's Flag cell: its review flag's, then its link notes'."""
+        row = self._inter_row(key)
+        flagged = [row.flag.severity] if row is not None and is_flagged(row.flag) else []
+        return flagged + [m.severity for m in self._link_markers(key)]
 
     def _analyzer_nodes(self, sets) -> list[Node]:
         """The analyzer flip: one top row per analyzer, every scan set's spectrum beneath it."""
