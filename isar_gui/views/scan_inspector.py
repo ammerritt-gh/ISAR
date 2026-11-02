@@ -25,6 +25,7 @@ from PySide6.QtGui import QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (QFormLayout, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QScrollArea,
                                QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
+from isar.workspace_api.inter_spectra import UnitLinks
 from isar.workspace_api.scan_list import Fact, PooledRow, ScanSetRow, SpectrumRow
 from isar.workspace_api.spectra import (AMPLITUDE_HEADING, ENERGY_HEADING, LINEWIDTH_HEADING,
                                         OUTDATED_TEXT, Measured, PassSummary,
@@ -50,6 +51,7 @@ _STAGE_ONE_FACTS = frozenset({"Temperature", "Q", "Slit"})   # the lines the fac
 # Unit metadata keys the inspector draws on its own lines, or the hashed unit key: never repeated below.
 _SHOWN_ELSEWHERE = frozenset({"unit", "analyzer", "T", "points", "file", "slit", "scan_numbers",
                               "n_merged_scans", "T_K", "Q_nm"})
+_BRANCH_TIP = "Branch this mode follows, from the saved mode links"    # the words of the Scan(s) name in plotspec/builders.py
 
 
 class Line(NamedTuple):
@@ -268,6 +270,26 @@ class _SnapshotIndex:
         return self._sets.get(key)
 
 
+def _branch_name(links: UnitLinks, index: int) -> str | None:
+    """Mode ``index`` (0-based) as its branch reads: 'B3', or 'B2 / B3 (unresolved)' for a split candidate."""
+    pair = links.unresolved[index] if index < len(links.unresolved) else ()
+    if pair:
+        return f"{' / '.join(pair)} (unresolved)"
+    return links.names[index] if index < len(links.names) else None
+
+
+def _links_note_text(links: UnitLinks | None, drawn_fit: str | None) -> str | None:
+    """The one line about a spectrum's saved links: out of date, or whose branch names these are. None says nothing."""
+    if links is None or not links.link_id:             # no saved record covers this spectrum
+        return None
+    if links.stale:
+        return f"Branch links from {links.at}; out of date"
+    if links.fit_id != drawn_fit:
+        who = "the Fast solo fit" if links.fit_id == "fast" else f"fit {links.fit_id}"
+        return f"Branch names belong to {who}, which this table does not show"
+    return None
+
+
 class FitSection(QWidget):
     """Compact Fast | Deep summary sourced from the shared spectrum bundle."""
 
@@ -320,11 +342,15 @@ class FitSection(QWidget):
         self._unavailable = _Note("", self)
         self._unavailable.setObjectName("scan_inspector_fit_unavailable")
         self._unavailable.hide()
+        self._links_note = _Note("", self)
+        self._links_note.setObjectName("scan_inspector_fit_links")
+        self._links_note.hide()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
         layout.addWidget(self._title)
         layout.addWidget(self._grid_widget)
+        layout.addWidget(self._links_note)
         layout.addWidget(self._note)
         layout.addWidget(self._unavailable)
         self.setMinimumWidth(0)
@@ -340,21 +366,35 @@ class FitSection(QWidget):
         self._clear_modes()
         self._grid_widget.hide()
         self._note.hide()
+        self._links_note.hide()
         self._unavailable.setText(message)
         self._unavailable.setToolTip(message)
         self._unavailable.show()
 
-    def render(self, summaries, *, exposure_source: str | None = None) -> None:
+    def render(self, summaries, *, exposure_source: str | None = None, links: UnitLinks | None = None,
+               drawn_fit: str | None = None) -> None:
         self._unavailable.hide()
         self._grid_widget.show()
         self._note.show()
         fast, deep = summaries["fast"], summaries["deep"]
         for pass_name, summary in (("fast", fast), ("deep", deep)):
             self._set_summary(pass_name, summary)
+        text = _links_note_text(links, drawn_fit)
+        self._links_note.setText(text or "")
+        self._links_note.setToolTip(text or "")
+        self._links_note.setVisible(text is not None)
+        # names and marks belong to the fit the links were made on, and only where this table shows that fit
+        shown = links is not None and links.current and links.fit_id == drawn_fit
+        marks = links.markers if shown and not links.stale else ()
         self._clear_modes()
         for number in range(1, max(len(fast.modes), len(deep.modes)) + 1):
             mode_row = self._base_rows + (number - 1) * (len(self._QUANTITIES) + 1)
-            heading = self._cell(f"Mode {number}", f"fit_mode_{number}_header", muted=True)
+            name = _branch_name(links, number - 1) if shown else None
+            notes = [m for m in marks if m.mode == number - 1]
+            parts = [f"Mode {number}", *([name] if name else []), *(m.label for m in notes)]
+            heading = self._cell(" · ".join(parts), f"fit_mode_{number}_header", muted=True)
+            if name or notes:
+                heading.setToolTip("\n".join([*([_BRANCH_TIP] if name else []), *(m.words for m in notes)]))
             heading_font = heading.font()
             heading_font.setBold(True)
             heading.setFont(heading_font)
@@ -706,8 +746,10 @@ class ScanInspectorPanel(QWidget):
         if self.current_bundle is None:
             self._fit_section.set_unavailable("Fit values unavailable (no spectrum values returned)")
             return
+        # the table draws the solo fast fit, so the saved links name its modes only when they were made on it
         self._fit_section.render(self.current_bundle.summaries,
-                                 exposure_source=self.current_bundle.exposure_source)
+                                 exposure_source=self.current_bundle.exposure_source,
+                                 links=self._vm.link_for(key), drawn_fit="fast")
 
     def _render_tables(self, row) -> None:
         fit = getattr(row, "fit", None)
