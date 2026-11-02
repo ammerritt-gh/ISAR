@@ -80,6 +80,15 @@ def test_stale_links_keep_names_drop_glyphs_and_say_so(setup):
     assert not [m for m in page._drawn_state.main_spec.markers if m.kind is ps.MarkerKind.LINK_CHANGE]
 
 
+def test_a_stale_link_whose_own_fit_changed_says_so_and_names_nothing(setup):
+    page, inter = setup
+    unit = make_unit_links(TWO_MODE, names=("B3", "B2"), peak_E=(2.4, 5.6), current=False, fit_id="r2")
+    inter.links = make_link_view(replace(unit, stale=True, stale_text="made from fits that have changed since"))
+    drawn = _select(page, TWO_MODE)
+    assert _mode_names(drawn, TWO_MODE) == ["Mode 1", "Mode 2"]
+    assert "links out of date" in _legend(drawn, TWO_MODE)
+
+
 def test_link_glyph_sits_at_the_peak_energy_with_its_words_as_hover(setup):
     page, inter = setup
     inter.links = make_link_view(make_unit_links(TWO_MODE, names=("B3", "B2"), peak_E=(2.4, 3.0), markers=(CHANGE,)))

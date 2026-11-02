@@ -510,16 +510,16 @@ class ScansPageViewModel(ViewModel):
                         note = ' · '.join(parts + ([note] if note else []))
             link = self.inter.link_row(bundle.key) if self.inter is not None else None
             marks = ()
-            if curves and link is not None and link.current and link.names:
+            if link is not None and curves and link.current and link.names:
                 if shown == 'fast' and fit_id == link.fit_id:
                     curves = _named_modes(curves, link)
                     marks = _link_marks(link)
-                    if link.stale:
-                        note = ' · '.join(filter(None, (note, LINKS_OUT_OF_DATE)))
                 else:
                     row = self.inter.row(bundle.key)
                     owner = row.label if row is not None and row.fit_id == link.fit_id else link.fit_id
                     note = ' · '.join(filter(None, (note, f'branch names belong to {owner}; not drawn here')))
+            if link is not None and curves and link.stale:
+                note = ' · '.join(filter(None, (note, LINKS_OUT_OF_DATE)))
             tag = ' (beamline zero)' if bundle.zero == ZERO_BEAMLINE else ''
             identity = fit_label if wf else labels[bundle.key] + tag
             active = self._wf_entries[index].fit_id == viewed if wf else bundle.key == self.selection.active
