@@ -312,6 +312,7 @@ class FitSection(QWidget):
         self._grid.setHorizontalSpacing(6)
         self._grid.setVerticalSpacing(2)
         self._grid.setColumnStretch(0, 0)
+        self._grid.setColumnMinimumWidth(0, _LABEL_WIDTH)      # the Mode and quantity labels, as the facts' labels
         self._grid.setColumnStretch(1, 1)
         self._grid.setColumnStretch(2, 1)
         self._grid_values: dict[str, _Note] = {}
