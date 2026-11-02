@@ -200,6 +200,10 @@ def _draw_marker(ax, m, label=None) -> None:
     elif m.kind is MarkerKind.VERDICT_HELD:
         ax.scatter([m.x], [m.y], marker="s", s=60, facecolors="none", edgecolors="0.3", zorder=6,
                    label=label)
+    elif m.kind is MarkerKind.LINK_CHANGE:
+        ax.scatter([m.x], [m.y], marker="P", s=70, color="#6a3d9a", zorder=6, label=label)
+    elif m.kind is MarkerKind.LINK_UNLINKED:
+        ax.scatter([m.x], [m.y], marker="v", s=60, color="#1b9e77", zorder=6, label=label)
     else:
         ax.scatter([m.x], [m.y], marker="o", s=40, color="0.3", zorder=6, label=label)
 
@@ -309,6 +313,8 @@ def _render_onto(ax, spec: PlotSpec) -> None:
         _draw_projection(ax, spec.projection)
     ax.set_xlabel(spec.xlabel)
     ax.set_ylabel(spec.ylabel)
+    if spec.x_ticks:
+        ax.set_xticks([x for x, _ in spec.x_ticks], [t for _, t in spec.x_ticks])
     ax.set_title(spec.title, fontsize=9)
     _, labels = ax.get_legend_handles_labels()
     if labels:

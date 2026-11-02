@@ -86,6 +86,8 @@ class MarkerKind(str, Enum):
     VERDICT_RESOLVED = "verdict_resolved"
     VERDICT_FLAGGED = "verdict_flagged"
     VERDICT_HELD = "verdict_held"
+    LINK_CHANGE = "link_change"        # saved mode links: a change, a cap or a contradiction (design 2.4, kind 2)
+    LINK_UNLINKED = "link_unlinked"    # saved mode links: a mode linked to no neighbour (design 2.4, kind 3)
 
 
 class Glyph(str, Enum):
@@ -276,10 +278,14 @@ class Marker:
     y: float
     kind: MarkerKind
     label: str | None = None
+    tooltip: str | None = None      # hover text (pyqtgraph); matplotlib ignores it
 
     def to_dict(self) -> dict:
-        return {"x": float(self.x), "y": float(self.y), "kind": _tok(self.kind),
-                "label": self.label}
+        result = {"x": float(self.x), "y": float(self.y), "kind": _tok(self.kind),
+                  "label": self.label}
+        if self.tooltip is not None:
+            result["tooltip"] = self.tooltip
+        return result
 
 
 @dataclass
@@ -378,6 +384,8 @@ class PlotSpec:
     strip_levels: tuple[float, float] | None = None
     meta: dict = field(default_factory=dict)
     guides: list[GuideLine] = field(default_factory=list)
+    # Explicit bottom-axis ticks (position, text); empty means the renderers' automatic ticks.
+    x_ticks: list[tuple[float, str]] = field(default_factory=list)
 
     def __post_init__(self):
         self._check_certifying()
@@ -405,6 +413,8 @@ class PlotSpec:
         }
         if self.guides:
             result["guides"] = [g.to_dict() for g in self.guides]
+        if self.x_ticks:
+            result["x_ticks"] = [[float(x), str(t)] for x, t in self.x_ticks]
         return result
 
 

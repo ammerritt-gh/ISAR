@@ -74,6 +74,25 @@ def test_masked_point_is_a_grey_x():
         plt.close(fig)
 
 
+def test_link_markers_draw_and_explicit_x_ticks_are_set():
+    spec = ps.PlotSpec(
+        title="t", xlabel="x", ylabel="y",
+        markers=[ps.Marker(x=1.0, y=2.0, kind=ps.MarkerKind.LINK_CHANGE, label="energy differs"),
+                 ps.Marker(x=2.0, y=3.0, kind=ps.MarkerKind.LINK_UNLINKED, label="no link",
+                           tooltip="hover text is for pyqtgraph only")],
+        x_ticks=[(0.0, "a03"), (0.1, "a04")],
+    )
+    fig, ax = plt.subplots()
+    try:
+        mpl._render_onto(ax, spec)
+        labels = [t.get_text() for t in ax.get_legend().get_texts()]
+        ticks = [(float(x), t.get_text()) for x, t in zip(ax.get_xticks(), ax.get_xticklabels())]
+    finally:
+        plt.close(fig)
+    assert {"energy differs", "no link"} <= set(labels)
+    assert ticks == [(0.0, "a03"), (0.1, "a04")]
+
+
 def test_strips_render_as_separate_rectangles_with_a_gap():
     # Two measured columns at H=2.0 and H=2.4 (a gap between 2.04 and 2.36); each is its own
     # AxesImage over its own E extent, and NO artist spans the gap (gaps stay gaps, no interpolation).

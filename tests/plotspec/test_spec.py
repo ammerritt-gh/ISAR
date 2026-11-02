@@ -231,6 +231,20 @@ def test_series_carries_per_point_colour_channel_in_to_dict():
     assert d["color_norm"] == pytest.approx(ps.LN2)
 
 
+def test_marker_tooltip_and_x_ticks_serialize_only_when_set():
+    # Specs without the link fields keep their JSON exactly (the existing goldens depend on it).
+    plain = ps.PlotSpec(title="t", xlabel="x", ylabel="y",
+                        markers=[ps.Marker(x=1.0, y=2.0, kind=ps.MarkerKind.MASKED)])
+    assert "x_ticks" not in plain.to_dict()
+    assert "tooltip" not in plain.to_dict()["markers"][0]
+    link = ps.Marker(x=1.0, y=5.0, kind=ps.MarkerKind.LINK_UNLINKED, label="no link to a neighbour",
+                     tooltip="Mode 2 of a06 links to no neighbour")
+    assert link.to_dict() == {"x": 1.0, "y": 5.0, "kind": "link_unlinked", "label": "no link to a neighbour",
+                              "tooltip": "Mode 2 of a06 links to no neighbour"}
+    spec = ps.PlotSpec(title="t", xlabel="x", ylabel="y", x_ticks=[(0.0, "a03"), (0.1, "a04")])
+    assert json.loads(json.dumps(spec.to_dict()))["x_ticks"] == [[0.0, "a03"], [0.1, "a04"]]
+
+
 def test_pooled_master_enumerates_members_in_meta():
     sp = ps.PlotSpec(title="t", xlabel="x", ylabel="y",
                      series=[ps.Series(x=np.array([0.0]), y=np.array([1.0]),
