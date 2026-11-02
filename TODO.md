@@ -144,6 +144,10 @@ Things that are wrong now, as opposed to things not yet built.
       - Order-dependent, found by hand not in the gate: `tests/gui/test_fact_table.py` followed by
         another GUI test raises `AttributeError: 'types.SimpleNamespace' object has no attribute
         'fast_pass'` inside a Qt slot (a test leaves a widget whose timer still reads a stub workspace).
+      - `tests/gui/test_queue_panel.py` geometry checks under `-n 16` (2026-11-02, job ja847b237965f):
+        `test_the_processing_tab_keeps_its_order_with_an_anchor` failed once ("Finished is below the queue
+        viewport", 598 <= 587) and `test_the_laptop_window_keeps_its_frame_with_the_queue_on_the_rail_and_in_the_panel`
+        failed once in another gate; both passed alone, in their file (46 passed) and on the rerun.
       **Acceptance:** each item is either fixed at its shared state with a before/after run, or
       recorded as understood and accepted.
 
@@ -724,7 +728,7 @@ conditions — these are wants, not commitments.
 
 ## Notes
 
-routine suite 2.3 min, over its 1-min budget
+routine suite 2.7 min, over its 1-min budget
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test
