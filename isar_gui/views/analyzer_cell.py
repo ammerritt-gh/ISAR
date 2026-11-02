@@ -19,7 +19,7 @@ from isar.plotspec.spec import Role
 from isar_gui.inter_words import BATCH_TIPS, BATCH_WORDS
 from isar_gui.plotspec_pg import ROLE_COLOR
 from isar_gui.theme import TONE_COLOR, Tone, dot_icon, marker_icon
-from isar_gui.viewmodels.analyzer_array import CellState
+from isar_gui.viewmodels.analyzer_array import CellLinks, CellState
 from isar_gui.views.elided_label import ElidedLabel
 
 CELL_MIN = (132, 150)        # px: a dock smaller than the grid scrolls, the cells never shrink below this
@@ -28,6 +28,7 @@ VEIL_ALPHA = 170             # of 255: the window-coloured veil over a waiting c
 RING_STILL = 0.6             # the ring's brightness with the timer stopped (the reduced-motion look)
 BATCH_TONES = {"waiting": Tone.IDLE, "fitting": Tone.ACTIVE, "done": Tone.OK, "refused": Tone.WARN,
                "failed": Tone.ERR, "not_reached": Tone.IDLE}
+LINK_TONES = {None: Tone.OK, "info": Tone.IDLE, "warn": Tone.WARN, "serious": Tone.ERR}   # the worst note's dot
 MARKERS = {"anchor": "Anchor: a spectrum you trust. An anchored batch grows outward from it.",
            "lock": "Locked: this spectrum's fit is fixed, so no batch will refit it."}
 GESTURE_TIP = ("Click selects this spectrum in the scan list. Ctrl-click adds or removes it, and the cells you add form "
@@ -147,6 +148,24 @@ class AnalyzerCell(QFrame):
         self.absence_label.hide()
         outer.addWidget(self.absence_label)
 
+        self.link_strip = QWidget(self)                  # the branch names of the spectrum, under the plot like the absence word
+        self.link_strip.setObjectName("link_strip")
+        strip = QHBoxLayout(self.link_strip)
+        strip.setContentsMargins(0, 0, 0, 0)
+        strip.setSpacing(3)
+        self.link_dot = QLabel(self.link_strip)
+        self.link_dot.setObjectName("link_dot")
+        self.link_label = ElidedLabel("", self.link_strip, Qt.TextElideMode.ElideRight)
+        self.link_label.setObjectName("link_label")
+        _small(self.link_label)
+        strip.addWidget(self.link_dot)
+        strip.addWidget(self.link_label, 1)
+        policy = self.link_strip.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)             # keeps its height with no links, so the plots of a row line up
+        self.link_strip.setSizePolicy(policy)
+        self.link_strip.hide()
+        outer.addWidget(self.link_strip)
+
         self.hkl_label = ElidedLabel("", self, Qt.TextElideMode.ElideRight)
         self.hkl_label.setObjectName("hkl_label")
         self.q_label = ElidedLabel("", self, Qt.TextElideMode.ElideRight)
@@ -250,6 +269,7 @@ class AnalyzerCell(QFrame):
         self.absence_label.setVisible(cell.absence is not None)
         self.absence_label.set_full_text(cell.absence or "")
         self.absence_label.setToolTip(cell.absence_tip or "")
+        self._apply_links(cell.links)
 
         if cell.key is None:
             self.hkl_label.set_full_text("")
@@ -288,6 +308,19 @@ class AnalyzerCell(QFrame):
         self.state_dot.setToolTip(self.state_caption.toolTip())
         self.state_dot.show()
 
+    def _apply_links(self, links: CellLinks | None) -> None:
+        """The branch names and the tone dot of ``links``; a stale caption is grey and has no dot (its notes are gone)."""
+        self.link_strip.setVisible(links is not None)
+        if links is None:
+            self.link_label.set_full_text("")
+            return
+        self.link_label.set_full_text(links.caption)
+        self.link_label.setToolTip(links.tip)
+        self.link_label.setStyleSheet(f"color: {TONE_COLOR[Tone.IDLE]};" if links.stale else "")
+        self.link_dot.setVisible(not links.stale)
+        self.link_dot.setPixmap(dot_icon(LINK_TONES[links.severity]).pixmap(10, 10))
+        self.link_dot.setToolTip(links.tip)
+
     def set_ring_phase(self, phase: float) -> None:
         self.ring_phase = phase
         if self.ringing:
@@ -312,6 +345,8 @@ class AnalyzerCell(QFrame):
         if cell.batch is not None:
             word = BATCH_WORDS.get(cell.batch.state, cell.batch.state)
             lines.append(f"Batch: {word}. {cell.batch.reason or BATCH_TIPS.get(cell.batch.state, '')}")
+        if cell.links is not None:
+            lines.append(cell.links.tip)
         lines.append(GESTURE_TIP)
         return "\n".join(lines)
 
@@ -330,6 +365,8 @@ class AnalyzerCell(QFrame):
         parts += [f"hkl {cell.hkl}" if cell.hkl else "hkl missing", cell.q]
         if cell.batch is not None:
             parts.append("batch: " + BATCH_WORDS.get(cell.batch.state, cell.batch.state))
+        if cell.links is not None:
+            parts.append("links out of date" if cell.links.stale else f"branches {cell.links.caption}")
         return ", ".join(parts)
 
     # ---- gestures ------------------------------------------------------------------------------
