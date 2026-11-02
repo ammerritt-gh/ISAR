@@ -1724,6 +1724,32 @@ def test_a_mode_on_no_branch_keeps_its_persistent_id_and_the_lone_name_rides_to_
     assert linker.calls[1][3].lone[y] == (None, "B9")                                              # ring 2 continues it
 
 
+def test_a_sweep_after_an_accepted_add_keeps_the_link_and_labels_the_added_mode(tmp_path):
+    """The round's link predicts a branch Bnew on y; y's sweep 1 accepts it (two modes). The sweep after still carries
+    the round's link: the added mode names its branch, and the applied add is no longer listed as a change."""
+    from isar.analyze.coupled.linking import Change, Prediction
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"},) * 3)
+    _set_fast(ws, {y: (6.0, {"toy": "keep", "slots": [f"link:{y}#0", "Bnew"]})})
+    pred = Prediction("Bnew", None, 8.0, 0.5, 1.0, 0.2, (x, z))
+
+    def extra(n, labels, state):
+        predictions = {u: () for u in labels}
+        predictions[y] = (pred,)
+        changes = {u: () for u in labels}
+        changes[y] = (Change("add", None, ("Bnew",), (pred,)),)
+        return {"predictions": predictions, "changes": changes}
+    spec = _simultaneous(ws, (x, y, z))
+    Bench(ws).run(spec, linker=fakes.ScriptedLinker(_own(lambda u: False), extra=extra))
+    by = _links_by_stage(ws, spec.batch_id)
+    came_in = {(r.unit, r.index): p["came_in"] for r, p in _lines(ws, spec.batch_id)}
+    after = came_in[(y, 2)]
+    assert after["links"] is not None                                    # the count change does not discard the link
+    assert (after["links"]["link_id"], after["links"]["stage"]) == (by["round1"].link, "round1")
+    assert sorted(m["branch"] for m in after["own"]["modes"]) == sorted([f"link:{y}#0", "Bnew"])
+    assert sorted(after["links"]["labels"]) == sorted([f"link:{y}#0", "Bnew"])
+    assert after["links"]["changes"] == []                               # the applied add is not listed again
+
+
 def test_relabelled_takes_link_ids_for_linked_modes_only():
     from isar.analyze.coupled.types import Dormant
     h = fakes.held_from_fit({"peaks": [{"omega0": 4.0, "branch": "p"}, {"omega0": 8.0, "branch": "q"}]},

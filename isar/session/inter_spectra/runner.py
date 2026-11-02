@@ -840,6 +840,23 @@ def snapshot_links(link_now, u: str):
                          tuple(TieSide(g.id, g.kind, tuple(sorted(g.units)), g.alternatives[u]) for g in ties))
 
 
+def fitted_links(links, modes, aliases: Mapping[str, str]):
+    """The stage's link (``snapshot_links``) read against a spectrum's current modes, so a sweep after a count change
+    keeps it: a mode carries its own branch id when the link names that branch for this spectrum (its labels,
+    predictions or changes, through the batch's aliases); settled follows the link's flag for that branch; a change
+    whose branches the spectrum now carries (an applied add or split) is no longer listed."""
+    canon = lambda b: aliases.get(b, b)     # noqa: E731
+    settled = {canon(b): s for b, s in zip(links.labels, links.settled) if b is not None}
+    named = (set(settled) | {canon(p.branch) for p in links.predictions}
+             | {canon(b) for c in links.changes for b in c.branches})
+    labels = tuple(m.branch if canon(m.branch) in named else None for m in modes)
+    flags = tuple(b is not None and settled.get(canon(b), False) for b in labels)
+    carried = {canon(b) for b in labels if b is not None}
+    changes = tuple(c for c in links.changes if not (c.branches and all(canon(b) in carried for b in c.branches)))
+    return replace(links, labels=labels, settled=flags, changes=changes,
+                   settled_branches=frozenset(b for b, s in zip(labels, flags) if b is not None and s))
+
+
 def _scans_of(units) -> list[str]:
     return sorted({u.rsplit(":", 1)[0] for u in units})
 
@@ -1245,8 +1262,8 @@ class _Run:
     def snapshot(self, u: str, own, sid: str, terms, stage_id: str | None = None):
         from isar.analyze.coupled.types import Snapshot
         links = snapshot_links(self.link_now, u)
-        if links is not None and len(links.labels) != len(own.modes):
-            links = None            # a sweep after a count change: the stage's labels no longer fit its modes
+        if links is not None:
+            links = fitted_links(links, own.modes, self.aliases)     # the link read against this spectrum's own modes
         return Snapshot(snapshot_id=sid, stage_id=stage_id or sid, unit=u, fit_id=self.records_mod.new_fit_id(),
                         context=self.ctx[u], own=own, own_record=self.record_of(u, own.fit), terms=tuple(terms),
                         settings=self.settings, batch_kind=self.kind, fast=self.fast.get(u),
