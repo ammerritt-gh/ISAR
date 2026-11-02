@@ -931,7 +931,9 @@ a persistent legend like `plane (H, 1, 0) × E — integrating |L| < 0.02, |K−
   when only one stop carries it. A named mode on a current link is drawn at its peak energy E*, with no whisker, so a broad
   mode is never drawn at its ω0 and a kink in a phonon line is a real departure. Any
   other mode (uncovered, stale link, no E*) is drawn at its ω0 with its stored interval, asymmetric as stored and
-  a one-sided interval keeping its one side. Each stop draws the fit in use. A click on this plot activates nothing.
+  a one-sided interval keeping its one side. Each stop draws the fit in use. The phonon legend is an opaque box over the
+  data, so the view runs a quarter of the path's span (at least 0.05) past the last analyzer to leave it room; the ticks
+  stay on the analyzers. A click on this plot activates nothing.
 - **Heatmap (item 2):** measured strips render as strips; gaps render as gaps. **No
   interpolation by default.** An optional smoothed/kriged surface is a *model overlay*,
   toggled explicitly and labeled as a model — the same discipline as everywhere else in ISAR.
