@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -264,14 +264,45 @@ def inputs_for(root, units: Sequence[str], *, held: Mapping[str, Held] | None = 
 
 
 def previous_for(root, scans: Collection[str]) -> tuple[core.LinkResult | None, int]:
-    """The saved link result to continue from, and the next branch-name number: one past every stored record's
-    (``B1`` when nothing is stored). Prefers the newest record whose scope covers every scan, so a series link keeps
-    branches seen only at other temperatures; else the newest record overlapping any of them."""
+    """The saved link result a link of ``scans`` continues, and the next branch-name number (one past every stored
+    record's, 1 when none). Each scan's newest record with a readable payload is used: none gives (None, next); one
+    gives that result as stored; several are merged. In the merge a unit's ``made_from`` and ``stamps`` come from the
+    record newest for its scan, and the branches are the union by id, named from the newest record carrying the id,
+    a member kept only where its record is newest for the member's scan (so a mode sits on one id). The merged
+    result's other fields are the newest record's and mean nothing: it goes to ``core.link`` only, never to a save
+    or a view."""
     lines = inter_records.read_links(root)
     nxt = max((line.next_name for line in lines), default=1)
-    want = set(scans)
-    mine = [line for line in lines if want <= set(line.scope)] or [line for line in lines if set(line.scope) & want]
-    return (inter_records.read_link_payload(root, mine[-1]) if mine else None), nxt
+    newest = inter_records.newest_link_by_scan(lines, scans)
+    wanted = {line.link for line in newest.values()}
+    used: dict[str, core.LinkResult] = {}                  # link id -> result, oldest first
+    for line in lines:
+        if line.link in wanted:
+            res = inter_records.read_link_payload(root, line)
+            if res is not None:
+                used[line.link] = res
+    if not used:
+        return None, nxt
+    if len(used) == 1:
+        return next(iter(used.values())), nxt
+    newest_id = {scan: line.link for scan, line in newest.items() if line.link in used}
+
+    def newest_for_its_scan(unit: str, link_id: str) -> bool:
+        return newest_id.get(unit.rsplit(":", 1)[0]) == link_id
+
+    made_from: dict = {}
+    stamps: dict = {}
+    branches: dict[str, core.Branch] = {}
+    for link_id, res in used.items():
+        made_from |= {u: v for u, v in res.made_from.items() if newest_for_its_scan(u, link_id)}
+        stamps |= {u: v for u, v in res.stamps.items() if newest_for_its_scan(u, link_id)}
+        for b in res.branches:                              # oldest first: the newest record's name wins
+            kept = {m for m in b.members if newest_for_its_scan(m[0], link_id)}
+            prior = branches[b.id].members if b.id in branches else ()
+            branches[b.id] = core.Branch(b.id, b.name, tuple(sorted({*prior, *kept})))
+    top = list(used.values())[-1]
+    return replace(top, made_from=made_from, stamps=stamps, next_name=nxt,
+                   branches=tuple(sorted(branches.values(), key=lambda b: b.id))), nxt
 
 
 def widen_to_series(root, scans: Sequence[str]) -> tuple[str, ...]:
