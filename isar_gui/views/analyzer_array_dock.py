@@ -39,6 +39,7 @@ MODE_TIPS = {
     "shared": "All cells use one y limit, so heights compare between cells. Affects every cell's y axis."}
 LIMIT_TIP = ("The y limit all cells share when 'One limit for all' is chosen (0 to this value). Empty uses the "
              "largest value shown. Kept separately for Normalised and Raw, since their units differ.")
+PATH_BUTTON_TIP = "Opens the Dispersion ω(q) view and plots the analyzers you picked, in click order."
 
 
 class AxisLabel(QWidget):
@@ -121,6 +122,7 @@ class ArrayWindow(QWidget):
 
 class AnalyzerArrayDock(QDockWidget):
     openChanged = Signal(bool)   # the array shown or hidden, in either host, or its window moved
+    path_plot_requested = Signal()   # the Plot path in Dispersion button was pressed
 
     def __init__(self, vm: AnalyzerArrayViewModel, parent=None, *, window_title: str = "Analyzer array",
                  default_rect=None) -> None:
@@ -162,6 +164,15 @@ class AnalyzerArrayDock(QDockWidget):
         self.unplaced_label = self._line(outer, "array_unplaced", root)
         self.batch_label = self._line(outer, "array_batch_line", root)
         self.path_label = self._line(outer, "array_path_line", root)
+        path_row = QHBoxLayout()
+        self.path_button = QPushButton("Plot path in Dispersion", root)
+        self.path_button.setObjectName("array_plot_path")
+        self.path_button.setEnabled(False)
+        self.path_button.setToolTip(PATH_BUTTON_TIP)
+        self.path_button.clicked.connect(self.path_plot_requested)
+        path_row.addWidget(self.path_button)
+        path_row.addStretch(1)
+        outer.addLayout(path_row)
 
         scale_row, self.scale_group, self.scale_buttons = self._segment(
             root, "Intensity", SCALES, {"normalised": "Normalised", "raw": "Raw"}, SCALE_TIPS)
@@ -477,6 +488,13 @@ class AnalyzerArrayDock(QDockWidget):
         self.limit_unit.set_full_text(state.limit_unit)
         self.limit_note.set_full_text(reason if state.limit_enabled else "")
         self.limit_note.setVisible(bool(reason) and state.limit_enabled)
+
+    def set_path_state(self, state) -> None:
+        """The Plot path button follows the path's own state: enabled when it can be plotted, else says why."""
+        if self._disposed:                  # the window closed: its button is being deleted with it
+            return
+        self.path_button.setEnabled(state.can_plot)
+        self.path_button.setToolTip(PATH_BUTTON_TIP if state.can_plot else f"{PATH_BUTTON_TIP}\n{state.reason or ''}")
 
     def _limit_typed(self) -> None:
         text = self.limit_box.text()
