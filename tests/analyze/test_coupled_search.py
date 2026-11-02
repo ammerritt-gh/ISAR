@@ -253,6 +253,16 @@ def test_a_change_the_pool_cannot_carry_is_skipped_with_its_reason_never_dropped
     assert {x["id"] for x in a.search["skipped"]} == {"add:b9", "drop:5", "split:0:b3+b9"}
 
 
+def test_a_listed_change_that_cannot_be_composed_is_skipped_with_its_reason():
+    # add:b1 names a branch the incoming fit already carries; split 0 and drop 0 meet on one mode
+    ch = [add("b1", 13.0), drop(0), split_of(0, "b3", 5.2, "b4", 6.1)]
+    s = open_search(snap(links_for(2, changes=ch)))
+    why = {x["id"]: x["why"] for x in s.skipped}
+    assert why["add:b1"] == "a branch would be named twice"
+    assert why["split:0:b3+b4+drop:0"] == "two changes meet on one mode"
+    assert next(x for x in s.skipped if x["id"] == "add:b1")["change"] == 0
+
+
 # (f) count first ---------------------------------------------------------------------------------------------------
 def test_a_count_wins_by_the_mass_summed_over_its_listed_labellings_beyond_the_hysteresis():
     eps = 0.1

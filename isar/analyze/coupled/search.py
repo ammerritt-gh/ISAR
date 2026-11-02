@@ -213,8 +213,8 @@ class Search:
 
     def _compose(self, S):
         """(count, slots, modes) of the incoming candidate with the changes S applied, modes ascending in energy and
-        the easy modes at their incoming (omega0, Gamma, height); None when two changes meet on one mode or a branch
-        would be named twice."""
+        the easy modes at their incoming (omega0, Gamma, height); else the reason they cannot apply together (two
+        changes meet on one mode, or a branch would be named twice)."""
         spec = self.spec
         R_ = spec.fwhm
         rows = {i: [(self.inc[i], m)] for i, m in enumerate(self.own)}
@@ -226,7 +226,7 @@ class Search:
                 adds.append((self._name(c.branches[0]), (p.E, g0, None)))
                 continue
             if c.mode in touched:
-                return None
+                return "two changes meet on one mode"
             touched.add(c.mode)
             ((_slot, (_e, g, h)),) = rows[c.mode]
             if c.kind == "drop":
@@ -241,12 +241,14 @@ class Search:
         slots = tuple(s for s, _m in both)
         named = [s for s in slots if s is not None]
         if len(named) != len(set(named)):
-            return None
+            return "a branch would be named twice"
         return len(both), slots, tuple(m for _s, m in both)
 
     def _change_cand(self, S):
         made = self._compose(S)
-        if made is None:
+        if isinstance(made, str):
+            self.skipped.append({"change": S[0][0] if len(S) == 1 else [i for i, _c in S],
+                                 "id": "+".join(change_id(c) for _i, c in S), "why": made})
             return None
         k, slots, modes = made
         split = any(c.kind == "split" for _i, c in S)
