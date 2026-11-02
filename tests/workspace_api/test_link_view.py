@@ -275,9 +275,30 @@ def test_each_spectrum_reads_the_newest_record_of_its_own_scan_and_branches_merg
     assert {view.by_unit[u].link_id for u in _units(root, s1)} == {one}
     assert {view.by_unit[u].link_id for u in _units(root, s2)} == {both}
     u1, u2 = _units(root, s1)[0], _units(root, s2)[0]
-    assert view.by_unit[u1].names == (None, None)          # the newer lone record links nothing, and it governs u1
+    lone = view.by_unit[u1].names                          # the newer record links nothing: both modes are lone phonons
+    assert len(lone) == 2 and not set(lone) & set(view.branches)
     name = view.by_unit[u2].names[0]
     assert {(u1, 0), (u2, 0)} <= set(view.branches[name].members)       # the older record's members stay in the branch
+
+
+def test_a_record_saved_before_lone_names_reads_as_out_of_date_and_names_no_mode(root, monkeypatch):
+    s1, _ = scan_keys(root)
+    _save(root, [s1])
+    read = records.read_link_payload
+
+    def without_lone(root_, line):
+        payload = read(root_, line)
+        return None if payload is None else replace(payload, lone={})
+
+    monkeypatch.setattr(records, "read_link_payload", without_lone)
+    for unit in _units(root, s1):
+        ul = link_view(root).by_unit[unit]
+        assert not ul.current and ul.stale and ul.stale_text == LINK_WORDS["unnamed"] and ul.names == ()
+
+
+def test_a_phonon_is_shown_as_p_with_its_stored_number():
+    from isar.workspace_api.inter_spectra import phonon_label
+    assert phonon_label("B3") == "P3" and phonon_label("B12") == "P12"
 
 
 def test_a_spectrum_no_record_covers_is_absent_and_units_narrow_the_view(root):

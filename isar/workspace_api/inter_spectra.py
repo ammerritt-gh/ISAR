@@ -406,6 +406,7 @@ def batch_preview(root, req: BatchRequest) -> BatchPreview:
 # ---------------------------------------------------------------------------
 LINK_WORDS = {
     "stale": "made from fits that have changed since: run Link modes again",
+    "unnamed": "saved before its phonons were named: run Link modes again",
     "change": "{} differs from neighbours", "at_cap": "at the width cap (wants to be broader)",
     "unlinked": "no link to a neighbour", "contradiction": "links contradict each other",
     "add": "{} is expected near {:.1f} meV here, but no mode of this spectrum follows it",
@@ -439,13 +440,18 @@ class UnitLinks:
     stale: bool; stale_text: str | None              # the record is out of date
     current: bool                                    # this spectrum's own fit in the record is still the one in use
     fit_id: str | None                               # the fit in use now; names index its modes
-    names: tuple[str | None, ...]                    # per mode, None = unlinked; () unless current
+    names: tuple[str, ...]                           # per mode, its phonon's stored name (B<n>; phonon_label shows P<n>); () unless current
     peak_E: tuple[float, ...]                        # per mode, the E* the link matched on (meV); () unless current
     unresolved: tuple[tuple[str, ...], ...]          # per mode, both names of a split candidate, else ()
     settled: tuple[bool, ...]                        # () unless current
     markers: tuple[MarkerView, ...]                  # () when stale or not current
     changes: tuple[ChangeView, ...]                  # () when stale or not current
     ties: tuple[TieView, ...]                        # () when stale or not current
+
+
+def phonon_label(name: str) -> str:
+    """The label every surface shows for a phonon: its stored name ``B<n>`` as ``P<n>``."""
+    return "P" + name[1:]
 
 
 @dataclass(frozen=True)
@@ -576,6 +582,8 @@ def _unit_links(line: records.LinkLine, R: LinkResult, unit: str, now: _LinkNow,
     text, fit = (LINK_WORDS["stale"] if stale else None), now.fits.get(unit)
     if unit not in R.made_from or not _fresh(R, unit, now):
         return UnitLinks(unit, line.link, line.at, stale, text, False, fit, (), (), (), (), (), (), ())
+    if unit not in R.lone:          # a record saved before lone phonons were named: every mode lacks its name
+        return UnitLinks(unit, line.link, line.at, True, LINK_WORDS["unnamed"], False, fit, (), (), (), (), (), (), ())
     changes = R.changes.get(unit, ())
     unresolved = [() for _ in R.labels[unit]]
     for ch in changes:
@@ -583,7 +591,8 @@ def _unit_links(line: records.LinkLine, R: LinkResult, unit: str, now: _LinkNow,
             unresolved[ch.mode] = tuple(names[b] for b in ch.branches)
     return UnitLinks(
         unit, line.link, line.at, stale, text, True, fit,
-        tuple(None if b is None else names[b] for b in R.labels[unit]), tuple(R.peak_E[unit]), tuple(unresolved),
+        tuple(names[b] if b is not None else R.lone[unit][i] for i, b in enumerate(R.labels[unit])),
+        tuple(R.peak_E[unit]), tuple(unresolved),
         tuple(R.settled[unit]),
         () if stale else tuple(_marker(m) for m in R.markers if m.unit == unit),
         () if stale else tuple(_change(ch, names) for ch in changes),
