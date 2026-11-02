@@ -185,7 +185,7 @@ def test_a_picked_refit_that_cannot_be_drawn_is_noted_and_its_names_are_not_draw
                    changes=(), ties=())
     view = analyzer_path(snap, ws, [k0, k1], links=LinkView("r", {k0: ul}, {}))
     stop = view.stops[0]
-    assert stop.note == f"fit {F1} cannot be drawn; showing the Fast solo fit, without branch names"
+    assert stop.note == f"fit {F1} cannot be drawn; showing the Fast solo fit, without phonon names"
     assert _energies(stop) == _energies(analyzer_path(snap, ws, [k0, k1]).stops[0])   # the solo's modes
     assert all(m.name is None and m.peak_E is None and not m.markers for m in stop.modes)
     assert view.stops[1].note is None

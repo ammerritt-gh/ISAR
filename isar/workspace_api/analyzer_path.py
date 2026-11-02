@@ -133,7 +133,7 @@ def analyzer_path(snapshot: ScanListSnapshot, ws, keys: Sequence[str], *,
         fast = bundle.summaries["fast"]
         modes = tuple(_mode(i, m, ul if named else None) for i, m in enumerate(fast.modes))
         wanted = choice.get(r.key, "fast")
-        fallback = (f"fit {wanted} cannot be drawn; showing the Fast solo fit, without branch names"
+        fallback = (f"fit {wanted} cannot be drawn; showing the Fast solo fit, without phonon names"
                     if wanted != bundle.fit_id else None)
         why = None if modes else (bundle.not_drawn.text if bundle.not_drawn is not None else "no fit to draw")
         note = "; ".join(n for n in (fallback, why) if n) or None

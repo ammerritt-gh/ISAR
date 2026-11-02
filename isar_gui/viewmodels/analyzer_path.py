@@ -121,8 +121,10 @@ class AnalyzerPathViewModel(ViewModel):
             spec = None
         elif can_plot:
             spec = self._spec(keys, snapshot)
-        else:                               # the empty plot says how to make a path
-            spec = analyzer_path_spec(stops=(), title="Analyzer path", xlabel="", ylabel=YLABEL, reason=reason)
+        else:                               # the empty plot says how to make a path, in its title and axis line (larger type)
+            no_layout = set_key is not None and not layout
+            title = "No path yet" + ("" if set_key is None or no_layout else f": {len(keys)} picked so far")
+            spec = analyzer_path_spec(stops=(), title=title, xlabel=NO_LAYOUT if no_layout else HOW, ylabel=YLABEL)
         self._state = PathState(keys=keys, tip=PLOT_TIP if can_plot else "", can_plot=can_plot,
                                 reason=reason, spec=spec)
         self.state_changed.emit(self._state)
