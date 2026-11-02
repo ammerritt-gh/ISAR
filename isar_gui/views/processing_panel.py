@@ -29,6 +29,7 @@ RAIL_WIDTH = 24
 class ProcessingPanel(QWidget):
     run_requested = Signal()            # "Fast-pass all ready (N)" -> MainWindow.start_analysis
     batch_requested = Signal(object)    # a BatchRequest from the inter-spectra box -> MainWindow.start_inter_batch
+    link_requested = Signal(object)     # the scan keys of a Link modes click -> MainWindow.start_link
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -50,6 +51,7 @@ class ProcessingPanel(QWidget):
         self.controls.hide()                # shown with the queue, once the window hands the panel a controller
         self.inter_box = InterBatchBox(self)
         self.inter_box.batch_requested.connect(self.batch_requested)
+        self.inter_box.link_requested.connect(self.link_requested)
         self._queue = QueuePanel(self)
         self._queue.hide()                  # shown once the window hands the panel a controller
 
