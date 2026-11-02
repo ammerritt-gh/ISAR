@@ -923,9 +923,7 @@ class MainWindow(QMainWindow):
             signal.connect(self._release_export_hold)
         self.processing_panel.run_requested.connect(lambda: self.start_analysis())
         self.processing_panel.batch_requested.connect(self.start_inter_batch)
-        link_requested = getattr(self.processing_panel, "link_requested", None)   # the inter-spectra box adds it (S2U3P2)
-        if link_requested is not None:
-            link_requested.connect(self.start_link)
+        self.processing_panel.link_requested.connect(self.start_link)
         self.processing_rail.toggled.connect(
             lambda: self.set_right_panel_collapsed(not self._right_panel_collapsed()))
         self._refresh_recents_menu()
