@@ -8,7 +8,8 @@ import threading
 
 import pytest
 
-from gui.inter_fakes import make_entry, make_history, make_overview, make_preview
+from gui.inter_fakes import (FakeInterState, make_entry, make_history, make_link_view, make_overview, make_preview,
+                             make_unit_links)
 from isar.intake import inter_values
 from isar.intake.settings import SaveResult
 from isar.workspace_api import inter_spectra as reads
@@ -39,7 +40,21 @@ def state(qtbot, intake):
 
 
 @pytest.fixture
-def overview(monkeypatch):
+def links(monkeypatch):
+    """The saved-links read: ``value`` is what it returns (no link record by default), ``raise`` makes it fail."""
+    box = {"value": make_link_view(), "raise": None}
+
+    def read(root):
+        if box["raise"]:
+            raise box["raise"]
+        return box["value"]
+
+    monkeypatch.setattr(reads, "link_view", read)
+    return box
+
+
+@pytest.fixture
+def overview(monkeypatch, links):
     """The overview read: ``value`` is what it returns, ``raise`` makes it fail, ``calls`` counts the reads."""
     box = {"value": make_overview(revision="1"), "calls": 0, "raise": None}
 
@@ -58,14 +73,14 @@ def test_bind_reads_the_overview_and_emits_changed(qtbot, state, overview, tmp_p
     seen = []
     state.changed.connect(lambda: seen.append(state.revision))
     state.bind(tmp_path)
-    qtbot.waitUntil(lambda: state.revision == "7", timeout=5000)
-    assert seen == ["7"]
+    qtbot.waitUntil(lambda: len(seen) == 2, timeout=5000)    # the overview, then the (empty) link read
+    assert seen == ["7", "7"]
     assert state.anchors == (KEY,)
     assert state.row(KEY).fit_id == "fast"
     assert state.row("e:9:a01") is None
 
 
-def test_an_answer_from_before_a_reload_is_dropped(qtbot, state, monkeypatch, tmp_path):
+def test_an_answer_from_before_a_reload_is_dropped(qtbot, state, monkeypatch, links, tmp_path):
     started, gate = threading.Event(), threading.Event()
     calls = []
 
@@ -84,8 +99,8 @@ def test_an_answer_from_before_a_reload_is_dropped(qtbot, state, monkeypatch, tm
     assert started.wait(timeout=5)      # the first read is in flight before the reload starts
     state.reload()                      # the newer read queues behind it
     gate.set()
-    qtbot.waitUntil(lambda: state.revision == "new", timeout=5000)
-    assert seen == ["new"]              # the old answer arrived and was dropped, never shown
+    qtbot.waitUntil(lambda: len(seen) == 2, timeout=5000)
+    assert seen == ["new", "new"]       # the old answer arrived and was dropped, never shown
 
 
 def test_unbound_empties_every_read_and_refuses_a_write(qtbot, state, overview, tmp_path, monkeypatch):
@@ -275,6 +290,56 @@ def test_a_refresh_calls_no_writer(qtbot, state, overview, monkeypatch, tmp_path
     state.changed.connect(lambda: seen.append(state.revision))
     state.bind(tmp_path)
     state.reload()
-    qtbot.waitUntil(lambda: seen == ["1"], timeout=5000)
+    qtbot.waitUntil(lambda: len(seen) == 2, timeout=5000)    # the overview, then the link read
     qtbot.wait(20)
     assert writes == []
+
+
+def test_the_saved_links_join_the_revision_and_are_read_per_spectrum(qtbot, state, overview, links, tmp_path):
+    links["value"] = make_link_view(make_unit_links(KEY, names=("B1", None), peak_E=(4.0, 8.0)))
+    state.bind(tmp_path)
+    qtbot.waitUntil(lambda: state.links is not None, timeout=5000)
+    assert state.revision == f"1+{state.links.revision}"
+    assert state.link_row(KEY).names == ("B1", None)
+    assert state.link_row("e:9:a01") is None
+
+
+def test_no_saved_link_leaves_the_revision_as_the_overview(qtbot, state, overview, links, tmp_path):
+    state.bind(tmp_path)
+    qtbot.waitUntil(lambda: state.links is not None, timeout=5000)
+    assert state.links == make_link_view()
+    assert state.revision == "1" and state.link_row(KEY) is None
+
+
+def test_a_failed_link_read_is_logged_and_the_last_good_view_stays(qtbot, state, overview, links, tmp_path, caplog):
+    links["value"] = make_link_view(make_unit_links(KEY, names=("B1",), peak_E=(4.0,)))
+    state.bind(tmp_path)
+    qtbot.waitUntil(lambda: state.links is not None, timeout=5000)
+    good = state.links
+    links["raise"] = RuntimeError("the link store is unreadable")
+    with caplog.at_level(logging.ERROR, logger="isar_gui.viewmodels.inter_state"):
+        state.reload()
+        qtbot.waitUntil(lambda: state.error is not None, timeout=5000)
+    assert state.links is good and state.link_row(KEY).names == ("B1",)
+    assert state.error == "links: RuntimeError: the link store is unreadable"
+    assert any(r.levelno == logging.ERROR and "failed" in r.getMessage() for r in caplog.records)
+
+
+def test_another_experiment_or_no_experiment_drops_the_links(qtbot, state, overview, links, tmp_path):
+    links["value"] = make_link_view(make_unit_links(KEY, names=("B1",), peak_E=(4.0,)))
+    state.bind(tmp_path)
+    qtbot.waitUntil(lambda: state.links is not None, timeout=5000)
+    state.bind(tmp_path / "another")
+    assert state.links is None and state.link_row(KEY) is None
+    state.bind(None)
+    assert state.links is None and state.revision == ""
+
+
+def test_the_fake_joins_the_revision_and_reads_link_rows_as_the_real_state_does(qtbot):
+    fake = FakeInterState()
+    assert fake.link_row(KEY) is None and fake.revision == "1"
+    fake.links = make_link_view(make_unit_links(KEY, names=("B1", None), peak_E=(4.0, 8.0)))
+    assert fake.revision == f"1+{fake.links.revision}"
+    row = fake.link_row(KEY)
+    assert row.names == ("B1", None) and row.settled == (True, False) and row.unresolved == ((), ())
+    assert fake.link_row("e:9:a01") is None

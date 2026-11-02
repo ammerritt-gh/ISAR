@@ -1,9 +1,9 @@
 """InterState -- the GUI thread's one holder of the inter-spectra reads and writers (C-gui-state).
 
-Reads (the overview, one spectrum's history, one batch preview) run on one daemon worker thread, and their
-answers come back through a queue polled on the GUI thread. An answer from before the last reload is dropped,
-as IntakeState does. Each writer appends one delta to ``intake/inter_spectra.jsonl`` on the GUI thread, then
-reloads. A refresh only reads (AGENTS.md hard rule 7).
+Reads (the overview, the saved mode links, one spectrum's history, one batch preview) run on one daemon
+worker thread, and their answers come back through a queue polled on the GUI thread. An answer from before the
+last reload is dropped, as IntakeState does. Each writer appends one delta to ``intake/inter_spectra.jsonl`` on
+the GUI thread, then reloads. A refresh only reads (AGENTS.md hard rule 7).
 """
 from __future__ import annotations
 
@@ -19,7 +19,8 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from isar.intake import inter_values
 from isar.intake.settings import SaveResult
 from isar.workspace_api import inter_spectra as reads
-from isar.workspace_api.inter_spectra import BatchPreview, BatchRequest, FitEntry, InterOverview, SpectrumInter
+from isar.workspace_api.inter_spectra import (BatchPreview, BatchRequest, FitEntry, InterOverview, LinkView,
+                                              SpectrumInter, UnitLinks)
 from isar_gui import collector_guard
 from isar_gui.viewmodels.intake import NO_EXPERIMENT, SaveOutcome
 
@@ -62,6 +63,7 @@ class InterState(QObject):
         self._intake = intake           # only for busy_reason(): an export refuses a save
         self._root: Path | None = None
         self._overview: InterOverview | None = None
+        self._links: LinkView | None = None         # the saved mode links; a failed read keeps the last good one
         self._histories: dict[str, tuple[FitEntry, ...]] = {}
         self._previews: dict[BatchRequest, BatchPreview] = {}
         self._preview_errors: dict[BatchRequest, str] = {}
@@ -87,6 +89,7 @@ class InterState(QObject):
         root = None if root is None else Path(root)
         if root != self._root:
             self._overview = None       # another experiment's anchors and locks are never shown
+            self._links = None          # nor its mode links
         self._root = root
         self.reload()
 
@@ -101,11 +104,13 @@ class InterState(QObject):
         self._todo.clear()
         if self._root is None:
             self._overview = None
+            self._links = None
             self._want = None
             self._debounce.stop()
             self.changed.emit()
             return
         self._enqueue("overview", None, reads.inter_overview)
+        self._enqueue("links", None, reads.link_view)
         if self._want is not None:
             self._debounce.start()
 
@@ -120,8 +125,17 @@ class InterState(QObject):
         return self._overview
 
     @property
+    def links(self) -> LinkView | None:
+        """The saved mode links: None until the first read."""
+        return self._links
+
+    def link_row(self, key: str) -> UnitLinks | None:
+        return None if self._links is None else self._links.by_unit.get(key)
+
+    @property
     def revision(self) -> str:
-        return self._overview.revision if self._overview else ""
+        overview = self._overview.revision if self._overview else ""
+        return f"{overview}+{self._links.revision}" if self._links and self._links.revision else overview
 
     @property
     def anchors(self) -> tuple[str, ...]:
@@ -213,6 +227,9 @@ class InterState(QObject):
             return
         if kind == "overview":
             self._overview = value
+            self.changed.emit()
+        elif kind == "links":
+            self._links = value
             self.changed.emit()
         elif kind == "history":
             self._histories[key] = value

@@ -6,10 +6,13 @@ Reads are plain attributes a test sets. Writers record ``(name, args)`` in ``cal
 """
 from __future__ import annotations
 
+import hashlib
+
 from PySide6.QtCore import QObject, Signal
 
 from isar.analyze.coupled.settings import InterSettings
-from isar.workspace_api.inter_spectra import (BatchPreview, BatchRequest, FitEntry, InterOverview, SpectrumInter)
+from isar.workspace_api.inter_spectra import (LINK_WORDS, BatchPreview, BatchRequest, BranchView, FitEntry,
+                                              InterOverview, LinkView, SpectrumInter, UnitLinks)
 from isar_gui.viewmodels.intake import SaveOutcome
 
 
@@ -27,12 +30,17 @@ class FakeInterState(QObject):
         self.previews: dict[BatchRequest, BatchPreview] = {}
         self.preview_errors: dict[BatchRequest, str] = {}
         self.error: str | None = None
+        self.links: LinkView | None = None         # the saved mode links; None until a test sets them
         self.calls: list[tuple[str, tuple]] = []
         self.fail_next: str | None = None          # a reason: the next writer refuses with it
 
     @property
     def revision(self) -> str:
-        return self.overview.revision if self.overview else ""
+        overview = self.overview.revision if self.overview else ""
+        return f"{overview}+{self.links.revision}" if self.links and self.links.revision else overview
+
+    def link_row(self, key: str) -> UnitLinks | None:
+        return None if self.links is None else self.links.by_unit.get(key)
 
     @property
     def anchors(self) -> tuple[str, ...]:
@@ -109,3 +117,33 @@ def make_history(*refits: FitEntry) -> tuple[FitEntry, ...]:
 
 def make_preview(**overrides) -> BatchPreview:
     return BatchPreview(**{**dict(can_start=True, reason=None, members=(), line="", notes=()), **overrides})
+
+
+def make_unit_links(unit: str, *, names: tuple[str | None, ...] = (), peak_E: tuple[float, ...] = (),
+                    link_id: str = "l1", at: str = "2026-11-01T10:00:00", stale: bool = False, current: bool = True,
+                    fit_id: str | None = "fast", unresolved=None, settled=None, markers=(), changes=(),
+                    ties=()) -> UnitLinks:
+    """One spectrum's saved links as the facade gives them. ``settled`` defaults to True on a branch and False
+    when unlinked; ``peak_E`` (the E* each mode matched on) defaults to 0.0 per mode when not given. A spectrum
+    that is not current, or whose record is stale, carries no per-mode fields, markers, changes or ties."""
+    if not current:
+        names, peak_E, unresolved, settled = (), (), (), ()
+    if stale or not current:
+        markers, changes, ties = (), (), ()
+    n = len(names)
+    return UnitLinks(
+        unit=unit, link_id=link_id, at=at, stale=stale, stale_text=LINK_WORDS["stale"] if stale else None,
+        current=current, fit_id=fit_id, names=tuple(names), peak_E=tuple(peak_E) or (0.0,) * n,
+        unresolved=((),) * n if unresolved is None else tuple(unresolved),
+        settled=tuple(name is not None for name in names) if settled is None else tuple(settled),
+        markers=tuple(markers), changes=tuple(changes), ties=tuple(ties))
+
+
+def make_link_view(*units: UnitLinks, branches: tuple[BranchView, ...] = ()) -> LinkView:
+    """A saved-links view over ``units`` and ``branches``. Its revision hashes them, as the facade's does, and is
+    empty exactly when there is nothing to show."""
+    by_unit = {u.unit: u for u in units}
+    by_name = {b.name: b for b in branches}
+    revision = "" if not (by_unit or by_name) else hashlib.sha256(
+        repr((sorted(by_unit.items()), sorted(by_name.items()))).encode("utf-8")).hexdigest()[:16]
+    return LinkView(revision, by_unit, by_name)
