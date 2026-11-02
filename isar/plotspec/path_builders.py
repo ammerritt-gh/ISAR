@@ -37,6 +37,8 @@ def _series(rows, **kw) -> ps.Series:
 def analyzer_path_spec(*, stops, title, xlabel, ylabel, stale_note=None, reason=None) -> ps.PlotSpec:
     """The path plot. ``reason`` makes it an empty spec with one annotation saying why the path is unavailable."""
     spec = ps.PlotSpec(title=title, xlabel=xlabel, ylabel=ylabel)
+    if not stops:                            # no data: no tick values, or pyqtgraph's default 0-1 range reads as real
+        spec.meta["hide_axis_values"] = True
     if reason is not None:
         spec.annotations.append(ps.Annotation(text=reason))
         return spec

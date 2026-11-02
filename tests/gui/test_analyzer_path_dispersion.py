@@ -97,8 +97,10 @@ def test_one_pick_says_how_to_make_a_path_and_two_picks_draw_it(env):
     assert spec is not None and not spec.series and not spec.annotations
     assert spec.title == "No path yet: 1 picked so far"
     assert "Ctrl-click analyzers" in spec.xlabel and "shift-click two" in spec.xlabel
+    assert not any(pane._plot.getAxis(side).style["showValues"] for side in ("bottom", "left"))   # no fake 0-1 range
     _pick(env.selection, keys[:2])
     assert env.path_vm.state.can_plot and env.path_vm.state.spec.series
+    assert all(pane._plot.getAxis(side).style["showValues"] for side in ("bottom", "left"))
     assert _bottom_ticks(pane) == [key.rsplit(":", 1)[1] for key in keys[:2]]
 
 

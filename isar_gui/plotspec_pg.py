@@ -626,6 +626,9 @@ def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
     plot_item.setLabel("left", spec.ylabel)
     # A spec without ticks resets the axis: DispersionPane re-renders different specs into one PlotItem.
     plot_item.getAxis("bottom").setTicks([[(float(x), t) for x, t in spec.x_ticks]] if spec.x_ticks else None)
+    # Re-set on every render: DispersionPane reuses one PlotItem for an empty spec and a path.
+    for side in ("bottom", "left"):
+        plot_item.getAxis(side).setStyle(showValues=not spec.meta.get("hide_axis_values"))
     plot_item.setTitle(spec.title)
 
     plot_item._isar_rendered = rs
