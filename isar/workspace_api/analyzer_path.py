@@ -16,7 +16,7 @@ from typing import Literal
 from isar.session.inter_spectra.q_provider import q_coordinates
 
 from .analyzer_array import ArrayView, array_view
-from .inter_spectra import LinkView, MarkerView, UnitLinks, fits_in_use
+from .inter_spectra import LinkView, UnitLinks, fits_in_use
 from .scan_list import Fact, ScanListSnapshot, SpectrumRow
 from .spectra import SpectraCache, spectrum_bundles
 
@@ -32,8 +32,6 @@ class PathMode:
     hi: float | None
     width: float | None                    # Gamma (meV)
     name: str | None
-    unresolved: tuple[str, ...]
-    markers: tuple[MarkerView, ...]
 
 
 @dataclass(frozen=True)
@@ -44,7 +42,6 @@ class PathStop:
     x: float | None                        # cumulative distance along the path, in the view's metric
     modes: tuple[PathMode, ...]
     note: str | None                       # why a stop has no modes, or that it draws a fit other than the one picked
-    covered: bool                          # a current, not stale saved link covers the fit drawn (every mode then has a name)
 
 
 @dataclass(frozen=True)
@@ -78,8 +75,7 @@ def _mode(i: int, mode, ul: UnitLinks | None) -> PathMode:
     return PathMode(
         mode=i, energy=mode.energy.value, peak_E=ul.peak_E[i] if at_E else None,
         lo=mode.energy.lo, hi=mode.energy.hi, width=mode.linewidth.value,
-        name=ul.names[i] if named else None, unresolved=ul.unresolved[i] if named else (),
-        markers=tuple(m for m in ul.markers if m.mode == i) if named else ())
+        name=ul.names[i] if named else None)
 
 
 def analyzer_path(snapshot: ScanListSnapshot, ws, keys: Sequence[str], *,
@@ -129,7 +125,6 @@ def analyzer_path(snapshot: ScanListSnapshot, ws, keys: Sequence[str], *,
             stale_text = stale_text or ul.stale_text
             links_at = links_at or (ul.at or None)
         named = ul is not None and ul.current and ul.names and ul.fit_id == bundle.fit_id
-        covered = ul is not None and ul.current and not ul.stale and ul.fit_id == bundle.fit_id
         fast = bundle.summaries["fast"]
         modes = tuple(_mode(i, m, ul if named else None) for i, m in enumerate(fast.modes))
         wanted = choice.get(r.key, "fast")
@@ -138,7 +133,7 @@ def analyzer_path(snapshot: ScanListSnapshot, ws, keys: Sequence[str], *,
         why = None if modes else (bundle.not_drawn.text if bundle.not_drawn is not None else "no fit to draw")
         note = "; ".join(n for n in (fallback, why) if n) or None
         beamline, internal = _place(view, r)
-        stops.append(PathStop(r.key, beamline, internal, x, modes, note, covered))
+        stops.append(PathStop(r.key, beamline, internal, x, modes, note))
     if not any(s.modes for s in stops):
         return _no("none of the picked analyzers has a fit in use to draw", **where)
     return PathView(True, None, set_key, label, temperature, metric, unit, tuple(stops), stale, stale_text,

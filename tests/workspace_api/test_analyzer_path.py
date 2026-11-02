@@ -146,11 +146,11 @@ def test_a_broad_mode_is_marked_at_its_peak_energy_not_its_omega0(root, q_points
     view = analyzer_path(snap, ws, [k0, k1], links=links)
     mode = view.stops[0].modes[0]
     assert (mode.energy, mode.peak_E) == (pytest.approx(omega0[0]), pytest.approx(omega0[0] - 1.0))
-    assert [m.kind for m in mode.markers] == ["unlinked"] and mode.name is None
+    assert mode.name is None
     assert view.stops[1].modes[0].peak_E is None and view.links_at == LINK_AT and not view.stale
 
 
-def test_names_and_markers_are_drawn_only_while_they_name_the_fit_in_use(root, q_points):
+def test_names_are_drawn_only_while_they_name_the_fit_in_use(root, q_points):
     ws, snap = _snapshot(root)
     k0, k1 = spectrum_keys(root)[:2]
     e0 = spectrum_bundles(ws, [snap.spectrum(k0)])[0].summaries["fast"].modes[0].energy.value
@@ -160,14 +160,12 @@ def test_names_and_markers_are_drawn_only_while_they_name_the_fit_in_use(root, q
                    changes=(), ties=())
     stale = replace(ul, stale=True, stale_text=LINK_WORDS["stale"], markers=())   # its names stay, its markers go
     other_fit = replace(ul, fit_id=F1)                                             # the stop draws the fast fit
-    cases = {"current": (ul, False, "B1", e0, True), "stale": (stale, True, "B1", None, False),
-             "other fit": (other_fit, False, None, None, False)}
-    for name, (entry, is_stale, expect_name, expect_peak, has_marker) in cases.items():
+    cases = {"current": (ul, False, "B1", e0), "stale": (stale, True, "B1", None),
+             "other fit": (other_fit, False, None, None)}
+    for name, (entry, is_stale, expect_name, expect_peak) in cases.items():
         view = analyzer_path(snap, ws, [k0, k1], links=LinkView("r", {k0: entry}, {}))
         mode = view.stops[0].modes[0]
         assert (mode.name, mode.peak_E, view.stale) == (expect_name, expect_peak, is_stale), name
-        assert bool(mode.markers) == has_marker, name
-        assert view.stops[0].covered == (name == "current"), name      # a stale or other-fit entry covers nothing
     assert view.stale_text is None
     assert analyzer_path(snap, ws, [k0, k1], links=LinkView("r", {k0: stale}, {})).stale_text == LINK_WORDS["stale"]
 
@@ -187,5 +185,5 @@ def test_a_picked_refit_that_cannot_be_drawn_is_noted_and_its_names_are_not_draw
     stop = view.stops[0]
     assert stop.note == f"fit {F1} cannot be drawn; showing the Fast solo fit, without phonon names"
     assert _energies(stop) == _energies(analyzer_path(snap, ws, [k0, k1]).stops[0])   # the solo's modes
-    assert all(m.name is None and m.peak_E is None and not m.markers for m in stop.modes)
+    assert all(m.name is None and m.peak_E is None for m in stop.modes)
     assert view.stops[1].note is None
