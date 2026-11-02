@@ -97,11 +97,14 @@ def test_a_retired_setting_is_logged_and_ignored_not_damaged(caplog):
         {"kind": "settings", "seq": 1, "targets": ["experiment"],
          "changes": {"q_tolerance_meV": 3.0, "flag_threshold": 60.0}},
         {"kind": "settings", "seq": 2, "targets": ["experiment"], "changes": {"q_change_scale_meV": None}},
+        {"kind": "settings", "seq": 3, "targets": ["experiment"],
+         "changes": {"full_search": True, "full_search_max_count": 6, "stop_margin_nats": 9.0}},
     ]
     caplog.set_level(logging.INFO)
     u = inter_spectra.fold(entries)
     assert (u.settings, u.damaged) == ({"flag_threshold": 60.0}, ())
     assert "q_tolerance_meV" in caplog.text and "q_change_scale_meV" in caplog.text
+    assert all(n in caplog.text for n in ("full_search", "full_search_max_count", "stop_margin_nats"))
 
 
 def test_a_saved_retired_setting_reads_as_the_default_and_a_save_of_it_is_refused(root):
