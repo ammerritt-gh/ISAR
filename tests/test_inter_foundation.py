@@ -265,8 +265,11 @@ def test_the_read_facade_adds_no_scipy_qt_or_coupled_numerics():
                           "isar.schema.card, isar.session.state, isar.session.workspace")
     assert not [m for m in base if m.startswith(("isar.workspace_api", "isar.session.inter_spectra"))]
     added = _modules_after("import isar.workspace_api.inter_spectra") - base
+    # pure-data modules: stdlib and one another only, no numerics, so the facade may load them
+    pure = ("isar.analyze.coupled.settings", "isar.analyze.coupled.types", "isar.analyze.coupled.identity",
+            "isar.analyze.coupled.linking")
     heavy = sorted(m for m in added if m.split(".")[0] in ("scipy", "PySide6")
-                   or (m.startswith("isar.analyze.coupled.") and m != "isar.analyze.coupled.settings"))
+                   or (m.startswith("isar.analyze.coupled.") and m not in pure))
     assert heavy == [], heavy
 
 
