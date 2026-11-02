@@ -16,7 +16,7 @@ one pool stream. Each search waits only for its own jobs: when the last job of i
 prices in its own job order and sends its next jobs at once, so no spectrum waits for another. A pool exception
 becomes that job's failed price and is never cached; a search that raises fails only its spectrum. With more than one
 worker and a core that has ``run_task``, a job's inner work (its fits, basins and split nodes) runs as tasks on the
-same pool and workers left idle price the searches' likely next promotions into the cache (``_Sched``).
+same pool (``_Sched``).
 
 Every ring or sweep is handed over through ``emit`` and the runner waits on ``ack`` for the writer's verdict
 before the next stage: acceptance decides what the next stage conditions on, and a refused refit's held value
@@ -1406,24 +1406,6 @@ class _Run:
 
         tasks = getattr(self.pool, "uses_tasks", lambda fn: False)("price")   # a stand-in pool has today's stream()
 
-        def lookahead() -> list:
-            """Offers for idle workers: each live search's likely next promotions, round-robin across spectra."""
-            rows = []
-            for k, search in live.items():
-                try:
-                    named = search.likely_next(self.pool.workers) if hasattr(search, "likely_next") else ()
-                except Exception:  # noqa: BLE001 — lookahead is only speculation; the search's own calls report real failures
-                    log.warning("likely_next of %s failed; no lookahead from it", k, exc_info=True)
-                    continue
-                rows.append([((k, j.key), (snaps[k], j)) for j in named
-                             if j.key not in cache.get(k, ()) and j.key not in asked[k]])
-            return [o for row in itertools.zip_longest(*rows) for o in row if o is not None]
-
-        def lookahead_done(key, p) -> None:
-            k, job_key = key
-            if k in live and isinstance(p, Priced):
-                cache.setdefault(k, {})[job_key] = p
-
         passes: dict = {}            # k -> (its pass's jobs, the keys of that pass still in the pool)
         got: dict = {}               # (k, job key) -> what the pool returned for it
 
@@ -1464,7 +1446,7 @@ class _Run:
                 if isinstance(p, Exception):              # not a price: never cached, a later stage prices it afresh
                     p = Priced(key=j.key, count=j.count, slots=tuple(j.slots), ln_z=None, status="no_evidence",
                                mode=None, reason=f"pricing failed ({type(p).__name__}: {p})", starts=0,
-                               seconds=0.0, depth=j.depth)
+                               seconds=0.0)
                 else:
                     cache[k][j.key] = p
                 tl.candidates += 1
@@ -1497,11 +1479,9 @@ class _Run:
         calls = [c for k in list(live) for c in advance(k)]          # every spectrum's first pass, in snaps order
         if calls:
             t, busy0 = time.perf_counter(), getattr(self.pool, "busy_s", 0.0)
-            if tasks:
-                self.pool.stream("price", calls, back, lookahead=lookahead, lookahead_done=lookahead_done)
+            self.pool.stream("price", calls, back)                   # a dead pool raises here, uncaught
+            if tasks:                                                # on the task path the pool's busy_s counts the work
                 self.timing["pool"]["busy_s"] += self.pool.busy_s - busy0
-            else:
-                self.pool.stream("price", calls, back)               # a dead pool raises here, uncaught
             self.timing["pool"]["map_wall_s"] += time.perf_counter() - t
         self.timing["assign_s"] += time.perf_counter() - t0
         return {k: A[k] for k in snaps if k in A}, errors

@@ -910,22 +910,21 @@ class _ScriptSearch:
 
     def feed(self, priced) -> None:
         self.passes.pop(0)                    # the test compares what was fed with the job order
-        self.fed.extend((p.key, p.ln_z, p.status, p.depth) for p in priced)
+        self.fed.extend((p.key, p.ln_z, p.status) for p in priced)
 
     def result(self):
         from types import SimpleNamespace as NS
         return NS(coverage={})
 
 
-def _job(unit, key, depth="full"):
+def _job(unit, key):
     from isar.analyze.coupled.types import PricingJob
-    return PricingJob(unit, "s", 1, ("B",), key, depth=depth)
+    return PricingJob(unit, "s", 1, ("B",), key)
 
 
 def _scripted_price(job):
     from isar.analyze.coupled.types import Priced
-    return Priced(job.key, job.count, tuple(job.slots), -float(len(job.key)) - (job.depth == "screen"), "ok", None,
-                  None, 1, 0.01, depth=job.depth)
+    return Priced(job.key, job.count, tuple(job.slots), -float(len(job.key)), "ok", None, None, 1, 0.01)
 
 
 class _OrderPool:
@@ -957,12 +956,11 @@ def _scripted_run(pool, searches: dict, cache: dict):
 
 
 def _scripts():
-    """x: a pass the cache answers alone, then one with a cache hit among fresh jobs; y: a screen of a candidate,
-    then its promotion (the full key, depth "full") beside a new job; z: one fresh pass."""
+    """x: a pass the cache answers alone, then one with a cache hit among fresh jobs; y: three fresh passes of
+    different key lengths; z: one fresh pass."""
     x = [[_job("x", "x-c1"), _job("x", "x-c2")], [_job("x", "x-a"), _job("x", "x-c3"), _job("x", "x-bb")],
          [_job("x", "x-ccc")]]
-    y = [[_job("y", "y-1"), _job("y", "y-2:screen", "screen")], [_job("y", "y-2:full"), _job("y", "y-3")],
-         [_job("y", "y-4444")]]
+    y = [[_job("y", "y-1"), _job("y", "y-22")], [_job("y", "y-333"), _job("y", "y-3")], [_job("y", "y-4444")]]
     z = [[_job("z", "z-1"), _job("z", "z-22"), _job("z", "z-333")]]
     return {"x": x, "y": y, "z": z}
 
@@ -982,21 +980,13 @@ def test_each_search_sees_the_same_prices_in_job_order_whatever_order_the_pool_r
         assert errors == {} and sorted(A) == ["x", "y", "z"]
         feeds[order] = {u: s.fed for u, s in searches.items()}
     cached = _cached()
-    expect = {u: [(j.key, *((7.0, "ok", "full") if j.key in cached.get(u, {}) else
-                            (_scripted_price(j).ln_z, "ok", j.depth))) for p in passes for j in p]
-              for u, passes in _scripts().items()}
+    expect = {u: [(j.key, *((7.0, "ok") if j.key in cached.get(u, {}) else (_scripted_price(j).ln_z, "ok")))
+                  for p in passes for j in p] for u, passes in _scripts().items()}
     assert feeds["fifo"] == feeds["reversed"] == feeds["interleaved"] == expect
-    assert ("y-2:screen", -11.0, "ok", "screen") in expect["y"] and ("y-2:full", -8.0, "ok", "full") in expect["y"]
+    assert ("y-333", -5.0, "ok") in expect["y"] and ("y-22", -4.0, "ok") in expect["y"]
     rows = {t.unit: t for t in run.tallies.values()}
     assert (rows["x"].iterations, rows["x"].candidates, rows["x"].cached) == (2, 3, 3)   # the cache-only pass is no iteration
     assert run.timing["pool"]["iterations"] == 6
-
-
-def test_a_failed_screen_job_comes_back_as_a_failed_screen_price():
-    searches, cache = {"y": _ScriptSearch([[_job("y", "y-1"), _job("y", "y-2:screen", "screen")]])}, {}
-    run, (A, errors) = _scripted_run(_OrderPool("fifo", raises={"y-2:screen"}), searches, cache)
-    assert searches["y"].fed == [("y-1", -3.0, "ok", "full"), ("y-2:screen", None, "no_evidence", "screen")]
-    assert set(cache["y"]) == {"y-1"} and run.tallies["ring1", "y"].failures == 1     # a failure is never cached
 
 
 def test_a_simultaneous_round_with_unchanged_inputs_prices_nothing(tmp_path, monkeypatch):
@@ -1354,7 +1344,7 @@ def _fake_core(monkeypatch, script):
         for h in [tasks.submit((b"ctx", job.key, (i,))) for i in range(script.get(("n", job.key), 1))]:
             tasks.wait(h)
         script.get(("after", job.key), nothing)()
-        return Priced(job.key, job.count, tuple(job.slots), -1.0, "ok", None, None, 1, 0.0, depth=job.depth)
+        return Priced(job.key, job.count, tuple(job.slots), -1.0, "ok", None, None, 1, 0.0)
 
     def run_task(ctx, kind, args):
         log.append((kind, args))
@@ -1363,41 +1353,6 @@ def _fake_core(monkeypatch, script):
     core.price, core.run_task, core.log = price, run_task, log
     monkeypatch.setitem(sys.modules, "fake_task_core", core)
     return core
-
-
-class _KeyEvents(dict):
-    """A cache that sets ``events[key]`` when ``key`` is stored."""
-
-    def __init__(self, events):
-        super().__init__()
-        self.events = events
-
-    def __setitem__(self, key, value):
-        super().__setitem__(key, value)
-        if key in self.events:
-            self.events[key].set()
-
-
-def test_idle_workers_price_the_next_promotions_and_the_later_request_is_served_from_the_cache(monkeypatch):
-    import threading
-    b_started, b_cached = threading.Event(), threading.Event()
-
-    def need(ev):
-        assert ev.wait(10), "lookahead never priced B while A ran"
-    core = _fake_core(monkeypatch, {("run", "B"): lambda a: b_started.set(),
-                                    ("run", "A"): lambda a: need(b_started),     # A's task ends once B's task has run
-                                    ("after", "A"): lambda: need(b_cached)})     # and A's price returns once B is cached
-    search = _ScriptSearch([[_job("u", "A")], [_job("u", "B")]])
-    search.likely_next = lambda n: (_job("u", "B"), _job("u", "C"))              # C is named, the search never asks it
-    pool = runner._Pool(core, 4)
-    pool.ex = _CountingPool(4)
-    run, (A, errors) = _scripted_run(pool, {"u": search}, {"u": _KeyEvents({"B": b_cached})})
-    pool.close()
-    assert errors == {} and "u" in A
-    assert [f[0] for f in search.fed] == ["A", "B"]                # the search was fed what it asked, in its order
-    assert [a for k, a in core.log if k == "B"] == [(0,)]          # B was priced once, ahead of the request
-    (row,) = run.tallies.values()
-    assert (row.candidates, row.cached) == (1, 1)                  # and its request was a cache hit
 
 
 def test_a_requested_task_is_sent_before_any_lookahead_task_and_rank_zero_before_rank_one(monkeypatch):
@@ -1459,37 +1414,6 @@ def test_a_requested_task_posted_before_a_choice_is_sent_before_a_ready_lookahea
     sched._fill()
     assert pool.ex.sent == ["req0"], pool.ex.sent
     sched.live.clear()
-
-
-def test_a_task_left_running_by_a_finished_stream_is_an_orphan_the_next_map_works_around(monkeypatch):
-    import threading
-    import time
-    b_started, gate = threading.Event(), threading.Event()
-    state = {"now": 0, "peak": 0, "lock": threading.Lock()}
-
-    def slow(x=None):
-        with state["lock"]:
-            state["now"] += 1
-            state["peak"] = max(state["peak"], state["now"])
-        time.sleep(0.05)
-        with state["lock"]:
-            state["now"] -= 1
-        return x
-    core = _fake_core(monkeypatch, {("run", "B"): lambda a: (b_started.set(), gate.wait(10)),
-                                    ("run", "A"): lambda a: b_started.wait(10)})
-    core.slow = slow
-    pool = runner._Pool(core, 4)
-    pool.ex = _CountingPool(4)
-    search = _ScriptSearch([[_job("u", "A")]])
-    search.likely_next = lambda n: (_job("u", "B"),)
-    _scripted_run(pool, {"u": search}, {})
-    assert len(pool.orphans) == 1                                     # B's task is still running; nobody waits for it
-    out = pool.map("slow", [(i, (i,), {}) for i in range(8)])
-    assert list(out.values()) == list(range(8)) and not gate.is_set()
-    assert state["peak"] == 3 and pool.ex.peak == 4                  # the workers less the orphan; the total held
-    gate.set()
-    pool.close()
-    assert pool.orphans == set()
 
 
 def test_a_single_call_map_with_an_orphan_in_flight_goes_to_the_pool_not_inline(monkeypatch):
