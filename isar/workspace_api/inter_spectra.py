@@ -620,10 +620,15 @@ def link_view(root, units: Collection[str] | None = None) -> LinkView:
             if unit.rsplit(":", 1)[0] == scan and (want is None or unit in want):
                 by_unit[unit] = _unit_links(line, R, unit, now, stale, names)
     branches: dict[str, BranchView] = {}
-    for _, R in read.values():
+    for line, R in read.values():
         for b in R.branches:
+            # newest-for-its-scan, as previous_for keeps members; a spectrum outside a narrowing units is not judged
+            kept = {(u, i) for u, i in b.members
+                    if (want is not None and u not in want) or newest.get(u.rsplit(":", 1)[0]) is line}
+            if not kept:
+                continue
             old = branches.get(b.name)
-            members = set(b.members) | (set(old.members) if old else set())
+            members = kept | (set(old.members) if old else set())
             branches[b.name] = BranchView(b.name, b.id, tuple(sorted(members)))
     if not by_unit and not branches:
         return LinkView("", {}, {})

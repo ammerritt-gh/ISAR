@@ -284,7 +284,35 @@ def test_each_spectrum_reads_the_newest_record_of_its_own_scan_and_branches_merg
     lone = view.by_unit[u1].names                          # the newer record links nothing: both modes are lone phonons
     assert len(lone) == 2 and not set(lone) & set(view.branches)
     name = view.by_unit[u2].names[0]
-    assert {(u1, 0), (u2, 0)} <= set(view.branches[name].members)       # the older record's members stay in the branch
+    assert (u2, 0) in view.branches[name].members          # the second scan's member stays; the superseded one is tested below
+
+
+def test_a_mode_a_newer_record_supersedes_leaves_the_branch_it_left(root):
+    s1, s2 = scan_keys(root)
+    u1, u2 = _units(root, s1)[0], _units(root, s2)[0]
+    _save(root, [s1, s2])
+    name = link_view(root).by_unit[u2].names[0]
+    assert {(u1, 0), (u2, 0)} <= set(link_view(root).branches[name].members)
+    _save(root, [s1])                                     # the newer record of the first scan links nothing
+    members = link_view(root).branches[name].members
+    assert (u1, 0) not in members and (u2, 0) in members
+
+
+def test_a_branch_whose_members_are_all_superseded_is_absent(root, monkeypatch):
+    s1, s2 = scan_keys(root)
+    _save(root, [s1, s2])
+    name = link_view(root).by_unit[_units(root, s2)[0]].names[0]
+    _save(root, [s1])
+    assert name in link_view(root).branches
+    read = records.read_link_payload
+
+    def first_scan_members_only(root_, line):             # the older record's branch with every member in the first scan
+        payload = read(root_, line)
+        return None if payload is None else replace(payload, branches=tuple(
+            replace(b, members=tuple(m for m in b.members if m[0].rsplit(":", 1)[0] == s1)) for b in payload.branches))
+
+    monkeypatch.setattr(records, "read_link_payload", first_scan_members_only)
+    assert name not in link_view(root).branches
 
 
 def test_a_record_saved_before_lone_names_reads_as_out_of_date_and_names_no_mode(root, monkeypatch):
