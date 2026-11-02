@@ -14,6 +14,7 @@ from isar.analyze.coupled.settings import InterSettings
 
 if TYPE_CHECKING:
     from isar.analyze.coupled.engine import Factor
+    from isar.analyze.coupled.linking import Change, Prediction
     from isar.session.inter_spectra.graph import Term
 
 FLAG_CODES = ("score_over_threshold", "count_changed_by_neighbours", "neighbour_supported_split",
@@ -65,6 +66,26 @@ class TermInput:
 
 
 @dataclass(frozen=True)
+class TieSide:                     # one near-tied alternative (swap or competition), seen from one spectrum
+    group: str                     # TieGroup.id
+    kind: str                      # TieGroup.kind: "swap" | "competition"
+    units: tuple[str, ...]         # every spectrum of the group, ascending key
+    slots: tuple[str | None, ...]  # THIS spectrum's alternative labelling: branch id per own mode (ascending omega0)
+
+
+@dataclass(frozen=True)
+class SnapshotLinks:               # the link result as ONE spectrum reads it; built by the runner
+    link_id: str | None            # the saved link record ("l" + 12 hex); None only in tests
+    stage: str                     # "ring2" | "round3" | "end"
+    labels: tuple[str | None, ...]  # branch id per mode of Snapshot.own (ascending omega0); None = on no branch (unlinked, or a lone phonon)
+    settled: tuple[bool, ...]      # parallel to labels (LinkResult.settled[unit])
+    settled_branches: frozenset[str]   # ids of the branches whose mode here is settled
+    predictions: tuple[Prediction, ...]  # LinkResult.predictions[unit], all of them (branches here or not)
+    changes: tuple[Change, ...]    # LinkResult.changes[unit]: add | split | drop
+    ties: tuple[TieSide, ...]      # one per TieGroup that names this unit, sorted by group id
+
+
+@dataclass(frozen=True)
 class Snapshot:
     snapshot_id: str               # runner-minted: "<batch>:ring<r>", "<batch>:round<n>" (stage 1) or "<batch>:sweep<s>" (stage 2)
     stage_id: str                  # the stage-1 or ring snapshot whose Assignment governs this refit (== snapshot_id in stage 1 and in rings)
@@ -78,6 +99,7 @@ class Snapshot:
     batch_kind: str                # "anchored" | "simultaneous"
     fast: Held | None = None       # the fast solo fit, what delta_fast and the width/regime flags compare with (default: own)
     aliases: Mapping[str, str] = field(default_factory=dict)   # the batch's merged ids so far, alias -> canonical name (identity.merged_aliases)
+    links: SnapshotLinks | None = None   # the stage's link as this spectrum reads it; None = no link information (the search prices the incoming candidate only)
 
 
 @dataclass(frozen=True)
