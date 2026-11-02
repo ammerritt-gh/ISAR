@@ -194,6 +194,24 @@ def test_the_qe_width_and_height_gradient():
         _agree(g, _fd(f, z), ("qe", seed))
 
 
+@pytest.mark.parametrize("lifted, start", [(False, (3.0, 0.6, 40.0)), (True, (9.7, 9.6, 40.0))])
+def test_a_coupled_height_gradient_is_the_derivative_of_the_value(lifted, start):
+    # S4U5: the matched slot's height density moves with its energy and width through b = a / U (the normaliser too)
+    from test_coupled_coupling import _links, _pred, _snap
+    snap = _snap(_links(preds=[_pred(A=500.0)]))
+    eng = _engine(snap, ("b1",), lifted=(lifted,))
+    assert eng.slots[0].has_area
+    model = eng.model(eng.variant(1, True, True), ())
+    theta = eng._start(model, [(*start, False)], {"elastic": 100.0, "bg": 2.0})
+    f, lo, hi = eng.objective(model, theta)
+    fg, _lo, _hi = eng.objective_and_gradient(model, theta)
+    for seed in (0, 1):
+        z = _inside(eng.zmap(model).to_z(theta), lo, hi, seed=seed)
+        v, g = fg(z)
+        assert v == f(z)
+        _agree(g, _fd(f, z), ("coupled height", lifted, seed))
+
+
 def _grid_check(fun, dfun, xs, h=1e-6):
     for x in xs:
         ref = (fun(x + h) - fun(x - h)) / (2.0 * h)

@@ -139,7 +139,7 @@ def test_the_slot_carries_the_prediction_in_the_snapshots_settings():
 @pytest.mark.parametrize("lifted", [False, True])
 @pytest.mark.parametrize("e", [2.5, 3.5, 7.0])
 def test_the_coupled_prior_differs_from_the_base_only_in_the_width_term_and_its_gradient_is_exact(e, lifted):
-    snap = _snap(_links())
+    snap = _snap(_links(preds=[_pred(A=0.0)]))                              # no intensity: the height term stays (S4U5)
     spec, eng = _engine(snap, ("b1",), lifted=(lifted,))
     _spec, bare = _engine(replace(snap, links=None), ("b1",), lifted=(lifted,))
     model, bmodel = _model(eng), _model(bare)

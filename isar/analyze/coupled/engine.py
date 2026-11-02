@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
-from functools import cached_property
+from functools import cached_property, lru_cache
 
 import numpy as np
 from scipy.integrate import quad
@@ -25,6 +25,7 @@ from scipy.optimize import minimize
 from scipy.special import logsumexp
 
 from isar.analyze import fast_pass, prior
+from isar.analyze.coupled.linking import unit_stokes_area
 
 # The split integral of a mode hidden under another (S1U1); algorithm settings, not operator settings.
 SPLIT_NODE_SETS = (6, 12, 24, 48)   # Gauss-Legendre node counts over the split f, tried in order
@@ -98,20 +99,70 @@ def mismatch(f: Factor, u: float) -> float:
 
 # ---- energy densities ---------------------------------------------------------------------------
 _GL = np.polynomial.legendre.leggauss(256)   # the width normaliser's rule (nodes, weights) on [-1, 1]: 1e-8 at tau_w 0.1, 1e-14 at the default 0.3
+GF_SPAN = 8.0                                 # the G_f table covers ln X in [-GF_SPAN tau_A, GF_SPAN tau_A]
+GF_NODES = 8001                               # cubic Hermite in ln X: under 1e-10 relative for tau_A in [0.2, 2] (2001: 1e-8)
+
+
+def _welsch(C: float, u: float) -> tuple[float, float]:
+    """(P(u), P'(u)) of the Welsch potential at cap C; u = -inf (zero intensity) sits at the cap, P' = 0."""
+    if not math.isfinite(u):
+        return C, 0.0
+    return -C * math.expm1(-0.5 * u * u), C * u * math.exp(-0.5 * u * u)
+
+
+@lru_cache(maxsize=64)
+def _gf_table(tau: float, C: float):
+    """(v0, step, G_f at the nodes, dG_f/dv at the nodes) on v = ln X: each interval by 8-point Gauss-Legendre of
+    e^v exp(-P(v/tau)/2), cumulated from the exact lower tail e^{-C/2} X."""
+    v = np.linspace(-GF_SPAN * tau, GF_SPAN * tau, GF_NODES)
+    step = float(v[1] - v[0])
+    x, w = np.polynomial.legendre.leggauss(8)
+    mid = v[:-1, None] + 0.5 * step * (x + 1.0)
+    f = np.exp(mid + 0.5 * C * np.expm1(-0.5 * (mid / tau) ** 2))
+    base = math.exp(-0.5 * C + float(v[0]))
+    G = np.concatenate([[base], base + np.cumsum(0.5 * step * (f @ w))])
+    D = np.exp(v + 0.5 * C * np.expm1(-0.5 * (v / tau) ** 2))
+    return float(v[0]), step, G, D
+
+
+def intensity_gf(tau: float, C: float, X: float) -> tuple[float, float]:
+    """(G_f(X), G_f'(X)), G_f(X) = int_0^X exp(-P(ln x / tau)/2) dx with P the Welsch potential at cap C: cubic
+    Hermite in ln X on the table, the exact linear tails e^{-C/2} X below it and G_f(X0) + e^{-C/2} (X - X0) above.
+    G_f' is exact."""
+    if not X > 0:
+        return 0.0, math.exp(-0.5 * C)
+    v = math.log(X)
+    d = math.exp(-0.5 * _welsch(C, v / tau)[0])
+    v0, step, G, D = _gf_table(tau, C)
+    if v <= v0:
+        return math.exp(-0.5 * C) * X, d
+    i = int((v - v0) / step)
+    if i >= GF_NODES - 1:
+        return float(G[-1]) + math.exp(-0.5 * C) * (X - math.exp(v0 + (GF_NODES - 1) * step)), d
+    s = (v - (v0 + i * step)) / step
+    s2, s3 = s * s, s * s * s
+    g = ((2 * s3 - 3 * s2 + 1) * G[i] + (s3 - 2 * s2 + s) * step * D[i]
+         + (-2 * s3 + 3 * s2) * G[i + 1] + (s3 - s2) * step * D[i + 1])
+    return float(g), d
 
 
 @dataclass(frozen=True)
 class SlotCoupling:
-    """What a matched slot's width density needs from the link prediction (S4U3; S4U5 adds the intensity's fields).
+    """What a matched slot's width and height densities need from the link prediction (S4U3, S4U5).
     w_star: the neighbours' predicted ``matching_width`` (meV, resolution included); fwhm: this spectrum's
     resolution R; tau_w: ``width_tolerance_ln``; C: ``penalty_cap`` (deviance); knee: the width prior's knee k;
-    g_lo: the width's lower bound."""
+    g_lo: the width's lower bound. a_star: the predicted intrinsic intensity in this spectrum's stored scale
+    (``Prediction.A``; <= 0: no height coupling, today's term); tau_a: ``intensity_tolerance_ln``; T: this
+    spectrum's temperature (K; None: the T -> 0 response), for ``unit_stokes_area``."""
     w_star: float
     fwhm: float
     tau_w: float
     C: float
     knee: float
     g_lo: float
+    a_star: float = 0.0
+    tau_a: float = 0.0
+    T: float | None = None
 
 
 @dataclass
@@ -142,7 +193,8 @@ class MatchedDensity:
         cp = self.coupling
         if cp is not None and not (all(math.isfinite(x) for x in (cp.w_star, cp.fwhm, cp.tau_w, cp.C, cp.knee, cp.g_lo))
                                    and cp.w_star > 0 and cp.fwhm > 0 and cp.tau_w > 0 and cp.C >= 0
-                                   and math.isfinite(self.ln_f(max(4.0, 2.0 * cp.g_lo)))):
+                                   and math.isfinite(self.ln_f(max(4.0, 2.0 * cp.g_lo)))
+                                   and (not cp.a_star > 0 or self._area_ok())):
             self.status, self.ln_z = "no_evidence", math.nan   # never a silent flat fallback
             return
         lo, hi = float(self.ep.lo), float(self.ep.hi)
@@ -220,6 +272,48 @@ class MatchedDensity:
         """d ln p_w / dc at fixed G: only the normaliser moves with the ceiling."""
         cp = self.coupling
         return -math.exp(float(self._g(c)[1]) - math.log(c + cp.knee) - self.ln_f(c))
+
+    # ---- the height density (S4U5) ------------------------------------------------------------------------------
+    # The prior is on the intrinsic intensity m = h b, b = (area per unit height) / unit_stokes_area: Welsch from zero
+    # about a*, u = ln(h b / a*) / tau_a. Induced on the height h in [0, H]:
+    # ln p_h = -P(u)/2 + ln b - ln a* - ln G_f(X), X = H b / a* (+ ln b: the Jacobian of m = h b).
+    def _area_ok(self) -> bool:
+        cp = self.coupling
+        if not (math.isfinite(cp.a_star) and math.isfinite(cp.tau_a) and cp.tau_a > 0
+                and (cp.T is None or math.isfinite(cp.T))):
+            return False
+        G = _gf_table(float(cp.tau_a), float(cp.C))[2]
+        return bool(np.all(np.isfinite(G)) and G[0] > 0)
+
+    @property
+    def has_area(self) -> bool:
+        return self.has_width and self.coupling.a_star > 0
+
+    def _ua(self, h: float, b: float) -> float:
+        cp = self.coupling
+        return math.log(h * b / cp.a_star) / cp.tau_a if h > 0 else -math.inf
+
+    def ln_height(self, h: float, b: float, H: float) -> float:
+        """ln p_h(h | b); -inf outside [0, H]."""
+        cp = self.coupling
+        if not 0.0 <= h <= H:
+            return -math.inf
+        P = _welsch(cp.C, self._ua(h, b))[0]
+        G = intensity_gf(cp.tau_a, cp.C, H * b / cp.a_star)[0]
+        return -0.5 * P + math.log(b) - math.log(cp.a_star) - math.log(G)
+
+    def d_ln_height_dh(self, h: float, b: float, H: float) -> float:
+        """d ln p_h / dh inside the support (0 at h = 0: the Welsch factor beats 1/h)."""
+        if not h > 0:
+            return 0.0
+        cp = self.coupling
+        return -_welsch(cp.C, self._ua(h, b))[1] / (2.0 * h * cp.tau_a)
+
+    def d_ln_height_db(self, h: float, b: float, H: float) -> float:
+        """d ln p_h / db at fixed h: the potential's, the Jacobian's and the normaliser's."""
+        cp = self.coupling
+        G, dG = intensity_gf(cp.tau_a, cp.C, H * b / cp.a_star)
+        return -_welsch(cp.C, self._ua(h, b))[1] / (2.0 * b * cp.tau_a) + 1.0 / b - H * dG / (cp.a_star * G)
 
     @cached_property
     def centre(self) -> float:
@@ -742,6 +836,63 @@ class CoupledEngine(fast_pass._Engine):
             return super()._ln_width(model, theta, m)
         return cw[0].ln_width(float(theta[model.modes[m][1]]), cw[1])
 
+    # ---- the height coupling (S4U5) ------------------------------------------------------------------------------
+    def _coupled_height(self, model, m: int):
+        """The slot when mode ``m``'s height term is its slot's coupled density, else None (today's term)."""
+        slot = self.slots[m]
+        return slot if isinstance(slot, MatchedDensity) and slot.has_area else None
+
+    def _intensity_per_height(self, model, theta, m: int, grad: bool = False):
+        """b = a / U of mode ``m``: a = up.area_stokes / up.height (the fast pass's area per unit height, no exposure),
+        U = ``unit_stokes_area(omega0, Gamma, T)``, so h b is the intrinsic intensity ``matching_intensity`` gives
+        for the stored area h a. ``grad``: (b, {coordinate: db/dcoordinate}) for the mode's energy and width, da from
+        the same column steps ``_value_and_grad`` takes (cache hits there), dU by central differences."""
+        a_, g, _c = model.modes[m]
+        T = self.slots[m].coupling.T
+        peak = model.variant.peaks[m]
+        e, G = float(theta[a_]), float(theta[g])
+        up = self.units([(e, G)], [peak])[0][1]
+        # shortcut: U is the core's pure-Python quadrature, lru-cached, five calls per slot per gradient; tabulate U on
+        #   (omega0, Gamma) per T if a refit's profile shows it
+        U = unit_stokes_area(e, G, T)
+        b = up.area_stokes / up.height / U
+        if not grad:
+            return b
+        db = {}
+        for pos in (a_, g):
+            if pos in model.omit:
+                continue
+            u, d = self._column_steps(model, theta, pos, m)
+            ups = self.units([(u, G), (d, G)] if pos == a_ else [(e, u), (e, d)], [peak, peak])
+            da = (ups[0][1].area_stokes / ups[0][1].height - ups[1][1].area_stokes / ups[1][1].height) / (u - d)
+            x = e if pos == a_ else G
+            h = min(1e-4 * max(1.0, abs(x)), 0.5 * x)
+            pair = ((e + h, G), (e - h, G)) if pos == a_ else ((e, G + h), (e, G - h))
+            dU = (unit_stokes_area(*pair[0], T) - unit_stokes_area(*pair[1], T)) / (2.0 * h)
+            db[pos] = (da - b * dU) / U
+        return b, db
+
+    def _column_steps(self, model, t, pos: int, m: int):
+        """(up, down) of a mode coordinate's column difference: +-COLUMN_FD_REL x max(|value|, FWHM), one-sided inward
+        within a step of a bound (a width's upper bound is its mode's ceiling)."""
+        v = float(t[pos])
+        h = COLUMN_FD_REL * max(abs(v), self.fwhm)
+        up, dn = v + h, v - h
+        zm = self.zmap(model)
+        top = zm.ceiling(t, m) if pos == model.modes[m][1] and zm.mapped_mode(m) else model.hi[pos]
+        if up > top:
+            up = v
+        elif dn < model.lo[pos]:
+            dn = v
+        return up, dn
+
+    def _ln_height(self, model, theta, m: int) -> float:
+        h = float(theta[model.modes[m][2]])
+        slot = self._coupled_height(model, m)
+        if slot is None:
+            return self.sp.ln_height(h)
+        return slot.ln_height(h, self._intensity_per_height(model, theta, m), self.sp.height_hi)
+
     def ln_prior(self, model, theta) -> float:
         sp, omit = self.sp, model.omit
         if len(model.modes) != len(self.slots):
@@ -756,7 +907,7 @@ class CoupledEngine(fast_pass._Engine):
             if g not in omit:
                 lp += self._ln_width(model, theta, m)
             if c not in omit:
-                lp += sp.ln_height(theta[c])
+                lp += self._ln_height(model, theta, m)
         if model.el is not None and model.el not in omit:
             lp += sp.ln_height(theta[model.el])
         if model.bg is not None and model.bg not in omit:
@@ -770,7 +921,8 @@ class CoupledEngine(fast_pass._Engine):
     def d_ln_prior(self, model, theta) -> np.ndarray:
         """d ln_prior / d theta over every coordinate, term by term as ``ln_prior`` (inside the support). The
         coupling enters once, through each matched density's V; the heights' and background's densities and the
-        exchangeability count are constant. A width's density depends on its mode's energy through the ceiling
+        exchangeability count are constant, except a coupled height's, which moves with its mode's energy and width
+        through b (``_intensity_per_height``). A width's density depends on its mode's energy through the ceiling
         (recipe /7), so it has an energy partial too; a soft width cut at the ceiling, its normaliser's."""
         sp, omit = self.sp, model.omit
         cond = self._conditional_widths()
@@ -794,6 +946,16 @@ class CoupledEngine(fast_pass._Engine):
                 d[a] += da
             else:
                 d[g] += sp.d_ln_width(float(theta[g]))
+        for m, (_a, _g, c) in enumerate(model.modes):
+            slot = None if c in omit else self._coupled_height(model, m)
+            if slot is None:
+                continue
+            b, db = self._intensity_per_height(model, theta, m, grad=True)
+            h = float(theta[c])
+            d[c] += slot.d_ln_height_dh(h, b, sp.height_hi)
+            dlb = slot.d_ln_height_db(h, b, sp.height_hi)
+            for pos, v in db.items():
+                d[pos] += dlb * v
         if model.qe_w is not None and model.qe_w not in omit:
             d[model.qe_w] += sp.d_ln_qe_width(float(theta[model.qe_w]))
         gamma_of = {g: m for m, (_a, g, _c) in enumerate(model.modes)}
@@ -839,19 +1001,14 @@ class CoupledEngine(fast_pass._Engine):
         height-normalised convolved column (``units``, peak-height normalisation included) at +-COLUMN_FD_REL x
         max(|value|, FWHM), one-sided inward within a step of a bound, every column in ONE ``units`` call; a free QE
         width the same through ``qe_column``; minus ``d_ln_prior``."""
-        lp = self.ln_prior(model, t)
-        if not math.isfinite(lp):
-            return math.inf, None
         free = set(int(i) for i in model.free)
         peaks = model.variant.peaks
-        zm = self.zmap(model)                        # a width's upper edge is its mode's ceiling (a lifted one: 20)
-        top = {g: zm.ceiling(t, m) for m, (_a, g, _c) in enumerate(model.modes) if zm.mapped_mode(m)}
 
-        def shifted(pos):
+        def shifted(pos):                            # the QE width's step: its upper edge is its box's
             v = float(t[pos])
             h = COLUMN_FD_REL * max(abs(v), self.fwhm)
             up, dn = v + h, v - h
-            if up > top.get(pos, model.hi[pos]):
+            if up > model.hi[pos]:
                 up = v
             elif dn < model.lo[pos]:
                 dn = v
@@ -864,12 +1021,15 @@ class CoupledEngine(fast_pass._Engine):
             for pos in (a, g):
                 if pos not in free:
                     continue
-                up, dn = shifted(pos)
+                up, dn = self._column_steps(model, t, pos, m)   # a width's upper edge: its ceiling (a lifted one: 20)
                 for v in (up, dn):
                     keys.append((v, t[g]) if pos == a else (t[a], v))
                     kp.append(peaks[m])
                 diffs.append((pos, m, len(keys) - 2, len(keys) - 1, up - dn))
         units = self.units(keys, kp) if keys else []
+        lp = self.ln_prior(model, t)                 # after the columns: a coupled height's b reads them from the cache
+        if not math.isfinite(lp):
+            return math.inf, None
         k = len(model.modes)
         total = np.zeros_like(self.y)
         for (_, _, c), (col, _up) in zip(model.modes, units[:k]):
@@ -910,7 +1070,7 @@ class CoupledEngine(fast_pass._Engine):
         """[(term id, deviance, sign)] of this block's J_i beyond D_i, each term once; the sign
         (of the factor residual u) makes the TRF residual sign(u) sqrt(P), smooth through u = 0."""
         out = []
-        for m, ((a, g, _c), slot) in enumerate(zip(model.modes, self.slots)):
+        for m, ((a, g, c), slot) in enumerate(zip(model.modes, self.slots)):
             e = float(theta[a])
             if isinstance(slot, MatchedDensity):
                 out += [(f.factor_id, potential(f, slot._u(f, e)), slot._u(f, e))
@@ -919,6 +1079,11 @@ class CoupledEngine(fast_pass._Engine):
                 if cw is not None:       # the full width density, normaliser included: V_w = -2 ln p_w - 2 B_w >= 0
                     out.append((f"width:{m}", -2.0 * cw[0].ln_width(float(theta[g]), cw[1])
                                 - 2.0 * self._width_floor(model, m, cw[0]), 1.0))
+                if c not in model.omit and self._coupled_height(model, m) is not None:
+                    # the full height density, normaliser included: V_h = -2 ln p_h - 2 B_h >= 0, B_h = ln H - C/2
+                    H = self.sp.height_hi
+                    out.append((f"area:{m}", -2.0 * self._ln_height(model, theta, m)
+                                - 2.0 * (math.log(H) - 0.5 * slot.coupling.C), 1.0))
                 ramp = slot.ep.penalty(e) if slot.keep_ramp else 0.0
             else:
                 out.append((f"entry:{m}", slot.B(e), 1.0))

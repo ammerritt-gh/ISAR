@@ -793,13 +793,16 @@ class _Spec:
         return b is not None and self.canon(b) in self.settled and self.canon(b) not in unlifted
 
     def coupling(self, b: str) -> cc.SlotCoupling | None:
-        """The width coupling of a slot naming ``b``: its link prediction, in this snapshot's settings."""
+        """The width and height coupling of a slot naming ``b``: its link prediction, in this snapshot's settings. The
+        height's centre is the prediction's intrinsic intensity (0: unknown, no height coupling), at this spectrum's T."""
         p = self.link_pred.get(self.canon(b))
         st, tau = self.snap.settings, self.snap.settings.width_tolerance_ln
         if p is None or not p.w > 0 or not tau > 0 or self.fs.prior is not None and self.fs.prior.legacy_v4:
             return None
+        tau_a = st.intensity_tolerance_ln
+        a_star = float(p.A) if math.isfinite(p.A) and p.A > 0 and tau_a > 0 else 0.0
         return cc.SlotCoupling(p.w, self.fwhm, tau, st.penalty_cap, (self.fs.prior or prior.PriorSettings()).width_knee,
-                               self.sp.g_lo)
+                               self.sp.g_lo, a_star=a_star, tau_a=tau_a, T=self.own.T)
 
     def slot_objects(self, slots, factors=None):
         """One MatchedDensity per matched slot (``factors``: the frozen definitions to use, by branch;
@@ -1313,7 +1316,7 @@ def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
     P, U = {}, {}
     unary = sum(((theta[i] - mu) / sd) ** 2 for i, mu, sd in model.soft)   # J counts the soft squares once
     for tid, p, _sign in eng.penalty_terms(model, theta):
-        if tid.startswith(("entry:", "ramp:", "width:")):
+        if tid.startswith(("entry:", "ramp:", "width:", "area:")):
             unary += p
         else:
             P[tid] = p
