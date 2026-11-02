@@ -760,10 +760,11 @@ def canonical_factors(A: Mapping, ids, refs: Mapping, outside: Mapping) -> tuple
 
 
 # ---- one batch --------------------------------------------------------------------------------------------
-def relabelled(h, labels, branches=(), aliases: Mapping[str, str] | None = None):
+def relabelled(h, labels, branches=(), aliases: Mapping[str, str] | None = None, give_up=()):
     """``h`` with each linked mode under its link branch id (``labels`` per mode, ascending omega0; None = on no
-    branch: the mode keeps its persistent id, unless that id is (through ``aliases``) one of the link's ``branches``
-    or another mode's label: then it is a birth and gets a new id, so no unlinked mode is priced on a branch).
+    branch: the mode keeps its persistent id, unless that id is (through ``aliases``) one of the link's ``branches``,
+    another mode's label, or in ``give_up`` (canonical ids that unlinked modes of two or more spectra carry): then it
+    is a birth and gets a new id, so no unlinked mode is priced on a branch).
     A dormant record whose id a mode now carries is dropped, as ``_renamed`` does. ``h`` itself when ``labels``
     is None."""
     from isar.analyze.coupled.identity import new_branch_id
@@ -779,7 +780,8 @@ def relabelled(h, labels, branches=(), aliases: Mapping[str, str] | None = None)
     for i, (m, b) in enumerate(zip(h.modes, labels)):
         if b is not None:
             m = replace(m, branch=b)
-        elif canon(m.branch) in used:           # a link branch, or an id an earlier mode of this spectrum kept
+        # a link branch, an id an earlier mode of this spectrum kept, or an id given up
+        elif canon(m.branch) in used or canon(m.branch) in give_up:
             new = new_branch_id(f"fast:{h.unit}" if h.fit == "fast" else h.fit, i)
             while canon(new) in avoid:
                 new += "'"
@@ -1272,7 +1274,13 @@ class _Run:
                 raise _Ended("failed", f"could not save the links of {tag}: {verdict.get('error')}")
             stored = self.linker.stored(self.root, verdict["link"])     # names are final once saved
             branches = tuple(b.id for b in stored.branches)
-            relabel = {u: relabelled(h, stored.labels.get(u), branches, self.aliases) for u, h in state.items()}
+            # an id that unlinked modes of two or more spectra carry is one the link no longer ties: each gives it up
+            unlinked = [{self.aliases.get(m.branch, m.branch) for m, b in zip(h.modes, stored.labels.get(u) or ())
+                         if b is None} for u, h in state.items()]
+            count = Counter(b for s in unlinked for b in s)
+            give_up = {b for b, n in count.items() if n >= 2}
+            relabel = {u: relabelled(h, stored.labels.get(u), branches, self.aliases, give_up)
+                       for u, h in state.items()}
         except (_Ended, EOFError, ConnectionError):
             raise
         except Exception as exc:  # noqa: BLE001 — a batch that ignored its links would silently be the old search

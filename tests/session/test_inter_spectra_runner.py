@@ -1692,6 +1692,20 @@ def test_a_mode_a_later_ring_leaves_unlinked_is_held_on_no_branch(tmp_path):
     assert len(held_y) == 1 and held_y[0] != "B"
 
 
+def test_a_pair_a_later_ring_no_longer_links_is_not_coupled_through_its_old_id(tmp_path):
+    """Ring 1 links every mode as B; ring 2's link links nothing, so B is no branch of it. The modes that still carry B
+    in two spectra give it up, so z's refit couples nothing to y through the old id."""
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"},) * 3)
+    lab = lambda u, n, h: ["B" if n == 1 else None for _m in h.modes]   # noqa: E731
+    spec = _anchored(ws, [x])
+    Bench(ws).run(spec, linker=fakes.ScriptedLinker(lab))
+    p = next(p for r, p in _lines(ws, spec.batch_id) if r.unit == z)["came_in"]
+    assert p["links"]["stage"] == "ring2" and p["links"]["labels"] == [None]
+    own = [m["branch"] for m in p["own"]["modes"]]
+    held_y = [m["branch"] for t in p["terms"] for h in t["held"] if h["unit"] == y for m in h["modes"]]
+    assert len(held_y) == 1 and "B" not in own + held_y and not set(own) & set(held_y)
+
+
 def test_a_tie_group_gives_a_side_only_to_its_free_spectrum():
     from isar.analyze.coupled.linking import TieGroup
     mk = lambda u, e: fakes.held_from_fit({"peaks": [{"omega0": e}, {"omega0": e + 1}]}, unit=u, fit="fast",   # noqa: E731
