@@ -25,7 +25,7 @@ from PySide6.QtGui import QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (QFormLayout, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QScrollArea,
                                QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
-from isar.workspace_api.inter_spectra import UnitLinks, phonon_label
+from isar.workspace_api.inter_spectra import UnitLinks, link_time, phonon_label
 from isar.workspace_api.scan_list import Fact, PooledRow, ScanSetRow, SpectrumRow
 from isar.workspace_api.spectra import (AMPLITUDE_HEADING, ENERGY_HEADING, LINEWIDTH_HEADING,
                                         OUTDATED_TEXT, Measured, PassSummary,
@@ -280,7 +280,7 @@ def _links_note_text(links: UnitLinks | None, drawn_fit: str | None) -> str | No
     if links is None or not links.link_id:             # no saved record covers this spectrum
         return None
     if links.stale:
-        return f"Phonon links from {links.at}; out of date"
+        return f"Phonon links from {link_time(links.at)}; out of date"
     if links.fit_id != drawn_fit:
         who = "the Fast solo fit" if links.fit_id == "fast" else f"fit {links.fit_id}"
         return f"Phonon names belong to {who}, which this table does not show"

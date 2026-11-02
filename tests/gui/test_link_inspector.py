@@ -72,7 +72,7 @@ def test_a_stale_record_keeps_its_phonon_names_and_says_when_it_was_made(qtbot):
     stale = replace(make_unit_links(A06, names=("B3", "B2")), stale=True, stale_text=LINK_WORDS["stale"])
     _show(widget, 2, 0, stale)
     assert _label(widget, "fit_mode_1_fast_branch").text() == "P3"
-    assert _note(widget).text() == "Phonon links from 2026-11-01T10:00:00; out of date"
+    assert _note(widget).text() == "Phonon links from 2026-11-01 10:00; out of date"
 
 
 def test_without_a_saved_link_the_fit_section_is_as_before(qtbot):

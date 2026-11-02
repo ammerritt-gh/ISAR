@@ -11,6 +11,7 @@ import math
 from collections import Counter
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -452,6 +453,11 @@ class UnitLinks:
 def phonon_label(name: str) -> str:
     """The label every surface shows for a phonon: its stored name ``B<n>`` as ``P<n>``."""
     return "P" + name[1:]
+
+
+def link_time(stamp: str) -> str:
+    """A saved link's time (stored as ISO) in local time, 'YYYY-MM-DD HH:MM', as the operator reads it."""
+    return datetime.fromisoformat(stamp).astimezone().strftime("%Y-%m-%d %H:%M")
 
 
 @dataclass(frozen=True)

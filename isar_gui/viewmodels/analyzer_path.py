@@ -14,7 +14,7 @@ from isar.plotspec import spec as ps
 from isar.plotspec.path_builders import analyzer_path_spec
 from isar.workspace_api.analyzer_array import array_view
 from isar.workspace_api.analyzer_path import PathView, analyzer_path
-from isar.workspace_api.inter_spectra import phonon_label
+from isar.workspace_api.inter_spectra import link_time, phonon_label
 from isar.workspace_api.scan_list import SpectrumRow
 from isar_gui.viewmodels.analyzer_array import path_keys
 from isar_gui.viewmodels.base import ViewModel
@@ -59,7 +59,7 @@ def _stop(stop) -> dict:
 def _to_spec(view: PathView) -> ps.PlotSpec:
     title = " · ".join(p for p in ("Analyzer path", f"scan {view.scan_label}" if view.scan_label else None,
                                    _temperature(view.temperature),
-                                   f"links of {view.links_at}" if view.links_at else None) if p)
+                                   f"links of {link_time(view.links_at)}" if view.links_at else None) if p)
     if not view.ok:
         return analyzer_path_spec(stops=(), title=title, xlabel="", ylabel=YLABEL, reason=view.reason)
     notes = [view.stale_text] if view.stale_text else []
