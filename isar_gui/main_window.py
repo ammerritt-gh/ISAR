@@ -78,7 +78,7 @@ from isar.workspace_api import (
     WorkspaceNotFound,
     validate_endpoint,
 )
-from isar.schema.analyzer_layout import layout_for
+from isar.workspace_api.analyzer_array import layout_for
 from isar.workspace_api.references import outside_references
 from isar.workspace_api.watch import last_written
 from isar_gui.log_dock import LogDock
