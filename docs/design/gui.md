@@ -929,8 +929,8 @@ a persistent legend like `plane (H, 1, 0) × E — integrating |L| < 0.02, |K−
   energy transfer. Each branch is a series, joined by a line between path-adjacent stops that both carry it; the change and
   unlinked markers sit at each mode's peak energy E*. A named or split mode on a current link is drawn at its E*, with its
   branch line and no whisker, so a broad mode is never drawn at its ω0 and a kink in a branch line is a real departure. Any
-  other mode (unlinked, uncovered, stale link, no E*) is drawn at its ω0 with its stored interval. Each stop draws the fit
-  in use. A click on this plot activates nothing.
+  other mode (unlinked, uncovered, stale link, no E*) is drawn at its ω0 with its stored interval, asymmetric as stored and
+  a one-sided interval keeping its one side. Each stop draws the fit in use. A click on this plot activates nothing.
 - **Heatmap (item 2):** measured strips render as strips; gaps render as gaps. **No
   interpolation by default.** An optional smoothed/kriged surface is a *model overlay*,
   toggled explicitly and labeled as a model — the same discipline as everywhere else in ISAR.

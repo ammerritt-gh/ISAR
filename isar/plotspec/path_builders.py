@@ -21,17 +21,20 @@ BRANCH_TIP = "Named modes sit at their peak energy E*, the energy the links matc
 _GROUP_KIND = {2: ps.MarkerKind.LINK_CHANGE, 3: ps.MarkerKind.LINK_UNLINKED}
 
 
-def _row(x: float, mode: dict) -> tuple[float, float, float]:
+def _row(x: float, mode: dict) -> tuple[float, float, float, float]:
+    """(x, y, below, above): a named or split mode at its E* with no whisker; any other at omega0 with its interval."""
     if mode["peak_E"] is not None and (mode["name"] is not None or mode["unresolved"]):
-        return float(x), float(mode["peak_E"]), 0.0
+        return float(x), float(mode["peak_E"]), 0.0, 0.0
+    y = float(mode["energy"])
     lo, hi = mode["lo"], mode["hi"]
-    half = (hi - lo) / 2 if lo is not None and hi is not None else 0.0
-    return float(x), float(mode["energy"]), max(half, 0.0)
+    below = max(y - lo, 0.0) if lo is not None else 0.0
+    above = max(hi - y, 0.0) if hi is not None else 0.0
+    return float(x), y, below, above
 
 
 def _series(rows, **kw) -> ps.Series:
-    x, y, err = (np.array(col, dtype=float) for col in zip(*rows))
-    return ps.Series(x=x, y=y, yerr=err, **kw)
+    x, y, below, above = (np.array(col, dtype=float) for col in zip(*rows))
+    return ps.Series(x=x, y=y, errors=ps.ErrorBars(bottom=below, top=above), **kw)
 
 
 def analyzer_path_spec(*, stops, title, xlabel, ylabel, stale_note=None, reason=None) -> ps.PlotSpec:

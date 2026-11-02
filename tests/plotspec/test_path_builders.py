@@ -36,10 +36,17 @@ def test_one_series_per_branch_at_omega0_with_its_interval_and_the_unlinked_mode
                   _stop(0.3, "a05", _mode(4.4, name="B1", lo=4.3, hi=4.5))])
     (b1,) = _named(spec, "B1")
     assert list(b1.x) == [0.0, 0.1, 0.3] and list(b1.y) == [4.0, 4.2, 4.4]
-    assert np.allclose(b1.yerr, [0.1, 0.0, 0.1])                       # no interval: no whisker, not a guess
+    assert np.allclose(b1.errors.bottom, [0.1, 0.0, 0.1]) and np.allclose(b1.errors.top, [0.1, 0.0, 0.1])  # no interval, no whisker
     (muted,) = _named(spec, UNLINKED_LABEL)
     assert list(muted.x) == [0.0] and list(muted.y) == [8.0]
     assert json.dumps(spec.to_dict(), allow_nan=False)                  # the spec is a JSON value
+
+
+def test_a_mode_at_omega0_keeps_its_stored_interval_asymmetric_and_one_sided():
+    spec = _spec([_stop(0.0, "a03", _mode(5.0, lo=4.9, hi=5.5)), _stop(0.1, "a04", _mode(4.0, hi=4.2)),
+                  _stop(0.2, "a05", _mode(3.0, lo=2.8))])
+    (muted,) = _named(spec, UNLINKED_LABEL)
+    assert np.allclose(muted.errors.bottom, [0.1, 0.0, 0.2]) and np.allclose(muted.errors.top, [0.5, 0.2, 0.0])
 
 
 def test_a_line_joins_only_path_adjacent_stops_that_both_carry_the_branch():
@@ -70,7 +77,7 @@ def test_a_named_mode_and_its_branch_line_sit_at_e_star_with_no_whisker():
     spec = _spec([_stop(0.0, "a06", _mode(9.7, name="B1", peak_E=0.945, lo=9.5, hi=9.9)),
                   _stop(0.1, "a07", _mode(1.0, name="B1", peak_E=1.0, lo=0.9, hi=1.1))])
     (b1,) = _named(spec, "B1")
-    assert list(b1.y) == [0.945, 1.0] and np.allclose(b1.yerr, [0.0, 0.0])   # the broad mode is not drawn at 9.7
+    assert list(b1.y) == [0.945, 1.0] and not np.any(b1.errors.bottom) and not np.any(b1.errors.top)  # not at 9.7
     (line,) = [s for s in spec.series if s.role is ps.Role.BRANCH]
     assert list(line.y) == [0.945, 1.0]
     (muted,) = _named(_spec([_stop(0.0, "a03", _mode(4.0, peak_E=3.5, lo=3.9, hi=4.1))]), UNLINKED_LABEL)
