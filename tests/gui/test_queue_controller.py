@@ -1095,6 +1095,26 @@ def test_a_waiting_series_link_item_that_lists_the_scan_covers_its_settle_but_on
     assert [(i.status, i.automatic) for i in r.ctrl.view().links] == [("waiting", False), ("waiting", True)]
 
 
+def test_two_scans_settling_in_turn_each_queue_their_own_automatic_link_item(rig):
+    third = "E:14"                                                 # a fast item still queued while SET2 settles
+    r = rig(cores=1, sets={SET: ("a06", "a07", "a08", "a09"), SET2: ("a06",), third: ("a06",)})
+    r.ctrl.set_auto_link(True)
+    r.select(A06, unit(SET2, "a06"), unit(third, "a06"))
+    r.ctrl.add_selection("fast")
+    r.wait_commands("start", 1)
+    _settle_fast(r, A06)                                           # SET's automatic item waits behind the fast items
+    _settle_fast(r, unit(SET2, "a06"))                             # SET2 settles while SET's item waits: it gets its own
+    r.wait_commands("start", 3)                                    # the third file took the core; no link item started
+    assert [(i.status, i.automatic) for i in r.ctrl.view().links] == [("waiting", True), ("waiting", True)]
+    _settle_fast(r, unit(third, "a06"))
+    first = r.wait_commands("start", 4)[3]
+    assert first["link"] == {"link_id": first["link"]["link_id"], "scans": [SET], "series": True, "reason": "auto"}
+    r.emit(_result(first["item_id"], first["unit_key"], "link"), _finished(first["item_id"]),
+           _link_saved(first["item_id"], first["unit_key"], first["link"]["link_id"]))
+    second = r.wait_commands("start", 5)[4]
+    assert second["link"] == {"link_id": second["link"]["link_id"], "scans": [SET2], "series": True, "reason": "auto"}
+
+
 @pytest.mark.parametrize("how", ["already_current", "stopped", "deep"])
 def test_a_settle_that_produced_no_fast_fit_of_its_own_queues_no_link_item(rig, how):
     r = rig(cores=1)
