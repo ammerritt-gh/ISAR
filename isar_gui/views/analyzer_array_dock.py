@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QDockWidget, QGridLay
                                QPushButton, QScrollArea, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from isar_gui.viewmodels.analyzer_array import SCALES, Y_MODES, ArrayState, AnalyzerArrayViewModel
-from isar_gui.views.analyzer_cell import CELL_MIN, AnalyzerCell
+from isar_gui.views.analyzer_cell import CELL_MIN, GESTURE_TIP, AnalyzerCell
 from isar_gui.views.elided_label import ElidedLabel
 
 _log = logging.getLogger(__name__)
@@ -39,6 +39,7 @@ MODE_TIPS = {
     "shared": "All cells use one y limit, so heights compare between cells. Affects every cell's y axis."}
 LIMIT_TIP = ("The y limit all cells share when 'One limit for all' is chosen (0 to this value). Empty uses the "
              "largest value shown. Kept separately for Normalised and Raw, since their units differ.")
+PATH_BUTTON_TIP = "Opens the Dispersion ω(q) view and plots the analyzers you picked, in click order."
 
 
 class AxisLabel(QWidget):
@@ -121,6 +122,7 @@ class ArrayWindow(QWidget):
 
 class AnalyzerArrayDock(QDockWidget):
     openChanged = Signal(bool)   # the array shown or hidden, in either host, or its window moved
+    path_plot_requested = Signal()   # the Plot path in Dispersion button was pressed
 
     def __init__(self, vm: AnalyzerArrayViewModel, parent=None, *, window_title: str = "Analyzer array",
                  default_rect=None) -> None:
@@ -161,6 +163,16 @@ class AnalyzerArrayDock(QDockWidget):
         self.layout_label = self._line(outer, "array_layout_line", root)
         self.unplaced_label = self._line(outer, "array_unplaced", root)
         self.batch_label = self._line(outer, "array_batch_line", root)
+        self.path_label = self._line(outer, "array_path_line", root)
+        path_row = QHBoxLayout()
+        self.path_button = QPushButton("Plot path in Dispersion", root)
+        self.path_button.setObjectName("array_plot_path")
+        self.path_button.setEnabled(False)
+        self.path_button.setToolTip(PATH_BUTTON_TIP)
+        self.path_button.clicked.connect(self.path_plot_requested)
+        path_row.addWidget(self.path_button)
+        path_row.addStretch(1)
+        outer.addLayout(path_row)
 
         scale_row, self.scale_group, self.scale_buttons = self._segment(
             root, "Intensity", SCALES, {"normalised": "Normalised", "raw": "Raw"}, SCALE_TIPS)
@@ -196,6 +208,7 @@ class AnalyzerArrayDock(QDockWidget):
         self.scroll.setMinimumSize(120, 100)
         self.scroll.setAccessibleName("Analyzer grid")
         self.grid_host = QWidget()
+        self.grid_host.setToolTip(GESTURE_TIP)
         self.grid = QGridLayout(self.grid_host)
         self.grid.setContentsMargins(2, 2, 2, 2)
         self.grid.setSpacing(4)
@@ -217,6 +230,7 @@ class AnalyzerArrayDock(QDockWidget):
         vm.scan_list.snapshot_changed.connect(self.refresh)
         vm.refreshed.connect(self.refresh)
         vm.marks_moved.connect(self.refresh)
+        vm.note_moved.connect(self.refresh)
 
     @staticmethod
     def _line(layout, name, parent) -> ElidedLabel:
@@ -453,8 +467,9 @@ class AnalyzerArrayDock(QDockWidget):
                                   "seen from the sample: the scattering-plane row A at the bottom, 2θ rising to the left."),
                                  (self.unplaced_label, state.unplaced_line, state.unplaced_tip),
                                  (self.batch_label, state.batch_line, state.batch_line_tip),
+                                 (self.path_label, state.path_line if state.body == "grid" else "", GESTURE_TIP),
                                  (self.caption_label, state.caption if state.body == "grid" else "",
-                                  "Every cell shares the energy axis; the y axis is linear.")):
+                                  "Every cell shares the energy axis; the y axis is linear.\n" + GESTURE_TIP)):
             label.set_full_text(text)
             if text:
                 label.setToolTip(f"{text}\n{tip}" if tip else text)
@@ -473,6 +488,13 @@ class AnalyzerArrayDock(QDockWidget):
         self.limit_unit.set_full_text(state.limit_unit)
         self.limit_note.set_full_text(reason if state.limit_enabled else "")
         self.limit_note.setVisible(bool(reason) and state.limit_enabled)
+
+    def set_path_state(self, state) -> None:
+        """The Plot path button follows the path's own state: enabled when it can be plotted, else says why."""
+        if self._disposed:                  # the window closed: its button is being deleted with it
+            return
+        self.path_button.setEnabled(state.can_plot)
+        self.path_button.setToolTip(PATH_BUTTON_TIP if state.can_plot else f"{PATH_BUTTON_TIP}\n{state.reason or ''}")
 
     def _limit_typed(self) -> None:
         text = self.limit_box.text()

@@ -37,6 +37,8 @@ BATCH_STATES = ("waiting", "fitting", "done", "refused", "failed", "not_reached"
 EMPTY_MESSAGE = "Select a scan or a spectrum in the scan list."
 POOLED_MESSAGE = "Pooled masters are not an analyzer scan. Select a scan or a spectrum in the scan list."
 LIMIT_REASON = "Used when all cells share one y limit"
+UNALIGNED_NOTE = "Shift-click needs two analyzers in one row or one column; nothing was selected."
+PATH_TAIL = "plot it with Plot path in Dispersion"
 Y_PAD = 1.08                 # headroom over the tallest point of a cell
 X_PAD = 0.02                 # of the energy extent, each side
 
@@ -65,6 +67,16 @@ class BatchOverlay:                      # C-cell-marks
     line: str                            # the header's batch line
     line_tip: str                        # the counts per state, for the hover
     marks: Mapping[str, BatchMark]       # spectrum key -> mark; members only, any scan; held members absent
+
+
+@dataclass(frozen=True)
+class CellLinks:                         # C-link-cell: one spectrum's saved links, as its cell's strip shows them
+    caption: str                         # branch names in mode order; "no branch linked" when none
+    tip: str                             # the hover: the caption's basis, then each note's words from the facade
+    severity: str | None                 # the worst note's severity ("info", "warn", "serious"); None when no note
+    changes: int                         # group 2 notes: a change, a width at its cap, a contradiction
+    unlinked: int                        # group 3 notes: a mode no neighbour links to
+    stale: bool                          # the record is out of date: the names are old and carry no notes
 
 
 @dataclass(frozen=True)
@@ -101,6 +113,7 @@ class CellState:
     beamline_zero: bool = False          # the energy axis is the beamline's file axis, not a fitted zero
     stale_tip: str | None = None
     batch: BatchMark | None = None       # C-cell-marks
+    links: CellLinks | None = None       # C-link-cell: None when no saved link names this spectrum's fit
 
 
 @dataclass(frozen=True)
@@ -110,6 +123,7 @@ class ArrayState:
     title: str = ""
     title_tip: str = ""
     selection_note: str = ""
+    path_line: str = ""                  # the picks of this scan in click order, or the note of the last gesture
     layout_line: str = ""
     unplaced_line: str = ""
     unplaced_tip: str = ""
@@ -202,6 +216,7 @@ def _auto_range(plot: CellPlot) -> tuple[float, float] | None:
 class AnalyzerArrayViewModel(ViewModel):
     state_changed = Signal(object)
     marks_moved = Signal()                   # a batch's member states moved: the dock redraws the marks, reads nothing
+    note_moved = Signal()                    # the path note moved with no selection change: the dock redraws, reads nothing
 
     def __init__(self, ws, scan_list_vm, reference_source: Callable, parent=None):
         super().__init__(ws, parent)
@@ -218,6 +233,7 @@ class AnalyzerArrayViewModel(ViewModel):
         self._overlay: BatchOverlay | None = None
         self._queue = None                               # the controller whose member map the marks show
         self._read = None                                # (snapshot, shown cells and fit choice, bundles) of the last read
+        self._note: tuple[tuple[str, ...], str] | None = None   # (selection keys, words) of the last gesture's note
         self._scaled: dict = {}
         self._state = ArrayState()
 
@@ -308,18 +324,48 @@ class AnalyzerArrayViewModel(ViewModel):
         self.refreshed.emit()
 
     # ---- gestures ------------------------------------------------------------------------------
-    def click_cell(self, key: str | None, ctrl: bool = False) -> None:
-        """A click on a cell selects that spectrum in the scan list (Ctrl toggles it). A cell without a
-        spectrum does nothing. The dock keeps no selection of its own."""
+    def click_cell(self, key: str | None, ctrl: bool = False, shift: bool = False) -> None:
+        """A click on a cell selects that spectrum in the scan list (Ctrl toggles it). Shift runs from the last
+        picked cell to this one along their shared grid row or column and replaces the selection with it; with no
+        such run Shift is a plain click, Ctrl ignored. A cell without a spectrum does nothing. The dock keeps no
+        selection of its own."""
         if key is None or self.scan_list.snapshot.spectrum(key) is None:
             return
-        selected = self.selection.keys
-        if not ctrl:
-            self.selection.set((key,), clicked=key, origin=ORIGIN_ARRAY)
-        elif key in selected:
-            self.selection.set([k for k in selected if k != key], origin=ORIGIN_ARRAY, extend=True)
+        self._note = None
+        cells = {c.key: c for c in self._state.cells if c.key is not None}
+        anchor = next((k for k in reversed(self.selection.picks) if k in cells), None) if shift else None
+        if anchor is not None and anchor != key and key in cells:
+            self._run_to(cells[anchor], cells[key])
         else:
-            self.selection.set([*selected, key], clicked=key, origin=ORIGIN_ARRAY, extend=True)
+            selected = self.selection.keys
+            if not ctrl or shift:
+                self.selection.set((key,), clicked=key, origin=ORIGIN_ARRAY)
+            elif key in selected:
+                self.selection.set([k for k in selected if k != key], origin=ORIGIN_ARRAY, extend=True)
+            else:
+                self.selection.set([*selected, key], clicked=key, origin=ORIGIN_ARRAY, extend=True)
+        self.note_moved.emit()
+
+    def _run_to(self, anchor: CellState, target: CellState) -> None:
+        """The cells from ``anchor`` to ``target`` along their shared row or column, in that order, replace the
+        selection. Any other pair leaves it alone and says so; a cell with no file in the run is skipped and named."""
+        if anchor.screen_row == target.screen_row:
+            on, at = (lambda c: c.screen_row == target.screen_row), (lambda c: c.screen_col)
+        elif anchor.screen_col == target.screen_col:
+            on, at = (lambda c: c.screen_col == target.screen_col), (lambda c: c.screen_row)
+        else:
+            self._note = (self.selection.keys, UNALIGNED_NOTE)
+            return
+        lo, hi = sorted((at(anchor), at(target)))
+        run = sorted((c for c in self._state.cells if on(c) and lo <= at(c) <= hi), key=at,
+                     reverse=at(target) < at(anchor))
+        keys = [c.key for c in run if c.key is not None]
+        skipped = [c.beamline for c in run if c.key is None]
+        self.selection.set(keys, clicked=target.key, origin=ORIGIN_ARRAY, picked=keys)
+        if skipped:
+            verb = "has" if len(skipped) == 1 else "have"
+            self._note = (self.selection.keys, f"{_path_words(self._state.cells, keys)} · "
+                          f"{', '.join(skipped)} {verb} no file in this scan, so it is not in the path")
 
     def shown_keys(self) -> frozenset[str]:
         """The spectrum keys of the cells drawn now (the shown scan's)."""
@@ -342,6 +388,13 @@ class AnalyzerArrayViewModel(ViewModel):
             elif row is not None:
                 other = True
         return shown, len(sets), other
+
+    def _path_line(self, cells) -> str:
+        """The dock's path line: the picks of this scan in click order, or the note of the last gesture while the
+        selection it was made from still stands."""
+        if self._note is not None and self._note[0] == self.selection.keys:
+            return self._note[1]
+        return _path_words(cells, self.selection.picks)
 
     def recompute(self) -> ArrayState:
         if not self.active:
@@ -419,6 +472,7 @@ class AnalyzerArrayViewModel(ViewModel):
             hkl_c, q_c = hkl_cell(c.hkl), fact_cell(c.q_abs, with_unit=False)
             q_text = "" if key is None else f"|Q| {q_c.text} nm⁻¹" if c.q_abs.value is not None else "|Q| —"
             inter = self.inter.row(key) if (self.inter is not None and key) else None
+            links = _cell_links(self.inter.link_row(key)) if (self.inter is not None and key) else None
             if self.y_mode == "shared":
                 y_range = (0.0, limit) if plot is not None and limit is not None else None
             else:
@@ -435,7 +489,7 @@ class AnalyzerArrayViewModel(ViewModel):
                 plot=plot, y_range=y_range, x_range=x_range,
                 fit_label=d.fit_label if plot is not None else None, beamline_zero=d.beamline_zero,
                 stale_tip=d.stale_tip or (inter.stale_text if inter and inter.lock_stale else None),
-                batch=marks.get(key) if key else None))
+                batch=marks.get(key) if key else None, links=links))
 
         x_label, x_tip = _step_label("In plane — 2θ increases ←", "analyzer", view.in_plane)
         y_label, y_tip = _step_label("Out of plane ↑", "row", view.out_of_plane)
@@ -444,6 +498,7 @@ class AnalyzerArrayViewModel(ViewModel):
         total = perf_counter() - started
         return ArrayState(
             body="grid", **_header_words(head, n_scans),
+            path_line=self._path_line(cells),
             layout_line=f"Layout {view.layout.id} ({view.how})",
             unplaced_line=(f"{len(unplaced)} spectrum not in layout {view.layout.id}: {', '.join(_tail(unplaced))}"
                            if len(unplaced) == 1 else
@@ -540,6 +595,45 @@ def _unit_words(scale: str) -> str:
 
 def _tail(keys) -> list[str]:
     return [k.rsplit(":", 1)[-1] for k in keys]
+
+
+_SEVERITY_RANK = {"info": 1, "warn": 2, "serious": 3}
+
+
+def _cell_links(ul) -> CellLinks | None:
+    """A cell's link strip from the facade's view of its spectrum (``UnitLinks``). None when no saved link names the
+    fit in use; the words are the facade's, never computed here (hard rule 7)."""
+    if ul is None or not ul.names:
+        return None
+    labels = [" / ".join(pair) + "?" if pair else name for name, pair in zip(ul.names, ul.unresolved)]
+    caption = " · ".join(label for label in labels if label) or "no branch linked"
+    changes = sum(m.group == 2 for m in ul.markers)
+    unlinked = sum(m.group == 3 for m in ul.markers)
+    counts = [f"{n} {noun}{'' if n == 1 else 's'}" for n, noun in ((changes, "change note"),
+                                                                  (unlinked, "unlinked mode")) if n]
+    if ul.stale:
+        head = f"Links: {caption} (branch names from earlier links; {ul.stale_text or ''})"
+    else:
+        head = f"Links: {caption}" + (f" ({', '.join(counts)})" if counts else "")
+    severity = max((m.severity for m in ul.markers), key=_SEVERITY_RANK.__getitem__, default=None)
+    return CellLinks(caption, "\n".join([head, *(m.words for m in ul.markers)]), severity,
+                     changes, unlinked, ul.stale)
+
+
+def path_keys(cells, picks) -> tuple[str, ...]:
+    """The path of the shown scan: the picks that are its cells, in click order (one definition; the path plot reads it too)."""
+    shown = {c.key for c in cells if c.key is not None}
+    return tuple(k for k in picks if k in shown)
+
+
+def _path_words(cells, picks) -> str:
+    """The path the picks of the shown scan make, in click order: the analyzers that have a cell here. Empty when none."""
+    names = {c.key: c.beamline for c in cells if c.key is not None}
+    path = [names[k] for k in path_keys(cells, picks)]
+    if not path:
+        return ""
+    return (f"Path: {' → '.join(path)} ({len(path)} analyzer{'' if len(path) == 1 else 's'}, click order) · "
+            f"{PATH_TAIL}")
 
 
 def _rows_by_key(snapshot) -> dict:

@@ -518,6 +518,20 @@ when several scans are selected. Rulings that bind it:
   first event it reads "starting" and shows no counts. Curves never redraw on a members event: they follow `InterState.changed`,
   so the word "done" can precede the new curve by the reload's lag. The dock changes no fit, acceptance or save and calls no queue verb.
   (`BatchOverlay`, `set_batch_overlay` remain the seam the view model's tests drive by hand.)
+- Link marks (2026-11-02, S3U3). Each cell carries its spectrum's saved mode links, read through `InterState.link_row`: a
+  caption of branch names under the plot (a split candidate reads `B2 / B3?`, unresolved), and a tone dot for the worst
+  note (green when linked with nothing to flag, grey for info, amber for a change or an unlinked mode, red for a contradiction).
+  Names from an out-of-date record are drawn in a darker grey with no dot, and the tooltip says they come from earlier links.
+  A spectrum whose record names a fit other than the one in use shows no names. The words are the facade's; the GUI computes nothing.
+- Gestures (2026-11-02, S3U3). Ctrl-click adds or removes a cell, and the picked cells form a path in click order.
+  Shift-click on a second analyzer in the same grid row or column selects both and everything between them, in click
+  order, skipping and naming any cell with no file; on any other pair nothing is selected and the path line says so.
+  Space or Enter with Shift is the same gesture. The cell, grid and caption tooltips name both gestures.
+- Path line and Plot path button (2026-11-02, S3U3). The path line reads `Path: a03 → a04 → a05 (3 analyzers, click order)`.
+  **Plot path in Dispersion** is enabled while the picks make a path of two or more analyzers of one scan; otherwise its
+  tooltip says why. Pressing it shows the Dispersion ω(q) view with its Analyzer path choice on, and turns auto-follow off,
+  so the picks that come next do not carry the view back to Scan(s). Building a path never moves the page by itself.
+  Tests: `tests/gui/test_analyzer_path_gestures.py`, `test_link_array_cells.py`, `test_analyzer_path_dispersion.py`.
 - Code: `viewmodels/analyzer_array.py` (state), `views/analyzer_cell.py` (cell), `views/analyzer_array_dock.py` (dock),
   `main_window.py` (View > Panels, persistence). Tests: `tests/gui/test_analyzer_array_{vm,dock,window,batch}.py`, `test_inter_words.py`.
 
@@ -908,6 +922,14 @@ G27 retires Waterfall as a central page. Scan(s) is a per-spectrum 1D view; Plan
 Data lives in (Q₃, E); every 2D view is a projection and must say so on screen, always:
 a persistent legend like `plane (H, 1, 0) × E — integrating |L| < 0.02, |K−1| < 0.02`.
 
+- **Dispersion, analyzer path (2026-11-02, S3U3):** the Dispersion view's **Plot** row switches the pane between the fitted
+  ω̂(q) (the default) and **Analyzer path**, which plots the analyzers picked in the Analyzer array, in click order, for one
+  scan (so one temperature, named in the title). The horizontal axis is the cumulative distance along the path in the scan's
+  own q metric (Å⁻¹ on lattice coordinates, rlu when only hkl is known; the analyzer names are its ticks); the vertical axis is
+  energy transfer. Each branch is a series, joined by a line between path-adjacent stops that both carry it; the change and
+  unlinked markers sit at each mode's peak energy E*. Points and branch lines are drawn at the fit's ω0 with its interval, the
+  energy the Scan(s) view draws, so a broad mode's marker can sit off its point by design. Each stop draws the fit in use.
+  A click on this plot activates nothing.
 - **Heatmap (item 2):** measured strips render as strips; gaps render as gaps. **No
   interpolation by default.** An optional smoothed/kriged surface is a *model overlay*,
   toggled explicitly and labeled as a model — the same discipline as everywhere else in ISAR.

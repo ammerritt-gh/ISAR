@@ -125,6 +125,7 @@ from isar_gui.views.setup_section import RUN_TEXT, RUN_TIP, SetupSection, locate
 from isar_gui.views.scans_dock import ScansDock
 from isar_gui.selection import ORIGIN_ARRAY, ORIGIN_GROUP, ORIGIN_LIST, ORIGIN_OTHER
 from isar_gui.viewmodels.analyzer_array import AnalyzerArrayViewModel
+from isar_gui.viewmodels.analyzer_path import AnalyzerPathViewModel
 from isar_gui.watch_bridge import WatchBridge
 
 log = logging.getLogger(__name__)
@@ -372,6 +373,8 @@ class MainWindow(QMainWindow):
         self.scans_page = None        # the Scan(s) page is rebuilt for each workspace binding
         self.array_dock = None        # the Analyzer array dock and its view model, per binding
         self.array_vm = None
+        self.path_vm = None           # the analyzer path, per binding (plotted by the Dispersion pane)
+        self.dispersion_pane = None   # the Dispersion pane of the center host, per binding
         self._center_host: CenterHost | None = None   # hosts the four display surfaces once bound
         self.setAcceptDrops(True)      # drop a data folder/numor onto the window -> ingest (D2/D5)
 
@@ -692,9 +695,8 @@ class MainWindow(QMainWindow):
         host.add_page(
             "plane", "Plane (q, E)",
             HeatmapPane(self.heatmap_vm, entropy_action=self._entropy_action))
-        host.add_page(
-            "dispersion", "Dispersion ω(q)",
-            DispersionPane(self.dispersion_vm, entropy_action=self._entropy_action))
+        self.dispersion_pane = DispersionPane(self.dispersion_vm, entropy_action=self._entropy_action)
+        host.add_page("dispersion", "Dispersion ω(q)", self.dispersion_pane)
         host.add_page("sandbox", "Sandbox", SandboxPane(self.sandbox_vm))
         # Restore the persisted view state (default: Scan(s), auto-follow on). Set
         # auto BEFORE show_view so the programmatic (non-user) restore does not clear it.
@@ -717,6 +719,14 @@ class MainWindow(QMainWindow):
         """View-menu / routing entry point: switch the central view if a host is bound."""
         if self._center_host is not None:
             self._center_host.show_view(key, user=user)
+
+    def _on_path_plot_requested(self) -> None:
+        """The Analyzer array's Plot path button: show the Dispersion view on the picked analyzers' path. The
+        request is deliberate, so it turns auto-follow off: the next picks must not carry the view back to Scan(s)."""
+        if self._center_host is None or self.dispersion_pane is None:
+            return
+        self._center_host.show_view("dispersion", user=True)
+        self.dispersion_pane.show_path()
 
     def _on_selection_active(self, key: str | None) -> None:
         """Forward the one active spectrum to the legacy single-spectrum surfaces."""
@@ -1070,6 +1080,15 @@ class MainWindow(QMainWindow):
             self.array_dock.load_view_state(self._session)
             self.array_dock.openChanged.connect(lambda _open: self._autosave())
             self._register_dock("Analyzer array", self.array_dock)
+
+            # The analyzer path: the array's picks, plotted by the Dispersion pane's Analyzer path choice.
+            self.path_vm = AnalyzerPathViewModel(self._ws, self.scan_list_vm, parent=self)
+            self.path_vm.set_inter(self.inter)
+            self.dispersion_pane.set_path_source(self.path_vm)
+            self.path_vm.recompute()
+            self.array_dock.set_path_state(self.path_vm.state)
+            self.path_vm.state_changed.connect(self.array_dock.set_path_state)
+            self.array_dock.path_plot_requested.connect(self._on_path_plot_requested)
 
         # Scan(s), Plane, Dispersion and Sandbox are switchable pages of the central CenterHost,
         # built in _bind_workspace (see _build_center_host).
@@ -2850,6 +2869,10 @@ class MainWindow(QMainWindow):
             self.array_vm.save_view_state(self._session)
             self.array_vm.deleteLater()
             self.array_vm = None
+        if self.path_vm is not None:
+            self.path_vm.state_changed.disconnect()   # its dock and pane are going: nothing may reach them while it waits
+            self.path_vm.deleteLater()
+            self.path_vm = None
         # The old viewmodels are QObjects parented to self; without an explicit deleteLater() they
         # would linger as inert children (their dock's connections already dropped above) for the
         # rest of the window's life. Drop them so repeated rebinds don't accumulate.
@@ -2887,6 +2910,7 @@ class MainWindow(QMainWindow):
             self._center_host.dispose()
             self._center_host.deleteLater()
             self._center_host = None
+        self.dispersion_pane = None
         self.scans_page = None
 
     # ---- watch -----------------------------------------------------------
