@@ -141,7 +141,7 @@ class DispersionPane(GroupDropMixin, QWidget):
         self._path_caption.setVisible(True)
         if state.spec is None:
             self._path_caption.setText(state.reason or "")
-            clear_render(self._plot)
+            self._clear_plot()
             return
         self._path_caption.setText("The path is one scan, so one temperature (the title gives its T and scan).")
         render_into(self._plot, state.spec)
@@ -160,7 +160,11 @@ class DispersionPane(GroupDropMixin, QWidget):
         if spec is not None:
             render_into(self._plot, spec)
         else:
-            clear_render(self._plot)  # no spec -> don't retain the previous (stale) render
+            self._clear_plot()  # no spec -> don't retain the previous (stale) render, path ticks included
+
+    def _clear_plot(self) -> None:
+        clear_render(self._plot)
+        self._plot.getAxis("bottom").setTicks(None)   # fixed ticks (the path's analyzers) must not outlive their plot
 
     def _sync_status_ribbon(self) -> None:
         while self._status_layout.count():

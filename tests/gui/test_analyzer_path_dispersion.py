@@ -139,6 +139,26 @@ def test_the_path_is_drawn_and_switching_back_restores_the_fitted_plot(env):
     assert pane._plot.titleLabel.text == fitted.title     # and the fitted plot is drawn again, as it was
 
 
+def test_a_path_that_can_no_longer_be_plotted_takes_its_ticks_off_the_plot(env):
+    pane, keys = env.pane, env.keys
+    _pick(env.selection, keys)
+    pane._path_button.click()
+    assert _bottom_ticks(pane) == [key.rsplit(":", 1)[1] for key in keys]
+    _pick(env.selection, keys[:1])                        # one analyzer: the path is invalidated, not plotted
+    assert env.path_vm.state.spec is None and pane._path_mode
+    assert _bottom_ticks(pane) == []                      # the previous path's ticks do not stay on the empty plot
+
+
+def test_the_fitted_plot_with_no_spec_takes_the_path_ticks_off_too(env, monkeypatch):
+    pane, keys = env.pane, env.keys
+    _pick(env.selection, keys)
+    pane._path_button.click()
+    assert _bottom_ticks(pane) != []
+    monkeypatch.setattr(type(pane._vm), "spec", property(lambda self: None))   # no fitted dispersion to draw
+    pane._fit_button.click()
+    assert not pane._path_mode and _bottom_ticks(pane) == []
+
+
 def test_the_array_dock_button_plots_the_path_and_the_next_picks_do_not_pull_the_view_back(qtbot, root, q_points):
     w = MainWindow(None, session=Session(), watch=False)
     qtbot.addWidget(w)
