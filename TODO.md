@@ -709,12 +709,22 @@ conditions — these are wants, not commitments.
 - `isar/session/inter_spectra/runner.py:546` — a lookahead price that finishes after the search requested it
   is tallied as freshly priced, not a cache hit, so `tools/inter_timing.py`'s counts read low. Revisit if
   those counts are ever used to judge the lookahead.
+- `isar/session/inter_spectra/linking.py:286` — one link item loads the workspace twice and reads the nodes
+  two or three times (`link_scans`, then `inputs_for` and `_in_use`); pass the loaded card, session and nodes
+  into a private `_inputs_for`. Revisit if a link item takes more than a few seconds, or at S4U1.
+- `isar/workspace_api/analyzer_path.py:121` — the path resolves the fit in use with `fits_in_use`, a third
+  rule beside `InterState.row(key).fit_id` used by the array cells and Scan(s), and parses the inter log on
+  the GUI thread; take a `fit_choice` from the view model. Revisit if path redraws lag or the path and cells
+  draw different fits.
+- `isar/workspace_api/inter_spectra.py:619` — `LinkView.branches` merges every record's members unfiltered,
+  while `previous_for` keeps a member only from its scan's newest record; apply the same newest-per-scan
+  filter. Revisit when the first consumer of `BranchView.members` lands (S4U4).
 
 ---
 
 ## Notes
 
-routine suite 2.6 min, over its 1-min budget
+routine suite 2.3 min, over its 1-min budget
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test

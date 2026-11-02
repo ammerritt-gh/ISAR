@@ -149,6 +149,9 @@ Read in this order when returning after time away:
 10. While it exists: [HANDOFF-letacon-fitting.md](HANDOFF-letacon-fitting.md) — the le Tacon BL43LXU
     fitting job: slice S1 (open-ended peak count) held unlanded behind a scene presence-factor bound;
     later slices paused for a replan.
+11. While it exists: [HANDOFF-inter-spectra-linking.md](HANDOFF-inter-spectra-linking.md) — the
+    inter-spectra mode-linking job: width cap, linking and its display landed; the inter-spectra pass
+    using the links waits on the operator's call on the linking thresholds.
 
 ### Door 2 — running ISAR on data (the user door)
 
