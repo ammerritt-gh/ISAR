@@ -151,6 +151,11 @@ Things that are wrong now, as opposed to things not yet built.
         Later on 2026-11-02 (job jc50670152313) the first one failed alone as well, 3 runs of 3 on the job branch
         and 1 of 1 on main at `c45aab09`, same numbers; in the 16-worker gate it failed 2 runs of 3. No longer a
         rare flake: it blocked that job's acceptance run, which the operator waived.
+        Not a flake but a race the test usually loses (2026-11-02, at `2ba90668`): sampled every 100 ms after the
+        anchor is added, the Finished heading's bottom reads 585-598 for ~0.2 s, then settles at 626 against the
+        viewport's 587 in every run (606 before the add). The settled layout fails the check; the test passes
+        only when it asserts before the settle. A fix makes the test wait for the settle, then fixes the layout
+        or the requirement. It blocked the v0.0.5 landing, which the operator waived.
       **Acceptance:** each item is either fixed at its shared state with a before/after run, or
       recorded as understood and accepted.
 
