@@ -34,8 +34,11 @@ def test_config_actions_redraw_and_save_scan_appearance(qtbot, scans_view_ws_rea
     assert all(s.x[0] == s.x[1] and s.y[1] >= s.y[0] for s in peaks)
     assert {s.color for s in peaks} == {CURVE_COLORS['mode1'], CURVE_COLORS['mode2']}
     assert any(s.x[0] < 0 for s in peaks) and any(s.x[0] > 0 for s in peaks)
-    assert [a.xy[1] for a in spec.annotations] == [100, 0]
-    assert all(a.anchor[1] < 0 for a in spec.annotations)
+    trace_labels = [a for a in spec.annotations if a.anchor is not None]     # the offset labels, under each scan zero
+    assert [a.xy[1] for a in trace_labels] == [100, 0]
+    assert all(a.anchor[1] < 0 for a in trace_labels)
+    mode_labels = [a for a in spec.annotations if a.anchor is None]         # Mode N at each peak, unlinked spectra
+    assert sorted(a.text for a in mode_labels) == ['Mode 1', 'Mode 1', 'Mode 2']
     assert all('heavy' in s.style for s in spec.series if (s.label or '').startswith('Mode'))
     data = [s for s in spec.series if s.role is Role.DATA]
     assert all(s.style == 'hollow' for s in data)
