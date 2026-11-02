@@ -18,6 +18,7 @@ UNSAVED_LABEL = "modes (no saved links)"
 UNSAVED_TIP = "Link modes has not covered this analyzer"
 UNRESOLVED_LABEL = "unresolved (two branches)"
 BRANCH_TIP = "Named modes sit at their peak energy E*, the energy the links matched on; other modes at omega0."
+CHANGE_LEGEND = "note: differs from neighbours, at the width cap, or links contradict (hover a mark for which)"
 _GROUP_KIND = {2: ps.MarkerKind.LINK_CHANGE, 3: ps.MarkerKind.LINK_UNLINKED}
 
 
@@ -54,9 +55,10 @@ def analyzer_path_spec(*, stops, title, xlabel, ylabel, stale_note=None, reason=
             notes.append(f"{stop['beamline']}: {stop['note']}")
         for mode in stop["modes"]:
             if mode["peak_E"] is not None:
-                for mk in mode["markers"]:
+                for mk in mode["markers"]:               # the legend has one row per kind; the hover keeps the words
+                    label = CHANGE_LEGEND if mk["group"] == 2 else mk["label"]
                     spec.markers.append(ps.Marker(
-                        x=xs[i], y=mode["peak_E"], kind=_GROUP_KIND[mk["group"]], label=mk["label"],
+                        x=xs[i], y=mode["peak_E"], kind=_GROUP_KIND[mk["group"]], label=label,
                         tooltip=mk["words"]))
             if mode["energy"] is None:
                 continue

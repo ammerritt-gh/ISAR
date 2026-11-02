@@ -84,6 +84,16 @@ def test_a_named_mode_and_its_branch_line_sit_at_e_star_with_no_whisker():
     assert list(muted.y) == [4.0]                                       # unlinked: E* is not its place, omega0 is
 
 
+def test_kind_two_notes_share_one_legend_row_and_keep_their_own_words_on_hover():
+    energy_note = {"group": 2, "label": "energy differs from neighbours", "words": "energy 4.6 meV, neighbours 4.1"}
+    cap_note = {"group": 2, "label": "at the width cap (wants to be broader)", "words": "Mode 2 at the width cap"}
+    unlinked = {"group": 3, "label": "no link to a neighbour", "words": "Mode 1 follows no neighbour"}
+    spec = _spec([_stop(0.0, "a06", _mode(9.7, peak_E=0.9, markers=[energy_note, unlinked])),
+                  _stop(0.1, "a07", _mode(4.1, name="B1", peak_E=4.0, markers=[cap_note]))])
+    assert len({(m.kind, m.label) for m in spec.markers}) == 2             # one legend row per kind, not one per note
+    assert [m.tooltip for m in spec.markers] == [energy_note["words"], unlinked["words"], cap_note["words"]]
+
+
 def test_an_unresolved_split_candidate_is_its_own_series_at_e_star_with_both_names_asked():
     spec = _spec([_stop(0.0, "a03", _mode(5.0, name="B2", unresolved=("B2", "B3"), peak_E=4.9))])
     assert _named(spec, "B2") == []                                     # not a settled branch series
