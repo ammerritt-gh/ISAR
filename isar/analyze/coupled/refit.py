@@ -497,7 +497,8 @@ def _selected_model(record: dict) -> dict | None:
 
 
 def held_from_fit(record: dict, *, unit: str, fit: str, inputs: str | None, context, T: float | None,
-                  branch_ids: tuple[str, ...] | None = None, dormant: tuple[Dormant, ...] = ()) -> Held:
+                  branch_ids: tuple[str, ...] | None = None, dormant: tuple[Dormant, ...] = (),
+                  window: tuple[float, float] | None = None) -> Held:
     """A stored fit (fast-pass record shape) as a neighbour or incoming state reads it.
 
     The guard of each energy (spec 1): for the fast solo its own covariance sigma; for a refit the
@@ -506,9 +507,12 @@ def held_from_fit(record: dict, *, unit: str, fit: str, inputs: str | None, cont
     the neighbours: a factor that uses it falls back to ``ell/sqrt(12)`` and notes
     ``neighbour_precision_unavailable``. Branch ids: ``branch_ids``, else those stored on the peaks, else
     ``fast:<unit>#<i>`` for the fast solo (``<fit>#<i>`` for a refit). A mode is pinned only by an
-    explicit user energy pin (its energy is not a free coordinate of the stored model)."""
-    ctx, fs, _structures = _parts(context)
-    sp = prior.resolve_prior_for(ctx, fs.prior or prior.PriorSettings())
+    explicit user energy pin (its energy is not a free coordinate of the stored model). ``window`` given: the
+    energy window is taken from it and ``context`` is not read (it may be None)."""
+    if window is None:
+        ctx, fs, _structures = _parts(context)
+        sp = prior.resolve_prior_for(ctx, fs.prior or prior.PriorSettings())
+        window = (float(sp.e_lo), float(sp.e_hi))
     peaks = sorted(record.get("peaks") or (), key=lambda p: float(p["omega0"]))
     sel = _selected_model(record)
     free = set(sel.get("free") or ()) if sel is not None else None
@@ -537,7 +541,7 @@ def held_from_fit(record: dict, *, unit: str, fit: str, inputs: str | None, cont
                               height=float(p["height"]), guard=None if guard is None else float(guard),
                               guard_source=source, status=status, regime=str(p.get("regime") or "underdamped"),
                               pinned=pinned))
-    return Held(unit=unit, fit=fit, inputs=inputs, window=(float(sp.e_lo), float(sp.e_hi)), modes=tuple(modes),
+    return Held(unit=unit, fit=fit, inputs=inputs, window=(float(window[0]), float(window[1])), modes=tuple(modes),
                 dormant=tuple(dormant), T=T)
 
 

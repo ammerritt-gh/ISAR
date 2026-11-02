@@ -29,7 +29,7 @@ MODULES = (
     "isar.session.inter_spectra.q_provider", "isar.session.inter_spectra.records",
     "isar.session.inter_spectra.authority", "isar.session.inter_spectra.runner",
     "isar.analyze.coupled.types", "isar.analyze.coupled.refit", "isar.analyze.coupled.search",
-    "isar.analyze.coupled.identity", "isar.intake.inter_spectra", "isar.intake.inter_values",
+    "isar.analyze.coupled.identity", "isar.analyze.coupled.linking", "isar.intake.inter_spectra", "isar.intake.inter_values",
     "isar.workspace_api.inter_spectra",
 )
 
@@ -61,6 +61,8 @@ CONTRACT = (
       "flag", "why_changed", "accept", "payload"]),
     ("isar.session.inter_spectra.records", "StageLine",
      ["batch", "at", "stage", "index", "round", "progress", "seams", "not_reached"]),
+    ("isar.session.inter_spectra.records", "LinkLine",
+     ["link", "at", "scope", "batch", "stage", "made_from", "stamps", "next_name", "digest", "counts", "payload"]),
     ("isar.session.inter_spectra.records", "BatchInfo",
      ["batch", "number", "at", "batch_kind", "scope", "anchors", "rings", "seams", "settings", "preview", "fixed",
       "unreached", "terms", "metric", "core", "intake_seq", "epochs", "end"]),
@@ -115,6 +117,18 @@ CONTRACT = (
       "stale", "stale_text", "flag", "why_changed", "conditional_errors", "errors_available"]),
     ("isar.workspace_api.inter_spectra", "BatchRequest", ["kind", "direction", "anchors", "selection"]),
     ("isar.workspace_api.inter_spectra", "BatchPreview", ["can_start", "reason", "members", "line", "notes"]),
+    ("isar.analyze.coupled.linking", "LinkInput",
+     ["held", "fwhm", "areas", "sigma_areas", "sigma_gammas", "at_cap", "stamp", "scale", "anchored"]),
+    ("isar.analyze.coupled.linking", "Branch", ["id", "name", "members"]),
+    ("isar.analyze.coupled.linking", "Prediction", ["branch", "mode", "E", "w", "A", "tol_E", "from_units"]),
+    ("isar.analyze.coupled.linking", "Change", ["kind", "mode", "branches", "predictions"]),
+    ("isar.analyze.coupled.linking", "TieGroup",
+     ["id", "kind", "units", "modes", "branches", "alternatives", "d_best", "d_alt"]),
+    ("isar.analyze.coupled.linking", "Contradiction", ["units", "modes", "d", "reason", "words"]),
+    ("isar.analyze.coupled.linking", "Marker", ["unit", "kind", "mode", "quantity", "words"]),
+    ("isar.analyze.coupled.linking", "LinkResult",
+     ["schema", "made_from", "stamps", "branches", "labels", "peak_E", "settled", "predictions", "changes", "ties",
+      "contradictions", "markers", "excluded", "settings", "name_start", "next_name"]),
     ("isar.analyze.coupled.settings", "SettingDef",
      ["name", "group", "kind", "default", "calibrated", "unit", "minimum", "maximum", "choices", "help",
       "strict_minimum"]),
@@ -133,6 +147,8 @@ SETTING_TABLE = (
     ("close_call_nats", "hidden", 2.0), ("evidence_hysteresis_nats", "hidden", 0.1),
     ("stop_margin_nats", "hidden", 5.0), ("linewidth_ratio", "hidden", 2.0), ("full_search", "hidden", False),
     ("full_search_max_count", "hidden", 4),
+    ("width_tolerance_ln", "hidden", 0.7), ("intensity_tolerance_ln", "hidden", 1.0),
+    ("link_threshold", "hidden", 9.0), ("tie_margin", "hidden", 2.0),
 )
 
 
@@ -238,7 +254,7 @@ def test_the_core_store_and_records_load_no_numerics_and_no_qt():
     loaded = _loaded_after("import isar.session.inter_spectra.authority, isar.session.inter_spectra.runner, isar.session.inter_spectra.graph, "
                            "isar.session.inter_spectra.rings, isar.session.inter_spectra.schedule, "
                            "isar.session.inter_spectra.preview, isar.analyze.coupled.settings, "
-                           "isar.analyze.coupled.types, isar.intake.inter_spectra")
+                           "isar.analyze.coupled.types, isar.analyze.coupled.linking, isar.intake.inter_spectra")
     assert loaded == "[]", loaded
 
 

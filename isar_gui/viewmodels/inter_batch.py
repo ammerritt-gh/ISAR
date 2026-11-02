@@ -8,8 +8,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from isar.workspace_api.inter_spectra import BatchPreview, BatchRequest
+from isar.workspace_api.scan_keys import scan_prefix
+
+if TYPE_CHECKING:               # the queue controller imports Qt; the annotation alone needs it here
+    from isar_gui.queue_controller import LinkStatus
 
 DIRECTIONS = ("q", "T", "qT")
 NO_EXPERIMENT = "Open an experiment first."
@@ -20,6 +25,7 @@ REMOVE_OFF = "Select one or more anchors in the list first."
 WORKING = "Working out what this batch would do…"
 PREVIEW_FAILED = "This batch's preview could not be read"
 CANNOT_START = "This batch cannot start."
+NO_SCANS_TO_LINK = "Select scans in the scan list first."
 
 
 @dataclass(frozen=True)
@@ -37,6 +43,8 @@ class BoxState:
     anchored_line: str           # the preview's line and notes, verbatim ("" until there is a preview)
     simultaneous_line: str
     note: str                    # a failed read, in plain words ("" when none)
+    link: Control = Control(False, None)   # Link modes
+    link_line: str = ""          # what the last link-modes item did, in the service's words ("" when none)
 
 
 def anchored_request(direction: str, anchors: Sequence[str]) -> BatchRequest:
@@ -45,6 +53,31 @@ def anchored_request(direction: str, anchors: Sequence[str]) -> BatchRequest:
 
 def simultaneous_request(selection: Sequence[str]) -> BatchRequest:
     return BatchRequest(kind="simultaneous", direction=None, anchors=(), selection=tuple(selection))
+
+
+def link_scans(selection: Sequence[str]) -> tuple[str, ...]:
+    """The scans the selected spectra belong to, each once: what one Link modes item names."""
+    return tuple(dict.fromkeys(scan_prefix(key) for key in selection))
+
+
+def link_state(*, bound: bool, blocked: str | None, n_scans: int) -> Control:
+    if not bound:
+        return Control(False, NO_EXPERIMENT)
+    if blocked:
+        return Control(False, blocked)
+    return Control(True, None) if n_scans else Control(False, NO_SCANS_TO_LINK)
+
+
+def link_text(status: LinkStatus | None) -> str:
+    """The link line: items waiting and running, then the newest settled item's words, as the service gave them."""
+    if status is None:
+        return ""
+    lines = []
+    if status.n_running or status.n_waiting:
+        lines.append(f"Link modes: {status.n_running} running, {status.n_waiting} waiting.")
+    if status.last:
+        lines.append(f"Last link modes: {status.last}")
+    return "\n".join(lines)
 
 
 def wanted_requests(*, bound: bool, direction: str, anchors: Sequence[str],
@@ -87,7 +120,8 @@ def _gate(bound: bool, ok: bool, off: str) -> Control:
 def box_state(*, bound: bool, blocked: str | None, n_anchors: int, n_selected: int, n_addable: int,
               n_selected_anchors: int, anchored: BatchPreview | None, simultaneous: BatchPreview | None,
               note: str | None, anchored_error: str | None = None,
-              simultaneous_error: str | None = None) -> BoxState:
+              simultaneous_error: str | None = None, n_selected_scans: int = 0,
+              link_status: LinkStatus | None = None) -> BoxState:
     """``anchored`` / ``simultaneous`` are the previews for the requests ``wanted_requests`` names, else None;
     ``*_error`` is the text of a read of that request that raised, shown in place of the working text."""
     unbound = None if bound else NO_EXPERIMENT
@@ -101,4 +135,6 @@ def box_state(*, bound: bool, blocked: str | None, n_anchors: int, n_selected: i
         anchored_line=preview_text(anchored),
         simultaneous_line=preview_text(simultaneous),
         note=note or "",
+        link=link_state(bound=bound, blocked=blocked, n_scans=n_selected_scans),
+        link_line=link_text(link_status),
     )

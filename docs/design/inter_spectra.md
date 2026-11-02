@@ -36,10 +36,13 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | Width at the floor and the quasi-elastic line: a railed width is a resolution-limited alternative that is priced; a QE line railed at its narrowest width is the elastic line (shared engine); the model line is chosen by evidence beyond the hysteresis margin | Implemented on synthetic spectra | `isar/analyze/coupled/refit.py`, `engine.py`, `rules.py` | `tests/analyze/test_coupled_width_floor.py`, `tests/analyze/test_coupled_search_real.py` |
 | Counts above six: pricing, refinement, the release fit and storage accept a count beyond six; `full_search` prices a stated finite domain as a check | Implemented on synthetic spectra | `isar/analyze/coupled/search.py`, `refit.py`, `isar/session/inter_spectra/runner.py` | `tests/analyze/test_coupled_search_real.py`, `tests/analyze/test_coupled_search.py` |
 | Search, price and resume across the refit pool: the runner feeds each spectrum's search as its own jobs return, caches prices within one batch, sizes the pool to the item's cores (`ISAR_WORKERS`, when set, caps it), keeps every worker busy (a candidate's fits, basins and split nodes run as tasks on the same pool, and idle workers price the searches' likely next promotions ahead), and reports timing in the batch's `end` record | Implemented; the timing is measured in section 10 | `isar/session/inter_spectra/runner.py`, `isar/analyze/coupled/tasks.py`, `tools/inter_timing.py` | `tests/session/test_inter_spectra_runner.py`, `tests/test_inter_timing_tool.py`, `tests/session/test_inter_service_e2e.py` |
+| Mode linking core: branches by grid-wide matching on the peak energy, width and intrinsic intensity of each mode, contradictions, near ties, predictions from neighbours, listed changes (add, split, drop), markers, JSON form | **Partial**: built and tested on synthetic grids; the four tolerances are uncalibrated (section 5); saved and queued (rows below); not yet used by a batch | `isar/analyze/coupled/linking.py` | `tests/analyze/test_coupled_linking.py` |
 | Branch identity: persistent ids, loops, returns, cumulative T drift | Implemented | `isar/analyze/coupled/identity.py` | `tests/analyze/test_coupled_identity.py` |
 | Anchored batch: rings fixed by distance, seams, not reached | Implemented | `isar/session/inter_spectra/rings.py`, `runner.py` | `tests/session/inter_spectra/test_rings.py`, `tests/session/test_inter_spectra_runner.py` |
 | Simultaneous batch: rounds, sweeps, quiet-sweep settling, sweep cap (did not settle) | Implemented | `isar/session/inter_spectra/runner.py`, `schedule.py` | `tests/session/test_inter_spectra_runner.py` |
 | Batch as one queue item (pass kind `inter`), run by the analysis service | Implemented | `isar/session/analysis_service.py`, `analysis_queue.py`, `isar_gui/queue_controller.py` | `tests/session/test_analysis_service.py`, `test_analysis_queue.py`, `tests/gui/test_queue_panel_inter.py` |
+| Mode linking as a queue item (pass kind `link`): one item on the link lock, one core, its result saved by the one writer | Partial: built and tested at the queue and the service; the Link modes button and the automatic toggle start it | `isar/session/analysis_queue.py`, `analysis_service.py`, `isar/session/inter_spectra/linking.py` (`run_link`), `isar_gui/queue_controller.py` | `tests/session/test_analysis_queue.py`, `tests/session/test_link_service.py` |
+| Mode linking: saved result in the machine store (kind `link`) | Partial: built and tested; no run on a copy of the experiment is recorded in section 10 | `isar/session/writer.py` (`save_links`), `isar/session/inter_spectra/records.py` | `tests/session/test_inter_links_store.py` |
 | Machine store: index, payloads, one writer under the workspace lock | Implemented | `isar/session/inter_spectra/records.py`, `isar/session/writer.py` (`save_inter`) | `tests/session/test_inter_records.py`, `test_inter_records_gpi.py` |
 | Authority: the fit in use, picks, locks, acceptance, staleness | Implemented | `isar/session/inter_spectra/authority.py` | `tests/session/test_inter_authority.py` |
 | User values (anchors, picks, locks, settings) with checked writers | Implemented | `isar/intake/inter_spectra.py`, `isar/intake/inter_values.py` | `tests/intake/test_inter_user.py` |
@@ -50,7 +53,7 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | Amplitude coupling (a prior on mode amplitude) | Planned: not coupled. Amplitude stays free, there is no amplitude setting, and the amplitude-prior test was not run in planning | — | — |
 | Read facade, Qt-free and read-only | Implemented | `isar/workspace_api/inter_spectra.py` | `tests/workspace_api/test_inter_facade.py` |
 | Scan list: Anchor, Flag, Lock and Inter-spectra fit columns; Set as anchor, Remove anchor | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/scan_list.py`, `isar_gui/viewmodels/scan_list.py` | `tests/gui/test_inter_scan_list.py` |
-| Processing dock: anchors list, direction, preview line, the two Start buttons | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/inter_batch_box.py`, `isar_gui/viewmodels/inter_batch.py` | `tests/gui/test_inter_batch_box.py` |
+| Processing dock: anchors list, direction, preview line, the two Start buttons, the Link modes button and the automatic linking toggle | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/inter_batch_box.py`, `isar_gui/viewmodels/inter_batch.py`, `isar_gui/queue_controller.py` | `tests/gui/test_inter_batch_box.py`, `tests/gui/test_queue_controller.py` |
 | Scan(s) view: flat fit dropdown with Up/Down navigation, Make authoritative, Lock, reasons, error-bar label, waterfall | Implemented; tested offscreen, no person walk-through yet | `isar_gui/views/inter_fit_bar.py`, `isar_gui/viewmodels/scans_page.py`, `inter_fits.py` | `tests/gui/test_inter_fit_bar.py`, `test_inter_fits.py`, `test_scans_page_inter.py` |
 | Config > Inter-spectra fitting settings | Implemented | `isar_gui/main_window.py`, `isar_gui/views/inter_settings_dialog.py` | `tests/gui/test_inter_settings_dialog.py` |
 | Export and run report show the authoritative fit, labelled | Implemented | `isar/report/export.py`, `isar/report/run_report.py` | `tests/report/test_export_inter.py`, `tests/session/test_run_report_inter.py` |
@@ -99,6 +102,17 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
   as a full price.
 - **Promotion**: asking a screened candidate for its full price. The full price replaces the screen in the
   search's ledger; it is never added to it.
+- **Mode linking**: the step that decides which modes of neighbouring spectra are one branch, before any coupled
+  fitting. It chooses links and starting values only; its scores never enter a fit's likelihood.
+- **Linked branch**: modes of two or more spectra that mode linking joined, with one grid-wide name (`B<n>`).
+  An anchored mode is a branch of its own id even alone.
+- **Peak energy E\***: where a mode's unconvolved intensity peaks, meV. For a sharp mode it is omega0; an
+  overdamped or broad mode is matched by E\*, never by its omega0.
+- **Near tie**: two consistent ways of linking whose summed mismatch differs by less than `tie_margin`, reported as
+  one local group (a swap at a crossing, or two rivals for one mode), never forced to one answer.
+- **Contradiction**: a link that would put two modes of one spectrum on one branch, or join two anchored
+  branches. It is reported and refused.
+- **Settled mode**: a mode on a branch that is in no near tie and no contradiction.
 
 ## 3. Invariants
 
@@ -108,8 +122,8 @@ Each line names the failure it prevents.
   `modes.csv` and campaigns read. `save_inter` never touches `session.json`, `results.csv` or a fast solo fit.
 - **ISAR never writes an anchor, a pick, a lock or a setting on its own** (AGENTS.md hard rule 1). They are
   entries of `intake/inter_spectra.jsonl`, written only by the GUI in process through `isar/intake/inter_values.py`.
-- **The machine store is append-only, has one writer and deletes nothing.** `save_inter` appends under the
-  workspace write lock and writes the index last, so a payload that no index line names is never read.
+- **The machine store is append-only, has one writer and deletes nothing.** `save_inter` and `save_links` append
+  under the workspace write lock and write the index last, so a payload that no index line names is never read.
 - **One resolver decides the fit in use.** `isar/session/inter_spectra/authority.py` (`resolve`, `effective`)
   serves the export, the run report and the read facade, so the views cannot disagree. A user pick and a
   machine acceptance are ordered by the intake `seq`, never by wall-clock time.
@@ -380,6 +394,10 @@ dialog*. `tests/docs/test_inter_spectra_docs.py` keeps the names, marks and help
 | `linewidth_ratio` | not in the dialog | 2 | > 1 to 100 | uncalibrated | A linewidth change is reported when a mode's damping ratio to its fast solo fit passes this. |
 | `full_search` | not in the dialog | false |  | uncalibrated | Price every mode count up to the full-search count and every labelling of each, with no pruning (slow; a check for calibration and proofs). |
 | `full_search_max_count` | not in the dialog | 4 modes | 0 to 12 | uncalibrated | With the full search on: the largest mode count it prices (every count from none up to this). The number of labellings grows factorially with it and nothing else limits the run. |
+| `width_tolerance_ln` | not in the dialog | 0.7 | > 0 to 5 | uncalibrated | Mode linking: how far a mode's width may differ between neighbours, as the natural log of the ratio (0.7 is about a factor of two), before it counts as one full tolerance. |
+| `intensity_tolerance_ln` | not in the dialog | 1 | > 0 to 5 | uncalibrated | Mode linking: how far a mode's intrinsic intensity (Bose-corrected, divided by the analyzer's efficiency) may differ between neighbours, as the natural log of the ratio (1 is about a factor of 2.7), before it counts as one full tolerance. |
+| `link_threshold` | not in the dialog | 9 | > 0 to 1000 | uncalibrated | Mode linking: two modes of neighbouring spectra are linked as one branch only when their summed mismatch in energy, width and intensity, each in squared tolerances, is at most this. |
+| `tie_margin` | not in the dialog | 2 | 0 to 100 | uncalibrated | Mode linking: two ways of linking a crossing are reported as a near tie when their summed mismatch differs by less than this. |
 
 A saved value of `q_tolerance_meV`, `q_change_scale_meV` or `composition_limit` is logged and ignored, never reported as damaged, and has no effect; the two q slopes start at their defaults, and the stopping margin does the work of the composition limit. The two q slopes are provisional until sample handling is written out. The rows marked calibrated were calibrated before the propagation of section 4 existed. That propagation also widens the temperature and curvature penalties, so for the same neighbour uncertainty those penalties, and the flag statistic they feed, are lower. Their marks stand and the calibration is not redone.
 
@@ -390,8 +408,9 @@ Paths are relative to the workspace folder. Every line is one JSON object.
 | File | Written by | Holds |
 |---|---|---|
 | `intake/inter_spectra.jsonl` | the GUI, in process, through `isar/intake/inter_values.py` | user values: kinds `anchor`, `pick`, `lock`, `settings`; append-only, the latest wins |
-| `report/inter_spectra.jsonl` | `save_inter` only | the machine index: `batch_start`, `refit`, `stage` and `batch_end` lines; append-only |
+| `report/inter_spectra.jsonl` | `save_inter` and `save_links` | the machine index: `batch_start`, `refit`, `stage` and `batch_end` lines, and `link` lines (one saved mode-linking result each); append-only |
 | `report/inter_spectra/refits/<batch_id>.jsonl` | `save_inter` only | one payload per refit with a payload: `schema`, `fit`, `unit`, `came_in`, `came_out`, `overlay`; read by byte offset |
+| `report/inter_spectra/links/<link_id>.jsonl` | `save_links` only | one payload per `link` line: `link` and `result` (the linking result as JSON, `isar.mode-links/1`); read by byte offset |
 
 Example lines, with synthetic values:
 
@@ -415,6 +434,14 @@ the branches not observed in it under `dormant`) and its `overlay`, so a history
 overlay carries the calibration, resolution and temperature the refit was made with (`calib`, `T`), so a locked
 or older refit is drawn and exported in its own context, never in a later fast solo fit's.
 
+A `link` line names the scan keys it covers, the fits it was made from (`made_from`: fit and inputs hash per spectrum)
+and their stamps, the next branch-name number, and where its payload is. A new branch's name continues the store's
+names, so a result saved after another never refuses on names; its ids stay.
+
+```json
+{"schema": "isar.inter-log/1", "kind": "link", "link": "l3a9f10c2e7d4", "at": "2026-11-02T09:14:03.000000+00:00", "scope": ["exp1:12", "exp1:13"], "batch": null, "stage": null, "made_from": {"exp1:12:a03": ["fast", "9d2c4e1f0a7b"], "exp1:13:a03": ["fast", "7a1b3c5d9e0f"]}, "stamps": {"exp1:12:a03": "5b0c1d2e3f4a", "exp1:13:a03": "6c1d2e3f4a5b"}, "next_name": 4, "digest": "0f1e2d3c4b5a6978", "counts": {"spectra": 56, "branches": 3, "ties": 1, "contradictions": 0, "excluded": 0}, "payload": ["l3a9f10c2e7d4.jsonl", 0, 18342]}
+```
+
 ## 7. Code locations
 
 | Module | Owns |
@@ -428,6 +455,7 @@ or older refit is drawn and exported in its own context, never in a later fast s
 | `isar/analyze/coupled/rules.py` | the pure decision rules: acceptance order, settling, flag score, the count-first decision |
 | `isar/analyze/coupled/search.py` | one spectrum's adaptive candidate search: seeds, count steps, labelling moves, screens and promotions (`Search.feed`, `_final`, `_rank`), the search record and the shadow record |
 | `isar/analyze/coupled/identity.py` | persistent branch identity across neighbours |
+| `isar/analyze/coupled/linking.py` | mode linking: the pure core, its result and JSON form |
 | `isar/session/inter_spectra/nodes.py` | spectrum keys, series keys and temperatures |
 | `isar/session/inter_spectra/layout.py` | the 4 × 7 analyzer grid and its adjacency |
 | `isar/session/inter_spectra/graph.py` | links, curvature terms and the batch scope |
@@ -435,7 +463,8 @@ or older refit is drawn and exported in its own context, never in a later fast s
 | `isar/session/inter_spectra/rings.py` | anchored rings and seams |
 | `isar/session/inter_spectra/schedule.py` | simultaneous terms and conflict-free parallel groups |
 | `isar/session/inter_spectra/preview.py` | the batch preview line and the reason Start waits |
-| `isar/session/inter_spectra/records.py` | the machine store's reader |
+| `isar/session/inter_spectra/records.py` | the machine store's reader, and links |
+| `isar/session/inter_spectra/linking.py` | mode linking, session side: the fits in use and what a link leaves out and why, the temperature series, the link queue item's run (`run_link`) |
 | `isar/session/inter_spectra/authority.py` | the one resolver of the fit in use |
 | `isar/session/inter_spectra/runner.py` | the batch runner: rings, rounds, sweeps and acceptance hand-over; `_Run.assign`, the stage-1 pool that feeds each spectrum's search as its own jobs return |
 | `isar/analyze/coupled/tasks.py` | the task port a candidate's pricing sends its inner work through, and the worker side's engine cache |
@@ -443,9 +472,9 @@ or older refit is drawn and exported in its own context, never in a later fast s
 | `tools/inter_ring1.py` | opens the anchored batch headless and stops at the end of ring 1's stage 1; shared by the two measurement tools below |
 | `tools/inter_gradient_compare.py` | compares the gradient path with the finite-difference path on picked real-shaped jobs, per class (`summary.txt`, `table.md`, `compare.json` with `--out`) |
 | `tools/inter_screen_calibration.py` | shadow run of ring 1's stage 1: screen errors, count-total errors and shadow decisions (`calibration.json`, `calibration.md` with `--out`) |
-| `isar/session/writer.py` | `save_inter`, the one writer of the machine store |
-| `isar/session/analysis_service.py` | runs an `inter` queue item in the analysis process |
-| `isar/session/analysis_queue.py` | the queue's bookkeeping for `inter` items |
+| `isar/session/writer.py` | `save_inter` and `save_links`, the one writer of the machine store |
+| `isar/session/analysis_service.py` | runs an `inter` and a `link` queue item in the analysis process |
+| `isar/session/analysis_queue.py` | the queue's bookkeeping for `inter` and `link` queue items |
 | `isar/intake/inter_spectra.py` | the user values, read (`fold`, `read_user`) |
 | `isar/intake/inter_values.py` | the checked writers of the user values |
 | `isar/workspace_api/inter_spectra.py` | the read facade the GUI and notebooks use |
@@ -585,13 +614,17 @@ intensity, and aren't well supported on their own; they should come through as p
 where: "Everywhere it runs." On the value: "Yes, we can take that limit; we can always tune it later if need be." On
 the lifted ceiling of 20 meV: "Sure".
 
+**IS28 — Mode linking is a step of its own, run on request or by a toggle.** Decides that mode linking (section 2.2) is a third step beside the anchored and simultaneous batches, which stay. The Processing dock's **Link modes** button queues one short link item for the scans selected in the scan list. The switch *Link modes after each fast pass* is off by default and stored with the experiment; when it is on, the settling of a scan's last fast pass queues one series link item for that scan. Turning it on links nothing already present. Linking changes no fit, and no control edits a link. IS14 still holds for batches. Dated 2026-11-01.
+"I view this is a basic "how many modes should we even be trying, and where can we draw links for the same mode across different zones to do the fitting right in the next iteration"" (what linking is for). "No need, this is a different thing entirely from the anchor->ring moving. It may survive as the second step; once we aren't choosing modes, that's cut a huge amount of the time, we can link directly and focus on the harder questions there rather than trying to check every candidate" and "So: don't rip out the anchors and rings, this is a third thing." (a third step). "No user modification or interaction right now, that comes later once the base is working ok." (no editing). "A button is good. Make a toggle to run it automatically, like the fast-pass, so users can run a fast pass and synchronize new data automatically." (button and toggle).
+On 2026-11-01 the operator answered the intensity questions in these words: "A b. B Yes, we compare the intrinsic intensity of the phonon which removes external factors (correct for temperature, analyzer efficiency, etc.) C Ok, yes" (A answered the analyzer-efficiency question, B the temperature question, C the named removals). The intensity scale is `intensity_scale` in `isar/session/inter_spectra/linking.py`.
+
 ## 9. Out of scope and open
 
 **Out of scope, by ruling.**
 
 - Coupling across series taken at different q settings: "we don't need to go across those scans, I don't think, right now" and "an issue for another time" (operator, 2026-10-29).
 - A fitted ω(q, T) surface: "we get Omega(q, T) and Omega(q', T) and Omega (q, T') but not Omega (q', T')" (operator, 2026-10-29).
-- Any automatic start, and any toggle for one (IS14); new windows (IS15).
+- Any automatic start of a batch, and any toggle for one (IS14); new windows (IS15). Mode linking has its own automatic toggle (IS28).
 - The campaign side (`isar drive`): its running dispersion prior and its branch identity are unchanged, and inter-spectra results do not reach a campaign.
 - A full joint selection of the mode count along a track, and a deep pass on inter-spectra fits (IS12).
 
@@ -608,6 +641,8 @@ the lifted ceiling of 20 meV: "Sure".
 - *Reports and exports, plan decision D6.* The fast-pass projection of `results.csv`, `modes.csv` and `report.json` is the built reading of the design's default; the operator is to confirm it.
 - *Settling time.* Whether a simultaneous batch settles in useful time on a real row is not measured (section 10).
 - *Search risk accepted.* A better count reachable only through counts that are each more than the stopping margin behind is not found (IS21). The operator: "We can try this and see how it works on the data."
+- *Mode linking tolerances.* `width_tolerance_ln`, `intensity_tolerance_ln`, `link_threshold` and `tie_margin` are uncalibrated starting values (section 5), to be tuned on the operator's data. No run of the linking on a copy of the experiment is recorded in section 10.
+- *Skip pairs.* A branch is linked across one missing spectrum only (the single-gap limit): the two graph links on either side of the middle spectrum must lie on one line through it. A gap of two or more spectra is not bridged.
 - *Flags.* Deliberately last: "Let's leave the flags for the *end* when everything is tuned and working". The flag `branch_lost_mid_window` (look) is kept; the flag layout and any relabelling of severities are later work.
 - *q-links and curvature on real data.* On the BL43LXU gpi triplets, measured in the hkl metric, the triplets lie off the straight line, so whether a curvature term forms depends on `collinearity_tol`. Its default is now 0.01, a provisional value, still uncalibrated and under the operator's review. The q proof (section 1) reports the curvature count when it is run.
 
@@ -623,7 +658,7 @@ the lifted ceiling of 20 meV: "Sure".
 - Skipping is within one batch only (no cross-batch skip): a rerun of an interrupted batch repeats its work.
 - The fast pass's own six-mode peak-count ceiling is not changed by this work (noted, not built). On the finish-line copy, 10 of its 28 fast passes reached it.
 - After the degenerate-QE rule (IS23), a BL43LXU fast pass stored by older code is stale (the recipe version `isar.central-qe-recipe/2`): the analysis queue refits it when asked, and a batch refuses a member without a current fast pass until then. Stored results are not rewritten; an experiment changes only when its fast pass is re-run.
-- After the fast-pass width cap (IS27, recipe `isar.mode-prior-recipe/7`), every fast pass stored by older code is stale: the analysis queue refits it when asked, and a batch refuses a member without a current fast pass until it is re-run. Stored results are not rewritten.
+- After the fast-pass width cap (IS27, recipe `isar.mode-prior-recipe/7`), every fast pass stored by older code is stale: the analysis queue refits it when asked, and a batch refuses a member without a current fast pass until it is re-run. Stored results are not rewritten. Mode linking leaves such a spectrum out with the reason "fitted with an older fitting recipe; run its fast pass again".
 
 ## 10. Measured so far
 

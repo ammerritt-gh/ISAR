@@ -623,6 +623,7 @@ class MainWindow(QMainWindow):
         self.intake.bind(root)
         self.inter.bind(root)
         self._queue.bind(root, auto_fast=True if self._gui_store is None else self._gui_store.auto_fast_pass(),
+                         auto_link=False if self._gui_store is None else self._gui_store.auto_link(),
                          keep_waiting=self._renaming)
         self.files_strip.bind(self.files_vm, root is not None)   # experiment_open
         self.output_bar.set_experiment(root)
@@ -800,6 +801,8 @@ class MainWindow(QMainWindow):
         self.scan_list_vm.set_queue(self._queue)
         self._queue.log_line.connect(self.log)
         self._queue.auto_fast_changed.connect(self._on_auto_fast_changed)
+        self._queue.auto_link_changed.connect(self._on_auto_link_changed)
+        self._queue.links_saved.connect(self._on_links_saved)
         self._queue.changed.connect(self._push_run_row)
         self._queue.results_saved.connect(self._on_results_saved)
         self.intake.saved.connect(lambda _message: self.inter.reload())        # a saved value can make a refit stale
@@ -920,6 +923,7 @@ class MainWindow(QMainWindow):
             signal.connect(self._release_export_hold)
         self.processing_panel.run_requested.connect(lambda: self.start_analysis())
         self.processing_panel.batch_requested.connect(self.start_inter_batch)
+        self.processing_panel.link_requested.connect(self.start_link)
         self.processing_rail.toggled.connect(
             lambda: self.set_right_panel_collapsed(not self._right_panel_collapsed()))
         self._refresh_recents_menu()
@@ -2123,6 +2127,15 @@ class MainWindow(QMainWindow):
         if not ok:
             self._say(message)
 
+    def start_link(self, scans) -> None:
+        """The Processing dock's Link modes button: queue one link item for the selected scans. A refusal is said
+        here; an accepted item is logged by the queue."""
+        if not self._resolve_dirty_card("link modes"):
+            return
+        ok, message = self._queue.add_link(tuple(scans), reason="user")
+        if not ok:
+            self._say(message)
+
     def _open_inter_settings(self) -> None:
         InterSettingsDialog(self.inter, self).exec()
 
@@ -2225,6 +2238,12 @@ class MainWindow(QMainWindow):
         """The switch moved: it belongs to the experiment, so it is saved in the experiment's GUI store."""
         if self._gui_store is not None:
             self._gui_store.set_auto_fast_pass(flag)
+            self._store_save_timer.start()
+
+    def _on_auto_link_changed(self, flag: bool) -> None:
+        """The automatic linking switch moved: it belongs to the experiment, so it is saved beside the fast-pass one."""
+        if self._gui_store is not None:
+            self._gui_store.set_auto_link(flag)
             self._store_save_timer.start()
 
     def _on_virtual_start_requested(self, opts, env: dict) -> None:
@@ -2882,6 +2901,12 @@ class MainWindow(QMainWindow):
         self._on_workspace_changed({"snapshot", "results"}, refresh_shown=False)
         if shown in keys:
             self._refresh_inspector_selection()
+
+    def _on_links_saved(self, scans) -> None:
+        """A link result was saved. A running watch bridge sees the file; a stopped one (a rename, ``watch=False``)
+        re-reads as it does for saved fits. No analyzer is named, so the shown one is not re-rendered."""
+        log.info("mode links saved for %d scan(s)", len(scans))
+        self._on_results_saved(())
 
     def _on_workspace_changed(self, changed, *, refresh_shown: bool = True) -> None:
         # The bridge already refreshed the facade on this (Qt) thread.

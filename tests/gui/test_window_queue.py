@@ -458,3 +458,67 @@ def test_a_saved_result_re_renders_only_the_shown_analyzer_with_the_watch_bridge
     assert w.scan_list_vm.selected_keys() == (shown,)
     w._queue.results_saved.emit((other, shown))
     assert len(renders) == 1 and reloads == [1, 1] and w.scan_list_vm.selected_keys() == (shown,)
+
+# ---- mode linking: the switch, the button's entry point and a saved link ---------------------------
+def test_the_automatic_linking_switch_is_off_by_default_and_saved_with_the_experiment(qtbot, bl43_ws):
+    w = _win(qtbot, bl43_ws)
+    assert w._gui_store.auto_link() is False and w._queue.auto_link() is False
+    w._queue.set_auto_link(True)
+    assert w._gui_store.auto_link() is True and w._store_save_timer.isActive()
+    assert w._gui_store.auto_fast_pass() is True                           # the fast-pass switch is its own
+    w._flush_gui_store_if_pending()
+    assert GuiStore.load(bl43_ws).auto_link() is True                      # on disk, beside the fast-pass switch
+    other = _win(qtbot, bl43_ws)                                           # the next time the experiment is opened
+    assert other._queue.auto_link() is True
+    other._queue.set_auto_link(False)
+    other._flush_gui_store_if_pending()
+    assert GuiStore.load(bl43_ws).auto_link() is False
+
+
+def test_turning_the_linking_switch_on_queues_nothing_in_the_window(qtbot, bl43_ws):
+    w = _win(qtbot, bl43_ws)
+    w._queue.set_auto_link(True)
+    view = w._queue.view()
+    assert view.links == () and view.fast == () and view.n_look == 0
+    assert w._queue.link_status() == qc.LinkStatus(0, 0, None, False)
+
+
+def test_start_link_queues_one_user_item_for_the_scans_and_says_a_refusal(qtbot, bl43_ws):
+    w = _win(qtbot, bl43_ws)
+    w._queue.pause()                                                       # nothing starts; the item only waits
+    scan = w.scan_list_vm.snapshot.sets[0].key
+    try:
+        w.start_link((scan,))
+        (item,) = w._queue.view().links
+        assert item.status == "waiting" and not item.automatic
+        spec = w._queue._recs[item.item_id].spec
+        assert spec["scans"] == [scan] and spec["series"] is False and spec["reason"] == "user"
+        w.start_link((scan,))                                              # the same request while it waits
+        assert len(w._queue.view().links) == 1
+        assert w.statusBar().currentMessage() == "Link modes for these scans is already queued."
+        w.start_link(())
+        assert w.statusBar().currentMessage() == "no scans to link modes for"
+    finally:
+        _forget_queue(w)
+
+
+def test_start_link_asks_about_a_draft_card_first_and_queues_nothing_when_the_user_cancels(qtbot, monkeypatch, bl43_ws):
+    w = _win(qtbot, bl43_ws)
+    asked = []
+    monkeypatch.setattr(w, "_resolve_dirty_card", lambda action: asked.append(action) or False)
+    w.start_link(("E:1",))
+    assert asked == ["link modes"] and w._queue.view().links == ()
+
+
+def test_a_saved_link_re_reads_the_experiment_with_the_watch_bridge_stopped_and_leaves_the_display_alone(
+        qtbot, monkeypatch, bl43_ws):
+    w = _win(qtbot, bl43_ws)
+    assert w._bridge is None
+    shown = w.scan_list_vm.snapshot.sets[0].spectra[0].key
+    w.scan_list_vm.select(shown)
+    renders, reloads = [], []
+    monkeypatch.setattr(w.inspector_vm, "set_fit", lambda fit: renders.append(fit))
+    monkeypatch.setattr(w.inspector_vm, "set_unit", lambda key: renders.append(key))
+    monkeypatch.setattr(w.intake, "reload", lambda: reloads.append(1))
+    w._queue.links_saved.emit((w.scan_list_vm.snapshot.sets[0].key,))
+    assert renders == [] and reloads == [1] and w.scan_list_vm.selected_keys() == (shown,)

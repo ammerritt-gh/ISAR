@@ -93,6 +93,14 @@ SETTING_DEFS: tuple[SettingDef, ...] = (
     _row("full_search_max_count", "hidden", "int", 4, "modes", 0, 12,
          "With the full search on: the largest mode count it prices (every count from none up to this). The number of "
          "labellings grows factorially with it and nothing else limits the run."),
+    _row("width_tolerance_ln", "hidden", "float", 0.7, None, 0, 5,
+         "Mode linking: how far a mode's width may differ between neighbours, as the natural log of the ratio (0.7 is about a factor of two), before it counts as one full tolerance.", strict=True),
+    _row("intensity_tolerance_ln", "hidden", "float", 1.0, None, 0, 5,
+         "Mode linking: how far a mode's intrinsic intensity (Bose-corrected, divided by the analyzer's efficiency) may differ between neighbours, as the natural log of the ratio (1 is about a factor of 2.7), before it counts as one full tolerance.", strict=True),
+    _row("link_threshold", "hidden", "float", 9.0, None, 0, 1000,
+         "Mode linking: two modes of neighbouring spectra are linked as one branch only when their summed mismatch in energy, width and intensity, each in squared tolerances, is at most this.", strict=True),
+    _row("tie_margin", "hidden", "float", 2.0, None, 0, 100,
+         "Mode linking: two ways of linking a crossing are reported as a near tie when their summed mismatch differs by less than this."),
 )
 
 _BY_NAME = {d.name: d for d in SETTING_DEFS}
@@ -152,6 +160,10 @@ class InterSettings:
     linewidth_ratio: float = 2.0
     full_search: bool = False
     full_search_max_count: int = 4
+    width_tolerance_ln: float = 0.7
+    intensity_tolerance_ln: float = 1.0
+    link_threshold: float = 9.0
+    tie_margin: float = 2.0
 
     @staticmethod
     def from_values(values: Mapping[str, object]) -> "InterSettings":

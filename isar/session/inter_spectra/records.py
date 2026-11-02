@@ -2,7 +2,8 @@
 
 Stdlib plus the intake package only. The index ``report/inter_spectra.jsonl`` is append-only, one JSON object per
 line, file order = global order; payloads live in ``report/inter_spectra/refits/<batch>.jsonl`` and are read by
-byte offset. The one writer is ``isar.session.writer.save_inter``; this module only reads.
+byte offset. Link results (kind ``link``) sit in the same index, with payloads in ``report/inter_spectra/links``.
+The one writer is ``isar.session.writer`` (``save_inter``, ``save_links``); this module only reads.
 """
 from __future__ import annotations
 
@@ -12,16 +13,22 @@ import secrets
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from isar.intake import store
+
+if TYPE_CHECKING:
+    from isar.analyze.coupled.linking import LinkResult
 
 log = logging.getLogger(__name__)
 
 LOG = "report/inter_spectra.jsonl"
 PAYLOAD_DIR = "report/inter_spectra/refits"
+LINK_DIR = "report/inter_spectra/links"
 SCHEMA_LOG = "isar.inter-log/1"
 SCHEMA_REFIT = "isar.inter-refit/1"
 SCHEMA_SAVE = "isar.inter-result/1"
+SCHEMA_LINK = "isar.link-result/1"            # a link queue item's payload (the writer's input)
 ELIGIBLE = ("accepted", "unchanged")        # statuses that are offered fits; "rejected" and "failed" are logged only
 STATUSES = ("accepted", "unchanged", "rejected", "failed")
 # the plain words of a declined refit, by Accept.reason; "{}" is Accept.detail (the neighbour). The writer
@@ -41,6 +48,10 @@ def new_batch_id() -> str:                  # "b" + 12 hex; the GUI controller m
 
 def new_fit_id() -> str:                    # "f" + 12 hex ("fast" is the reserved id of the solo fit)
     return "f" + secrets.token_hex(6)
+
+
+def new_link_id() -> str:                   # "l" + 12 hex
+    return "l" + secrets.token_hex(6)
 
 
 @dataclass(frozen=True)
@@ -92,6 +103,18 @@ class InterLog:
     batches: dict[str, BatchInfo]; refits: tuple[RefitLine, ...]; stages: tuple[StageLine, ...]; damaged: tuple
 
 
+@dataclass(frozen=True)
+class LinkLine:
+    link: str; at: str
+    scope: tuple[str, ...]                   # scan keys the result covers
+    batch: str | None; stage: str | None
+    made_from: dict[str, tuple[str, str | None]]     # unit -> (fit id, inputs hash)
+    stamps: dict[str, str]                           # unit -> the fit's stamp (fit_stamp)
+    next_name: int; digest: str
+    counts: dict[str, int]                           # spectra, branches, ties, contradictions, excluded
+    payload: tuple[str, int, int]                    # (file relative to report/inter_spectra/links, byte offset, byte length)
+
+
 def refused_words(accept: Accept) -> str:
     """The plain reason a declined refit gives in ``save_inter``'s verdict."""
     return REFUSED[accept.reason].format(accept.detail)
@@ -133,8 +156,10 @@ def read_log(root) -> InterLog:
     for lineno, o in store._objects(store._bytes(Path(root) / LOG), LOG, damaged):
         kind = o.get("kind")
         try:
-            if o.get("schema") != SCHEMA_LOG or kind not in ("batch_start", "refit", "stage", "batch_end"):
+            if o.get("schema") != SCHEMA_LOG or kind not in ("batch_start", "refit", "stage", "batch_end", "link"):
                 raise ValueError(f"not an {SCHEMA_LOG} line")
+            if kind == "link":
+                continue                          # read_links reads these
             if kind == "batch_start":
                 if o["batch"] not in batches:
                     batches[o["batch"]] = _batch(o)
@@ -174,6 +199,44 @@ def read_payload(root, line: RefitLine) -> dict | None:
         log.warning("payload of %s (%s) unreadable: %s", line.fit, path, exc)
         return None
     return {"came_in": o.get("came_in"), "came_out": o.get("came_out"), "overlay": o.get("overlay")}
+
+
+def read_links(root) -> tuple[LinkLine, ...]:
+    """The saved link records in file order; a damaged line or one that does not fit is skipped and logged."""
+    out: list[LinkLine] = []
+    damaged: list = []
+    for lineno, o in store._objects(store._bytes(Path(root) / LOG), LOG, damaged):
+        if o.get("kind") != "link":
+            continue
+        try:
+            if o.get("schema") != SCHEMA_LOG:
+                raise ValueError(f"not an {SCHEMA_LOG} line")
+            p = o["payload"]
+            out.append(LinkLine(
+                o["link"], o["at"], tuple(o["scope"]), o["batch"], o["stage"],
+                {u: (v[0], v[1]) for u, v in o["made_from"].items()}, dict(o["stamps"]), int(o["next_name"]),
+                o["digest"], dict(o["counts"]), (str(p[0]), int(p[1]), int(p[2]))))
+        except (KeyError, TypeError, ValueError, IndexError) as exc:
+            store._skip(damaged, LOG, lineno, f"{type(exc).__name__}: {exc}")
+    return tuple(out)
+
+
+def read_link_payload(root, line: LinkLine) -> LinkResult | None:
+    """The result a link record stored; None (logged) when its payload is gone or is not that record's."""
+    from isar.analyze.coupled import linking       # the facade reads this module: the core stays out of its import
+
+    name, offset, length = line.payload
+    path = Path(root) / LINK_DIR / name
+    try:
+        with open(path, "rb") as f:
+            f.seek(offset)
+            o = json.loads(f.read(length))
+        if not isinstance(o, dict) or o.get("link") != line.link:
+            raise ValueError(f"the bytes at {offset} are not link {line.link}'s payload")
+        return linking.from_json(o["result"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        log.warning("payload of link %s (%s) unreadable: %s", line.link, path, exc)
+        return None
 
 
 def inputs_now_from(rows, index, tabulated, units: Sequence[str], gpi: Mapping | None = None, *,

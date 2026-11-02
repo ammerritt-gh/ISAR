@@ -11,12 +11,15 @@ read-modify-write and merge onto the files as they are on disk, never over them 
   when it loaded, so a result saved meanwhile is kept.
 - :func:`save_inter` appends a batch's refits to ``report/inter_spectra`` and decides, against the locks and
   input fingerprints on disk at that moment, which become authoritative; it writes nothing else.
+- :func:`save_links` appends a mode-linking result (index kind ``link``, payload under ``report/inter_spectra/links``)
+  and never refuses it on its branch names.
 
 ``run_batch``, the campaign worker and the drive loop do not take the lock (docs/WORKSPACE_AND_CLI.md).
 """
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import logging
 import os
@@ -24,6 +27,7 @@ import re
 from collections.abc import Sequence
 from pathlib import Path
 
+from isar.analyze.coupled import linking
 from isar.intake import fit_inputs, gpi, inputs, inter_spectra, scans as intake_scans, store
 from isar.schema import _json
 from isar.schema.card import load_state
@@ -322,6 +326,94 @@ def save_inter(workspace_root, payloads: Sequence[dict]) -> list[dict | str]:
                 else:
                     verdict["refused"][r["unit"]] = records.refused_words(accept)
             out.append(verdict)
+    return out
+
+
+def _link_problem(p) -> str | None:
+    """Why a link payload cannot be saved (nothing of it is written); None when it can."""
+    if not isinstance(p, dict) or p.get("schema") != records.SCHEMA_LINK or p.get("pass") != "link":
+        return f"not an {records.SCHEMA_LINK} payload"
+    scope = p.get("scope")
+    if not (isinstance(scope, list) and scope and all(isinstance(s, str) for s in scope)):
+        return "a link covers no scan"
+    if not isinstance(p.get("result"), dict):
+        return "a link carries no result"
+    try:
+        linking.from_json(p["result"])
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        return f"the link result is malformed: {exc}"
+    return None
+
+
+def _append_link(workspace_root, result: linking.LinkResult, *, scope: Sequence[str], batch: str | None,
+                 stage: str | None) -> str:
+    """One link record: its payload, then its index line. The caller holds the workspace write lock.
+
+    Saving the same result for the same scope again returns the record it has. The new branches' display names
+    continue the store's names (``B<N>`` from the largest stored ``next_name``); their ids and every label stay.
+    """
+    if not isinstance(result, linking.LinkResult):
+        raise PayloadError(f"a link result is not a LinkResult ({type(result).__name__})")
+    if not scope:
+        raise PayloadError("a link covers no scan")
+    scope = list(scope)
+    try:
+        body = linking.to_json(result)
+    except ValueError as exc:
+        raise PayloadError(f"a link result is malformed: {exc}") from exc
+    root = Path(workspace_root)
+    content = {k: v for k, v in body.items() if k not in ("name_start", "next_name")}     # provenance, not content
+    digest = hashlib.sha256(json.dumps([sorted(scope), content], sort_keys=True, separators=(",", ":"),
+                                       allow_nan=False).encode("utf-8")).hexdigest()[:16]
+    logged = records.read_links(root)
+    same = [line for line in logged if sorted(line.scope) == sorted(scope)]
+    if same and same[-1].digest == digest:
+        return same[-1].link
+    next_name = max((line.next_name for line in logged), default=1)
+    new = [b.id for b in result.branches if int(b.name[1:]) >= result.name_start]
+    if new and result.name_start != next_name:
+        names = {bid: f"B{next_name + k}" for k, bid in enumerate(new)}
+        result = dataclasses.replace(
+            result, branches=tuple(dataclasses.replace(b, name=names[b.id]) if b.id in names else b
+                                   for b in result.branches),
+            name_start=next_name, next_name=next_name + len(new))
+    link = records.new_link_id()
+    name = f"{link}.jsonl"
+    blob = _line({"link": link, "result": linking.to_json(result)})
+    offset = _append_lines(root / records.LINK_DIR / name, [blob])
+    counts = {"spectra": len(result.made_from), "branches": len(result.branches), "ties": len(result.ties),
+              "contradictions": len(result.contradictions), "excluded": len(result.excluded)}
+    head = {"schema": records.SCHEMA_LOG, "batch": batch, "at": fit_inputs._now()}
+    _append_lines(root / records.LOG, [_line({**head, "kind": "link", "link": link, "scope": scope,
+                                              "stage": stage, "made_from": result.made_from,
+                                              "stamps": result.stamps, "next_name": result.next_name,
+                                              "digest": digest, "counts": counts,
+                                              "payload": [name, offset, len(blob) - 1]})])   # index last
+    return link
+
+
+def save_links(workspace_root, result: linking.LinkResult, *, scope: Sequence[str], batch: str | None,
+               stage: str | None) -> str:
+    """Save one link result under the workspace write lock; returns its link id (see :func:`_append_link`)."""
+    with workspace_write_lock(Path(workspace_root)):
+        return _append_link(workspace_root, result, scope=scope, batch=batch, stage=stage)
+
+
+def save_link_payloads(workspace_root, payloads: Sequence[dict]) -> list[dict | str]:
+    """The link save target of the analysis service: per payload, in arrival order, ``{"saved": True, "link": id,
+    "new": bool}`` or the plain reason it was not saved (nothing of that payload is written)."""
+    root = Path(workspace_root)
+    out: list[dict | str] = []
+    with workspace_write_lock(root):
+        for p in payloads:
+            why = _link_problem(p)
+            if why is not None:
+                out.append(why)
+                continue
+            before = {line.link for line in records.read_links(root)}
+            link = _append_link(root, linking.from_json(p["result"]), scope=p["scope"], batch=p.get("batch"),
+                                stage=p.get("stage"))
+            out.append({"saved": True, "link": link, "new": link not in before})
     return out
 
 

@@ -18,6 +18,7 @@ from bl43_fixture import KEY_A
 from gui.inter_fakes import make_preview
 from inter_fixtures import build_inter_workspace, spectrum_keys
 from isar.workspace_api import inter_spectra as inter_reads
+from isar.workspace_api.scan_keys import scan_prefix
 from isar_gui import main_window as mw_mod
 from isar_gui import queue_controller as qc
 from isar_gui.main_window import MainWindow
@@ -206,6 +207,23 @@ def test_a_fold_is_remembered_for_its_experiment_and_a_new_experiment_opens_expa
     assert box._expanded                                   # B has no fold of its own: open
     assert w.load_workspace(str(bl43_ws))
     assert not box._expanded                               # A keeps its fold
+
+
+def test_link_modes_in_the_dock_queues_one_link_item_for_the_scans_of_the_selection(qtbot, inter_ws):
+    analyzer = spectrum_keys(inter_ws)[0]
+    w = _win(qtbot, inter_ws)
+    box = w.processing_panel.inter_box
+    w._queue.pause()                                                    # nothing starts; the item only waits
+    try:
+        w.scan_list_vm.select(analyzer)
+        qtbot.waitUntil(lambda: box._link_modes.isEnabled(), timeout=WAIT_MS)
+        box._link_modes.click()                                         # the dock's own *Link modes* button
+        (item,) = w._queue.view().links
+        assert item.status == "waiting" and not item.automatic
+        spec = w._queue._recs[item.item_id].spec
+        assert spec["scans"] == [scan_prefix(analyzer)] and spec["series"] is False and spec["reason"] == "user"
+    finally:
+        _forget_queue(w)
 
 
 def _forget_queue(w) -> None:
