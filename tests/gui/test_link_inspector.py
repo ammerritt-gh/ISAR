@@ -109,7 +109,7 @@ def test_the_inspector_names_the_modes_of_the_spectrum_it_shows_from_the_saved_l
 def test_the_branch_names_sit_in_the_fast_column_and_no_shared_heading_or_deep_cell_carries_them(qtbot):
     widget = _section(qtbot)
     _show(widget, 2, 2, make_unit_links(A06, names=("B3", "B2"), markers=(CHANGE,)))
-    assert _label(widget, "fit_mode_1_header").text() == "Mode 1"          # the heading spans Fast and Deep: no name
+    assert _label(widget, "fit_mode_1_header").text() == "Mode 1"          # the Mode heading is shared by Fast and Deep: no name
     branch = _label(widget, "fit_mode_1_fast_branch")
     assert branch.text() == "B3 · energy differs from neighbours"
     assert widget._grid.getItemPosition(widget._grid.indexOf(branch))[1] == 1     # the Fast column
