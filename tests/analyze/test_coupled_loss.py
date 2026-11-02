@@ -142,9 +142,13 @@ HIDDEN_W, HIDDEN_E2 = 8.0, 8.5
 
 
 def _three(own_modes, own_true_modes, e2, w_nb, *, scale=1.0, settings=S, seed=1):
+    """The link lists the add of b2 (the search prices only listed changes, S4U2); its intensity is unknown (A 0), so
+    no height coupling enters and the loss price is the only price these cases weigh (the height coupling's own
+    decision on these fixtures: ``test_coupled_search_real.py`` 17)."""
     prep = spectrum(own_true_modes, scale=scale, seed=seed, ceiling=2)
     nb = [(8.0, 0.4, 40.0), (e2, 0.4, w_nb)]
-    return t_pair(prep, own_modes, ["b1"], nb, ["b1", "b2"], guard=0.0, settings=settings)
+    snap = t_pair(prep, own_modes, ["b1"], nb, ["b1", "b2"], guard=0.0, settings=settings)
+    return replace(snap, links=links_for(1, changes=[add("b2", e2, w=1.7, A=0.0)], labels=("b1",)))
 
 
 def _hidden(settings=S):

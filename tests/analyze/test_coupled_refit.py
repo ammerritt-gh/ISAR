@@ -109,13 +109,23 @@ def test_runs_from_the_worktree():
     assert isar.__file__.replace("\\", "/").startswith(here)
 
 
+def _split_listed(snap):
+    """``snap`` with the link listing the split of y's one mode into b1 and b2 at 8 and 10 meV (the search prices only
+    listed changes, S4U2); width 0.3 in 1.5 meV, intensity unknown (A 0), so no height coupling enters."""
+    from _search_harness import links_for, pred
+
+    from isar.analyze.coupled.linking import Change
+    split = Change("split", 0, ("b1", "b2"), (pred("b1", 8.0, w=1.6, A=0.0), pred("b2", 10.0, w=1.6, A=0.0)))
+    return replace(snap, links=links_for(1, changes=[split]))
+
+
 # 1 ---------------------------------------------------------------------------------------------------------
 @pytest.mark.slow       # a search on the real engine (about 50 s)
 def test_overlap_is_recovered_without_a_birth_charge():
     # Two branches at 8 and 10 meV in both T-neighbours; the centre's fast solo holds one broad mode at 9 meV
     # on counts too weak for the data alone to prefer two (solo: (None,) beats (None, None)).
     true = [(8.0, 0.3, 30.0), (10.0, 0.3, 30.0)]
-    snap = t_pair(spectrum(true, scale=0.08, seed=5), [(9.0, 1.0, 4.0)], ["fast:y#0"], true, ["b1", "b2"])
+    snap = _split_listed(t_pair(spectrum(true, scale=0.08, seed=5), [(9.0, 1.0, 4.0)], ["fast:y#0"], true, ["b1", "b2"]))
     r = R.refit(snap, stage="both")
     a = r.assignment
     assert (a.count, a.slots, a.changed, r.status) == (2, ("b1", "b2"), True, "accepted")
@@ -430,12 +440,17 @@ def test_a_label_swap_of_two_close_modes_loses_by_a_clear_margin():
     # two modes 2.4 meV apart (made-up energies); swapping their branches shifts each one by 2.4 meV across the link
     modes = [(3.0, 0.3, 40.0), (5.4, 0.3, 40.0)]
     spacing = 2.0 / S.q_slope_meV_per_rlu                     # a 2 meV tolerance at this spacing
-    own = held("y", modes, ["fast:y#0", "fast:y#1"])
+    # the link labels y's modes b1, b2 (the runner relabels the frozen fit to them) and reports the swap as a near-tie,
+    # so the search prices the swapped labelling as the crossing's alternative (S4U2)
+    from _search_harness import ledger, links_for, tie
+    own = held("y", modes, ["b1", "b2"])
     term = TermInput(Term("q-change", ("x", "y"), (spacing,), None, None, "hkl"), (held("x", modes, ["b1", "b2"]),))
-    snap = Snapshot("s", "s", "y", "f1", spectrum(modes, seed=21), own, record(modes), (term,), S, "anchored")
-    from _search_harness import ledger
+    links = links_for(2, labels=("b1", "b2"), ties=[tie("t1", "swap", ("x", "y"), ("b2", "b1"))])
+    snap = Snapshot("s", "s", "y", "f1", spectrum(modes, seed=21), own, record(modes), (term,), S, "anchored",
+                    links=links)
     a, _priced = R.assign(snap)
-    assert a.slots == ("b1", "b2")
+    assert a.slots == ("b1", "b2") and a.search["chosen"] == "incoming"
+    assert any(c["source"] == "cross:t1" and c["ln_z"] is not None for c in a.candidates)   # the swap was priced
     # price both labellings from the incoming modes (the swap move's own start) and read the basin ledger: the
     # swapped basin (mode at 3.0 on b2) files under (b2, b1); the straight basin one order finds is counted once
     s = ledger(snap, [R.price(snap, _job(snap, o, ("own", modes))) for o in (("b1", "b2"), ("b2", "b1"))])
@@ -774,7 +789,7 @@ def test_the_evidence_selected_delta_mask_reaches_the_runner_refinement_and_stay
     # (about 0.37 nat cheaper per free width) tipped the tie to one free width; at the floor both-delta leads by ~15.
     from isar.analyze.phonon import GAMMA_FLOOR
     true = [(8.0, GAMMA_FLOOR, 30.0), (10.0, GAMMA_FLOOR, 30.0)]
-    snap = t_pair(spectrum(true, scale=0.08, seed=5), [(9.0, 1.0, 4.0)], ["fast:y#0"], true, ["b1", "b2"])
+    snap = _split_listed(t_pair(spectrum(true, scale=0.08, seed=5), [(9.0, 1.0, 4.0)], ["fast:y#0"], true, ["b1", "b2"]))
     a, priced = R.assign(snap)
     win = next(p for p in priced if (p.count, tuple(p.slots)) == (a.count, a.slots))
     assert (a.slots, win.mode[3]) == (("b1", "b2"), (0, 1))
@@ -800,15 +815,6 @@ def test_why_names_the_components_when_the_evidence_changed_the_variant_and_the_
     same = ("b1",)
     assert "quasi-elastic" in R._why("accepted", "evidence", 1, 1, same, same, None, 0.0, True)
     assert "resolution limited" in R._why("accepted", "evidence", 1, 1, same, same, None, 0.0, False)
-
-
-@pytest.mark.slow       # a search on the real engine (about 40 s); the id rule itself is the routine test above
-def test_a_mode_born_by_the_search_gets_a_new_id():
-    born = R.refit(t_pair(spectrum([(8.0, 0.4, 40.0), (15.0, 0.4, 60.0)], seed=8), [(8.0, 0.4, 40.0)], ["b1"],
-                          [(8.0, 0.4, 40.0)], ["b1"], rec=record([(8.0, 0.4, 40.0)], probs={"1": 0.5, "2": 0.5})),
-                   stage="both")
-    new = [m.branch for m in born.modes if m.branch != "b1"]
-    assert born.assignment.count == 2 and len(new) == 1 and new[0].startswith("f00000000000a#")   # a birth is minted
 
 
 def test_widths_and_shifts_are_compared_with_the_fast_solo_not_the_last_sweep():
@@ -841,7 +847,7 @@ def test_only_exchangeable_unmatched_modes_get_the_factorial():
 def test_a_split_has_no_fast_comparison_without_a_one_to_one_partner():
     true = [(8.0, 0.3, 30.0), (10.0, 0.3, 30.0)]
     solo = [(9.0, 1.0, 4.0)]
-    snap = t_pair(spectrum(true, scale=0.08, seed=5), solo, ["fast:y#0"], true, ["b1", "b2"])
+    snap = _split_listed(t_pair(spectrum(true, scale=0.08, seed=5), solo, ["fast:y#0"], true, ["b1", "b2"]))
     r = R.refit(replace(snap, fast=held("y", solo, ["fast:y#0"], T=200.0)), stage="both")
     assert r.assignment.count == 2 and "neighbour_supported_split" in codes(r)
     assert "linewidth_change" not in codes(r) and "overdamped_entry" not in codes(r)
