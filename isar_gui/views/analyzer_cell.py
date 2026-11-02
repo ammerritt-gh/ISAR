@@ -30,6 +30,9 @@ BATCH_TONES = {"waiting": Tone.IDLE, "fitting": Tone.ACTIVE, "done": Tone.OK, "r
                "failed": Tone.ERR, "not_reached": Tone.IDLE}
 MARKERS = {"anchor": "Anchor: a spectrum you trust. An anchored batch grows outward from it.",
            "lock": "Locked: this spectrum's fit is fixed, so no batch will refit it."}
+GESTURE_TIP = ("Click selects this spectrum in the scan list. Ctrl-click adds or removes it, and the cells you add form "
+               "a path in click order. Shift-click on a second analyzer in the same row or column selects both and "
+               "everything between them; if they are not in one row or column nothing happens.")
 
 
 def _small(widget: QWidget, bold: bool = False, shrink: float = 1.0) -> None:
@@ -60,7 +63,7 @@ class _Veil(QWidget):
 
 
 class AnalyzerCell(QFrame):
-    clicked = Signal(object, bool)          # (spectrum key or None, ctrl held)
+    clicked = Signal(object, bool, bool)    # (spectrum key or None, ctrl held, shift held)
 
     def __init__(self, beamline: str, internal: str, show_x_ticks: bool, parent=None) -> None:
         super().__init__(parent)
@@ -309,7 +312,7 @@ class AnalyzerCell(QFrame):
         if cell.batch is not None:
             word = BATCH_WORDS.get(cell.batch.state, cell.batch.state)
             lines.append(f"Batch: {word}. {cell.batch.reason or BATCH_TIPS.get(cell.batch.state, '')}")
-        lines.append("Click to select this spectrum in the scan list; Ctrl-click adds or removes it.")
+        lines.append(GESTURE_TIP)
         return "\n".join(lines)
 
     @staticmethod
@@ -332,14 +335,18 @@ class AnalyzerCell(QFrame):
     # ---- gestures ------------------------------------------------------------------------------
     def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
         if event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit(self.key, bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier))
+            self._emit_click(event.modifiers())
             event.accept()
         else:
             super().mousePressEvent(event)
 
+    def _emit_click(self, modifiers) -> None:
+        self.clicked.emit(self.key, bool(modifiers & Qt.KeyboardModifier.ControlModifier),
+                          bool(modifiers & Qt.KeyboardModifier.ShiftModifier))
+
     def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt override)
         if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            self.clicked.emit(self.key, bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier))
+            self._emit_click(event.modifiers())
             event.accept()
         else:
             super().keyPressEvent(event)

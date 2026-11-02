@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QDockWidget, QGridLay
                                QPushButton, QScrollArea, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from isar_gui.viewmodels.analyzer_array import SCALES, Y_MODES, ArrayState, AnalyzerArrayViewModel
-from isar_gui.views.analyzer_cell import CELL_MIN, AnalyzerCell
+from isar_gui.views.analyzer_cell import CELL_MIN, GESTURE_TIP, AnalyzerCell
 from isar_gui.views.elided_label import ElidedLabel
 
 _log = logging.getLogger(__name__)
@@ -161,6 +161,7 @@ class AnalyzerArrayDock(QDockWidget):
         self.layout_label = self._line(outer, "array_layout_line", root)
         self.unplaced_label = self._line(outer, "array_unplaced", root)
         self.batch_label = self._line(outer, "array_batch_line", root)
+        self.path_label = self._line(outer, "array_path_line", root)
 
         scale_row, self.scale_group, self.scale_buttons = self._segment(
             root, "Intensity", SCALES, {"normalised": "Normalised", "raw": "Raw"}, SCALE_TIPS)
@@ -196,6 +197,7 @@ class AnalyzerArrayDock(QDockWidget):
         self.scroll.setMinimumSize(120, 100)
         self.scroll.setAccessibleName("Analyzer grid")
         self.grid_host = QWidget()
+        self.grid_host.setToolTip(GESTURE_TIP)
         self.grid = QGridLayout(self.grid_host)
         self.grid.setContentsMargins(2, 2, 2, 2)
         self.grid.setSpacing(4)
@@ -217,6 +219,7 @@ class AnalyzerArrayDock(QDockWidget):
         vm.scan_list.snapshot_changed.connect(self.refresh)
         vm.refreshed.connect(self.refresh)
         vm.marks_moved.connect(self.refresh)
+        vm.note_moved.connect(self.refresh)
 
     @staticmethod
     def _line(layout, name, parent) -> ElidedLabel:
@@ -453,8 +456,9 @@ class AnalyzerArrayDock(QDockWidget):
                                   "seen from the sample: the scattering-plane row A at the bottom, 2θ rising to the left."),
                                  (self.unplaced_label, state.unplaced_line, state.unplaced_tip),
                                  (self.batch_label, state.batch_line, state.batch_line_tip),
+                                 (self.path_label, state.path_line if state.body == "grid" else "", GESTURE_TIP),
                                  (self.caption_label, state.caption if state.body == "grid" else "",
-                                  "Every cell shares the energy axis; the y axis is linear.")):
+                                  "Every cell shares the energy axis; the y axis is linear.\n" + GESTURE_TIP)):
             label.set_full_text(text)
             if text:
                 label.setToolTip(f"{text}\n{tip}" if tip else text)
