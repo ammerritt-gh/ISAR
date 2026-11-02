@@ -8,9 +8,9 @@ under ``TYPE_CHECKING``), so the session's records may import it at top level.
 Per mode the core reads three summaries: the energy ``E*`` where the mode's intensity peaks (``peak_energy``;
 an overdamped or broad mode is never matched by its omega0), the width ``matching_width`` and the intrinsic
 intensity ``matching_intensity`` (the DHO amplitude: the stored Stokes area with the Bose factor integrated
-across the line removed, times the analyzer scale). ``link`` joins modes with Kruskal over all candidate pairs
-of the grid, reports contradictions and near ties, and lists per spectrum the predicted branches, the changes
-(add, split, drop) and the markers. A mode index is the 0-based position in the fit's modes by ascending omega0.
+across the line removed, times the analyzer scale). ``link`` matches each link's modes as a whole, joins the
+matched pairs with Kruskal over the grid, reports contradictions and near ties, and lists per spectrum the predicted
+branches, the changes (add, split, drop) and the markers. A mode index is the 0-based position in the fit's modes by ascending omega0.
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ if TYPE_CHECKING:
 LINK_SCHEMA = "isar.mode-links/1"
 KB_MEV_PER_K = 0.086173324          # a test asserts == isar.analyze.lineshapes.KB (the core stays numpy-free)
 FWHM_PER_GAMMA = 2.0                # a DHO line of damping Gamma has full width 2 Gamma
+MARK_SIGMAS = 2.0                   # a change marker needs a difference beyond this many combined uncertainties
 
 
 # ---- the three summaries -----------------------------------------------------------------------
@@ -400,6 +401,58 @@ class _DSU:
         self.anchor[a] = self.anchor[a] or self.anchor[b]
 
 
+def _best_matching(pd: Mapping[tuple[int, int], float], thr: float) -> dict[tuple[int, int], float]:
+    """The one-to-one matching of a link's candidate pairs ``pd`` with the least total ``d - thr``: a pair is matched only
+    when it beats leaving both its modes alone (a pair at ``thr`` is dropped). Hungarian method on the square
+    matrix padded with zero-cost dummies; O(n³) in the larger mode count."""
+    rows, cols = sorted({i for i, _ in pd}), sorted({j for _, j in pd})
+    n = max(len(rows), len(cols))
+    if n == 0:
+        return {}
+    c = [[min(pd.get((rows[r], cols[k]), thr) - thr, 0.0) if r < len(rows) and k < len(cols) else 0.0
+          for k in range(n)] for r in range(n)]
+    u, v, p, way = [0.0] * (n + 1), [0.0] * (n + 1), [0] * (n + 1), [0] * (n + 1)   # p[col] = row, 1-based
+    for r in range(1, n + 1):
+        p[0], k0 = r, 0
+        minv, used = [math.inf] * (n + 1), [False] * (n + 1)
+        while True:
+            used[k0] = True
+            r0, delta, k1 = p[k0], math.inf, 0
+            for k in range(1, n + 1):
+                if not used[k]:
+                    cur = c[r0 - 1][k - 1] - u[r0] - v[k]
+                    if cur < minv[k]:
+                        minv[k], way[k] = cur, k0
+                    if minv[k] < delta:
+                        delta, k1 = minv[k], k
+            for k in range(n + 1):
+                if used[k]:
+                    u[p[k]] += delta
+                    v[k] -= delta
+                else:
+                    minv[k] -= delta
+            k0 = k1
+            if p[k0] == 0:
+                break
+        while k0:
+            k1 = way[k0]
+            p[k0] = p[k1]
+            k0 = k1
+    out = {}
+    for k in range(1, n + 1):
+        r = p[k] - 1
+        if r < len(rows) and k - 1 < len(cols):
+            pair = (rows[r], cols[k - 1])
+            if pair in pd and pd[pair] < thr:
+                out[pair] = pd[pair]
+    return out
+
+
+def _mutual_best(pd: Mapping[tuple[int, int], float], i: int, j: int, d: float) -> bool:
+    """Whether the pair (i, j) at mismatch ``d`` is the cheapest candidate of both its modes in ``pd``."""
+    return all(d <= v for (a, b), v in pd.items() if a == i or b == j)
+
+
 def _name_no(name: str) -> int:
     try:
         return int(name[1:])
@@ -417,12 +470,12 @@ def link(inputs: Mapping[str, LinkInput], links: Sequence[Link], settings: Inter
     L = sorted((l for l in links if l.a in inputs and l.b in inputs), key=lambda l: (l.kind, l.a, l.b))
     wt, at, thr, margin = (settings.width_tolerance_ln, settings.intensity_tolerance_ln,
                            settings.link_threshold, settings.tie_margin)
-    tol = {id(l): settings.link_tolerance(l) for l in L}
+    tol = {id(l): settings.link_energy_tolerance(l) for l in L}
 
-    # 1  candidate pairs of every link, and the one-partner winners the skip rule needs
-    cands = []                                  # (d, ua, i, ub, j, li, skip)
+    # 1  candidate pairs of every link; only the link's best matching is offered to the joining
+    cands = []                                  # (d, ua, i, ub, j, li, skip index or -1)
     pair_d: list[dict[tuple[int, int], float]] = []
-    won: list[tuple[set, set]] = []
+    matched: list[dict[tuple[int, int], float]] = []
     for li, l in enumerate(L):
         pd = {}
         for m in S[l.a]:
@@ -430,28 +483,31 @@ def link(inputs: Mapping[str, LinkInput], links: Sequence[Link], settings: Inter
                 d = _cost(m, n, tol[id(l)], wt, at)
                 if d <= thr:
                     pd[(m.i, n.i)] = d
-                    cands.append((d, l.a, m.i, l.b, n.i, li, ""))
         pair_d.append(pd)
-        wa, wb = set(), set()
-        for (i, j), d in sorted(pd.items(), key=lambda kv: (kv[1], kv[0])):
-            if i not in wa and j not in wb:
-                wa.add(i); wb.add(j)
-        won.append((wa, wb))
+        matched.append(_best_matching(pd, thr))
+        cands += [(d, l.a, i, l.b, j, li, -1) for (i, j), d in matched[li].items()]
     li_of = {id(l): k for k, l in enumerate(L)}
 
-    # 1b  skip pairs across one missing spectrum (a branch both neighbours on a line carry, the middle lacks)
+    # 1b  skip pairs across one missing spectrum (a branch both neighbours on a line carry, the middle lacks), among
+    #     the modes the two links' matchings left unmatched, matched as a whole the same way
     def free_modes(l, unit):
-        wa, wb = won[li_of[id(l)]]
-        return [s for s in S[unit] if s.i not in (wa if unit == l.a else wb)]
+        side = 0 if unit == l.a else 1
+        taken = {pair[side] for pair in matched[li_of[id(l)]]}
+        return [s for s in S[unit] if s.i not in taken]
 
+    skip_d: list[dict[tuple[int, int], float]] = []
     for left, l1, x, l2, right in _skip_triples(units, L):
         tolE = tol[id(l1)] + tol[id(l2)]
+        ua, ub = sorted((left, right))
+        pd = {}
         for m in free_modes(l1, left):
             for n in free_modes(l2, right):
                 d = _cost(m, n, tolE, wt, at)
                 if d <= thr:
-                    a, b = (m, n) if left < right else (n, m)
-                    cands.append((d, a.u, a.i, b.u, b.i, -1, x))
+                    a, b = (m, n) if left == ua else (n, m)
+                    pd[(a.i, b.i)] = d
+        skip_d.append(pd)
+        cands += [(d, ua, i, ub, j, -1, len(skip_d) - 1) for (i, j), d in _best_matching(pd, thr).items()]
     cands.sort()
 
     # 2  Kruskal over components
@@ -473,8 +529,6 @@ def link(inputs: Mapping[str, LinkInput], links: Sequence[Link], settings: Inter
     accepted: list[list[tuple[int, int, float]]] = [[] for _ in L]
     contradictions: list[Contradiction] = []
     for d, ua, i, ub, j, li, skip in cands:
-        if li >= 0 and ((li, 0, i) in direct or (li, 1, j) in direct):
-            continue
         ra, rb = dsu.find((ua, i)), dsu.find((ub, j))
         if ra != rb:
             reason = None
@@ -483,6 +537,8 @@ def link(inputs: Mapping[str, LinkInput], links: Sequence[Link], settings: Inter
             elif dsu.anchor[ra] and dsu.anchor[rb] and dsu.anchor[ra] != dsu.anchor[rb]:
                 reason, why = "anchor", "would join two different anchored branches"
             if reason:
+                if not _mutual_best(pair_d[li] if li >= 0 else skip_d[skip], i, j, d):
+                    continue                    # a refused pair that was not both modes' best: no conflict to report
                 contradictions.append(Contradiction(
                     (ua, ub), (i, j), d, reason,
                     f"{ua} mode {i + 1} and {ub} mode {j + 1} match (mismatch {d:.2f}) but linking them {why}."))
@@ -734,14 +790,14 @@ def link(inputs: Mapping[str, LinkInput], links: Sequence[Link], settings: Inter
             if b not in by_branch:
                 continue
             p, lw, la = by_branch[b]
-            if abs(s.E - p.E) > math.sqrt(p.tol_E ** 2 + s.sE ** 2):
+            if abs(s.E - p.E) > MARK_SIGMAS * math.sqrt(p.tol_E ** 2 + s.sE ** 2):
                 markers.append(Marker(x, "change", s.i, "energy",
                                       f"mode {s.i + 1} peaks at {s.E:.2f} meV; its neighbours predict "
                                       f"{p.E:.2f} ± {p.tol_E:.2f} meV."))
-            if abs(s.lw - lw) > math.sqrt(wt ** 2 + s.sw ** 2):
+            if abs(s.lw - lw) > MARK_SIGMAS * math.sqrt(wt ** 2 + s.sw ** 2):
                 markers.append(Marker(x, "change", s.i, "width",
                                       f"mode {s.i + 1} has width {s.w:.2f} meV; its neighbours predict {p.w:.2f} meV."))
-            if s.la is not None and la is not None and abs(s.la - la) > math.sqrt(at ** 2 + s.sA ** 2):
+            if s.la is not None and la is not None and abs(s.la - la) > MARK_SIGMAS * math.sqrt(at ** 2 + s.sA ** 2):
                 markers.append(Marker(x, "change", s.i, "intensity",
                                       f"mode {s.i + 1} has intrinsic intensity {s.a:.3g}; its neighbours "
                                       f"predict {math.exp(la):.3g}."))

@@ -147,7 +147,8 @@ SETTING_TABLE = (
     ("close_call_nats", "hidden", 2.0), ("evidence_hysteresis_nats", "hidden", 0.1),
     ("stop_margin_nats", "hidden", 5.0), ("linewidth_ratio", "hidden", 2.0), ("full_search", "hidden", False),
     ("full_search_max_count", "hidden", 4),
-    ("width_tolerance_ln", "hidden", 0.7), ("intensity_tolerance_ln", "hidden", 1.0),
+    ("link_slope_meV_per_rlu", "hidden", 3.0), ("link_slope_meV_per_invA", "hidden", 2.3),
+    ("width_tolerance_ln", "hidden", 0.3), ("intensity_tolerance_ln", "hidden", 1.0),
     ("link_threshold", "hidden", 9.0), ("tie_margin", "hidden", 2.0),
 )
 
@@ -218,6 +219,19 @@ def test_the_q_tolerance_is_a_slope_times_the_spacing_in_its_own_metric():
     link = SimpleNamespace(kind="T", step=100.0, metric=None, a="x", b="y")
     assert s.link_tolerance(link) == pytest.approx(1.0)
     assert s.link_tolerance(SimpleNamespace(kind="q", step=0.1, metric="hkl", a="a", b="b")) == pytest.approx(1.06)
+
+
+def test_mode_linking_has_its_own_q_slope_and_the_refit_keeps_its_own():
+    s = InterSettings()
+    q = lambda metric: SimpleNamespace(kind="q", step=0.1, metric=metric, a="a", b="b")   # noqa: E731
+    assert s.link_energy_tolerance(q("hkl")) == pytest.approx(0.30)
+    assert s.link_energy_tolerance(q("lattice")) == pytest.approx(0.23)
+    assert s.link_tolerance(q("hkl")) == pytest.approx(1.06)          # the refit's penalty and the seam check
+    assert replace(s, q_slope_meV_per_rlu=20.0).link_energy_tolerance(q("hkl")) == pytest.approx(0.30)
+    t = SimpleNamespace(kind="T", step=100.0, metric=None, a="x", b="y")
+    assert s.link_energy_tolerance(t) == s.link_tolerance(t)
+    with pytest.raises(ValueError, match="a|b: a q link has no metric"):
+        s.link_energy_tolerance(q(None))
 
 
 def test_the_retired_settings_are_gone_from_the_table():

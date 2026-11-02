@@ -93,8 +93,12 @@ SETTING_DEFS: tuple[SettingDef, ...] = (
     _row("full_search_max_count", "hidden", "int", 4, "modes", 0, 12,
          "With the full search on: the largest mode count it prices (every count from none up to this). The number of "
          "labellings grows factorially with it and nothing else limits the run."),
-    _row("width_tolerance_ln", "hidden", "float", 0.7, None, 0, 5,
-         "Mode linking: how far a mode's width may differ between neighbours, as the natural log of the ratio (0.7 is about a factor of two), before it counts as one full tolerance.", strict=True),
+    _row("link_slope_meV_per_rlu", "hidden", "float", 3.0, "meV/r.l.u.", 0, 1000,
+         "Mode linking, scans with no lattice loaded: how far a mode's energy may move per reciprocal lattice unit of distance between neighbours before it counts as one full tolerance (the refit's q-slope is separate).", strict=True),
+    _row("link_slope_meV_per_invA", "hidden", "float", 2.3, "meV/Å⁻¹", 0, 1000,
+         "Mode linking, scans with a lattice loaded: how far a mode's energy may move per inverse angstrom of distance between neighbours before it counts as one full tolerance (the refit's q-slope is separate).", strict=True),
+    _row("width_tolerance_ln", "hidden", "float", 0.3, None, 0, 5,
+         "Mode linking: how far a mode's width may differ between neighbours, as the natural log of the ratio (0.3 is about 35%), before it counts as one full tolerance.", strict=True),
     _row("intensity_tolerance_ln", "hidden", "float", 1.0, None, 0, 5,
          "Mode linking: how far a mode's intrinsic intensity (Bose-corrected, divided by the analyzer's efficiency) may differ between neighbours, as the natural log of the ratio (1 is about a factor of 2.7), before it counts as one full tolerance.", strict=True),
     _row("link_threshold", "hidden", "float", 9.0, None, 0, 1000,
@@ -160,7 +164,9 @@ class InterSettings:
     linewidth_ratio: float = 2.0
     full_search: bool = False
     full_search_max_count: int = 4
-    width_tolerance_ln: float = 0.7
+    link_slope_meV_per_rlu: float = 3.0
+    link_slope_meV_per_invA: float = 2.3
+    width_tolerance_ln: float = 0.3
     intensity_tolerance_ln: float = 1.0
     link_threshold: float = 9.0
     tie_margin: float = 2.0
@@ -207,3 +213,13 @@ class InterSettings:
         if link.kind == "q":
             return self.q_tolerance(link.metric, link.step, f"{link.a}|{link.b}")
         return self.t_base(link.step)[0]
+
+    def link_energy_tolerance(self, link) -> float:
+        """Mode linking's energy tolerance across one graph link, meV: its own slope times the spacing on a q link,
+        ``link_tolerance`` on a T link."""
+        if link.kind != "q":
+            return self.link_tolerance(link)
+        slopes = {"hkl": self.link_slope_meV_per_rlu, "lattice": self.link_slope_meV_per_invA}
+        if link.metric not in slopes:
+            raise ValueError(f"{link.a}|{link.b}: a q link has no metric ({link.metric!r}), so no tolerated slope applies")
+        return slopes[link.metric] * abs(float(link.step))

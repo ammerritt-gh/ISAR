@@ -7,7 +7,8 @@ and a JSON form that does not round-trip. Spectra are built here from omega0, Ga
 from a workspace.
 
 Defaults throughout: T = 100 K, resolution fwhm 0.4, every mode Gamma 0.2, area 10, window (1, 12), q links
-of step 0.1 with metric "lattice" (tolerance 8.0 x 0.1 = 0.8 meV), the default linking settings.
+of step 0.1 with metric "lattice" (tolerance 8.0 x 0.1 = 0.8 meV), width tolerance 0.7: the worked examples were
+built on these tolerances, so ``SET`` keeps them; the shipped defaults are checked on their own below.
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ from isar.analyze.coupled.types import Held, HeldMode
 from isar.session.inter_spectra.graph import Link
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-SET = InterSettings()
+SET = InterSettings(link_slope_meV_per_invA=8.0, width_tolerance_ln=0.7)
 
 
 def test_the_import_root_is_this_checkout():
@@ -266,6 +267,30 @@ def test_the_refused_pair_is_the_last_one_processed_on_the_loop():
     assert (c.units, c.modes, c.reason) == (("c", "d"), (0, 0), "loop") and c.d == pytest.approx(0.564, abs=0.1)
 
 
+def test_a_refused_pair_that_was_not_both_modes_best_is_no_contradiction():
+    # link a-b matches a0-b0 and a1-b1 (a1's best is b0); joining refuses a1-b1, a worse alternative: no conflict.
+    # The mutual-best refusal of _block([5.0, 7.5]) above stays a contradiction.
+    ins = {"a": inp("a", [5.0, 5.5]), "b": inp("b", [5.1, 6.8]), "c": inp("c", [5.7]), "d": inp("d", [6.1, 6.9])}
+    links = [qlink("a", "b"), qlink("c", "d"), qlink("a", "c", COL), qlink("b", "d", COL)]
+    r = lk.link(ins, links, SET)
+    assert r.contradictions == () and not [m for m in r.markers if m.kind == "contradiction"]
+    assert len(_block([5.0, 7.5]).contradictions) == 1
+
+
+def test_each_link_is_matched_as_a_whole_not_cheapest_pair_first():
+    # cheapest first would take 6.0-5.9 (mismatch 0.02) and leave 5.0-6.9 (5.6); the matching takes 5.0-5.9 and
+    # 6.0-6.9 (1.27 each, 2.5 in total)
+    r = lk.link({"a": inp("a", [5.0, 6.0]), "b": inp("b", [5.9, 6.9])}, [qlink("a", "b")], SET)
+    assert members(r) == {frozenset({("a", 0), ("b", 0)}), frozenset({("a", 1), ("b", 1)})}
+    assert r.ties == () and r.contradictions == ()
+
+
+def test_the_matching_links_one_sure_pair_over_two_marginal_ones():
+    # the design's example: a-x at 0 beats a-y and b-x at 8 each (threshold 9); b and y stay unlinked
+    assert lk._best_matching({(0, 0): 0.0, (0, 1): 8.0, (1, 0): 8.0}, 9.0) == {(0, 0): 0.0}
+    assert lk._best_matching({(0, 0): 9.0}, 9.0) == {}
+
+
 def test_anchored_modes_are_fixed_points_and_two_anchors_never_join():
     ins = {"u1": inp("u1", [5.0, 7.0], anchored=True, ids=["P", "Q"]),
            "u2": inp("u2", [5.6], anchored=True, ids=["Q2"]),
@@ -450,11 +475,19 @@ def test_a_mode_far_from_what_its_neighbours_predict_is_a_change_marker():
     ins = {"a": inp("a", [5.0]), "b": inp("b", [5.5]), "c": inp("c", [6.0])}
     ok = lk.link(ins, [qlink("a", "b"), qlink("b", "c")], SET)
     assert ok.markers == ()
-    ins["b"] = inp("b", [(5.5, 0.2, 1000.0)])
-    r = lk.link({**ins, "b": inp("b", [(5.5, 0.2, 40.0)])}, [qlink("a", "b"), qlink("b", "c")], SET)
+    r = lk.link({**ins, "b": inp("b", [(5.5, 0.2, 100.0)])}, [qlink("a", "b"), qlink("b", "c")], SET)
     kinds = {(m.unit, m.quantity) for m in r.markers if m.kind == "change"}
     assert ("b", "intensity") in kinds
     assert any("intrinsic intensity" in m.words for m in r.markers)
+
+
+@pytest.mark.parametrize("off,marked", [(1.5, False), (2.5, True)])
+def test_a_change_marker_needs_two_tolerances(off, marked):
+    # intensity tolerance 1 (ln), no own uncertainty: the middle mode sits ``off`` tolerances above its neighbours
+    ins = {"a": inp("a", [5.0]), "b": inp("b", [(5.0, 0.2, 10.0 * math.exp(off))]), "c": inp("c", [5.0])}
+    r = lk.link(ins, [qlink("a", "b"), qlink("b", "c")], SET)
+    assert len(r.branches) == 1
+    assert (("b", "intensity") in {(m.unit, m.quantity) for m in r.markers if m.kind == "change"}) == marked
 
 
 def test_the_intensity_marker_words_show_the_efficiency_corrected_numbers():

@@ -36,7 +36,7 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | Width at the floor and the quasi-elastic line: a railed width is a resolution-limited alternative that is priced; a QE line railed at its narrowest width is the elastic line (shared engine); the model line is chosen by evidence beyond the hysteresis margin | Implemented on synthetic spectra | `isar/analyze/coupled/refit.py`, `engine.py`, `rules.py` | `tests/analyze/test_coupled_width_floor.py`, `tests/analyze/test_coupled_search_real.py` |
 | Counts above six: pricing, refinement, the release fit and storage accept a count beyond six; `full_search` prices a stated finite domain as a check | Implemented on synthetic spectra | `isar/analyze/coupled/search.py`, `refit.py`, `isar/session/inter_spectra/runner.py` | `tests/analyze/test_coupled_search_real.py`, `tests/analyze/test_coupled_search.py` |
 | Search, price and resume across the refit pool: the runner feeds each spectrum's search as its own jobs return, caches prices within one batch, sizes the pool to the item's cores (`ISAR_WORKERS`, when set, caps it), keeps every worker busy (a candidate's fits, basins and split nodes run as tasks on the same pool, and idle workers price the searches' likely next promotions ahead), and reports timing in the batch's `end` record | Implemented; the timing is measured in section 10 | `isar/session/inter_spectra/runner.py`, `isar/analyze/coupled/tasks.py`, `tools/inter_timing.py` | `tests/session/test_inter_spectra_runner.py`, `tests/test_inter_timing_tool.py`, `tests/session/test_inter_service_e2e.py` |
-| Mode linking core: branches by grid-wide matching on the peak energy, width and intrinsic intensity of each mode, contradictions, near ties, predictions from neighbours, listed changes (add, split, drop), markers, JSON form | **Partial**: built and tested on synthetic grids; the four tolerances are uncalibrated (section 5); saved and queued (rows below); not yet used by a batch | `isar/analyze/coupled/linking.py` | `tests/analyze/test_coupled_linking.py` |
+| Mode linking core: each link's modes matched as a whole (the one-to-one matching of least total mismatch on the peak energy, width and intrinsic intensity of each mode), the matched pairs joined grid-wide, contradictions, near ties, predictions from neighbours, listed changes (add, split, drop), markers at two sigma, JSON form | **Partial**: built and tested on synthetic grids; the tolerances are set from one run on a copy of the operator's experiment (section 10) and stay uncalibrated (section 5); saved and queued (rows below); not yet used by a batch | `isar/analyze/coupled/linking.py` | `tests/analyze/test_coupled_linking.py` |
 | Branch identity: persistent ids, loops, returns, cumulative T drift | Implemented | `isar/analyze/coupled/identity.py` | `tests/analyze/test_coupled_identity.py` |
 | Anchored batch: rings fixed by distance, seams, not reached | Implemented | `isar/session/inter_spectra/rings.py`, `runner.py` | `tests/session/inter_spectra/test_rings.py`, `tests/session/test_inter_spectra_runner.py` |
 | Simultaneous batch: rounds, sweeps, quiet-sweep settling, sweep cap (did not settle) | Implemented | `isar/session/inter_spectra/runner.py`, `schedule.py` | `tests/session/test_inter_spectra_runner.py` |
@@ -117,7 +117,10 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 - **Near tie**: two consistent ways of linking whose summed mismatch differs by less than `tie_margin`, reported as
   one local group (a swap at a crossing, or two rivals for one mode), never forced to one answer.
 - **Contradiction**: a link that would put two modes of one spectrum on one branch, or join two anchored
-  branches. It is reported and refused.
+  branches. It is refused, and reported only when the link's matching chose the pair and its two modes were each
+  other's best match; a refused worse alternative is not reported.
+- **Change marker**: a mode on a branch whose energy, width or intensity differs from what its neighbours predict by
+  more than twice the combined uncertainty (the tolerance and the mode's own uncertainty in quadrature).
 - **Settled mode**: a mode on a branch that is in no near tie and no contradiction.
 
 ## 3. Invariants
@@ -400,7 +403,9 @@ dialog*. `tests/docs/test_inter_spectra_docs.py` keeps the names, marks and help
 | `linewidth_ratio` | not in the dialog | 2 | > 1 to 100 | uncalibrated | A linewidth change is reported when a mode's damping ratio to its fast solo fit passes this. |
 | `full_search` | not in the dialog | false |  | uncalibrated | Price every mode count up to the full-search count and every labelling of each, with no pruning (slow; a check for calibration and proofs). |
 | `full_search_max_count` | not in the dialog | 4 modes | 0 to 12 | uncalibrated | With the full search on: the largest mode count it prices (every count from none up to this). The number of labellings grows factorially with it and nothing else limits the run. |
-| `width_tolerance_ln` | not in the dialog | 0.7 | > 0 to 5 | uncalibrated | Mode linking: how far a mode's width may differ between neighbours, as the natural log of the ratio (0.7 is about a factor of two), before it counts as one full tolerance. |
+| `link_slope_meV_per_rlu` | not in the dialog | 3 meV/r.l.u. | > 0 to 1000 | uncalibrated | Mode linking, scans with no lattice loaded: how far a mode's energy may move per reciprocal lattice unit of distance between neighbours before it counts as one full tolerance (the refit's q-slope is separate). |
+| `link_slope_meV_per_invA` | not in the dialog | 2.3 meV/Å⁻¹ | > 0 to 1000 | uncalibrated | Mode linking, scans with a lattice loaded: how far a mode's energy may move per inverse angstrom of distance between neighbours before it counts as one full tolerance (the refit's q-slope is separate). |
+| `width_tolerance_ln` | not in the dialog | 0.3 | > 0 to 5 | uncalibrated | Mode linking: how far a mode's width may differ between neighbours, as the natural log of the ratio (0.3 is about 35%), before it counts as one full tolerance. |
 | `intensity_tolerance_ln` | not in the dialog | 1 | > 0 to 5 | uncalibrated | Mode linking: how far a mode's intrinsic intensity (Bose-corrected, divided by the analyzer's efficiency) may differ between neighbours, as the natural log of the ratio (1 is about a factor of 2.7), before it counts as one full tolerance. |
 | `link_threshold` | not in the dialog | 9 | > 0 to 1000 | uncalibrated | Mode linking: two modes of neighbouring spectra are linked as one branch only when their summed mismatch in energy, width and intensity, each in squared tolerances, is at most this. |
 | `tie_margin` | not in the dialog | 2 | 0 to 100 | uncalibrated | Mode linking: two ways of linking a crossing are reported as a near tie when their summed mismatch differs by less than this. |
@@ -647,7 +652,7 @@ On 2026-11-01 the operator answered the intensity questions in these words: "A b
 
 **Open, with who decides.**
 
-- *Calibration.* Eighteen settings are uncalibrated starting values, and five are calibrated on synthetic tracks. Their calibration is not done. The operator's tuning list, after landing: the stopping margin (`stop_margin_nats`), the two tolerated slopes (`q_slope_meV_per_rlu`, `q_slope_meV_per_invA`) and the loss size (`birth_edge`, `birth_mid`) are starting values, provisional until tuned on data.
+- *Calibration.* Twenty-four settings are uncalibrated starting values, and five are calibrated on synthetic tracks. Their calibration is not done. The operator's tuning list, after landing: the stopping margin (`stop_margin_nats`), the two tolerated slopes (`q_slope_meV_per_rlu`, `q_slope_meV_per_invA`) and the loss size (`birth_edge`, `birth_mid`) are starting values, provisional until tuned on data.
 - *Speed.* The full anchored batch took about 58 minutes against the 30-minute yardstick (IS13, section 10). The next
   step is not built. The options are a cheaper screen for labelling moves, a lighter anchored search, or analytic
   line-shape derivatives; the operator chooses.
@@ -658,7 +663,7 @@ On 2026-11-01 the operator answered the intensity questions in these words: "A b
 - *Reports and exports, plan decision D6.* The fast-pass projection of `results.csv`, `modes.csv` and `report.json` is the built reading of the design's default; the operator is to confirm it.
 - *Settling time.* Whether a simultaneous batch settles in useful time on a real row is not measured (section 10).
 - *Search risk accepted.* A better count reachable only through counts that are each more than the stopping margin behind is not found (IS21). The operator: "We can try this and see how it works on the data."
-- *Mode linking tolerances.* `width_tolerance_ln`, `intensity_tolerance_ln`, `link_threshold` and `tie_margin` are uncalibrated starting values (section 5), to be tuned on the operator's data. No run of the linking on a copy of the experiment is recorded in section 10.
+- *Mode linking tolerances.* `link_slope_meV_per_rlu`, `link_slope_meV_per_invA`, `width_tolerance_ln`, `intensity_tolerance_ln`, `link_threshold` and `tie_margin` are uncalibrated (section 5). The slopes and the width tolerance were set on 2026-11-02 from the spread of linked neighbours in one run on a copy of the operator's 302 K experiment (section 10), one temperature only; temperature links keep the refit's temperature tolerance, which no linking run has tested. Tolerances that set themselves from each run's measured spread were discussed and not built.
 - *Skip pairs.* A branch is linked across one missing spectrum only (the single-gap limit): the two graph links on either side of the middle spectrum must lie on one line through it. A gap of two or more spectra is not bridged.
 - *Flags.* Deliberately last: "Let's leave the flags for the *end* when everything is tuned and working". The flag `branch_lost_mid_window` (look) is kept; the flag layout and any relabelling of severities are later work.
 - *q-links and curvature on real data.* On the BL43LXU gpi triplets, measured in the hkl metric, the triplets lie off the straight line, so whether a curvature term forms depends on `collinearity_tol`. Its default is now 0.01, a provisional value, still uncalibrated and under the operator's review. The q proof (section 1) reports the curvature count when it is run.
@@ -736,3 +741,12 @@ The real-data proof has not been run (Partial, section 1). The finish-line runs 
   room: a cheaper screen for labelling moves (re-scoring a parent's fit), or a lighter anchored search. The coordinator
   estimates the column differences at about 45 per cent of a hidden-pair job, so analytic line-shape derivatives would cut
   at most that share, and cannot reach the yardstick on their own. The operator decides which, if any, to build.
+- **2026-11-02, mode linking on a copy of the operator's 302 K experiment (28 spectra, 45 q-links, one temperature,
+  under a tenth of a second).** At the first defaults (the refit's q-slope as the energy tolerance, width tolerance 0.7,
+  markers at one sigma, cheapest pairs joined first, every refused candidate a contradiction): 9 branches, 48 of 139
+  modes settled, 44 near ties, 34 contradictions, change markers 8 energy, 2 width, 16 intensity. The energy and width
+  tolerances were then about three times the spread of linked neighbours. With linking's own slopes, width tolerance
+  0.3, markers at two sigma, each link matched as a whole and only best-match refusals reported: 11 branches, 93 of 139
+  settled, 6 near ties, 17 contradictions, change markers 11 energy, 2 width, 2 intensity. Listed changes rose (adds 22
+  to 28, splits 17 to 31): with the tighter energy tolerance more branches are predicted near a single mode. The
+  unsettled modes are mostly two groups where two modes sit about a resolution width apart.
