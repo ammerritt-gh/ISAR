@@ -27,7 +27,6 @@ YLABEL = "energy transfer (meV)"
 @dataclass(frozen=True)
 class PathState:
     keys: tuple[str, ...] = ()           # the path: picked cells of the shown scan, click order
-    line: str = ""
     tip: str = ""
     can_plot: bool = False
     reason: str | None = None            # why the path cannot be plotted yet; None when it can
@@ -117,11 +116,8 @@ class AnalyzerPathViewModel(ViewModel):
             reason = NO_LAYOUT
         else:
             reason = f"A path needs two or more analyzers of this scan; {len(keys)} picked so far."
-        beamline = {c.key: c.beamline for c in view.cells} if layout else {}
-        line = (f"Path: {' → '.join(beamline[k] for k in keys)} ({len(keys)} analyzers, click order)"
-                if keys else "")
         spec = self._spec(keys, snapshot) if can_plot and self._wanted else None
-        self._state = PathState(keys=keys, line=line, tip=PLOT_TIP if can_plot else "", can_plot=can_plot,
+        self._state = PathState(keys=keys, tip=PLOT_TIP if can_plot else "", can_plot=can_plot,
                                 reason=reason, spec=spec)
         self.state_changed.emit(self._state)
 
