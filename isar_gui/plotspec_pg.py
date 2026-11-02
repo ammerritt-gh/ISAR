@@ -349,10 +349,6 @@ def _marker_style(kind: MarkerKind):
         return "t", "orange", "orange", 12
     if kind is MarkerKind.VERDICT_HELD:
         return "s", _GREY_03, None, 11
-    if kind is MarkerKind.LINK_CHANGE:
-        return "+", "#6a3d9a", None, 14
-    if kind is MarkerKind.LINK_UNLINKED:
-        return "t1", "#1b9e77", "#1b9e77", 11
     return "o", _GREY_03, _GREY_03, 9
 
 

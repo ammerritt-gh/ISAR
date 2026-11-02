@@ -86,8 +86,6 @@ class MarkerKind(str, Enum):
     VERDICT_RESOLVED = "verdict_resolved"
     VERDICT_FLAGGED = "verdict_flagged"
     VERDICT_HELD = "verdict_held"
-    LINK_CHANGE = "link_change"        # saved mode links: a change, a cap or a contradiction (design 2.4, kind 2)
-    LINK_UNLINKED = "link_unlinked"    # saved mode links: a mode linked to no neighbour (design 2.4, kind 3)
 
 
 class Glyph(str, Enum):

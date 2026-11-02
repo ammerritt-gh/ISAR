@@ -1,9 +1,10 @@
-"""The Dispersion pane's Analyzer path choice and the Analyzer array's Plot path button, offscreen with the real widgets.
+"""The Dispersion view of an analyzer-array experiment is its Analyzer path, offscreen with the real widgets, and the
+Analyzer array's Plot path button brings it up.
 
 A generated BL43 workspace (made-up hkl and counts, hard rule 10); the q provider is replaced, as the path read's own
-tests do, so the stops have points. Prevents: the path choice enabled with no path to plot, the path drawn from fits
-other than the ones in use, a click on the path plot changing anything, the path's fixed ticks left on the fitted plot
-after switching back, and a deliberate Plot path request being pulled back to Scan(s) by the next picks.
+tests do, so the stops have points. Prevents: an empty path plot that does not say how to make a path, the path drawn
+from fits other than the ones in use, a phonon drawn anywhere but its peak energy, a click on the path plot changing
+anything, and a deliberate Plot path request being pulled back to Scan(s) by the next picks.
 """
 from __future__ import annotations
 
@@ -24,12 +25,11 @@ from gui.inter_fakes import FakeInterState, make_link_view, make_unit_links
 from inter_fixtures import build_inter_workspace, spectrum_keys
 from isar.plotspec import spec as ps
 from isar.session.inter_spectra.q_provider import QCoordinates, QPoint
-from isar.workspace_api.inter_spectra import MarkerView
 from isar.workspace_api.spectra import spectrum_bundles
 from isar_gui.main_window import MainWindow
 from isar_gui.selection import ORIGIN_ARRAY
 from isar_gui.session import Session
-from isar_gui.viewmodels.analyzer_path import PLOT_TIP, AnalyzerPathViewModel
+from isar_gui.viewmodels.analyzer_path import AnalyzerPathViewModel
 from isar_gui.viewmodels.dispersion import DispersionViewModel
 from isar_gui.views.analyzer_array_dock import PATH_BUTTON_TIP
 from isar_gui.views.dispersion_pane import DispersionPane
@@ -80,6 +80,7 @@ def env(qtbot, root, q_points):
     env.path_vm = AnalyzerPathViewModel(env.ws, env.scan_list)
     env.path_vm.set_inter(inter)
     env.pane.set_path_source(env.path_vm)
+    env.pane.show()                             # the path's heavy spec is read while the view is shown
     env.inter = inter
     return env
 
@@ -89,85 +90,52 @@ def _energies(env, key) -> list[float]:
     return [m.energy.value for m in spectrum_bundles(env.ws, [row])[0].summaries["fast"].modes]
 
 
-def test_the_path_choice_says_why_it_is_off_until_two_analyzers_are_picked(env):
+def test_one_pick_says_how_to_make_a_path_and_two_picks_draw_it(env):
     pane, keys = env.pane, env.keys
     _pick(env.selection, keys[:1])
-    assert not pane._path_button.isEnabled()
-    assert "1 picked so far" in pane._path_button.toolTip()
-    pane.show_path()                                       # asked for while it cannot be plotted: nothing changes
-    assert not pane._path_mode and pane._fit_button.isChecked()
+    spec = env.path_vm.state.spec
+    assert spec is not None and not spec.series
+    (note,) = [a.text for a in spec.annotations]
+    assert "Ctrl-click analyzers" in note and "shift-click two" in note and "1 picked so far" in note
     _pick(env.selection, keys[:2])
-    assert pane._path_button.isEnabled() and pane._path_button.toolTip() == PLOT_TIP
+    assert env.path_vm.state.can_plot and env.path_vm.state.spec.series
+    assert _bottom_ticks(pane) == [key.rsplit(":", 1)[1] for key in keys[:2]]
 
 
-def test_the_path_caption_has_a_tooltip_that_says_why_there_is_one_temperature(env):
+def test_the_analyzer_array_experiment_shows_only_its_path(env):
+    pane = env.pane
+    assert not hasattr(pane, "_fit_button") and not hasattr(pane, "_path_button")
+    _pick(env.selection, env.keys)
+    assert pane._t_row.isHidden() and pane._status_scroll.isHidden()
+    assert pane._plot.titleLabel.text.startswith("Analyzer path")
+
+
+def test_a_named_phonon_is_one_series_at_its_peak_energy_and_a_click_on_the_path_activates_nothing(env):
     pane, keys = env.pane, env.keys
-    _pick(env.selection, keys[:2])
-    pane._path_button.click()
-    assert not pane._path_caption.isHidden()
-    assert "temperature" in pane._path_caption.toolTip() and "Fitted" in pane._path_caption.toolTip()
-
-
-def test_the_path_is_drawn_and_switching_back_restores_the_fitted_plot(env):
-    pane, keys = env.pane, env.keys
-    units = []
-    for i, key in enumerate(keys):
-        energies = _energies(env, key)
-        names = ("B1",) + (None,) * (len(energies) - 1)
-        markers = ((MarkerView("change", 2, 0, "energy", "energy differs from neighbours",
-                               "Mode 1 energy differs from its neighbours by more than its tolerance", "warn"),)
-                   if i == 1 else ())
-        units.append(make_unit_links(key, names=names, peak_E=tuple(energies), markers=markers))
+    units = [make_unit_links(k, names=("B1",), peak_E=tuple(e + 0.5 for e in _energies(env, k))) for k in keys]
     env.inter.links = make_link_view(*units)
     _pick(env.selection, keys)
-    fitted = pane._vm.spec
-    assert fitted is not None, "the BL43 fixture should have a fitted dispersion to switch back to"
-
-    pane._path_button.click()
-    assert pane._path_mode and pane._path_button.isChecked()
-    assert pane._t_row.isHidden() and pane._status_scroll.isHidden() and not pane._path_caption.isHidden()
-    spec = env.path_vm.state.spec
-    assert [t for _, t in spec.x_ticks] == [key.rsplit(":", 1)[1] for key in keys]
-    assert "B1" in [s.label for s in spec.series]
-    assert [m.kind for m in spec.markers] == [ps.MarkerKind.LINK_CHANGE]
-    assert spec.markers[0].tooltip.startswith("Mode 1 energy differs")
-    assert spec.markers[0].y == pytest.approx(units[1].peak_E[0])          # at E*, not at omega0
-    assert _bottom_ticks(pane) == [key.rsplit(":", 1)[1] for key in keys]
+    (p1,) = [s for s in env.path_vm.state.spec.series if s.label == "P1"]
+    assert list(p1.y) == pytest.approx([e + 0.5 for k in keys for e in _energies(env, k)])   # at E*, not at omega0
+    assert not any(p1.errors.bottom) and not any(p1.errors.top)
+    assert [m for m in env.path_vm.state.spec.markers] == []
 
     clicks = []
     pane._vm.activate_at = lambda x, y: clicks.append((x, y))
-    pane._on_click(SimpleNamespace(scenePos=lambda: QPointF(0.5, 1.0)))   # on the path plot: activates nothing
-    assert pane._path_mode and clicks == []
-
-    pane._fit_button.click()
-    assert not pane._path_mode and pane._fit_button.isChecked()
-    assert pane._path_caption.isHidden()
-    assert pane._t_row.isHidden() == (len(pane._vm.temperatures) <= 1)   # the T selector returns when it is needed
-    assert _bottom_ticks(pane) == []                      # the path's ticks are gone with the path
-    assert pane._plot.titleLabel.text == fitted.title     # and the fitted plot is drawn again, as it was
+    pane._on_click(SimpleNamespace(scenePos=lambda: QPointF(0.5, 1.0)))
+    assert clicks == []
+    assert ps.Role.BRANCH in {s.role for s in env.path_vm.state.spec.series}
 
 
-def test_a_path_that_can_no_longer_be_plotted_takes_its_ticks_off_the_plot(env):
+def test_a_path_that_drops_below_two_picks_takes_its_ticks_off_the_plot(env):
     pane, keys = env.pane, env.keys
     _pick(env.selection, keys)
-    pane._path_button.click()
     assert _bottom_ticks(pane) == [key.rsplit(":", 1)[1] for key in keys]
     _pick(env.selection, keys[:1])                        # one analyzer: the path is invalidated, not plotted
-    assert env.path_vm.state.spec is None and pane._path_mode
     assert _bottom_ticks(pane) == []                      # the previous path's ticks do not stay on the empty plot
 
 
-def test_the_fitted_plot_with_no_spec_takes_the_path_ticks_off_too(env, monkeypatch):
-    pane, keys = env.pane, env.keys
-    _pick(env.selection, keys)
-    pane._path_button.click()
-    assert _bottom_ticks(pane) != []
-    monkeypatch.setattr(type(pane._vm), "spec", property(lambda self: None))   # no fitted dispersion to draw
-    pane._fit_button.click()
-    assert not pane._path_mode and _bottom_ticks(pane) == []
-
-
-def test_the_array_dock_button_plots_the_path_and_the_next_picks_do_not_pull_the_view_back(qtbot, root, q_points):
+def test_the_array_dock_button_brings_up_the_path_and_the_next_picks_do_not_pull_the_view_back(qtbot, root, q_points):
     w = MainWindow(None, session=Session(), watch=False)
     qtbot.addWidget(w)
     w.show()
@@ -184,7 +152,7 @@ def test_the_array_dock_button_plots_the_path_and_the_next_picks_do_not_pull_the
     host = w._center_host
     assert host.current_key == "dispersion" and not host.auto_follow
     pane = host.pane("dispersion")
-    assert pane._path_mode and pane._path_button.isChecked()
+    assert pane._path_vm is not None and pane._path_vm.state.spec is not None
 
     _pick(selection, keys[:2])                            # an array gesture: with auto-follow off the view stays put
-    assert host.current_key == "dispersion" and pane._path_mode
+    assert host.current_key == "dispersion" and pane._path_vm.state.can_plot

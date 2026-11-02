@@ -6,15 +6,14 @@ glyphs + prior/branch curves + off-curve flags + the always-on projection legend
 :class:`~isar_gui.viewmodels.dispersion.DispersionViewModel`; this pane only renders it through
 :func:`isar_gui.plotspec_pg.render_into`, offers a temperature selector when more than one T is
 present, and forwards a plot click to the VM's nearest-ω̂ hit-test (which emits ``point_activated``).
-With :meth:`set_path_source` it can also plot the Analyzer array's picked path, the path view model's spec.
-No geometry, no workspace access — the pane is dumb, the heatmap pane's 1-D sibling.
+With :meth:`set_path_source` (an analyzer-array experiment, which runs no campaign) it shows only the Analyzer array's
+picked path, the path view model's spec. No geometry, no workspace access — the pane is dumb, the heatmap pane's 1-D sibling.
 """
 from __future__ import annotations
 
 import pyqtgraph as pg
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QButtonGroup,
     QComboBox,
     QHBoxLayout,
     QLabel,
@@ -28,9 +27,6 @@ from PySide6.QtWidgets import (
 from isar_gui.plotspec_pg import clear_render, render_into
 from isar_gui.views.group_drop import GroupDropMixin
 
-PATH_CAPTION_TIP = ("The path is one scan, so it has one temperature; the plot title gives its T and scan. "
-                    "The Fitted ω̂(q) button brings back the experiment's dispersion.")
-
 
 class DispersionPane(GroupDropMixin, QWidget):
     """ω̂(q) over a :class:`DispersionViewModel`: scatter + overlays + projection legend, a T
@@ -39,8 +35,7 @@ class DispersionPane(GroupDropMixin, QWidget):
     def __init__(self, vm, parent=None, entropy_action=None):
         super().__init__(parent)
         self._vm = vm
-        self._path_vm = None                # set by set_path_source; None: the fitted plot only
-        self._path_mode = False
+        self._path_vm = None                # set by set_path_source: this view then shows only the path
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 4, 4, 4)
@@ -87,77 +82,43 @@ class DispersionPane(GroupDropMixin, QWidget):
         vm.spec_changed.connect(self.refresh)
         self.refresh()
 
-    # ---- the analyzer path (the Analyzer array's picks, in click order) ---------------------
+    # ---- the analyzer path (an analyzer-array experiment: its Dispersion view is the picked path) -------------
     def set_path_source(self, path_vm) -> None:
-        """Add the Plot row that switches this pane between the fitted ω̂(q) and the analyzer path."""
+        """Show only the Analyzer array's picked path here: an experiment with an analyzer layout runs no campaign, so
+        the fitted ω̂(q) plot is not offered. The path's heavy spec is read only while this view is shown."""
         self._path_vm = path_vm
-        row = QWidget()
-        row_l = QHBoxLayout(row)
-        row_l.setContentsMargins(0, 0, 0, 0)
-        plot_label = QLabel("Plot:", row)
-        plot_label.setToolTip("Chooses what this view plots: the fitted ω̂(q) dispersion of the experiment, or the "
-                              "analyzer path picked in the Analyzer array.")
-        row_l.addWidget(plot_label)
-        self._fit_button = QPushButton("Fitted ω̂(q)", row)
-        self._fit_button.setCheckable(True)
-        self._fit_button.setChecked(True)
-        self._fit_button.setToolTip("Plots the fitted ω̂(q) dispersion of the experiment, as this view always has.")
-        self._path_button = QPushButton("Analyzer path", row)
-        self._path_button.setCheckable(True)
-        self._path_button.setEnabled(False)
-        group = QButtonGroup(row)
-        group.setExclusive(True)
-        for button in (self._fit_button, self._path_button):
-            group.addButton(button)
-            row_l.addWidget(button)
-        self._path_caption = QLabel(row)
-        self._path_caption.setToolTip(PATH_CAPTION_TIP)
-        self._path_caption.setVisible(False)
-        row_l.addWidget(self._path_caption, 1)
-        self.layout().insertWidget(0, row)
-        self._fit_button.clicked.connect(lambda: self._set_path_mode(False))
-        self._path_button.clicked.connect(lambda: self._set_path_mode(True))
         path_vm.state_changed.connect(self._on_path_state)
-        self._on_path_state(path_vm.state)
-
-    def show_path(self) -> None:
-        """Switch to the analyzer path (the Analyzer array's Plot path button). Does nothing while it cannot be plotted."""
-        if self._path_vm is not None and self._path_vm.state.can_plot:
-            self._path_button.setChecked(True)
-            self._set_path_mode(True)
-
-    def _set_path_mode(self, path: bool) -> None:
-        self._path_mode = bool(path)
-        self._path_vm.set_wanted(self._path_mode)   # the heavy spec is read only while it is shown
+        path_vm.set_wanted(self.isVisible())
         self.refresh()
 
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().showEvent(event)
+        if self._path_vm is not None:
+            self._path_vm.set_wanted(True)
+
+    def hideEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        super().hideEvent(event)
+        if self._path_vm is not None:
+            self._path_vm.set_wanted(False)
+
     def _on_path_state(self, state) -> None:
-        self._path_button.setEnabled(state.can_plot)
-        self._path_button.setToolTip(state.tip if state.can_plot else (state.reason or ""))
-        if self._path_mode:
-            self.refresh()
+        self.refresh()
 
     def _render_path(self) -> None:
-        state = self._path_vm.state
         self._t_row.setVisible(False)              # the path is one scan, so one temperature: no T to choose
         self._status_scroll.setVisible(False)
         self._grp_banner.setVisible(False)
-        self._path_caption.setVisible(True)
-        if state.spec is None:
-            self._path_caption.setText(state.reason or "")
+        spec = self._path_vm.state.spec
+        if spec is None:
             self._clear_plot()
             return
-        self._path_caption.setText("The path is one scan, so one temperature (the title gives its T and scan).")
-        render_into(self._plot, state.spec)
+        render_into(self._plot, spec)
 
     # ---- rendering --------------------------------------------------------
     def refresh(self) -> None:
-        if self._path_mode:
+        if self._path_vm is not None:
             self._render_path()
             return
-        if self._path_vm is not None:       # back from the path: its caption goes and the group banner returns
-            self._path_caption.setVisible(False)
-            self._sync_group_banner()
         spec = self._vm.spec
         self._sync_t_combo()
         self._sync_status_ribbon()
@@ -226,7 +187,7 @@ class DispersionPane(GroupDropMixin, QWidget):
             self._vm.set_temperature(t)
 
     def _on_click(self, event) -> None:
-        if self._path_mode:                 # the path is drawn, not the fits: a click activates nothing here
+        if self._path_vm is not None:       # the path is drawn, not the fits: a click activates nothing here
             return
         vb = self._plot.getViewBox()
         if vb is None:

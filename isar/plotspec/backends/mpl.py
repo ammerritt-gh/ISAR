@@ -200,10 +200,6 @@ def _draw_marker(ax, m, label=None) -> None:
     elif m.kind is MarkerKind.VERDICT_HELD:
         ax.scatter([m.x], [m.y], marker="s", s=60, facecolors="none", edgecolors="0.3", zorder=6,
                    label=label)
-    elif m.kind is MarkerKind.LINK_CHANGE:
-        ax.scatter([m.x], [m.y], marker="P", s=70, color="#6a3d9a", zorder=6, label=label)
-    elif m.kind is MarkerKind.LINK_UNLINKED:
-        ax.scatter([m.x], [m.y], marker="v", s=60, color="#1b9e77", zorder=6, label=label)
     else:
         ax.scatter([m.x], [m.y], marker="o", s=40, color="0.3", zorder=6, label=label)
 

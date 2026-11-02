@@ -330,16 +330,16 @@ def test_masked_point_is_a_grey_x(qtbot):
     assert masked.opts["pen"].color().name() == "#808080"
 
 
-def test_link_marker_hover_text_and_x_ticks_reset_on_rerender(qtbot):
+def test_marker_hover_text_and_x_ticks_reset_on_rerender(qtbot):
     glw, plot = _new_plot()
     qtbot.addWidget(glw)
-    tip = "Mode 2 of a06 links to no neighbour"
+    tip = "Mode 2 of a06 is flagged"
     spec = PlotSpec(title="t", xlabel="x", ylabel="y",
-                    markers=[Marker(x=0.1, y=5.0, kind=MarkerKind.LINK_UNLINKED, label="no link", tooltip=tip)],
+                    markers=[Marker(x=0.1, y=5.0, kind=MarkerKind.VERDICT_FLAGGED, label="flagged", tooltip=tip)],
                     x_ticks=[(0.0, "a03"), (0.1, "a04")])
     rs = render_into(plot, spec)
-    (unlinked,) = [it for it in rs.items if isinstance(it, pg.ScatterPlotItem)]
-    assert unlinked.toolTip() == tip
+    (flagged,) = [it for it in rs.items if isinstance(it, pg.ScatterPlotItem)]
+    assert flagged.toolTip() == tip
     axis = plot.getAxis("bottom")
     assert axis._tickLevels == [[(0.0, "a03"), (0.1, "a04")]]     # private: pyqtgraph has no getter for explicit ticks
     render_into(plot, PlotSpec(title="t", xlabel="x", ylabel="y"))

@@ -237,10 +237,10 @@ def test_marker_tooltip_and_x_ticks_serialize_only_when_set():
                         markers=[ps.Marker(x=1.0, y=2.0, kind=ps.MarkerKind.MASKED)])
     assert "x_ticks" not in plain.to_dict()
     assert "tooltip" not in plain.to_dict()["markers"][0]
-    link = ps.Marker(x=1.0, y=5.0, kind=ps.MarkerKind.LINK_UNLINKED, label="no link to a neighbour",
-                     tooltip="Mode 2 of a06 links to no neighbour")
-    assert link.to_dict() == {"x": 1.0, "y": 5.0, "kind": "link_unlinked", "label": "no link to a neighbour",
-                              "tooltip": "Mode 2 of a06 links to no neighbour"}
+    flagged = ps.Marker(x=1.0, y=5.0, kind=ps.MarkerKind.VERDICT_FLAGGED, label="flagged",
+                        tooltip="Mode 2 of a06 is flagged")
+    assert flagged.to_dict() == {"x": 1.0, "y": 5.0, "kind": "verdict_flagged", "label": "flagged",
+                                 "tooltip": "Mode 2 of a06 is flagged"}
     spec = ps.PlotSpec(title="t", xlabel="x", ylabel="y", x_ticks=[(0.0, "a03"), (0.1, "a04")])
     assert json.loads(json.dumps(spec.to_dict()))["x_ticks"] == [[0.0, "a03"], [0.1, "a04"]]
 

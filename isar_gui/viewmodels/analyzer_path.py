@@ -14,11 +14,13 @@ from isar.plotspec import spec as ps
 from isar.plotspec.path_builders import analyzer_path_spec
 from isar.workspace_api.analyzer_array import array_view
 from isar.workspace_api.analyzer_path import PathView, analyzer_path
+from isar.workspace_api.inter_spectra import phonon_label
 from isar.workspace_api.scan_list import SpectrumRow
 from isar_gui.viewmodels.analyzer_array import path_keys
 from isar_gui.viewmodels.base import ViewModel
 
-NO_PICKS = "Select at least two analyzers of one scan in the Analyzer array first."
+HOW = "Ctrl-click analyzers of one scan in the Analyzer array, or shift-click two in one row or column."
+NO_PICKS = "No path yet. " + HOW
 NO_LAYOUT = "This instrument has no analyzer layout, so its analyzers have no path."
 PLOT_TIP = "Plots the picked analyzers in click order: position along the path against energy."
 YLABEL = "energy transfer (meV)"
@@ -48,10 +50,9 @@ def _temperature(fact) -> str | None:
 
 
 def _stop(stop) -> dict:
-    return {"x": stop.x, "beamline": stop.beamline, "note": stop.note, "covered": stop.covered,
-            "modes": [{"energy": m.energy, "lo": m.lo, "hi": m.hi, "peak_E": m.peak_E, "name": m.name,
-                       "unresolved": m.unresolved,
-                       "markers": [{"group": mk.group, "label": mk.label, "words": mk.words} for mk in m.markers]}
+    return {"x": stop.x, "beamline": stop.beamline, "note": stop.note,
+            "modes": [{"energy": m.energy, "lo": m.lo, "hi": m.hi, "peak_E": m.peak_E,
+                       "name": None if m.name is None else phonon_label(m.name)}
                       for m in stop.modes]}
 
 
@@ -115,8 +116,13 @@ class AnalyzerPathViewModel(ViewModel):
         elif not layout:
             reason = NO_LAYOUT
         else:
-            reason = f"A path needs two or more analyzers of this scan; {len(keys)} picked so far."
-        spec = self._spec(keys, snapshot) if can_plot and self._wanted else None
+            reason = f"Two analyzers of one scan make a path ({len(keys)} picked so far). " + HOW
+        if not self._wanted:
+            spec = None
+        elif can_plot:
+            spec = self._spec(keys, snapshot)
+        else:                               # the empty plot says how to make a path
+            spec = analyzer_path_spec(stops=(), title="Analyzer path", xlabel="", ylabel=YLABEL, reason=reason)
         self._state = PathState(keys=keys, tip=PLOT_TIP if can_plot else "", can_plot=can_plot,
                                 reason=reason, spec=spec)
         self.state_changed.emit(self._state)

@@ -78,6 +78,7 @@ from isar.workspace_api import (
     WorkspaceNotFound,
     validate_endpoint,
 )
+from isar.schema.analyzer_layout import layout_for
 from isar.workspace_api.references import outside_references
 from isar.workspace_api.watch import last_written
 from isar_gui.log_dock import LogDock
@@ -726,7 +727,6 @@ class MainWindow(QMainWindow):
         if self._center_host is None or self.dispersion_pane is None:
             return
         self._center_host.show_view("dispersion", user=True)
-        self.dispersion_pane.show_path()
 
     def _on_selection_active(self, key: str | None) -> None:
         """Forward the one active spectrum to the legacy single-spectrum surfaces."""
@@ -1081,10 +1081,12 @@ class MainWindow(QMainWindow):
             self.array_dock.openChanged.connect(lambda _open: self._autosave())
             self._register_dock("Analyzer array", self.array_dock)
 
-            # The analyzer path: the array's picks, plotted by the Dispersion pane's Analyzer path choice.
+            # The analyzer path: the array's picks. An experiment with an analyzer layout has no campaign, so its
+            # Dispersion view is this path alone; any other experiment keeps the campaign dispersion plot.
             self.path_vm = AnalyzerPathViewModel(self._ws, self.scan_list_vm, parent=self)
             self.path_vm.set_inter(self.inter)
-            self.dispersion_pane.set_path_source(self.path_vm)
+            if layout_for(getattr(getattr(self._ws, "card", None), "policy", None)).layout is not None:
+                self.dispersion_pane.set_path_source(self.path_vm)
             self.path_vm.recompute()
             self.array_dock.set_path_state(self.path_vm.state)
             self.path_vm.state_changed.connect(self.array_dock.set_path_state)

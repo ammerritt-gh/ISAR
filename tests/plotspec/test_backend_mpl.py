@@ -74,11 +74,11 @@ def test_masked_point_is_a_grey_x():
         plt.close(fig)
 
 
-def test_link_markers_draw_and_explicit_x_ticks_are_set():
+def test_markers_draw_and_explicit_x_ticks_are_set():
     spec = ps.PlotSpec(
         title="t", xlabel="x", ylabel="y",
-        markers=[ps.Marker(x=1.0, y=2.0, kind=ps.MarkerKind.LINK_CHANGE, label="energy differs"),
-                 ps.Marker(x=2.0, y=3.0, kind=ps.MarkerKind.LINK_UNLINKED, label="no link",
+        markers=[ps.Marker(x=1.0, y=2.0, kind=ps.MarkerKind.VERDICT_FLAGGED, label="energy differs"),
+                 ps.Marker(x=2.0, y=3.0, kind=ps.MarkerKind.VERDICT_HELD, label="no link",
                            tooltip="hover text is for pyqtgraph only")],
         x_ticks=[(0.0, "a03"), (0.1, "a04")],
     )

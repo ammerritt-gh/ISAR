@@ -2,7 +2,7 @@
 
 Each stop is one picked analyzer of one scan. Its position is the cumulative distance between the graph's own q
 points (cartesian inverse angstrom when every stop has a lattice epoch, else hkl). Its modes are the fit in use, so
-a refit draws its own modes. Its branch names and markers come from the saved links only while they name that fit.
+a refit draws its own modes. Its phonon names come from the saved links only while they name that fit.
 Read-only and Qt-free; a thin workspace gives ``ok=False`` with a plain reason, never an exception.
 """
 from __future__ import annotations
@@ -44,7 +44,7 @@ class PathStop:
     x: float | None                        # cumulative distance along the path, in the view's metric
     modes: tuple[PathMode, ...]
     note: str | None                       # why a stop has no modes, or that it draws a fit other than the one picked
-    covered: bool                          # a current, not stale saved link covers the fit drawn: its unnamed modes are unlinked
+    covered: bool                          # a current, not stale saved link covers the fit drawn (every mode then has a name)
 
 
 @dataclass(frozen=True)
