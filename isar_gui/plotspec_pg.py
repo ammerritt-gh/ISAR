@@ -549,6 +549,12 @@ def _populate_legend(legend, entries, names) -> None:
     legend.updateSize()
 
 
+def _plot_background(plot_item):
+    """The colour the plot is painted on: its view's background, else pyqtgraph's default."""
+    views = plot_item.scene().views() if plot_item.scene() is not None else []
+    return views[0].backgroundBrush().color() if views else pg.mkColor(pg.getConfigOption("background"))
+
+
 def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
     """Render ``spec`` into ``plot_item``, returning a :class:`RenderedSpec` handle.
 
@@ -600,8 +606,11 @@ def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
 
     if legend_entries:
         grouped = any(len(entry) == 4 and entry[2] is not None for entry in legend_entries)
-        legend = (_GroupedLegend(offset=None, labelTextColor=_GREY_025, brush=pg.mkBrush(255, 255, 255, 235))
-                  if grouped else pg.LegendItem(offset=None))
+        # The box takes the plot's own background, so it reads on a black pane as on a white one.
+        brush = pg.mkBrush(_plot_background(plot_item))
+        legend = (_GroupedLegend(offset=None, labelTextColor=_GREY_025, brush=brush)
+                  if grouped else pg.LegendItem(offset=None, brush=brush))
+        legend.setZValue(100)  # above the series, bands and markers (all z <= 9)
         legend.setParentItem(plot_item.getViewBox())
         legend.anchor(itemPos=(1, 0), parentPos=(1, 0), offset=(-8, 8))
         _populate_legend(legend, legend_entries, rs.legend_names)

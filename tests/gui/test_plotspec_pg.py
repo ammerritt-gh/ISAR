@@ -443,3 +443,14 @@ def test_scans_legend_lists_phonons_in_p_order(qtbot):
     assert elastic.pos().y() == qe.pos().y() < p1.pos().y()
     assert p1.pos().y() == p2.pos().y() < p3.pos().y()
     assert elastic.pos().x() == p1.pos().x() < qe.pos().x() == p2.pos().x()
+
+
+def test_legend_box_takes_the_plot_background_above_the_series():
+    x = np.linspace(0.0, 4.0, 5)
+    spec = PlotSpec(title='', xlabel='', ylabel='', series=[Series(x=x, y=x, label='data', role=Role.DATA)])
+    for background in ('k', 'w'):
+        glw, plot = _new_plot()
+        glw.setBackground(background)
+        legend = render_into(plot, spec).legend
+        assert legend.brush().color() == pg.mkColor(background)     # reads on a black pane and a white one
+        assert legend.zValue() > 9                                  # above every series (z <= 9)
