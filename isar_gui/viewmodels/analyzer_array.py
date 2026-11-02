@@ -620,10 +620,16 @@ def _cell_links(ul) -> CellLinks | None:
                      changes, unlinked, ul.stale)
 
 
+def path_keys(cells, picks) -> tuple[str, ...]:
+    """The path of the shown scan: the picks that are its cells, in click order (one definition; the path plot reads it too)."""
+    shown = {c.key for c in cells if c.key is not None}
+    return tuple(k for k in picks if k in shown)
+
+
 def _path_words(cells, picks) -> str:
     """The path the picks of the shown scan make, in click order: the analyzers that have a cell here. Empty when none."""
     names = {c.key: c.beamline for c in cells if c.key is not None}
-    path = [names[k] for k in picks if k in names]
+    path = [names[k] for k in path_keys(cells, picks)]
     if not path:
         return ""
     return (f"Path: {' → '.join(path)} ({len(path)} analyzer{'' if len(path) == 1 else 's'}, click order) · "

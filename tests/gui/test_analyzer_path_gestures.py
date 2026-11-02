@@ -5,6 +5,8 @@ have files. The one missing-file case swaps the grid's read for a hand-made one 
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("PySide6")
@@ -16,7 +18,7 @@ from PySide6.QtWidgets import QApplication
 from bl43_fixture import KEY_A, build_bl43_workspace
 from gui.array_helpers import ROWS, make_array_view, open_dock
 from isar_gui.viewmodels import analyzer_array as vm_mod
-from isar_gui.viewmodels.analyzer_array import PATH_TAIL, UNALIGNED_NOTE
+from isar_gui.viewmodels.analyzer_array import PATH_TAIL, UNALIGNED_NOTE, path_keys
 from isar_gui.views.analyzer_cell import GESTURE_TIP
 
 SHIFT = Qt.KeyboardModifier.ShiftModifier
@@ -122,6 +124,11 @@ def test_space_with_shift_is_the_same_gesture(env):
     QTest.keyClick(cell, Qt.Key.Key_Space, SHIFT)
     env.dock.flush_redraw()
     assert _picks(env) == ("a03", "a04", "a05", "a06")
+
+
+def test_path_keys_are_the_shown_scans_picks_in_click_order():
+    cells = [SimpleNamespace(key=key) for key in ("s:a03", "s:a04", None)]
+    assert path_keys(cells, ("s:a04", "t:a09", "s:a03")) == ("s:a04", "s:a03")    # another scan's pick is not on the path
 
 
 def test_the_gesture_words_are_on_the_cell_the_grid_and_the_caption(env):
