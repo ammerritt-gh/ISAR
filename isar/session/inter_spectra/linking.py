@@ -265,9 +265,10 @@ def inputs_for(root, units: Sequence[str], *, held: Mapping[str, Held] | None = 
 
 def previous_for(root, scans: Collection[str]) -> tuple[core.LinkResult | None, int]:
     """The saved link result a link of ``scans`` continues, and the next branch-name number (one past every stored
-    record's, 1 when none). Each scan's newest record with a readable payload is used: none gives (None, next); one
-    gives that result as stored; several are merged. In the merge a unit's ``made_from`` and ``stamps`` come from the
-    record newest for its scan, and the branches are the union by id, named from the newest record carrying the id,
+    record's, 1 when none). The newest record of each scan is used when its payload reads (an unreadable one is
+    skipped, not replaced by an older one): none gives (None, next); one gives that result as stored; several are
+    merged. In the merge a unit's ``made_from`` and ``stamps`` come from the record
+    newest for its scan, and the branches are the union by id, named from the newest record carrying the id,
     a member kept only where its record is newest for the member's scan (so a mode sits on one id). The merged
     result's other fields are the newest record's and mean nothing: it goes to ``core.link`` only, never to a save
     or a view."""
