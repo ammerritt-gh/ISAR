@@ -49,17 +49,18 @@ def _note(widget) -> QLabel:
 def test_a_mode_heading_names_its_branch_and_lists_its_notes_on_the_fit_the_table_shows(qtbot):
     widget = _section(qtbot)
     _show(widget, 2, 0, make_unit_links(A06, names=("B3", "B2"), markers=(CHANGE,)))
-    heading = _label(widget, "fit_mode_1_header")
-    assert heading.text() == "Mode 1 · B3 · energy differs from neighbours"
-    assert "Branch this mode follows" in heading.toolTip() and CHANGE.words in heading.toolTip()
-    assert _label(widget, "fit_mode_2_header").text() == "Mode 2 · B2"
+    assert _label(widget, "fit_mode_1_header").text() == "Mode 1"
+    branch = _label(widget, "fit_mode_1_fast_branch")
+    assert branch.text() == "B3 · energy differs from neighbours"
+    assert "Branch this mode follows" in branch.toolTip() and CHANGE.words in branch.toolTip()
+    assert _label(widget, "fit_mode_2_fast_branch").text() == "B2"
     assert _note(widget).isHidden()                                  # the table shows the linked fit: nothing to say
 
 
 def test_a_split_candidate_names_both_branches_as_unresolved(qtbot):
     widget = _section(qtbot)
     _show(widget, 1, 0, make_unit_links(A06, names=("B2",), unresolved=(("B2", "B3"),)))
-    assert _label(widget, "fit_mode_1_header").text() == "Mode 1 · B2 / B3 (unresolved)"
+    assert _label(widget, "fit_mode_1_fast_branch").text() == "B2 / B3 (unresolved)"
 
 
 def test_names_of_a_fit_the_table_does_not_show_are_not_drawn_and_the_note_says_whose_they_are(qtbot):
@@ -76,7 +77,7 @@ def test_a_stale_record_keeps_names_drops_its_notes_and_says_when_it_was_made(qt
     stale = replace(make_unit_links(A06, names=("B3", "B2"), markers=(CHANGE,)), stale=True,
                     stale_text=LINK_WORDS["stale"])
     _show(widget, 2, 0, stale)
-    assert _label(widget, "fit_mode_1_header").text() == "Mode 1 · B3"
+    assert _label(widget, "fit_mode_1_fast_branch").text() == "B3"
     assert _note(widget).text() == "Branch links from 2026-11-01T10:00:00; out of date"
 
 
@@ -100,6 +101,16 @@ def test_the_inspector_names_the_modes_of_the_spectrum_it_shows_from_the_saved_l
     inter.links = make_link_view(make_unit_links(A03, names=("B7",), markers=(CHANGE,)))
     inter.changed.emit()
     _select(panel, A03)
-    heading = panel._fit_section.findChild(QLabel, "fit_mode_1_header")
-    assert heading is not None
-    assert heading.text() == "Mode 1 · B7 · energy differs from neighbours"
+    branch = panel._fit_section.findChild(QLabel, "fit_mode_1_fast_branch")
+    assert branch is not None
+    assert branch.text() == "B7 · energy differs from neighbours"
+
+
+def test_the_branch_names_sit_in_the_fast_column_and_no_shared_heading_or_deep_cell_carries_them(qtbot):
+    widget = _section(qtbot)
+    _show(widget, 2, 2, make_unit_links(A06, names=("B3", "B2"), markers=(CHANGE,)))
+    assert _label(widget, "fit_mode_1_header").text() == "Mode 1"          # the heading spans Fast and Deep: no name
+    branch = _label(widget, "fit_mode_1_fast_branch")
+    assert branch.text() == "B3 · energy differs from neighbours"
+    assert widget._grid.getItemPosition(widget._grid.indexOf(branch))[1] == 1     # the Fast column
+    assert {w.objectName() for w in widget.findChildren(QLabel) if "B3" in w.text()} == {"fit_mode_1_fast_branch"}

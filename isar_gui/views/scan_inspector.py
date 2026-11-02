@@ -391,15 +391,19 @@ class FitSection(QWidget):
             mode_row = self._base_rows + (number - 1) * (len(self._QUANTITIES) + 1)
             name = _branch_name(links, number - 1) if shown else None
             notes = [m for m in marks if m.mode == number - 1]
-            parts = [f"Mode {number}", *([name] if name else []), *(m.label for m in notes)]
-            heading = self._cell(" · ".join(parts), f"fit_mode_{number}_header", muted=True)
+            # the Mode heading is shared by Fast and Deep; the branch and its notes sit in the Fast column only
+            heading = self._cell(f"Mode {number}", f"fit_mode_{number}_header", muted=True)
+            branch = self._cell(" · ".join(filter(None, [name, *(m.label for m in notes)])),
+                                f"fit_mode_{number}_fast_branch", muted=True)
             if name or notes:
-                heading.setToolTip("\n".join([*([_BRANCH_TIP] if name else []), *(m.words for m in notes)]))
-            heading_font = heading.font()
-            heading_font.setBold(True)
-            heading.setFont(heading_font)
-            self._grid.addWidget(heading, mode_row, 1, 1, 2)
-            self._dynamic_widgets.append(heading)
+                branch.setToolTip("\n".join([*([_BRANCH_TIP] if name else []), *(m.words for m in notes)]))
+            for cell in (heading, branch):
+                cell_font = cell.font()
+                cell_font.setBold(True)
+                cell.setFont(cell_font)
+            self._grid.addWidget(heading, mode_row, 0)
+            self._grid.addWidget(branch, mode_row, 1)
+            self._dynamic_widgets += [heading, branch]
             for quantity_index, (quantity, label_text, heading_tip) in enumerate(self._QUANTITIES, start=1):
                 row = mode_row + quantity_index
                 label = self._cell(label_text, f"fit_mode_{number}_{quantity}_label", muted=True)

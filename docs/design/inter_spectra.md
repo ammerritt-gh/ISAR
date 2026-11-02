@@ -492,7 +492,7 @@ names, so a result saved after another never refuses on names; its ids stay.
 | `isar_gui/viewmodels/scan_list.py` | the scan list's Anchor, Flag, Lock and Inter-spectra fit columns |
 | `isar_gui/viewmodels/scans_page.py` | the Scan(s) page's inter-spectra state |
 | `isar/plotspec/builders.py` | the Scan(s) plot's link marks (`ScansMark`): branch names and kind-2 and kind-3 glyphs at each mode's peak energy |
-| `isar_gui/views/scan_inspector.py` | the scan inspector's fit table: the branch name on each Mode heading and one link note, on the fit the links were made on |
+| `isar_gui/views/scan_inspector.py` | the scan inspector's fit table: the branch name and its notes in the Fast column of each Mode row (the Mode heading is shared with Deep and names nothing) and one link note, on the fit the links were made on |
 | `isar_gui/views/inter_batch_box.py` | the Processing dock's inter-spectra box |
 | `isar_gui/views/inter_fit_bar.py` | the Scan(s) flat fit dropdown, Make authoritative, Lock and Waterfall of fits |
 | `isar_gui/views/inter_settings_dialog.py` | Config > Inter-spectra fitting settings |
