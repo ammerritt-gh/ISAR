@@ -733,7 +733,9 @@ class _Spec:
                     [[d.branch, d.last_seen_fit, d.last_seen_unit] for d in h.dormant]]
         # every field of each term (a new Term field is hashed without another edit) and the merged aliases:
         # the loss price names branches canonically, so a price cached before a merge must not be reused after it
+        lk = snap.links          # the settled set is written sorted: a frozenset follows hash order, which differs per process
         return {"unit": snap.unit, "own": held(snap.own), "batch_kind": snap.batch_kind,
+                "links": None if lk is None else {**asdict(lk), "settled_branches": sorted(lk.settled_branches)},
                 "settings": snap.settings.to_values(), "aliases": sorted(snap.aliases.items()),
                 "terms": [[astuple(ti.term), [held(h) for h in ti.held]] for ti in snap.terms]}
 
@@ -1504,6 +1506,31 @@ def _qe_of(eng, model, theta, full):
         sigma_height=sd(model.qe_h), sigma_width=sd(model.qe_w)))
 
 
+def _area(eng, zm, model, theta, cov, src: int):
+    """(Stokes area, its delta-method sigma or None) of mode ``src`` as the fast pass computes them
+    (``fast_pass._peaks``): ``h`` times ``eng._area_per_h``, the gradient by a finite difference that steps
+    inward at a width's ceiling. ``cov`` is the covariance of ``model.free`` (None: no sigma)."""
+    ai, gi, ci = model.modes[src]
+    e, gam, h = float(theta[ai]), float(theta[gi]), float(theta[ci])
+    peak = model.variant.peaks[src]
+    per_s, _ = eng._area_per_h(peak, e, gam)
+    if cov is None:
+        return h * per_s, None
+    free = model.free.tolist()
+    grad = np.zeros(len(theta))
+    grad[ci] = per_s
+    for j, val in ((ai, e), (gi, gam)):
+        if j not in free:
+            continue
+        step = 1e-4 * max(1.0, abs(val))
+        upper = zm.ceiling(theta, src) if j == gi and zm.mapped_mode(src) else model.hi[j]
+        step = -step if val + step > upper else step
+        ds, _ = eng._area_per_h(peak, *((e + step, gam) if j == ai else (e, gam + step)))
+        grad[j] = h * (ds - per_s) / step
+    g = grad[free]
+    return h * per_s, float(math.sqrt(max(g @ cov @ g, 0.0)))
+
+
 def _record(eng, spec, a, model, theta, cov, sd, rel_sd, modes, ids, D, status):
     """The refit as a fast-pass-shaped record and its drawable overlay (N3), modes canonicalised to
     ascending energy for output only (branch ids, masks and covariance permuted with them, spec 3); and
@@ -1526,8 +1553,10 @@ def _record(eng, spec, a, model, theta, cov, sd, rel_sd, modes, ids, D, status):
     for dst, src in enumerate(order):
         ai, gi, ci = model.modes[src]
         md = modes[src]
+        area, sigma_area = _area(eng, zm, model, theta, cov, src)
         peaks.append({"index": dst, "omega0": md.omega0, "Gamma": md.gamma, "delta": src in model.delta,
-                      "height": md.height, "sigma_omega0": sd.get(ai), "sigma_Gamma": sd.get(gi),
+                      "height": md.height, "area_stokes": area, "sigma_area": sigma_area,
+                      "sigma_omega0": sd.get(ai), "sigma_Gamma": sd.get(gi),
                       "sigma_height": sd.get(ci), "sigma_release": rel_sd.get(ai), "regime": md.regime,
                       "mode_status": md.status, "branch": ids[src], "confident": md.status != "poorly_determined",
                       "at_width_cap": zm.at_cap(theta, src)})

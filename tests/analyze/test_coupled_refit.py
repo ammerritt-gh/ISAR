@@ -887,3 +887,37 @@ def test_the_coupled_refit_carries_the_central_qe_as_a_nuisance():
                                 + sp.ln_height(theta[model.modes[0][2]])
                                 + sp.ln_height(theta[model.el]) + sp.ln_background(theta[model.bg])
                                 + sp.ln_height(theta[model.qe_h]) + sp.ln_qe_width(theta[model.qe_w]))
+
+
+# S4U1: the snapshot's links and the refit record's areas ------------------------------------------------------
+def _links(settled, labels=("b1",), **kw):
+    from isar.analyze.coupled.types import SnapshotLinks
+    return SnapshotLinks("l0123456789ab", "ring1", tuple(labels), (True,) * len(labels), frozenset(settled),
+                         (), (), (), **kw)
+
+
+def test_the_price_key_changes_with_the_links_and_not_with_the_order_a_set_was_built_in():
+    modes = [(8.0, 0.6, 40.0)]
+    snap = t_pair(spectrum(modes, scale=2.0, seed=3), modes, ["b1"], modes, ["b1"])
+    key = R._Spec(snap).content_key()
+    assert R._Spec(replace(snap, links=None)).content_key() == key
+    linked = replace(snap, links=_links(["b1"]))
+    assert R._Spec(linked).content_key() != key
+    assert R._Spec(replace(snap, links=_links(["b1"], labels=("b9",)))).content_key() != R._Spec(linked).content_key()
+    names = [f"b{i}" for i in range(12)]
+    one = replace(snap, links=_links(names, labels=tuple(names)))
+    two = replace(snap, links=_links(list(reversed(names)), labels=tuple(names)))
+    assert R._Spec(one).content_key() == R._Spec(two).content_key()
+    assert R._Spec(one)._payload()["links"]["settled_branches"] == sorted(names)     # never a set in the payload
+
+
+def test_a_refit_record_peaks_carry_the_fast_pass_area_and_its_sigma():
+    modes = [(8.0, 0.6, 40.0)]
+    snap = t_pair(spectrum(modes, scale=2.0, seed=3, ceiling=1), modes, ["b1"], modes, ["b1"])
+    peak, = _kept(snap).fit["peaks"]
+    spec = R._Spec(snap)
+    eng = cc.CoupledEngine(spec.ctx, spec.fs, [cc.Entry(spec.sp.energy, band=1.0, b_edge=0.0, b_mid=0.0)])
+    _col, up = eng.units([(peak["omega0"], peak["Gamma"])], [eng.variant(1, True, True).peaks[0]])[0]
+    assert peak["area_stokes"] == pytest.approx(peak["height"] * up.area_stokes / up.height, rel=1e-9)
+    assert math.isfinite(peak["sigma_area"]) and peak["sigma_area"] > 0.0
+    assert 0.01 < peak["sigma_area"] / peak["area_stokes"] < 1.0                    # a delta-method error of a 40-count line
