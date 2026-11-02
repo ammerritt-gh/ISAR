@@ -273,7 +273,7 @@ class LinkResult:
     excluded: dict[str, tuple[str, str | None]]      # unit -> (plain reason it was not linked, token given by the session)
     settings: dict[str, object]                      # InterSettings.to_values() the result was made with
     name_start: int                                  # provenance only: first name number this run allocated
-    next_name: int                                   # name_start + number of new branches
+    next_name: int                                   # name_start + number of new branches and new lone names
 
 
 # ---- the algorithm -----------------------------------------------------------------------------
