@@ -11,7 +11,8 @@ from PySide6.QtCore import Signal
 
 from isar.plotspec.builders import (
     DEFAULT_STACK_RATIO, ScansCurve, ScansMark, ScansTrace, scans_spec, scans_residual_spec, stack_step)
-from isar.plotspec.spec import MarkerKind, PlotSpec
+from isar.plotspec.spec import PlotSpec
+from isar.workspace_api.inter_spectra import phonon_label
 from isar.workspace_api.spectra import (NotDrawn, ZERO_BEAMLINE, ZERO_NONE, normalisation_reference,
                                         spectrum_bundles)
 from isar.workspace_api.scan_list import PooledRow
@@ -85,35 +86,25 @@ class PageState:
     inter: BarState | None = None
 
 
-def _branch_text(link, index):
-    """Mode ``index`` (0-based) as Scan(s) names it: 'B3', 'B2 / B3 (unresolved)' for a split, else None."""
-    pair = link.unresolved[index] if index < len(link.unresolved) else ()
-    return f"{' / '.join(pair)} (unresolved)" if pair else link.names[index]
+def _phonon_curves(curves, phonons):
+    """Each mode curve is its phonon, 'P3' (the saved name of the mode's phonon); the curve keeps its number."""
+    return tuple(replace(c, name=phonon_label(phonons[c.number - 1]), phonon=phonons[c.number - 1])
+                 if c.kind == 'mode' and c.number is not None and c.number <= len(phonons) else c for c in curves)
 
 
-def _named_modes(curves, link):
-    """Each mode curve carries its branch: 'Mode 2 · B3'; a mode with no branch keeps 'Mode 2'."""
-    named = []
-    for curve in curves:
-        text = None
-        if curve.kind == 'mode' and curve.number is not None and curve.number <= len(link.names):
-            text = _branch_text(link, curve.number - 1)
-        named.append(replace(curve, name=f'Mode {curve.number} · {text}') if text else curve)
-    return tuple(named)
-
-
-def _link_marks(link):
-    """Branch names and link glyphs at each mode's E*, the energy its link matched on. Stale links keep names only."""
+def _mode_labels(curves, peak_E=None):
+    """Each mode's label at its peak: E* from the saved links when ``peak_E`` is given, else the fitted centre on the
+    energy-loss side (the mode's number, 'Mode 3', in energy order)."""
     marks = []
-    for index in range(len(link.names)):
-        text = _branch_text(link, index)
-        if text:
-            marks.append(ScansMark(index + 1, link.peak_E[index], name=text))
-    if not link.stale:
-        for m in link.markers:
-            if m.group in (2, 3) and m.mode is not None:
-                kind = MarkerKind.LINK_UNLINKED if m.group == 3 else MarkerKind.LINK_CHANGE
-                marks.append(ScansMark(m.mode + 1, link.peak_E[m.mode], kind=kind, label=m.label, tooltip=m.words))
+    for c in curves:
+        if c.kind != 'mode' or c.number is None:
+            continue
+        if peak_E is not None:
+            energy = peak_E[c.number - 1] if c.number <= len(peak_E) else None
+        else:
+            energy = c.centers[-1] if c.centers else None
+        if energy is not None:
+            marks.append(ScansMark(c.number, energy, name=c.name))
     return tuple(marks)
 
 
@@ -134,6 +125,7 @@ class ScansPageViewModel(ViewModel):
         self.zero_lines = True
         self.energy_zero_line = False
         self.peak_lines = True
+        self.energy_order = False        # label every mode Mode 1…N in energy order, even where saved links name it
         self.filled_symbols = False
         self.out_of_range = True
         self._store = None
@@ -165,7 +157,7 @@ class ScansPageViewModel(ViewModel):
             self.refreshed.emit()
 
     def set_display_option(self, name, value):
-        if name not in ("zero_lines", "energy_zero_line", "peak_lines", "filled_symbols",
+        if name not in ("zero_lines", "energy_zero_line", "peak_lines", "energy_order", "filled_symbols",
                         "out_of_range"):
             raise ValueError(f"unknown display option: {name}")
         self._set(name, value, (True, False))
@@ -262,7 +254,7 @@ class ScansPageViewModel(ViewModel):
     def save_view_state(self, session, root=None):
         session.view_state[STATE_KEY] = {'fit': self.fit, 'layout': self.layout, 'scale': self.scale,
             'zero_lines': self.zero_lines, 'energy_zero_line': self.energy_zero_line,
-            'peak_lines': self.peak_lines,
+            'peak_lines': self.peak_lines, 'energy_order': self.energy_order,
             'filled_symbols': self.filled_symbols, 'out_of_range': self.out_of_range,
             'offset_ratio': self.offset_ratio}
         if root is not None:
@@ -278,7 +270,7 @@ class ScansPageViewModel(ViewModel):
         saved = saved if isinstance(saved, dict) else {}
         offsets = outer.get(OFFSETS_KEY) if isinstance(outer, dict) else None
         for name, default in (("zero_lines", True), ("energy_zero_line", False),
-                              ("peak_lines", True), ("filled_symbols", False),
+                              ("peak_lines", True), ("energy_order", False), ("filled_symbols", False),
                               ("out_of_range", True)):
             value = saved.get(name, default)
             setattr(self, name, value if isinstance(value, bool) else default)
@@ -385,7 +377,7 @@ class ScansPageViewModel(ViewModel):
             revisions = ()
         signature = (keys, revisions, tuple(labels.items()), self.selection.active,
                      self.fit, self.layout, self.scale, self.hand_step, self.offset_ratio, reference,
-                     self.zero_lines, self.energy_zero_line, self.peak_lines, self.filled_symbols,
+                     self.zero_lines, self.energy_zero_line, self.peak_lines, self.energy_order, self.filled_symbols,
                      self.out_of_range,
                      inter.revision if inter else '', tuple(self.chosen.items()), wf, history, wf_off,
                      row,
@@ -509,15 +501,19 @@ class ScansPageViewModel(ViewModel):
                             CONDITIONAL_ERRORS if errors_ok else ERRORS_UNAVAILABLE]
                         note = ' · '.join(parts + ([note] if note else []))
             link = self.inter.link_row(bundle.key) if self.inter is not None else None
-            marks = ()
+            named = None                 # each mode's phonon, when the saved links apply to what is drawn here
             if link is not None and curves and link.current and link.names:
                 if shown == 'fast' and bundle.fit_id == link.fit_id:
-                    curves = _named_modes(curves, link)
-                    marks = _link_marks(link)
+                    named = link.names
                 else:
                     row = self.inter.row(bundle.key)
                     owner = row.label if row is not None and row.fit_id == link.fit_id else link.fit_id
-                    note = ' · '.join(filter(None, (note, f'branch names belong to {owner}; not drawn here')))
+                    note = ' · '.join(filter(None, (note, f'phonon names belong to {owner}; not drawn here')))
+            if named is not None and not self.energy_order:
+                curves = _phonon_curves(curves, named)
+                marks = _mode_labels(curves, link.peak_E)
+            else:
+                marks = _mode_labels(curves)
             if link is not None and curves and link.stale:
                 note = ' · '.join(filter(None, (note, LINKS_OUT_OF_DATE)))
             tag = ' (beamline zero)' if bundle.zero == ZERO_BEAMLINE else ''

@@ -548,20 +548,18 @@ class ScansCurve:
     number: int | None
     values: np.ndarray
     centers: tuple[float, ...] = ()
+    phonon: str | None = None           # the saved phonon name (B<n>) of a mode named by its links; sets its colour
 
 
 @dataclass(frozen=True)
 class ScansMark:
-    """A mode's branch name and/or link glyph, placed at its peak energy E* (never omega0 or the curve centre)."""
+    """A mode's label, written at its peak energy: E* from the saved links, else the fitted centre."""
     mode: int                           # the mode's curve number (1-based)
-    energy: float                       # E* in meV, from the saved link
-    name: str = ""                      # branch text drawn at the peak, with the Peak lines switch
-    kind: ps.MarkerKind | None = None   # link glyph (change or unlinked); None draws the name alone
-    label: str | None = None
-    tooltip: str | None = None
+    energy: float                       # meV
+    name: str = ""                      # the label ('P3' or 'Mode 3'), drawn with the Peak lines switch
 
 
-_BRANCH_TIP = "Branch this mode follows, from the saved mode links"
+_LABEL_TIP = "The mode's phonon from the saved mode links, or its number in energy order"
 
 
 @dataclass(frozen=True)
@@ -655,11 +653,15 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
     curves = [(curve, trace, offset) for trace, offset in zip(traces, offsets)
               for curve in trace.curves]
     curves.sort(key=lambda item: (rank[item[0].kind], item[0].number or 0))
+    # A phonon keeps one colour in every spectrum: the plot's trace colours, given in ascending P number.
+    phonons = sorted({c.phonon for c, _, _ in curves if c.phonon}, key=lambda p: int(p[1:]))
     for curve, trace, offset in curves:
         if trace.curve_x is None or np.shape(curve.values) != np.shape(trace.curve_x):
             raise ValueError("curve values must match the curve energy grid")
         color_key = (f"mode{((curve.number or 1) - 1) % 6 + 1}"
                      if curve.kind == "mode" else curve.kind)
+        color = (ps.TRACE_COLORS[phonons.index(curve.phonon) % len(ps.TRACE_COLORS)] if curve.phonon
+                 else ps.CURVE_COLORS[color_key])
         style = []
         if curve.kind in {"total", "mode"}:
             style.append("heavy")
@@ -671,7 +673,7 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
             x=np.asarray(trace.curve_x), y=np.asarray(curve.values) + offset,
             label=None if curve.kind == "background" else curve.name,
             role=ps.Role.FIT if curve.kind == "total" else ps.Role.COMPONENT,
-            style=" ".join(style) or None, color=ps.CURVE_COLORS[color_key],
+            style=" ".join(style) or None, color=color,
             legend_group=curves_header))
         if peak_lines and curve.kind == "mode":
             grid = np.asarray(trace.curve_x)
@@ -680,7 +682,7 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
                     height = float(np.interp(center, grid, curve.values))
                     spec.series.append(ps.Series(
                         x=np.array([center, center]), y=np.array([offset, offset + height]),
-                        role=ps.Role.COMPONENT, color=ps.CURVE_COLORS[color_key]))
+                        role=ps.Role.COMPONENT, color=color))
     for trace, offset in zip(traces, offsets):
         for mark in trace.marks:
             curve = next((c for c in trace.curves if c.kind == "mode" and c.number == mark.mode), None)
@@ -690,10 +692,8 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
             if not grid[0] <= mark.energy <= grid[-1]:
                 continue
             at = (float(mark.energy), offset + float(np.interp(mark.energy, grid, curve.values)))
-            if mark.kind is not None:
-                spec.markers.append(ps.Marker(at[0], at[1], mark.kind, mark.label, tooltip=mark.tooltip))
             if mark.name and peak_lines:
-                spec.annotations.append(ps.Annotation(mark.name, xy=at, tooltip=_BRANCH_TIP))
+                spec.annotations.append(ps.Annotation(mark.name, xy=at, tooltip=_LABEL_TIP))
     return spec
 
 

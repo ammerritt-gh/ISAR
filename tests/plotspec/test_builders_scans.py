@@ -104,20 +104,33 @@ def test_zero_guides_are_viewport_lines_and_leave_the_data_unchanged(view):
     assert 'guides' not in plain.to_dict()
 
 
-def test_link_marks_sit_at_the_peak_energy_and_names_follow_peak_lines():
+def test_mode_labels_sit_at_the_peak_and_follow_the_peak_lines_switch():
     trace = replace(deep_traces()[0], deep=False, marks=(
-        ScansMark(1, 1.5, name='B3'),
-        ScansMark(1, 1.5, kind=ps.MarkerKind.LINK_CHANGE, label='energy differs from neighbours', tooltip='words'),
-        ScansMark(2, 1.0, kind=ps.MarkerKind.LINK_UNLINKED, label='no link to a neighbour'),   # mode 2 has no curve
-        ScansMark(1, 9.0, kind=ps.MarkerKind.LINK_UNLINKED, label='off grid'),                 # outside the grid
+        ScansMark(1, 1.5, name='P3'),
+        ScansMark(2, 1.0, name='P2'),        # mode 2 has no drawn curve here: no label
+        ScansMark(1, 9.0, name='P3'),        # outside the grid: no label
     ))
     spec = scans_spec(traces=(trace,), view='single', step=0, ylabel='Counts', curves_header=None)
-    [glyph] = spec.markers
-    assert (glyph.kind, glyph.x, glyph.y, glyph.tooltip) == (ps.MarkerKind.LINK_CHANGE, 1.5, 1.5, 'words')
+    assert not spec.markers
     [name] = spec.annotations
-    assert (name.text, name.xy) == ('B3', (1.5, 1.5)) and name.tooltip
+    assert (name.text, name.xy) == ('P3', (1.5, 1.5)) and name.tooltip
     quiet = scans_spec(traces=(trace,), view='single', step=0, ylabel='Counts', curves_header=None, peak_lines=False)
-    assert [m.kind for m in quiet.markers] == [ps.MarkerKind.LINK_CHANGE] and not quiet.annotations
+    assert not quiet.annotations
+
+
+def test_a_phonon_is_one_colour_in_every_trace_in_ascending_number_and_energy_order_modes_keep_theirs():
+    a, b = deep_traces()
+    p3 = replace(b.curves[1], name='P3', phonon='B3')           # the same phonon in both spectra
+    named_b = (b.curves[0], p3, replace(b.curves[2], name='P2', phonon='B2'), b.curves[3])
+    named_a = (a.curves[0], replace(a.curves[1], name='P3', phonon='B3'), a.curves[2])
+    spec = scans_spec(traces=(replace(a, deep=False, curves=named_a), replace(b, deep=False, curves=named_b)),
+                      view='offset', step=1, ylabel='Counts', curves_header=None)
+    assert {s.label: s.color for s in spec.series if s.label in ('P2', 'P3')} == {
+        'P2': ps.TRACE_COLORS[0], 'P3': ps.TRACE_COLORS[1]}
+    assert {s.color for s in spec.series if s.label == 'P3'} == {ps.TRACE_COLORS[1]}
+    plain = scans_spec(traces=(replace(a, deep=False), replace(b, deep=False)),
+                       view='offset', step=1, ylabel='Counts', curves_header=None)
+    assert ps.CURVE_COLORS['mode1'] in {s.color for s in plain.series if s.label == 'Mode 1'}
 
 
 def test_new_style_fields_are_optional_in_serialization():

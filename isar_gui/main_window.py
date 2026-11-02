@@ -2174,6 +2174,7 @@ class MainWindow(QMainWindow):
             ("zero_lines", "Show scan zero lines", "Dotted grey zero-intensity lines across the full plot width for offset scans."),
             ("energy_zero_line", "Show energy zero line", "A dotted grey line at energy-axis zero across the full plot height, including the residual panel."),
             ("peak_lines", "Show mode centre lines", "Lines from each stored mode centre to its scan zero, on both energy sides, in the mode colour."),
+            ("energy_order", "Label modes in energy order", "Label every mode Mode 1, 2, … in energy order, not by its saved phonon; affects the Scan(s) plot's mode labels, colours and peak labels only."),
             ("out_of_range", "Show out-of-range indicators", "Black bars and outward arrows mark measured data beyond the visible axes, including masked points. Applies to Scan(s) and the analyzer array."),
             ("filled_symbols", "Filled data symbols", "Fill data symbols; turn off for empty symbols that reveal curves behind them."),
         ):
