@@ -59,9 +59,9 @@ def analyzer_path_spec(*, stops, title, xlabel, ylabel, stale_note=None, reason=
     if notes:
         spec.annotations.append(ps.Annotation(text=" · ".join(notes)))
 
-    for k, name in enumerate(sorted(phonons, key=lambda p: int(p[1:]))):     # the colours of Scan(s): ascending number
+    for k, name in enumerate(sorted(phonons, key=lambda p: int(p[1:]))):     # the phonon colours of Scan(s), by number
         placed = phonons[name]
-        colour = ps.TRACE_COLORS[k % len(ps.TRACE_COLORS)]
+        colour = ps.PHONON_COLORS[k % len(ps.PHONON_COLORS)]
         spec.series.append(_series([_row(xs[i], m) for i, m in placed], label=name,
                                    symbol=ps.SYMBOLS[k % len(ps.SYMBOLS)], color=colour, tooltip=PHONON_TIP))
         first = {}

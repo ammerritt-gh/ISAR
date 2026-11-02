@@ -655,14 +655,14 @@ def scans_spec(*, traces: Sequence[ScansTrace], view: str, step: float,
     # Phonons sort by their P number, so the legend reads P1, P2, P3 whatever the energy order.
     curves.sort(key=lambda item: (rank[item[0].kind],
                                   int(item[0].phonon[1:]) if item[0].phonon else item[0].number or 0))
-    # A phonon keeps one colour in every spectrum: the plot's trace colours, given in ascending P number.
+    # A phonon keeps one colour in every spectrum: the phonon colours, given in ascending P number.
     phonons = sorted({c.phonon for c, _, _ in curves if c.phonon}, key=lambda p: int(p[1:]))
     for curve, trace, offset in curves:
         if trace.curve_x is None or np.shape(curve.values) != np.shape(trace.curve_x):
             raise ValueError("curve values must match the curve energy grid")
         color_key = (f"mode{((curve.number or 1) - 1) % 6 + 1}"
                      if curve.kind == "mode" else curve.kind)
-        color = (ps.TRACE_COLORS[phonons.index(curve.phonon) % len(ps.TRACE_COLORS)] if curve.phonon
+        color = (ps.PHONON_COLORS[phonons.index(curve.phonon) % len(ps.PHONON_COLORS)] if curve.phonon
                  else ps.CURVE_COLORS[color_key])
         style = []
         if curve.kind in {"total", "mode"}:
