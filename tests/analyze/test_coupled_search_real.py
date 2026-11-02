@@ -179,10 +179,14 @@ def test_a_hidden_mode_is_kept_and_a_vanishing_branch_is_dropped_under_the_count
     assert (strong.count, strong.slots) == (1, ("b1",)), (strong.count, strong.slots, decision(strong)["count_p"])
     print(f"17 vanishing, strong statistics: count_p {decision(strong)['count_p']}; {time.perf_counter() - t1:.1f} s")
     t2 = time.perf_counter()
+    # S2U2 kept the phantom here: its height prior let b2 sit at zero for a few nats. The link's intensity prior (S4U5)
+    # centres b2's intrinsic intensity on the neighbours' (A 10, near their height 8, about 11 at y's 200 K), so a
+    # zero-height b2 pays the prior's tail and the add no longer wins; with A unknown (0) the phantom still stays
+    # (test_coupled_loss.py 4).
     weak, _ = R.assign(_vanished(1.0))
-    assert (weak.count, weak.slots) == (2, ("b1", "b2")), (weak.count, weak.slots, decision(weak)["count_p"])
-    print(f"17 vanishing, weak statistics: count_p {decision(weak)['count_p']} (the phantom stays, as S2U2 documents); "
-          f"{time.perf_counter() - t2:.1f} s")
+    assert (weak.count, weak.slots) == (1, ("b1",)), (weak.count, weak.slots, decision(weak)["count_p"])
+    print(f"17 vanishing, weak statistics: count_p {decision(weak)['count_p']} (the intensity prior drops the "
+          f"phantom); {time.perf_counter() - t2:.1f} s")
 
 
 # 20 --------------------------------------------------------------------------------------------------------
