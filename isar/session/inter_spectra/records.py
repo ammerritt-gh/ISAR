@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import secrets
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -219,6 +219,17 @@ def read_links(root) -> tuple[LinkLine, ...]:
         except (KeyError, TypeError, ValueError, IndexError) as exc:
             store._skip(damaged, LOG, lineno, f"{type(exc).__name__}: {exc}")
     return tuple(out)
+
+
+def newest_link_by_scan(lines: Sequence[LinkLine], scans: Collection[str] | None = None) -> dict[str, LinkLine]:
+    """Scan key -> the last record (file order) whose scope holds it, for ``scans`` (every scan when None): the one
+    rule for "the record of a spectrum", shared by the facade's reads and the inter-spectra linking."""
+    out: dict[str, LinkLine] = {}
+    for line in lines:
+        for scan in line.scope:
+            if scans is None or scan in scans:
+                out[scan] = line
+    return out
 
 
 def read_link_payload(root, line: LinkLine) -> LinkResult | None:
