@@ -105,6 +105,8 @@ class Bench:
 
     def run(self, spec, *, cores=1, core=fakes, **kw):
         item = runner.BatchItem("q1", f"inter:{spec.batch_id}:batch", "inter", cores, spec.to_json())
+        if core is not None and "linker" not in kw:     # a fake core has nothing real to link; the real core links
+            kw["linker"] = fakes.NullLinker()
         runner.run_batch(self.root, item, progress=self.prog, emit=self.emit, ack=self.ack, core=core, **kw)
         return records.read_log(self.root)
 
@@ -1243,6 +1245,17 @@ def test_the_real_core_runs_both_batch_kinds_end_to_end(tmp_path):
                              == ("rejected", "material_change_without_gain", True) for r in lines)
         assert all(records.read_payload(ws.root, r)["overlay"]["fast_pass"]["source"] == "inter_refit"
                    for r in lines if r.status in records.ELIGIBLE)
+        # the real linker: every stage names the link it saved, the stored result reads back, the end link is last
+        saved = {line.link: line for line in records.read_links(ws.root)}     # (an identical link is the first's record)
+        stages = [s for s in log.stages if s.batch == spec.batch_id]
+        assert stages and all(s.link in saved for s in stages)
+        assert end["link"] in saved          # (an end link equal to the last stage's is that record: the digest rule)
+        assert runner._Linker().stored(ws.root, end["link"]) == records.read_link_payload(ws.root, saved[end["link"]])
+        for r in lines:
+            p = records.read_payload(ws.root, r)
+            assert p["came_in"]["links"]["link_id"] in saved
+            if r.status in records.ELIGIBLE:          # a re-link inside a batch keeps its intensity: the refit's area
+                assert all(pk["area_stokes"] > 0 for pk in p["overlay"]["fast_pass"]["peaks"])
         if spec.kind == "anchored":
             assert end["done"] == 2 and {r.accept.decision for r in lines} == {"authoritative"}
             continue
@@ -1575,3 +1588,165 @@ def test_a_spare_worker_run_and_a_one_worker_run_reach_the_same_decision(tmp_pat
     for unit, m1 in models[1].items():
         if m1 is not None:
             assert models[4][unit][4] == pytest.approx(m1[4], abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# S4U1: linking is a stage of the batch
+# ---------------------------------------------------------------------------
+def _links_by_stage(ws, batch) -> dict:
+    return {line.stage: line for line in records.read_links(ws) if line.batch == batch}
+
+
+def _own(label):
+    """A scripted labelling: the anchor keeps its ids, every other mode takes ``link:<unit>#<i>``."""
+    return lambda u, n, h: [m.branch if label(u) else f"link:{u}#{i}" for i, m in enumerate(h.modes)]
+
+
+def test_an_anchored_batch_links_at_every_ring_and_once_at_the_end(tmp_path):
+    """One saved link per ring, tagged ring1..N, then the end link; each is made from the frozen state (the anchor is
+    a fixed point), the ring's own modes take the link ids, and the stage line, the refit's came_in and the end
+    record name the link used."""
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"},) * 3)
+    linker = fakes.ScriptedLinker(_own(lambda u: u == x))
+    spec = _anchored(ws, [x])
+    log = Bench(ws).run(spec, linker=linker)
+    by = _links_by_stage(ws, spec.batch_id)
+    assert list(by) == ["ring1", "ring2", "end"]
+    scans = tuple(sorted({u.rsplit(":", 1)[0] for u in (x, y, z)}))
+    assert all(line.scope == scans for line in by.values())          # SCAN keys, never spectrum keys
+    assert linker.calls[0][:3] == ("stage", sorted([x, y, z]), (x,)) and linker.calls[0][3] is None
+    assert linker.calls[1][3] is not None and linker.calls[1][4] == 4     # ring 2 continues ring 1's saved names
+    stages = {s.index: s for s in log.stages if s.batch == spec.batch_id}
+    assert [stages[i].link for i in (1, 2)] == [by["ring1"].link, by["ring2"].link]
+    assert log.batches[spec.batch_id].end["link"] == by["end"].link
+    lines = {r.unit: (r, p) for r, p in _lines(ws, spec.batch_id)}
+    for unit, stage in ((y, "ring1"), (z, "ring2")):
+        p = lines[unit][1]["came_in"]
+        assert [m["branch"] for m in p["own"]["modes"]] == [f"link:{unit}#0"]
+        assert (p["links"]["link_id"], p["links"]["stage"]) == (by[stage].link, stage)
+        assert p["links"]["labels"] == [f"link:{unit}#0"]
+    held_x = [h for t in lines[y][1]["came_in"]["terms"] for h in t["held"]]
+    assert [m["branch"] for h in held_x for m in h["modes"]] == ["B"]        # the anchor's ids are never relabelled
+
+
+def test_a_simultaneous_batch_links_at_every_round_and_the_sweeps_carry_their_rounds_link(tmp_path):
+    ws, x, y, z = _chain(tmp_path, ({"toy": "average"}, {"toy": "keep"}, {"toy": "average"}))
+    spec = _simultaneous(ws, (x, y, z))
+    log = Bench(ws).run(spec, linker=fakes.ScriptedLinker(_own(lambda u: False)))
+    end = log.batches[spec.batch_id].end
+    by = _links_by_stage(ws, spec.batch_id)
+    assert list(by) == [f"round{n}" for n in range(1, end["rounds"] + 1)] + ["end"] and end["rounds"] == 2
+    sweeps = [s for s in log.stages if s.batch == spec.batch_id]
+    assert len(sweeps) == end["sweeps"] >= 2
+    for s in sweeps:
+        assert s.link == by[f"round{s.round}"].link
+    assert end["link"] == by["end"].link
+    for r, p in _lines(ws, spec.batch_id):
+        assert p["came_in"]["links"]["stage"] == f"round{p['came_in']['stage_id'].rsplit('round', 1)[1]}"
+
+
+def test_a_linking_failure_ends_the_batch_failed_and_keeps_the_saved_rings(tmp_path):
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"},) * 3)
+    spec = _anchored(ws, [x])
+    log = Bench(ws).run(spec, linker=fakes.ScriptedLinker(_own(lambda u: u == x), boom=2))
+    end = log.batches[spec.batch_id].end
+    assert end["state"] == "failed" and "ring2" in end["reason"] and "scripted link failed" in end["reason"]
+    assert [s.index for s in log.stages if s.batch == spec.batch_id] == [1]          # ring 1 stays
+    assert list(_links_by_stage(ws, spec.batch_id)) == ["ring1"]                     # no end link after a failure
+    assert end["link"] is None
+
+
+def test_a_failed_end_link_is_a_warning_and_the_batch_results_stand(tmp_path):
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"},) * 3)
+    linker = fakes.ScriptedLinker(_own(lambda u: u == x))
+
+    def final(root, scans):
+        raise RuntimeError("no end link today")
+    linker.final = final
+    spec = _anchored(ws, [x])
+    bench = Bench(ws)
+    end = bench.run(spec, linker=linker).batches[spec.batch_id].end
+    assert end["state"] == "completed" and end["done"] == 2 and end["link"] is None
+    assert "linking at the end failed" in end["reason"] and "no end link today" in end["reason"]
+    assert bench.end().status == "done_warning"
+
+
+def test_a_link_saved_by_another_writer_between_rings_never_fails_the_batch(tmp_path):
+    """The other record's new branches take the store's names; the batch's next link continues after them and
+    carries the stored (renumbered) result as the one the next ring continues."""
+    ws = _workspace(tmp_path, (100, 150, 200, 250), 1)
+    k = _keys(ws)
+    u = [k["a03", t] for t in (100.0, 150.0, 200.0, 250.0)]
+    _set_fast(ws, {key: (4.0 + i, {"toy": "keep"}) for i, key in enumerate(u)})
+    linker = fakes.ScriptedLinker(_own(lambda unit: unit == u[0]))
+    held = fakes.held_from_fit({"peaks": [{"omega0": 5.0}]}, unit=u[0], fit="fast", inputs=None, context=None, T=None)
+    other = fakes._link_result({u[0]: held}, {u[0]: ("link:other#0",)}, next_name=10)
+
+    def other_writer():
+        writer.save_links(ws, other, scope=[u[0].rsplit(":", 1)[0]], batch=None, stage=None)
+    spec = _anchored(ws, [u[0]])
+    log = Bench(ws, _when("ring", 1, "save", other_writer)).run(spec, linker=linker)
+    end = log.batches[spec.batch_id].end
+    assert end["state"] == "completed" and end["done"] == 3
+    by = _links_by_stage(ws, spec.batch_id)
+    assert list(by) == ["ring1", "ring2", "ring3", "end"]
+    ring2 = records.read_link_payload(ws, by["ring2"])
+    (theirs,) = [line for line in records.read_links(ws) if line.batch is None]
+    assert linker.calls[1][4] < theirs.next_name                              # the batch had counted on fewer names
+    assert ring2.name_start == theirs.next_name                               # the save continued after the other's
+    assert ring2.branches[0].name == f"B{theirs.next_name}"
+    assert linker.calls[2][4] == by["ring2"].next_name                        # ring 3 starts from the stored counter
+    assert [b.name for b in linker.calls[2][3].branches] == [b.name for b in ring2.branches]
+
+
+def test_a_mode_on_no_branch_keeps_its_persistent_id_and_the_lone_name_rides_to_the_next_stage(tmp_path):
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"},) * 3)
+    w = Workspace.open(ws)
+    card, session = w.load()
+    for key, peaks in ((x, [(4.0, "p"), (8.0, "q")]), (y, [(4.1, "p"), (8.1, "q")]), (z, [(4.2, "p"), (8.2, "q")])):
+        fp = session.scans[key].detectors[key.rsplit(":", 1)[1]]["fast_pass"]
+        fp["peaks"] = [{"index": i, "omega0": e, "Gamma": 0.5, "height": 1.0, "branch": b}
+                       for i, (e, b) in enumerate(peaks)]
+        fp["fake"] = {"toy": "keep"}
+    w.save(card, session)
+    # y's high mode is on no branch (a lone phonon named B9); its low mode is on a link branch
+    label = lambda unit, n, h: [m.branch if unit == x else (f"link:{unit}#0" if i == 0 else None)         # noqa: E731
+                                for i, m in enumerate(h.modes)]
+    lone = lambda n, labels, state: {"lone": {unit: tuple(None if b is not None else "B9" for b in ls)      # noqa: E731
+                                              for unit, ls in labels.items()}}
+    linker = fakes.ScriptedLinker(label, extra=lone)
+    spec = _anchored(ws, [x])
+    Bench(ws).run(spec, linker=linker)
+    p = {r.unit: p for r, p in _lines(ws, spec.batch_id)}[y]
+    assert [m["branch"] for m in p["came_in"]["own"]["modes"]] == ["link:" + y + "#0", "q"]      # "q" is untouched
+    assert p["came_in"]["links"]["labels"] == ["link:" + y + "#0", None]
+    assert "B9" not in p["came_out"]["assignment"]["slots"]                                       # no name enters a fit
+    assert linker.calls[1][3].lone[y] == (None, "B9")                                              # ring 2 continues it
+
+
+def test_relabelled_takes_link_ids_for_linked_modes_only():
+    from isar.analyze.coupled.types import Dormant
+    h = fakes.held_from_fit({"peaks": [{"omega0": 4.0, "branch": "p"}, {"omega0": 8.0, "branch": "q"}]},
+                            unit="u", fit="fast", inputs=None, context=None, T=None,
+                            dormant=(Dormant("n", "fast", "v"), Dormant("q2", "fast", "v")))
+    assert runner.relabelled(h, None) is h
+    r = runner.relabelled(h, ("n", None))
+    assert [m.branch for m in r.modes] == ["n", "q"] and [d.branch for d in r.dormant] == ["q2"]   # n is observed now
+    assert runner.relabelled(r, ("n", None)) == r                                                    # idempotent
+    with pytest.raises(ValueError, match="3 link labels for 2 modes"):
+        runner.relabelled(h, ("a", "b", "c"))
+
+
+def test_a_tie_group_gives_a_side_only_to_its_free_spectrum():
+    from isar.analyze.coupled.linking import TieGroup
+    mk = lambda u, e: fakes.held_from_fit({"peaks": [{"omega0": e}, {"omega0": e + 1}]}, unit=u, fit="fast",   # noqa: E731
+                                          inputs=None, context=None, T=None)
+    units = {"E:1:a": mk("E:1:a", 5.0), "E:1:b": mk("E:1:b", 5.2)}
+    tie = TieGroup("t1", "swap", ("E:1:a", "E:1:b"), {"E:1:a": (0, 1), "E:1:b": (0, 1)}, ("b1", "b2"),
+                   {"E:1:b": ("b2", "b1")}, 0.1, 0.2)                  # E:1:a is an anchor: it has no alternative
+    res = fakes._link_result(units, {"E:1:a": ("b1", "b2"), "E:1:b": ("b1", "b2")}, ties=(tie,))
+    free, anchor = (runner.snapshot_links(("l0", "ring1", res), u) for u in ("E:1:b", "E:1:a"))
+    assert anchor.ties == () and anchor.settled_branches == {"b1", "b2"}
+    (side,) = free.ties
+    assert (side.group, side.kind, side.units, side.slots) == ("t1", "swap", ("E:1:a", "E:1:b"), ("b2", "b1"))
+    assert runner.snapshot_links(None, "E:1:b") is None and runner.snapshot_links(("l0", "ring1", res), "E:9:z") is None

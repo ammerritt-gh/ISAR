@@ -439,11 +439,15 @@ A refit line of the index (`kind` `refit`; `payload` is the file, byte offset an
 
 The other index kinds: `batch_start` carries the batch's number, kind (`batch_kind`), scope, anchors, rings, seams,
 settings, preview, fixed and not-reached counts, terms, metric, `q_slope` (per scan with a q link: the metric and slope an anchored batch used; empty for a simultaneous batch), core, `intake_seq` and lattice epochs; `stage`
-carries `stage`, `index`, `round`, `progress`, `seams` and `not_reached`; `batch_end` carries how the batch
-finished. Each refit payload holds what the refit came in with (`came_in`) and came out with (`came_out`, with
+carries `stage`, `index`, `round`, `progress`, `seams`, `not_reached` and `link` (the link record its refits used);
+`batch_end` carries how the batch finished, and `link` (the link made when it ended; null after a failed batch). Each refit payload holds what the refit came in with (`came_in`) and came out with (`came_out`, with
 the branches not observed in it under `dormant`) and its `overlay`, so a history entry can be read in full. The
 overlay carries the calibration, resolution and temperature the refit was made with (`calib`, `T`), so a locked
 or older refit is drawn and exported in its own context, never in a later fast solo fit's.
+
+A batch saves each link it uses with a `links` payload event (`{stage, scope, result}`, stage `ring<r>`, `round<n>` or
+`end`) beside `start`, `stage` and `end`; the writer answers with the link's id. Each ring's or round's refit payload
+carries it as `came_in.links`.
 
 A `link` line names the scan keys it covers, the fits it was made from (`made_from`: fit and inputs hash per spectrum)
 and their stamps, the next branch-name number, and where its payload is. A new branch's name continues the store's

@@ -31,6 +31,11 @@ travels into pool workers with the snapshot and onto the refit's own record:
 
 A stored record's peaks may carry ``omega0`` and ``branch``; a missing omega0 reads 5.0 meV and a missing branch
 ``"B"``, so every spectrum of a fixture shares one branch. No numbers here are measured.
+
+``NullLinker`` is the runner's linker with no linking: every mode keeps the branch id it has, nothing is predicted,
+changed or tied. ``ScriptedLinker`` answers the stage links from a script (``label(unit, stage, held)`` gives a unit's
+branch id per mode, None = on no branch). Both save through the real writer, so a batch that uses either leaves real
+link records.
 """
 from __future__ import annotations
 
@@ -251,8 +256,86 @@ def refit(snapshot, *, stage, assignment=None, cached={}, workers: int = 1) -> R
                 "uncertainty_s": 0.0, "release_s": 0.0}, priced=(), cache_hits=0)
 
 
-def run_batch(root, item, *, progress, emit, ack, members=None) -> None:
+def _link_result(units, labels, *, lone=None, predictions=None, changes=None, ties=(), next_name=1, stamp="s"):
+    """A real ``LinkResult`` over ``units`` (unit -> Held), ``labels`` unit -> branch id (or None) per mode."""
+    from isar.analyze.coupled import linking as lk
+    members: dict[str, list] = {}
+    for u in sorted(labels):
+        for i, b in enumerate(labels[u]):
+            if b is not None:
+                members.setdefault(b, []).append((u, i))
+    branches = tuple(lk.Branch(b, f"B{next_name + n}", tuple(m)) for n, (b, m) in enumerate(sorted(members.items())))
+    return lk.LinkResult(
+        schema=lk.LINK_SCHEMA, made_from={u: (h.fit, h.inputs) for u, h in sorted(units.items())},
+        stamps={u: f"{stamp}:{h.fit}" for u, h in sorted(units.items())}, branches=branches,
+        labels={u: tuple(labels[u]) for u in sorted(labels)},
+        lone={u: tuple(None for _ in labels[u]) for u in sorted(labels)} if lone is None else lone,
+        peak_E={u: tuple(m.omega0 for m in units[u].modes) for u in sorted(labels)},
+        settled={u: tuple(b is not None for b in labels[u]) for u in sorted(labels)},
+        predictions={u: () for u in sorted(labels)} if predictions is None else predictions,
+        changes={u: () for u in sorted(labels)} if changes is None else changes, ties=tuple(ties),
+        contradictions=(), markers=(), excluded={}, settings={}, name_start=next_name,
+        next_name=next_name + len(branches))
+
+
+class NullLinker:
+    """No linking: every spectrum keeps the branch ids it carries (the relabelling is the identity)."""
+
+    def __init__(self) -> None:
+        self.last = None
+        self.calls: list = []
+
+    def begin(self, root, units):
+        return None, 1
+
+    def stage(self, root, state, *, links, anchors, source, settings, previous, next_name):
+        self.calls.append(("stage", sorted(state), tuple(anchors), previous, next_name))
+        self.last = _link_result(state, {u: [m.branch for m in h.modes] for u, h in state.items()},
+                                 next_name=next_name)
+        return self.last
+
+    def final(self, root, scans):
+        self.calls.append(("final", list(scans)))
+        return _link_result({}, {}, next_name=1)
+
+    def stored(self, root, link_id):
+        return self._read(root, link_id)
+
+    @staticmethod
+    def _read(root, link_id):
+        from isar.session.inter_spectra import records
+        for line in records.read_links(root):
+            if line.link == link_id:
+                return records.read_link_payload(root, line)
+        raise ValueError(link_id)
+
+
+class ScriptedLinker(NullLinker):
+    """``label(unit, stage, held) -> tuple`` gives the branch id of each mode of a spectrum at a stage (stage is
+    ``ring<r>`` / ``round<n>``); ``extra(stage, labels, state)`` may return keyword arguments of ``_link_result``
+    (lone, predictions, changes, ties); ``boom`` names a stage whose link raises."""
+
+    def __init__(self, label, extra=None, boom=None) -> None:
+        super().__init__()
+        self.label, self.extra, self.boom, self.stages = label, extra, boom, []
+
+    def stage(self, root, state, *, links, anchors, source, settings, previous, next_name):
+        self.calls.append(("stage", sorted(state), tuple(anchors), previous, next_name))
+        if self.boom is not None and len(self.stages) + 1 == self.boom:
+            raise RuntimeError("the scripted link failed")
+        labels = {u: tuple(self.label(u, len(self.stages) + 1, h)) for u, h in state.items()}
+        kw = {} if self.extra is None else self.extra(len(self.stages) + 1, labels, state)
+        self.stages.append(labels)
+        self.last = _link_result(state, labels, next_name=next_name, **kw)
+        return self.last
+
+    def final(self, root, scans):
+        return _link_result({}, {}, next_name=1)
+
+
+def run_batch(root, item, *, progress, emit, ack, members=None, linker=None) -> None:
     """The real runner on this fake core: the service's ``--inter-target _inter_fakes:run_batch``."""
     import sys
     from isar.session.inter_spectra import runner
-    runner.run_batch(root, item, progress=progress, emit=emit, ack=ack, core=sys.modules[__name__], members=members)
+    runner.run_batch(root, item, progress=progress, emit=emit, ack=ack, core=sys.modules[__name__], members=members,
+                     linker=NullLinker() if linker is None else linker)

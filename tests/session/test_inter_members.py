@@ -233,6 +233,7 @@ def _fingerprint(ws, bench, spec):
               for r, p in sorted(lines, key=lambda lp: (lp[0].index, lp[0].unit))]
     end = dict(bench.end().payload["end"])
     end.pop("timing")
+    end["link"] = end["link"] is not None            # the link id is random, that the batch made one is not
     results = [(r.status, r.reason, r.cores) for r in bench.results if r.payload is None or r.payload["event"] != "end"]
     return refits, end, bench.end().status, results, bench.progress
 

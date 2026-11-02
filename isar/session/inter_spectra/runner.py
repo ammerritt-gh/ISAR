@@ -179,12 +179,13 @@ class _Ended(Exception):
 
 def run_batch(workspace_root: Path, item: BatchItem, *, progress: Callable[[dict], None],
               emit: Callable[[InterResult], None], ack: Callable[[int], dict], core=None,
-              target_s: float = TARGET_S, members: Callable[[dict], None] | None = None) -> None:
+              target_s: float = TARGET_S, members: Callable[[dict], None] | None = None, linker=None) -> None:
     # never raises for an analysis failure: it is logged and emitted as event "end" outcome "failed".
     # ack(token) blocks until the service has saved that result and returns the verdict.
     # members(ev), when given, gets the full map of member states (waiting, fitting, done, refused, failed,
     # not_reached, held), from this thread only; it is never part of a progress dict.
-    run = _Run(Path(workspace_root), item, progress, emit, ack, core, target_s, members)
+    # linker: the stage linker (``_Linker``: begin, stage, final, stored); tests inject a fake.
+    run = _Run(Path(workspace_root), item, progress, emit, ack, core, target_s, members, linker)
     try:
         try:
             run.go()
@@ -706,7 +707,9 @@ def _plain(o, skip=()):
         return {f.name: _plain(getattr(o, f.name)) for f in dataclasses.fields(o) if f.name not in skip}
     if isinstance(o, Mapping):
         return {("|".join(map(str, k)) if isinstance(k, tuple) else str(k)): _plain(v) for k, v in o.items()}
-    if isinstance(o, (list, tuple, set, frozenset)):
+    if isinstance(o, (set, frozenset)):                # hash order differs between processes
+        return sorted((_plain(v) for v in o), key=repr)
+    if isinstance(o, (list, tuple)):
         return [_plain(v) for v in o]
     if isinstance(o, bool) or o is None or isinstance(o, (str, int)):
         return o
@@ -808,10 +811,80 @@ def canonical_factors(A: Mapping, ids, refs: Mapping, outside: Mapping) -> tuple
 
 
 # ---- one batch --------------------------------------------------------------------------------------------
+def relabelled(h, labels):
+    """``h`` with each linked mode under its link branch id (``labels`` per mode, ascending omega0; None = on no
+    branch: the mode keeps its persistent id). A dormant record whose id a mode now carries is dropped, as
+    ``_renamed`` does. ``h`` itself when ``labels`` is None."""
+    if labels is None:
+        return h
+    if len(labels) != len(h.modes):
+        raise ValueError(f"{h.unit}: {len(labels)} link labels for {len(h.modes)} modes")
+    modes = tuple(replace(m, branch=b) if b is not None else m for m, b in zip(h.modes, labels))
+    names = {m.branch for m in modes}
+    return replace(h, modes=modes, dormant=tuple(d for d in h.dormant if d.branch not in names))
+
+
+def snapshot_links(link_now, u: str):
+    """The stage's link as spectrum ``u`` reads it (``SnapshotLinks``); None without a link or for a spectrum the
+    link did not cover."""
+    from isar.analyze.coupled.types import SnapshotLinks, TieSide
+    if link_now is None:
+        return None
+    link_id, tag, res = link_now
+    if u not in res.labels:
+        return None
+    labels, settled = res.labels[u], res.settled[u]
+    ties = sorted((g for g in res.ties if u in g.alternatives), key=lambda g: g.id)
+    return SnapshotLinks(link_id, tag, labels, settled, frozenset(b for b, s in zip(labels, settled) if b and s),
+                         res.predictions[u], res.changes[u],
+                         tuple(TieSide(g.id, g.kind, tuple(sorted(g.units)), g.alternatives[u]) for g in ties))
+
+
+def _scans_of(units) -> list[str]:
+    return sorted({u.rsplit(":", 1)[0] for u in units})
+
+
+class _Linker:
+    """The production linker (a test injects another with the same four methods)."""
+
+    def begin(self, root, units):
+        """(the saved result a link of these spectra continues, the next branch-name number)."""
+        from isar.session.inter_spectra import linking as session_linking
+        return session_linking.previous_for(root, _scans_of(units))
+
+    def stage(self, root, state: dict, *, links, anchors, source, settings, previous, next_name):
+        """The link of the batch's frozen fits ``state`` over the batch's own graph links."""
+        from isar.analyze.coupled import linking as core_linking
+        from isar.session.inter_spectra import linking as session_linking
+        inputs, excluded = session_linking.inputs_for(root, sorted(state), held=state, anchors=anchors, source=source)
+        return core_linking.link(inputs, links, settings, previous, next_name=next_name, excluded=excluded)
+
+    def final(self, root, scans):
+        """The link of the fits in use of every analyzer of ``scans`` (reads the authority itself)."""
+        from isar.session.inter_spectra import linking as session_linking
+        return session_linking.link_scans(root, scans)
+
+    def stored(self, root, link_id: str):
+        """The saved result of that link record: the save may have renumbered the new branches' display names."""
+        from isar.session.inter_spectra import records
+        for line in records.read_links(root):
+            if line.link == link_id:
+                res = records.read_link_payload(root, line)
+                if res is None:
+                    break
+                return res
+        raise ValueError(f"the saved link {link_id} cannot be read back")
+
+
 class _Run:
     def __init__(self, root: Path, item: BatchItem, progress, emit, ack, core, target_s: float,
-                 members=None) -> None:
+                 members=None, linker=None) -> None:
         self.root, self.item, self._progress, self._emit, self._ack = root, item, progress, emit, ack
+        self.linker = linker or _Linker()
+        self.link_prev, self.next_name = None, 1      # the result the next link continues, its next branch number
+        self.link_now = None                          # (link id, stage tag, LinkResult) of the stage in progress
+        self.end_link: str | None = None              # the link saved when the batch ended
+        self.end_link_error: str | None = None
         self.core, self.target_s = core, target_s
         self.pool = _Pool(None, 1)
         self.token = 0
@@ -822,6 +895,7 @@ class _Run:
         self.timing = {"wall_s": 0.0, "prepare_s": 0.0, "ship_s": 0.0, "save_s": 0.0, "assign_s": 0.0,
                        "likelihood_s": 0.0, "continuous_s": 0.0, "uncertainty_s": 0.0, "release_s": 0.0,
                        "starts": 0, "stages": [], "target_s": target_s, "over_target": False, "search_s": 0.0,
+                       "link_s": 0.0,
                        "pool": {"workers": 1, "iterations": 0, "map_wall_s": 0.0, "busy_s": 0.0}}
         self.tallies: dict[tuple[str, str], _Tally] = {}      # (stage label, unit) -> its stage-1 search record
         self.members: tuple[str, ...] = ()
@@ -973,12 +1047,15 @@ class _Run:
                                                f"{c['failed']} failed" if c["failed"] else "") if x)
         else:
             status = "done"
+        if self.end_link_error and state != "failed":        # the batch itself finished; say what the last link lacked
+            status = "done_warning"
+            reason = "; ".join(x for x in (reason, f"linking at the end failed: {self.end_link_error}") if x)
         body = {"state": state, "reason": reason, "done": c["done"], "failed": c["failed"], "not_reached": missed,
                 "failed_units": [{"unit": u, "reason": why} for u, why in self.failed.items()
                                  if u in self.members and self.latest.get(u) == "failed" and u not in self.held()],
                 "stale_locks": [{"unit": u, "reason": STALE_LOCK} for u in sorted(self.stale_locks & set(self.members))],
                 "rings_done": self.rings_done, "sweeps": self.sweeps, "rounds": self.rounds,
-                "timing": _plain(self.timing), "drift": self.drift}
+                "timing": _plain(self.timing), "drift": self.drift, "link": self.end_link}
         self.send(self.payload("end", body), status, reason)
 
     # -- the freeze
@@ -1075,6 +1152,7 @@ class _Run:
         self.incoming = {u: self.held_of(u, self.res[u].fit) for u in self.usable(scope)
                          if self.res[u].fit and u not in self.stale_locks}
         self.fast = {u: self.held_of(u, "fast") for u in self.incoming}
+        self.link_prev, self.next_name = self.linker.begin(self.root, self.incoming)
         if spec.kind == "anchored":
             self.anchored()
         else:
@@ -1166,10 +1244,70 @@ class _Run:
 
     def snapshot(self, u: str, own, sid: str, terms, stage_id: str | None = None):
         from isar.analyze.coupled.types import Snapshot
+        links = snapshot_links(self.link_now, u)
+        if links is not None and len(links.labels) != len(own.modes):
+            links = None            # a sweep after a count change: the stage's labels no longer fit its modes
         return Snapshot(snapshot_id=sid, stage_id=stage_id or sid, unit=u, fit_id=self.records_mod.new_fit_id(),
                         context=self.ctx[u], own=own, own_record=self.record_of(u, own.fit), terms=tuple(terms),
                         settings=self.settings, batch_kind=self.kind, fast=self.fast.get(u),
-                        aliases=dict(self.aliases))
+                        aliases=dict(self.aliases), links=links)
+
+    def link_source(self, u: str, h):
+        """The linker's record and resolution FWHM of a frozen fit: the batch's own, never a re-read of the store."""
+        from isar.analyze import prior
+        return self.record_of(u, h.fit), prior.resolution_fwhm(getattr(self.ctx[u], "ctx", self.ctx[u]))
+
+    def link_stage(self, tag: str, held: dict) -> None:
+        """Link the frozen fits (``held`` over the incoming ones), save the link and relabel the frozen state to its
+        branch ids, in place. A failure ends the batch ``failed``; a record another writer saved meanwhile cannot."""
+        from isar.analyze.coupled.linking import to_json
+        state = {u: held.get(u, h) for u, h in self.incoming.items() if u not in self.stale_locks}
+        if not state:
+            self.link_now = None
+            return
+        t0 = time.perf_counter()
+        try:
+            res = self.linker.stage(self.root, state, links=self.graph.links,
+                                    anchors=sorted(u for u in self.fixed if u in state), source=self.link_source,
+                                    settings=self.settings, previous=self.link_prev, next_name=self.next_name)
+            scans = _scans_of(state)
+            verdict = self.send(self.payload("links", {"stage": tag, "scope": scans, "result": to_json(res)}))
+            if not verdict.get("saved"):
+                raise _Ended("failed", f"could not save the links of {tag}: {verdict.get('error')}")
+            stored = self.linker.stored(self.root, verdict["link"])     # names are final once saved
+            relabel = {u: relabelled(h, stored.labels.get(u)) for u, h in state.items()}
+        except (_Ended, EOFError, ConnectionError):
+            raise
+        except Exception as exc:  # noqa: BLE001 — a batch that ignored its links would silently be the old search
+            log.exception("batch %s: linking at %s failed", self.batch, tag)
+            raise _Ended("failed", f"linking failed at {tag} ({type(exc).__name__}: {exc}); saved rings are kept")
+        self.link_prev, self.next_name = stored, stored.next_name
+        self.link_now = (verdict["link"], tag, stored)
+        for u, h in relabel.items():
+            if u in held:
+                held[u] = h
+            else:
+                self.incoming[u] = h
+            if state[u].fit == "fast" and self.fast.get(u) is not None:
+                self.fast[u] = h
+        self.timing["link_s"] += time.perf_counter() - t0
+
+    def finish_links(self) -> None:
+        """Link once more, on the fits then in use, so the links shown describe them. A failure is logged and said
+        in the end's reason; the batch's results stand."""
+        from isar.analyze.coupled.linking import to_json
+        scans = _scans_of(self.members)
+        try:
+            res = self.linker.final(self.root, scans)
+            verdict = self.send(self.payload("links", {"stage": "end", "scope": scans, "result": to_json(res)}))
+            if not verdict.get("saved"):
+                raise ValueError(str(verdict.get("error")))
+            self.end_link = verdict["link"]
+        except (EOFError, ConnectionError):
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.exception("batch %s: linking at the end failed", self.batch)
+            self.end_link_error = f"{type(exc).__name__}: {exc}"
 
     def start(self, *, anchors, rings, seams, preview, terms) -> None:
         # the slope each scan's q-change penalty used; an anchored batch only (a simultaneous one uses no q slope)
@@ -1405,7 +1543,8 @@ class _Run:
 
     def save_stage(self, stage: str, index: int, entries: list, seams: list) -> dict:
         body = {"stage": stage, "index": index, "round": self.round, "refits": entries, "seams": seams,
-                "progress": self.counts(), "not_reached": dict(self.not_reached)}
+                "progress": self.counts(), "not_reached": dict(self.not_reached),
+                "link": self.link_now[0] if self.link_now else None}
         verdict = self.send(self.payload("stage", body))
         if not verdict.get("saved"):
             raise _Ended("failed", f"could not save {stage} {index}: {verdict.get('error')}")
@@ -1502,6 +1641,8 @@ class _Run:
             t_ring = time.perf_counter()
             self.stage_name, self.index = "ring", r
             self.take_new_locks(held)                       # a lock set mid-batch is fixed from this ring on
+            if any(k not in self.fixed and k not in self.stale_locks and k in self.incoming for k in ring.members):
+                self.link_stage(f"ring{r}", held)           # the frozen state, relabelled to the link's branch ids
             held_frozen = dict(held)                        # the state every refit of this ring conditions on
             sid = f"{self.batch}:ring{r}"
             todo = {}
@@ -1550,6 +1691,7 @@ class _Run:
             self.stage_timing("ring", r, t_ring, len(snaps), len(snaps))
             self.progress("save")
         self.drift = self.drift_of(held)
+        self.finish_links()
         self.end("completed")
 
     def ring_seams(self, plan, r: int, R: dict, ok: set, ids_after) -> list[dict]:
@@ -1629,6 +1771,7 @@ class _Run:
             sid = f"{self.batch}:round{self.rounds}"
             t_round = time.perf_counter()
             leave(self.take_new_locks(held))
+            self.link_stage(f"round{self.rounds}", held)
             snaps = {}
             for k in sorted(active):
                 terms = terms_of(k, held)
@@ -1735,6 +1878,7 @@ class _Run:
             if outcome == "did_not_settle":
                 break
         self.drift = self.drift_of(held)
+        self.finish_links()
         if outcome == "did_not_settle":
             self.end("did_not_settle", f"did not settle within {s.sweep_cap} sweeps; its results are kept")
         elif outcome == "nothing_left":

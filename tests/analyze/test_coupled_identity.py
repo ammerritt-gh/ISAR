@@ -521,3 +521,20 @@ def test_a_mask_only_change_is_no_relabelling_anchored_and_simultaneous():
         assert build(changed=True, mask_only=True) == quiet
         assert build(changed=True) != quiet                 # the relabelling reading differs: the guard is not moot
     assert anchored(changed=False)[2] == {"p": ["fast:k#0"]}
+
+
+def test_link_ids_shared_by_two_spectra_flag_a_near_tied_swap_but_not_a_confident_one():
+    # S4U1: after the runner relabels the frozen state to the link ids, one id names one branch in every spectrum, so
+    # a close swap is seen (identity_ambiguous) and a confident swap is not: the gap S4U2's crossing check closes
+    prev = {u: held(u, f"f_{u}", [("L1", 10.0), ("L2", 12.0)]) for u in ("u1", "u2")}
+    links = [link("u1", "u2", "q")]
+    swapped = ("L2", "L1")
+
+    def stage(rival):
+        return {"u1": asg("u1", "b:round1", swapped, cands=[(swapped, 0.0), (("L1", "L2"), rival)]),
+                "u2": asg("u2", "b:round1", swapped, cands=[(swapped, 0.0), (("L1", "L2"), rival)])}
+    close = run(["u1", "u2"], links, stage(-0.3), prev, mode="simultaneous", sid="b:round1")
+    assert set(close.flags["identity_ambiguous"]["units"]) == {"u1", "u2"}
+    sure = run(["u1", "u2"], links, stage(-10.0), prev, mode="simultaneous", sid="b:round1")
+    assert "identity_ambiguous" not in sure.flags
+    assert sorted(sure.ids[ref] for ref in refs("u1", 2)) == ["L1", "L2"]              # two distinct branches, no flag
