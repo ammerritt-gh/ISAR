@@ -262,6 +262,9 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       saves, against the design's meaning of waiting. Candidate fixes, not ruled: interleave pricing
       jobs across the ring's spectra; a "fitted, saved with the ring" state. To be refined later.
       **Acceptance:** the operator agrees the marks match how a ring actually runs.
+- [ ] **GUI-12 — Automatic switches survive the experiment's rebind.** The automatic linking switch,
+      like the fast-pass switch, is lost when an experiment goes from pending to ready and is rebound.
+      **Acceptance:** both switches read the same before and after the rebind.
 
 ---
 
@@ -337,6 +340,24 @@ Specs in [design/gui.md](docs/design/gui.md) §16. Designed 2026-07-16, not buil
       fit_range, reason}`; write `card.state.corrections`; apply only via a guidelines-hash re-fit
       (P1 — no LLM in the runtime path of a number). The fields it edits already exist.
       **Acceptance:** a proposal round-trips into a re-fit without the LLM touching a fitted number.
+- [ ] **FIT-28 — First real batch of the link-driven inter-spectra pass.** The linking stage, the
+      listed-candidate search and the width and intensity coupling priors (job j2eac6dfd06c3, PR #89) are
+      built and tested on synthetic data only; every stored fast pass and link record predates them.
+      **Acceptance:** an anchored and a simultaneous batch run on one real experiment after Link modes,
+      and `docs/design/inter_spectra.md` §1's status moves from Partial.
+- [ ] **FIT-29 — Linking and coupling calibration on data.** Open from the linking job:
+      the linking tolerances (PR #88) come from one temperature of one experiment, and temperature
+      links still use the refit's temperature tolerance, untested by any linking run; the per-link
+      matching can prefer two moderate pairs over one near-perfect pair, and near-tie detection has no
+      kind for one pair against two; in an anchored batch the width and intensity priors read outer-ring
+      fast passes, so a spectrum's own summary can reach its prior through a neighbour; the refit's
+      energy coupling matches neighbours on ω0, linking on peak energy, so a capped neighbour pulls on
+      a biased ω0. **Acceptance:** each is measured on real links and fixed or ruled acceptable.
+- [ ] **FIT-30 — Listed-candidate search edges.** Forward selection with more than four listed
+      changes can extend the first of two equal-key drops; `search["applied"]` can name a different
+      basin's change than the selected model when two candidates differ only by width mask or QE
+      variant; a failed joint candidate of two changes does not set `search_limited`.
+      **Acceptance:** a test reproduces each on a constructed grid, or a real batch shows it never fires.
 - [ ] **FIT-2 — Multi-branch dispersion prior.** `PriorPoint` has no branch/mode field, so the
       prior carries the primary mode only.
       **Acceptance:** the prior distinguishes branches and a secondary mode can seed one.
@@ -713,24 +734,20 @@ conditions — these are wants, not commitments.
 - `isar/analyze/coupled/identity.py:80` — `match_link` survives the seeded search only for its
   pre-pricing pruning; the search's own labelling moves now propose candidates. Delete it, or fold its prune
   into the search. Revisit the next time `identity.py` is touched.
-- `isar/session/inter_spectra/runner.py:546` — a lookahead price that finishes after the search requested it
-  is tallied as freshly priced, not a cache hit, so `tools/inter_timing.py`'s counts read low. Revisit if
-  those counts are ever used to judge the lookahead.
-- `isar/session/inter_spectra/linking.py:286` — one link item loads the workspace twice and reads the nodes
+- `isar/session/inter_spectra/linking.py:328` — one link item loads the workspace twice and reads the nodes
   two or three times (`link_scans`, then `inputs_for` and `_in_use`); pass the loaded card, session and nodes
-  into a private `_inputs_for`. Revisit if a link item takes more than a few seconds, or at S4U1.
-- `isar/workspace_api/analyzer_path.py:121` — the path resolves the fit in use with `fits_in_use`, a third
-  rule beside `InterState.row(key).fit_id` used by the array cells and Scan(s), and parses the inter log on
-  the GUI thread; take a `fit_choice` from the view model. Revisit if path redraws lag or the path and cells
-  draw different fits.
-- `isar/workspace_api/inter_spectra.py:619` — `LinkView.branches` merges every record's members unfiltered,
-  while `previous_for` keeps a member only from its scan's newest record; apply the same newest-per-scan
-  filter. Revisit when the first consumer of `BranchView.members` lands (S4U4).
+  into a private `_inputs_for`. Revisit if a link item takes more than a few seconds.
+- `isar/session/inter_spectra/runner.py:792` — `fitted_links` (with `_Run.adopted`, `_Run.link_ids` and their
+  save/restore on refusal) rewrites each sweep snapshot's links against the current modes, but its one effect on a
+  fit, an applied add or split keeping the lone width cap, is also given by `Assignment.unlifted`; pass the
+  stage's link unchanged in sweeps and delete it. Revisit with a simultaneous-batch test where a spectrum adopts
+  an add in round 1 (unverified on the sweep path, which feeds the search).
 
 ---
 
 ## Notes
 
+routine suite 2.8 min, over its 1-min budget
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test
