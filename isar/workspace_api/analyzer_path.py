@@ -1,22 +1,23 @@
 """The analyzer path, read (C-path): the analyzers picked in order, placed along the path they make.
 
 Each stop is one picked analyzer of one scan. Its position is the cumulative distance between the graph's own q
-points (cartesian inverse angstrom when every stop has a lattice epoch, else hkl). Its modes are the fit in use, so
-a refit draws its own modes. Its phonon names come from the saved links only while they name that fit.
+points (cartesian inverse angstrom when every stop has a lattice epoch, else hkl). Its modes are the fit the caller
+chooses (the fit in use), so a refit draws its own modes. Its phonon names come from the saved links only while they
+name that fit.
 Read-only and Qt-free; a thin workspace gives ``ok=False`` with a plain reason, never an exception.
 """
 from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
 from isar.session.inter_spectra.q_provider import q_coordinates
 
 from .analyzer_array import ArrayView, array_view
-from .inter_spectra import LinkView, UnitLinks, fits_in_use
+from .inter_spectra import LinkView, UnitLinks
 from .scan_list import Fact, ScanListSnapshot, SpectrumRow
 from .spectra import SpectraCache, spectrum_bundles
 
@@ -78,10 +79,11 @@ def _mode(i: int, mode, ul: UnitLinks | None) -> PathMode:
         name=ul.names[i] if named else None)
 
 
-def analyzer_path(snapshot: ScanListSnapshot, ws, keys: Sequence[str], *,
-                  links: LinkView | None = None, cache: SpectraCache | None = None) -> PathView:
+def analyzer_path(snapshot: ScanListSnapshot, ws, keys: Sequence[str], *, links: LinkView | None = None,
+                  cache: SpectraCache | None = None, fit_choice: Mapping[str, str] | None = None) -> PathView:
     """The path the picked ``keys`` make, in the order given (duplicates dropped). The scan is the first spectrum's;
-    keys of other scans, and keys that are not spectra, go to ``skipped``."""
+    keys of other scans, and keys that are not spectra, go to ``skipped``. ``fit_choice`` is the fit each key draws
+    (the view's rule, ``InterState.fit_choice``); a key absent from it draws the Fast solo."""
     picked = tuple(dict.fromkeys(keys))
     rows = [r for r in (snapshot.spectrum(k) for k in picked) if isinstance(r, SpectrumRow)]
     if not rows:
@@ -115,8 +117,7 @@ def analyzer_path(snapshot: ScanListSnapshot, ws, keys: Sequence[str], *,
     for a, b in zip(coords, coords[1:]):
         xs.append(xs[-1] + math.dist(a, b))
 
-    choice = fits_in_use(ws.root, [r.key for r in members])
-    bundles = spectrum_bundles(ws, members, cache=cache, fit_choice=choice)
+    bundles = spectrum_bundles(ws, members, cache=cache, fit_choice=fit_choice)
     stops, stale_text, links_at, stale = [], None, None, False
     for r, x, bundle in zip(members, xs, bundles):
         ul = None if links is None else links.by_unit.get(r.key)
@@ -127,7 +128,7 @@ def analyzer_path(snapshot: ScanListSnapshot, ws, keys: Sequence[str], *,
         named = ul is not None and ul.current and ul.names and ul.fit_id == bundle.fit_id
         fast = bundle.summaries["fast"]
         modes = tuple(_mode(i, m, ul if named else None) for i, m in enumerate(fast.modes))
-        wanted = choice.get(r.key, "fast")
+        wanted = (fit_choice or {}).get(r.key, "fast")
         fallback = (f"fit {wanted} cannot be drawn; showing the Fast solo fit, without phonon names"
                     if wanted != bundle.fit_id else None)
         why = None if modes else (bundle.not_drawn.text if bundle.not_drawn is not None else "no fit to draw")

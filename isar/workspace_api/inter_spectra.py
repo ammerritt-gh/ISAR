@@ -534,18 +534,6 @@ def _link_now(root: Path, units: Collection[str]) -> _LinkNow:
     return _LinkNow(fits, now, {u: _stamp_now(c, scans, u, fits[u], now) for u in units})
 
 
-def fits_in_use(root, units: Collection[str]) -> dict[str, str]:
-    """unit -> the fit id in use now ("fast" or a refit id); a unit with none is absent."""
-    root = Path(root)
-    c, scans = _load(root), _session_scans(root)
-    out: dict[str, str] = {}
-    for unit in units:
-        fit = _in_use(c, scans, unit)
-        if fit is not None:
-            out[unit] = fit
-    return out
-
-
 def _fresh(R: LinkResult, unit: str, now: _LinkNow) -> bool:
     """A spectrum's own entry of a record names the fit in use, its inputs and its stamp."""
     fit, h = R.made_from[unit]

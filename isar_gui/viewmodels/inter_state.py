@@ -11,7 +11,7 @@ import logging
 import queue
 import threading
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -131,6 +131,11 @@ class InterState(QObject):
 
     def link_row(self, key: str) -> UnitLinks | None:
         return None if self._links is None else self._links.by_unit.get(key)
+
+    def fit_choice(self, keys: Iterable[str]) -> dict[str, str]:
+        """The refit in use of each key (the choice every view draws by); a key on its Fast solo is absent."""
+        rows = (self.row(k) for k in keys)
+        return {r.key: r.fit_id for r in rows if r is not None and r.fit_id not in (None, "fast")}
 
     @property
     def revision(self) -> str:

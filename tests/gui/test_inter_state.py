@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from dataclasses import replace
 
 import pytest
 
@@ -78,6 +79,17 @@ def test_bind_reads_the_overview_and_emits_changed(qtbot, state, overview, tmp_p
     assert state.anchors == (KEY,)
     assert state.row(KEY).fit_id == "fast"
     assert state.row("e:9:a01") is None
+
+
+def test_fit_choice_names_the_refit_in_use_of_each_key_and_leaves_out_the_solo(qtbot, state, overview, tmp_path):
+    """The one fit-in-use rule the array and the path both hand their views: a refit's id, never the Fast solo."""
+    refit, other, none = "f00000000a001", "e:1:a04", "e:1:a05"
+    overview["value"] = make_overview(revision="7", by_key={
+        KEY: replace(_spectrum(KEY), fit_id=refit, in_use=True, source="pick"),
+        other: _spectrum(other), none: replace(_spectrum(none), fit_id=None, source=None)})
+    state.bind(tmp_path)
+    qtbot.waitUntil(lambda: state.overview is not None, timeout=5000)
+    assert state.fit_choice([KEY, other, none, "e:9:a01"]) == {KEY: refit}
 
 
 def test_an_answer_from_before_a_reload_is_dropped(qtbot, state, monkeypatch, links, tmp_path):

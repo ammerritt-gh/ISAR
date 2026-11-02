@@ -20,8 +20,8 @@ pytest.importorskip("pyqtgraph")
 from PySide6.QtCore import QPointF
 
 import isar.workspace_api.analyzer_path as apath
-from gui.array_helpers import make_env
-from gui.inter_fakes import FakeInterState, make_link_view, make_unit_links
+from gui.array_helpers import inter_row, make_env
+from gui.inter_fakes import FakeInterState, make_link_view, make_overview, make_unit_links
 from inter_fixtures import build_inter_workspace, spectrum_keys
 from isar.plotspec import spec as ps
 from isar.session.inter_spectra.q_provider import QCoordinates, QPoint
@@ -29,6 +29,7 @@ from isar.workspace_api.spectra import spectrum_bundles
 from isar_gui.main_window import MainWindow
 from isar_gui.selection import ORIGIN_ARRAY
 from isar_gui.session import Session
+from isar_gui.viewmodels import analyzer_array
 from isar_gui.viewmodels.analyzer_path import AnalyzerPathViewModel
 from isar_gui.viewmodels.dispersion import DispersionViewModel
 from isar_gui.views.analyzer_array_dock import PATH_BUTTON_TIP
@@ -126,6 +127,27 @@ def test_a_named_phonon_is_one_series_at_its_peak_energy_and_a_click_on_the_path
     pane._on_click(SimpleNamespace(scenePos=lambda: QPointF(0.5, 1.0)))
     assert clicks == []
     assert ps.Role.BRANCH in {s.role for s in env.path_vm.state.spec.series}
+
+
+def test_the_path_and_the_array_are_handed_the_same_fit_choice(env, monkeypatch):
+    """The one fit-in-use rule: a refit picked on one analyzer reaches both view models as the same choice."""
+    k0, k1 = env.keys[:2]
+    refit = "f00000000a001"
+    env.inter.overview = make_overview(by_key={k0: inter_row(k0, refit), k1: inter_row(k1, "fast")})
+    calls = {"path": [], "array": []}
+
+    def recording(name, real):
+        def wrapped(ws, rows, *, cache=None, fit_choice=None):
+            calls[name].append(dict(fit_choice or {}))
+            return real(ws, rows, cache=cache, fit_choice=fit_choice)
+        return wrapped
+
+    monkeypatch.setattr(apath, "spectrum_bundles", recording("path", apath.spectrum_bundles))
+    monkeypatch.setattr(analyzer_array, "spectrum_bundles", recording("array", analyzer_array.spectrum_bundles))
+    _pick(env.selection, env.keys[:2])
+    env.vm.recompute()
+    assert env.path_vm.state.can_plot
+    assert calls["path"][-1] == calls["array"][-1] == {k0: refit}
 
 
 def test_a_path_that_drops_below_two_picks_takes_its_ticks_off_the_plot(env):

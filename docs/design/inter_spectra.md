@@ -495,7 +495,7 @@ until Link modes runs again.
 | `isar/intake/inter_spectra.py` | the user values, read (`fold`, `read_user`) |
 | `isar/intake/inter_values.py` | the checked writers of the user values |
 | `isar/workspace_api/inter_spectra.py` | the read facade the GUI and notebooks use |
-| `isar/workspace_api/inter_spectra.py` | the saved mode links read by `link_view` (the newest record of each spectrum's scan, its stale rule and the fit in use by `fits_in_use`) |
+| `isar/workspace_api/inter_spectra.py` | the saved mode links read by `link_view` (the newest record of each spectrum's scan, its stale rule and the fit in use by `_in_use`) |
 | `isar/report/export.py` | `isar export`: the `inter` pass and the authoritative marks |
 | `isar/report/run_report.py` | the run report: the authoritative fit in the markdown and HTML |
 | `isar_gui/inter_words.py` | the plain words the views show |

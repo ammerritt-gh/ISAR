@@ -135,6 +135,8 @@ class AnalyzerPathViewModel(ViewModel):
         heavy = self._heavy
         if heavy is not None and heavy[0] == keys and heavy[1] is snapshot and heavy[2] == revision:
             return heavy[3]
-        spec = _to_spec(analyzer_path(snapshot, self._ws, keys, links=links, cache=self.scan_list.spectra_cache))
+        choice = self.inter.fit_choice(keys) if self.inter is not None else {}
+        spec = _to_spec(analyzer_path(snapshot, self._ws, keys, links=links, cache=self.scan_list.spectra_cache,
+                                      fit_choice=choice))
         self._heavy = (keys, snapshot, revision, spec)
         return spec

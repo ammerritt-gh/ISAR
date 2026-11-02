@@ -24,11 +24,17 @@ from isar.schema.card import load_state
 from isar.session import writer
 from isar.session.inter_spectra import linking, records
 from isar.session.workspace import Workspace
-from isar.workspace_api import ChangeView, LinkView, TieView, fits_in_use, link_view
+from isar.workspace_api import ChangeView, LinkView, TieView, inter_overview, link_view
 from isar.workspace_api.inter_spectra import LINK_WORDS
 
 B1 = "b000000000001"
 F1 = "f00000000a001"                       # a refit the batch below writes; "fast" is the solo fit
+
+
+def _fit_in_use(root, units) -> dict[str, str]:
+    """Each unit's fit in use as the view model reads it; a unit with no row is on its Fast solo."""
+    rows = inter_overview(root).by_key
+    return {u: rows[u].fit_id if u in rows else "fast" for u in units}
 
 
 @pytest.fixture(scope="module")
@@ -138,7 +144,7 @@ def test_no_saved_link_gives_the_empty_view_and_the_solo_fits_in_use(root):
     units = spectrum_keys(root)
     assert link_view(root) == LinkView("", {}, {})
     assert link_view(root, units) == LinkView("", {}, {})
-    assert fits_in_use(root, units) == {u: "fast" for u in units}
+    assert _fit_in_use(root, units) == {u: "fast" for u in units}
 
 
 def test_a_fresh_record_names_every_mode_of_every_spectrum_from_the_stored_result(root):
@@ -170,7 +176,7 @@ def test_a_pick_of_a_refit_makes_the_record_stale_and_the_refit_has_no_names(roo
     assert inter_values.pick_fit(root, unit, F1).ok
     after = link_view(root)
     assert after.revision != before.revision
-    assert fits_in_use(root, [unit, mate]) == {unit: F1, mate: "fast"}
+    assert _fit_in_use(root, [unit, mate]) == {unit: F1, mate: "fast"}
     assert after.by_unit[unit].stale and not after.by_unit[unit].current
     assert (after.by_unit[unit].names, after.by_unit[unit].markers, after.by_unit[unit].stale_text) == (
         (), (), LINK_WORDS["stale"])

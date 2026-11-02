@@ -22,7 +22,7 @@ from isar.session import writer
 from isar.session.inter_spectra import records
 from isar.session.inter_spectra.q_provider import QCoordinates, QPoint
 from isar.workspace_api.analyzer_path import analyzer_path
-from isar.workspace_api.inter_spectra import LINK_WORDS, LinkView, MarkerView, UnitLinks, fits_in_use
+from isar.workspace_api.inter_spectra import LINK_WORDS, LinkView, MarkerView, UnitLinks, inter_overview
 from isar.workspace_api.scan_list import scan_list
 from isar.workspace_api.spectra import spectrum_bundles
 from isar.workspace_api.workspace import Workspace
@@ -127,11 +127,22 @@ def test_a_refit_pick_is_drawn_with_its_own_modes(root, q_points):
     _accept_refit(root, k0, F1)
     assert inter_values.pick_fit(root, k0, F1).ok
     ws, snap = _snapshot(root)
-    assert fits_in_use(root, [k0, k1]) == {k0: F1, k1: "fast"}
+    rows = inter_overview(root).by_key                                  # the fit in use, as the view model reads it
+    assert rows[k0].fit_id == F1 and k1 not in rows                     # no row: the Fast solo
     solo = spectrum_bundles(ws, [snap.spectrum(k1)])[0].summaries["fast"]
-    view = analyzer_path(snap, ws, [k0, k1])
+    view = analyzer_path(snap, ws, [k0, k1], fit_choice={k0: F1})
     assert _energies(view.stops[0]) == [3.5, 7.5]                       # the refit's modes, not the solo's
     assert _energies(view.stops[1]) == [m.energy.value for m in solo.modes]
+
+
+def test_the_path_draws_only_the_fit_it_is_given(root, q_points):
+    k0, k1 = spectrum_keys(root)[:2]
+    _accept_refit(root, k0, F1)
+    assert inter_values.pick_fit(root, k0, F1).ok
+    ws, snap = _snapshot(root)
+    solo = spectrum_bundles(ws, [snap.spectrum(k0)])[0].summaries["fast"]
+    view = analyzer_path(snap, ws, [k0, k1])                            # no choice: the Fast solo, though F1 is picked
+    assert _energies(view.stops[0]) == [m.energy.value for m in solo.modes]
 
 
 def test_a_broad_mode_is_marked_at_its_peak_energy_not_its_omega0(root, q_points):
@@ -181,7 +192,7 @@ def test_a_picked_refit_that_cannot_be_drawn_is_noted_and_its_names_are_not_draw
     ul = UnitLinks(unit=k0, link_id="l1", at=LINK_AT, stale=False, stale_text=None, current=True, fit_id=F1,
                    names=("B1",), peak_E=(e0,), unresolved=((),), settled=(True,), markers=(mark,),
                    changes=(), ties=())
-    view = analyzer_path(snap, ws, [k0, k1], links=LinkView("r", {k0: ul}, {}))
+    view = analyzer_path(snap, ws, [k0, k1], links=LinkView("r", {k0: ul}, {}), fit_choice={k0: F1})
     stop = view.stops[0]
     assert stop.note == f"fit {F1} cannot be drawn; showing the Fast solo fit, without phonon names"
     assert _energies(stop) == _energies(analyzer_path(snap, ws, [k0, k1]).stops[0])   # the solo's modes

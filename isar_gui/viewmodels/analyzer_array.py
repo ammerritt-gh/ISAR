@@ -423,11 +423,7 @@ class AnalyzerArrayViewModel(ViewModel):
 
         read_started = perf_counter()
         keyed = [c for c in view.cells if c.key is not None and rows_by_key.get(c.key) is not None]
-        choice = {}
-        for c in keyed:
-            inter = self.inter.row(c.key) if self.inter is not None else None
-            if inter is not None and inter.fit_id not in (None, "fast"):
-                choice[c.key] = inter.fit_id
+        choice = self.inter.fit_choice(c.key for c in keyed) if self.inter is not None else {}
         # read the files again on a refresh, or when the snapshot, the shown cells or the fit in use change;
         # a members event keeps them
         read_key = (tuple(c.key for c in keyed), tuple(sorted(choice.items())))

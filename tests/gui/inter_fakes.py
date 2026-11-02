@@ -53,6 +53,10 @@ class FakeInterState(QObject):
     def row(self, key: str) -> SpectrumInter | None:
         return self.overview.by_key.get(key) if self.overview else None
 
+    def fit_choice(self, keys) -> dict[str, str]:
+        rows = (self.row(k) for k in keys)
+        return {r.key: r.fit_id for r in rows if r is not None and r.fit_id not in (None, "fast")}
+
     def history(self, key: str) -> tuple[FitEntry, ...] | None:
         return self.histories.get(key)
 
