@@ -1,6 +1,10 @@
-"""The scan inspector's fit table with saved mode links (S3U2): a Mode heading names its branch and lists its link notes
-only on the fit the links were made on, and one note says when the links are out of date or whose names these are.
-Offscreen Qt with the real widgets; the fit table is driven directly, and the panel once through the fake InterState."""
+"""The scan inspector's fit table with saved mode links: a Mode row of a linked spectrum shows its phonon in the Fast
+column (every mode has one), with no note words; one line says when the links are out of date or whose names these
+are. Offscreen Qt with the real widgets; the fit table is driven directly, and the panel once through the fake InterState.
+
+Prevents: a removed link note coming back beside a phonon, a phonon name drawn for a fit the table does not show, and
+a stale record's names drawn as current.
+"""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -15,14 +19,12 @@ from bl43_fixture import KEY_A
 from gui.inter_fakes import FakeInterState, make_link_view, make_unit_links
 from gui.test_inspector_fit_section import _label, _mode, _pass
 from gui.test_scan_inspector import _panel, _select
-from isar.workspace_api.inter_spectra import LINK_WORDS, MarkerView
+from isar.workspace_api.inter_spectra import LINK_WORDS
 from isar.workspace_api.spectra import Measured
 from isar_gui.views.scan_inspector import FitSection
 
 A03 = f"{KEY_A}:a03"         # a resolved fast pass with a stored mode (the fixture stamps a06 with none)
 A06 = f"{KEY_A}:a06"
-CHANGE = MarkerView("change", 2, 0, "energy", "energy differs from neighbours",
-                    "mode 1 peaks at 4.00 meV; its neighbours predict 3.00 ± 0.20 meV.", "warn")
 
 
 def _section(qtbot) -> FitSection:
@@ -46,51 +48,38 @@ def _note(widget) -> QLabel:
     return widget.findChild(QLabel, "scan_inspector_fit_links")
 
 
-def test_a_mode_heading_names_its_branch_and_lists_its_notes_on_the_fit_the_table_shows(qtbot):
+def test_each_mode_of_a_linked_spectrum_shows_its_phonon_in_the_fast_column_and_no_note_words(qtbot):
     widget = _section(qtbot)
-    _show(widget, 2, 0, make_unit_links(A06, names=("B3", "B2"), markers=(CHANGE,)))
+    _show(widget, 2, 0, make_unit_links(A06, names=("B3", "B2")))
     assert _label(widget, "fit_mode_1_header").text() == "Mode 1"
-    branch = _label(widget, "fit_mode_1_fast_branch")
-    assert branch.text() == "B3 · energy differs from neighbours"
-    assert "Branch this mode follows" in branch.toolTip() and CHANGE.words in branch.toolTip()
-    assert _label(widget, "fit_mode_2_fast_branch").text() == "B2"
+    assert _label(widget, "fit_mode_1_fast_branch").text() == "P3"
+    assert _label(widget, "fit_mode_2_fast_branch").text() == "P2"
+    assert "phonon" in _label(widget, "fit_mode_1_fast_branch").toolTip()
     assert _note(widget).isHidden()                                  # the table shows the linked fit: nothing to say
-
-
-def test_a_split_candidate_names_both_branches_as_unresolved(qtbot):
-    widget = _section(qtbot)
-    _show(widget, 1, 0, make_unit_links(A06, names=("B2",), unresolved=(("B2", "B3"),)))
-    assert _label(widget, "fit_mode_1_fast_branch").text() == "B2 / B3 (unresolved)"
 
 
 def test_names_of_a_fit_the_table_does_not_show_are_not_drawn_and_the_note_says_whose_they_are(qtbot):
     widget = _section(qtbot)
-    _show(widget, 2, 0, make_unit_links(A06, names=("B3", "B2"), fit_id="f9", markers=(CHANGE,)))
+    _show(widget, 2, 0, make_unit_links(A06, names=("B3", "B2"), fit_id="f9"))
     assert _label(widget, "fit_mode_1_header").text() == "Mode 1"
-    assert _label(widget, "fit_mode_1_header").toolTip() == ""
-    assert _note(widget).text() == "Branch names belong to fit f9, which this table does not show"
+    assert _label(widget, "fit_mode_1_fast_branch").text() == ""
+    assert _note(widget).text() == "Phonon names belong to fit f9, which this table does not show"
     assert not _note(widget).isHidden() and _note(widget).toolTip() == _note(widget).text()
 
 
-def test_a_stale_record_keeps_names_drops_its_notes_and_says_when_it_was_made(qtbot):
+def test_a_stale_record_keeps_its_phonon_names_and_says_when_it_was_made(qtbot):
     widget = _section(qtbot)
-    stale = replace(make_unit_links(A06, names=("B3", "B2"), markers=(CHANGE,)), stale=True,
-                    stale_text=LINK_WORDS["stale"])
+    stale = replace(make_unit_links(A06, names=("B3", "B2")), stale=True, stale_text=LINK_WORDS["stale"])
     _show(widget, 2, 0, stale)
-    assert _label(widget, "fit_mode_1_fast_branch").text() == "B3"
-    assert _note(widget).text() == "Branch links from 2026-11-01T10:00:00; out of date"
-
-
-def test_a_mode_past_the_names_of_its_link_keeps_the_plain_heading(qtbot):
-    widget = _section(qtbot)
-    _show(widget, 2, 0, make_unit_links(A06, names=("B3",)))         # the links name one mode; mode 2 has none
-    assert _label(widget, "fit_mode_2_header").text() == "Mode 2"
+    assert _label(widget, "fit_mode_1_fast_branch").text() == "P3"
+    assert _note(widget).text() == "Phonon links from 2026-11-01T10:00:00; out of date"
 
 
 def test_without_a_saved_link_the_fit_section_is_as_before(qtbot):
     widget = _section(qtbot)
     _show(widget, 2, 0, None)
     assert _label(widget, "fit_mode_1_header").text() == "Mode 1"
+    assert _label(widget, "fit_mode_1_fast_branch").text() == ""
     assert _note(widget).isHidden()
 
 
@@ -98,19 +87,19 @@ def test_the_inspector_names_the_modes_of_the_spectrum_it_shows_from_the_saved_l
     vm, panel = _panel(qtbot, bl43_ws)
     inter = FakeInterState()
     vm.set_inter(inter)
-    inter.links = make_link_view(make_unit_links(A03, names=("B7",), markers=(CHANGE,)))
+    inter.links = make_link_view(make_unit_links(A03, names=("B7",)))
     inter.changed.emit()
     _select(panel, A03)
     branch = panel._fit_section.findChild(QLabel, "fit_mode_1_fast_branch")
     assert branch is not None
-    assert branch.text() == "B7 · energy differs from neighbours"
+    assert branch.text() == "P7"
 
 
-def test_the_branch_names_sit_in_the_fast_column_and_no_shared_heading_or_deep_cell_carries_them(qtbot):
+def test_the_phonon_sits_in_the_fast_column_and_no_shared_heading_or_deep_cell_carries_it(qtbot):
     widget = _section(qtbot)
-    _show(widget, 2, 2, make_unit_links(A06, names=("B3", "B2"), markers=(CHANGE,)))
-    assert _label(widget, "fit_mode_1_header").text() == "Mode 1"          # the Mode heading is shared by Fast and Deep: no name
+    _show(widget, 2, 2, make_unit_links(A06, names=("B3", "B2")))
+    assert _label(widget, "fit_mode_1_header").text() == "Mode 1"          # the Mode heading is shared by Fast and Deep
     branch = _label(widget, "fit_mode_1_fast_branch")
-    assert branch.text() == "B3 · energy differs from neighbours"
+    assert branch.text() == "P3"
     assert widget._grid.getItemPosition(widget._grid.indexOf(branch))[1] == 1     # the Fast column
-    assert {w.objectName() for w in widget.findChildren(QLabel) if "B3" in w.text()} == {"fit_mode_1_fast_branch"}
+    assert {w.objectName() for w in widget.findChildren(QLabel) if "P3" in w.text()} == {"fit_mode_1_fast_branch"}

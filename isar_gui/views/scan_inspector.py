@@ -25,7 +25,7 @@ from PySide6.QtGui import QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (QFormLayout, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QScrollArea,
                                QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
-from isar.workspace_api.inter_spectra import UnitLinks
+from isar.workspace_api.inter_spectra import UnitLinks, phonon_label
 from isar.workspace_api.scan_list import Fact, PooledRow, ScanSetRow, SpectrumRow
 from isar.workspace_api.spectra import (AMPLITUDE_HEADING, ENERGY_HEADING, LINEWIDTH_HEADING,
                                         OUTDATED_TEXT, Measured, PassSummary,
@@ -51,7 +51,7 @@ _STAGE_ONE_FACTS = frozenset({"Temperature", "Q", "Slit"})   # the lines the fac
 # Unit metadata keys the inspector draws on its own lines, or the hashed unit key: never repeated below.
 _SHOWN_ELSEWHERE = frozenset({"unit", "analyzer", "T", "points", "file", "slit", "scan_numbers",
                               "n_merged_scans", "T_K", "Q_nm"})
-_BRANCH_TIP = "Branch this mode follows, from the saved mode links"    # the words of the Scan(s) name in plotspec/builders.py
+_PHONON_TIP = "The phonon this mode is, from the saved mode links"
 
 
 class Line(NamedTuple):
@@ -270,23 +270,20 @@ class _SnapshotIndex:
         return self._sets.get(key)
 
 
-def _branch_name(links: UnitLinks, index: int) -> str | None:
-    """Mode ``index`` (0-based) as its branch reads: 'B3', or 'B2 / B3 (unresolved)' for a split candidate."""
-    pair = links.unresolved[index] if index < len(links.unresolved) else ()
-    if pair:
-        return f"{' / '.join(pair)} (unresolved)"
-    return links.names[index] if index < len(links.names) else None
+def _phonon_name(links: UnitLinks, index: int) -> str | None:
+    """Mode ``index`` (0-based) as its phonon reads: 'P3'. Every mode of a current link has one."""
+    return phonon_label(links.names[index]) if index < len(links.names) else None
 
 
 def _links_note_text(links: UnitLinks | None, drawn_fit: str | None) -> str | None:
-    """The one line about a spectrum's saved links: out of date, or whose branch names these are. None says nothing."""
+    """The one line about a spectrum's saved links: out of date, or whose phonon names these are. None says nothing."""
     if links is None or not links.link_id:             # no saved record covers this spectrum
         return None
     if links.stale:
-        return f"Branch links from {links.at}; out of date"
+        return f"Phonon links from {links.at}; out of date"
     if links.fit_id != drawn_fit:
         who = "the Fast solo fit" if links.fit_id == "fast" else f"fit {links.fit_id}"
-        return f"Branch names belong to {who}, which this table does not show"
+        return f"Phonon names belong to {who}, which this table does not show"
     return None
 
 
@@ -383,20 +380,17 @@ class FitSection(QWidget):
         self._links_note.setText(text or "")
         self._links_note.setToolTip(text or "")
         self._links_note.setVisible(text is not None)
-        # names and marks belong to the fit the links were made on, and only where this table shows that fit
+        # names belong to the fit the links were made on, and only where this table shows that fit
         shown = links is not None and links.current and links.fit_id == drawn_fit
-        marks = links.markers if shown and not links.stale else ()
         self._clear_modes()
         for number in range(1, max(len(fast.modes), len(deep.modes)) + 1):
             mode_row = self._base_rows + (number - 1) * (len(self._QUANTITIES) + 1)
-            name = _branch_name(links, number - 1) if shown else None
-            notes = [m for m in marks if m.mode == number - 1]
-            # the Mode heading is shared by Fast and Deep; the branch and its notes sit in the Fast column only
+            name = _phonon_name(links, number - 1) if shown else None
+            # the Mode heading is shared by Fast and Deep; the phonon sits in the Fast column only
             heading = self._cell(f"Mode {number}", f"fit_mode_{number}_header", muted=True)
-            branch = self._cell(" · ".join(filter(None, [name, *(m.label for m in notes)])),
-                                f"fit_mode_{number}_fast_branch", muted=True)
-            if name or notes:
-                branch.setToolTip("\n".join([*([_BRANCH_TIP] if name else []), *(m.words for m in notes)]))
+            branch = self._cell(name or "", f"fit_mode_{number}_fast_branch", muted=True)
+            if name:
+                branch.setToolTip(_PHONON_TIP)
             for cell in (heading, branch):
                 cell_font = cell.font()
                 cell_font.setBold(True)
