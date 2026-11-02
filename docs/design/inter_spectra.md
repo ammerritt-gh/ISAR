@@ -28,14 +28,13 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
 | Coupled refit of one spectrum: stage 1 (the candidate search and the count-first decision, below), continuous stage, one shared objective, release fit | Implemented | `isar/analyze/coupled/refit.py`, `engine.py`, `rules.py` | `tests/analyze/test_coupled_engine.py`, `test_coupled_refit.py`, `test_coupled_rules.py` |
 | q-change penalty: Welsch from zero, tolerance = tolerated slope x link spacing, neighbour uncertainty propagated (`s_eff^2 = s^2 + (C/2) sigma^2`) | Implemented | `isar/analyze/coupled/engine.py`, `refit.py`, `settings.py` | `tests/analyze/test_coupled_engine.py`, `test_coupled_refit.py` |
 | A mode hidden under another: guard against twin merges, evidence by integrating over the intensity split, undetermined status | Implemented on synthetic spectra, not established on real data | `isar/analyze/coupled/engine.py`, `refit.py` | `tests/analyze/test_coupled_hidden.py` |
-| Candidate search: seeds (each neighbour's own prediction and the spectrum's incoming fit), counts stepped both ways while within the stopping margin, labellings moved within a count, one ledger of distinct fitted basins, and a search record of every candidate and why each direction stopped. No count ceiling and no candidate cap in this pass | Partial: built and tested on synthetic cases; the stopping margin (5 nats) is an uncalibrated start, and the first real-data run is in section 10 | `isar/analyze/coupled/search.py`, `refit.py`, `types.py` | `tests/analyze/test_coupled_search.py`, `tests/analyze/test_coupled_search_real.py` |
-| Screen first, full price for contenders: each count step and labelling move is priced first as a screen (every split integral cut to its first node set); screened candidates are promoted to full prices until no optimistic remainder can change the decision. Seeds and failed screens are always full | Partial: built and tested; the 5-nat allowance is uncalibrated and was checked on one ring-1 shadow run (section 10) | `isar/analyze/coupled/search.py`, `engine.py` (`integrate_split`, `screen`), `refit.py` (`price`) | `tests/analyze/test_coupled_search_screens.py`, `tests/analyze/test_coupled_screen_price.py` |
+| Listed-candidate search: the incoming candidate, subsets of the changes the link lists for the spectrum (add a predicted branch, split, drop) and each crossing alternative, priced in one pass; count first, with a count change held by `evidence_hysteresis_nats`; a search record of every candidate. No count walk and no labelling move | Partial: built and tested on synthetic cases; the first real-data run is in section 10 | `isar/analyze/coupled/search.py`, `refit.py`, `types.py` | `tests/analyze/test_coupled_search.py`, `tests/analyze/test_coupled_search_real.py` |
 | Joint objective and gradient in the coupled pricing (ruling A): analytic derivatives of the Poisson term, heights, background, priors and split coordinates, in the fast pass's z coordinate (widths as t on their own range, IS27); column differences for mode energies and widths; curvature from differenced gradients; one-pass split polish. The solo fast pass keeps its finite differences | Partial: built and tested; it agrees with the finite-difference path on the real ordinary and bound cases, and two real hidden pairs miss the plan's 0.02-nat reading (section 10), accepted by IS25 | `isar/analyze/coupled/engine.py`, `refit.py`, `isar/analyze/prior.py` (`hessian_from_grad`), `isar/analyze/fast_pass.py` (the hook that returns none) | `tests/analyze/test_coupled_gradient.py` |
 | Count-first decision: a count's total probability over its distinct labellings, a count change held by `evidence_hysteresis_nats`, label confidence judged within the chosen count | Implemented | `isar/analyze/coupled/rules.py` (`decide`), `search.py` | `tests/analyze/test_coupled_rules.py`, `tests/analyze/test_coupled_search_real.py` |
 | Loss price for a branch that disappears: a branch a neighbour predicts in the window and the candidate does not name pays the mirror of the entry price, once per spectrum per snapshot | Partial: its size reuses `birth_edge` and `birth_mid`, uncalibrated | `isar/analyze/coupled/refit.py` (`_Spec.loss_terms`), `engine.py` | `tests/analyze/test_coupled_loss.py` |
 | Width at the floor and the quasi-elastic line: a railed width is a resolution-limited alternative that is priced; a QE line railed at its narrowest width is the elastic line (shared engine); the model line is chosen by evidence beyond the hysteresis margin | Implemented on synthetic spectra | `isar/analyze/coupled/refit.py`, `engine.py`, `rules.py` | `tests/analyze/test_coupled_width_floor.py`, `tests/analyze/test_coupled_search_real.py` |
-| Counts above six: pricing, refinement, the release fit and storage accept a count beyond six; `full_search` prices a stated finite domain as a check | Implemented on synthetic spectra | `isar/analyze/coupled/search.py`, `refit.py`, `isar/session/inter_spectra/runner.py` | `tests/analyze/test_coupled_search_real.py`, `tests/analyze/test_coupled_search.py` |
-| Search, price and resume across the refit pool: the runner feeds each spectrum's search as its own jobs return, caches prices within one batch, sizes the pool to the item's cores (`ISAR_WORKERS`, when set, caps it), keeps every worker busy (a candidate's fits, basins and split nodes run as tasks on the same pool, and idle workers price the searches' likely next promotions ahead), and reports timing in the batch's `end` record | Implemented; the timing is measured in section 10 | `isar/session/inter_spectra/runner.py`, `isar/analyze/coupled/tasks.py`, `tools/inter_timing.py` | `tests/session/test_inter_spectra_runner.py`, `tests/test_inter_timing_tool.py`, `tests/session/test_inter_service_e2e.py` |
+| Counts above six: pricing, refinement, the release fit and storage accept a count beyond six | Implemented on synthetic spectra | `isar/analyze/coupled/search.py`, `refit.py`, `isar/session/inter_spectra/runner.py` | `tests/analyze/test_coupled_search_real.py`, `tests/analyze/test_coupled_search.py` |
+| Search, price and resume across the refit pool: the runner feeds each spectrum's search as its own jobs return, caches prices within one batch, sizes the pool to the item's cores (`ISAR_WORKERS`, when set, caps it), keeps every worker busy (a candidate's fits, basins and split nodes run as tasks on the same pool), and reports timing in the batch's `end` record | Implemented; the timing is measured in section 10 | `isar/session/inter_spectra/runner.py`, `isar/analyze/coupled/tasks.py`, `tools/inter_timing.py` | `tests/session/test_inter_spectra_runner.py`, `tests/test_inter_timing_tool.py`, `tests/session/test_inter_service_e2e.py` |
 | Mode linking core: each link's modes matched as a whole (the one-to-one matching of least total mismatch on the peak energy, width and intrinsic intensity of each mode), the matched pairs joined grid-wide, contradictions, near ties, predictions from neighbours, listed changes (add, split, drop), markers at two sigma, JSON form | **Partial**: built and tested on synthetic grids; the tolerances are set from one run on a copy of the operator's experiment (section 10) and stay uncalibrated (section 5); saved and queued (rows below); not yet used by a batch | `isar/analyze/coupled/linking.py` | `tests/analyze/test_coupled_linking.py` |
 | Branch identity: persistent ids, loops, returns, cumulative T drift | Implemented | `isar/analyze/coupled/identity.py` | `tests/analyze/test_coupled_identity.py` |
 | Anchored batch: rings fixed by distance, seams, not reached | Implemented | `isar/session/inter_spectra/rings.py`, `runner.py` | `tests/session/inter_spectra/test_rings.py`, `tests/session/test_inter_spectra_runner.py` |
@@ -100,11 +99,6 @@ established on real data, or not calibrated. **Planned** means not built. (AGENT
   observed, never as a death followed by a birth.
 - **Did not settle**: a simultaneous batch stopped at its sweep cap before its fits settled. Its results are kept
   and the spectrum is flagged.
-- **Screen**: a candidate's price with every split integral cut to its first node set. It is an evidence in the
-  same units as a full price, but a screened basin's term is only bounded (section 4), so a screen never stands
-  as a full price.
-- **Promotion**: asking a screened candidate for its full price. The full price replaces the screen in the
-  search's ledger; it is never added to it.
 - **Mode linking**: the step that decides which modes of neighbouring spectra are one branch, before any coupled
   fitting. It chooses links and starting values only; its scores never enter a fit's likelihood.
 - **Linked branch**: modes of two or more spectra that mode linking joined, with one grid-wide name (`B<n>`).
@@ -155,10 +149,6 @@ Each line names the failure it prevents.
   fit is a per-spectrum nuisance and is never coupled.
 - **Pricing is exact.** A cached price is reused only when every value it depends on is unchanged; the runner's cache keys hash those values, including each job's starts and the batch's merged branch names. The cache lives within one batch. Reusing prices across a changed snapshot is a measured option for
   the operator and is not applied.
-- **A screen never stands in for a full price.** A screen's job key carries a `|screen` suffix, so the cache
-  never answers a full-price request with a screen, and a full price replaces its screen in the ledger instead of
-  adding to it. A screened basin's term is only bounded, at its screen plus the allowance, never read as exact;
-  without this a screened term could be counted twice or trusted as exact.
 - **Error bars are conditional.** A refit's error bars use the fast pass's covariance method at the refit's
   own solution. They are labelled "Error bars are conditional on the neighbours and the chosen model.", and
   later sweeps never treat them as independent precision.
@@ -191,7 +181,7 @@ start. The anchors a batch used are recorded with it, so later edits to the anch
 
 **Simultaneous batch.** Every selected spectrum pays the penalties on its links and curvature terms in one
 shared objective: its own Baker–Cousins cost plus each term it appears in. The objective is solved in rounds.
-Each round has two stages. Stage 1 searches mode counts and branch assignments against one frozen snapshot of the neighbours (the search is described under mode count and entry): it starts at the seeds, steps the count and the labelling outward while the evidence stays within the stopping margin, and decides count first, then labelling (IS20, IS21). Two slot orders of one fit count their evidence once, under the order of its fitted energies. Stage 2 refines the continuous parameters, with counts and assignments held fixed, in sweeps of
+Each round has two stages. Stage 1 searches mode counts and branch assignments against one frozen snapshot of the neighbours (the search is described under mode count and entry): it prices the incoming fit, the changes the link lists for the spectrum and each crossing alternative, and decides count first, then labelling (IS20). Two slot orders of one fit count their evidence once, under the order of its fitted energies. Stage 2 refines the continuous parameters, with counts and assignments held fixed, in sweeps of
 per-spectrum refits over conflict-free parallel groups; each refit includes every term the spectrum is in.
 A term shared by several spectra has one definition, held by every member's refit once the neighbour on the
 other end carries its branch; a branch that neighbour gains in this very stage enters from the next sweep, and
@@ -225,7 +215,7 @@ are `accepted`, `unchanged`, `rejected` or `failed`; only `accepted` and `unchan
 batch's newest accepted refit of a spectrum becomes its authoritative fit unless the spectrum is locked. A
 batch the user starts replaces an unlocked spectrum's authoritative fit; ISAR never changes a pick or a lock.
 
-**Mode count and entry.** The count of modes is chosen by total probability: each count's distinct labellings add up, and a count change must beat the incoming count by `evidence_hysteresis_nats` (IS20). The search starts at the seeds and stops where the evidence does: a count is stepped to only while it stays within `stop_margin_nats` of the best found, and it is judged behind only after the first wave of its best labelling's moves is priced (IS21). There is no count ceiling and no candidate cap in this pass. A better count reachable only through counts that are each more than the margin behind is not found, the accepted risk of section 9; `full_search` prices a stated finite domain as a check. A neighbour's prediction narrows the prior on each mode's energy, so a second mode that the neighbours show clearly can win in an ambiguous spectrum; the count is not forced to be equal along a track (IS8). A mode that no neighbour matches pays the entry price
+**Mode count and entry.** The count of modes is chosen by total probability: each count's distinct labellings add up, and a count change must beat the incoming count by `evidence_hysteresis_nats` (IS20). The candidates are listed, never walked: the spectrum's incoming fit (with the link's labelling), subsets of the changes the link lists for it (add a predicted branch, split a mode into two predicted branches, drop a mode; every subset when at most four are listed, forward selection by evidence above four) and, at a reported crossing, each alternative labelling of the group, all priced in one pass. No mode is added that nothing predicts, so there is no count ceiling to set and no candidate cap; a count the link does not list is not tried. A neighbour's prediction narrows the prior on each mode's energy, so a second mode that the neighbours show clearly can win in an ambiguous spectrum; the count is not forced to be equal along a track (IS8). A mode that no neighbour matches pays the entry price
 `birth_edge`, and `birth_mid` more when it appears in the middle of the energy window, not at its edges (IS9). A
 mode the fast pass fitted as one, which the neighbours resolve into two, is reported as a neighbour-supported
 split (severity repaired), not as a new branch. A branch that a neighbour predicts in the window and that a candidate does not name pays the
@@ -237,21 +227,6 @@ name, with or without a coupling term; a branch a neighbour only remembers, or p
 charged once per spectrum however many neighbours predict the branch, sits inside every basin term outside the normalised
 densities (so every slot order of a composition carries it equally), is frozen with the snapshot (it is not part of the refinement
 objective), and is recorded with each candidate (`loss`, `loss_nats`). The flag `branch_lost_mid_window` is kept (section 9).
-
-**Screens and promotions.** Each count step and labelling move is first priced as a screen: the ordinary price
-with every split integral cut to its first node set, everything else as in a full price. Seeds are always priced in
-full. A failed screen is promoted to a full price at once, unless its status is `degenerate_twin` or `no_structure`,
-which stand as they are (no price and no reason). Each decision keeps two totals: the evidence of what is fully
-priced, and an optimistic remainder in which each screened basin sits at its screen plus `SCREEN_ALLOWANCE_NATS`
-(5 nats). A count or labelling choice is taken only when the remainder cannot change it: the decision is taken again
-twice per level, with that level's screened rows at their lowest and the rest at their highest, then the reverse, and
-every pass must give the same winner, mask, variant, confidence and close calls, with the selected basin determined
-and the probabilities within `PROB_TOL` (0.01) across those extremes. Otherwise the screened candidates it reads are
-promoted, the largest optimistic contribution first, `PROMOTE_WAVE` (6) a pass. The search record (version 2) carries
-the screen summary: mode, allowance, promote wave, screened and promoted counts, and the remainder. The environment
-variable `ISAR_INTER_SCREENS` sets the mode: `on` (the default) in production, and `shadow` for the calibration tool,
-which prices everything in full and records each comparison the screens would have judged differently. It is a
-developer switch, not a setting.
 
 **The q-change penalty.** In an anchored batch a matched mode pays `C(1 - exp(-z^2/2))` for its energy change from the neighbour branch it continues, where `z` is the shift over the tolerance (IS17). The curve rises from zero, so every nonzero shift pays something: small shifts very little, the steepest rise at the tolerance, and a levelling off at `penalty_cap`, so a large shift never costs without bound. The tolerance is the tolerated slope of the scan's metric times the q distance to that neighbour (IS18): `q_slope_meV_per_rlu` when the scan has no lattice loaded, `q_slope_meV_per_invA` when it has one, and each batch records which slope it used. The width is `s_eff^2 = tolerance^2 + (C/2) sigma^2`, where `sigma` is the held neighbour's energy uncertainty. In an anchored batch the spectrum being refitted adds none of its own; a simultaneous batch adds both ends'. Near its centre the Welsch curve acts like a bell curve about 2.5 times narrower than its width setting, which is why the factor is `C/2`. The same width rule applies to the temperature and curvature penalties, whose `shape_family` (welsch or quartic) still governs only those two; the q-change penalty is always Welsch. A shift of exactly zero costs exactly zero.
 
@@ -337,7 +312,7 @@ D6 records; section 9 lists it as awaiting the operator's confirmation.
 
 **Pool.** Stage 1 of a ring or a round runs on one refit pool, and each spectrum's search waits only for its own
 jobs. When the last job of a spectrum's current pass returns, its search is fed that pass's prices in its own job
-order, and its next pass goes into the pool at once while other spectra's jobs still run. A promotion is decided from
+order, and its next pass goes into the pool at once while other spectra's jobs still run. A choice is decided from
 that spectrum's own state, never from whichever job returns first, so the same inputs give the same candidates in any
 completion order. Rings stay sequential, because a ring conditions on the saved fits of the rings before it; identity
 reconciliation, continuous refits and saving are unchanged. Prices are cached within one batch, under keys that hash
@@ -352,15 +327,7 @@ worker count (`ISAR_WORKERS` caps it), less any tasks still running for work the
 since dropped. The job's replay is result-identical to the serial price for a candidate with no split basin: the heavy
 steps are pure functions of their inputs, and whatever the parallel tasks did not compute is sent to the pool as a
 single task and waited for. A split basin differs only by the node starts of the split-integral paragraph above (D1).
-Priority is set when a task is sent: a requested job's task always goes before any lookahead task, and a lookahead
-task goes only to a free worker when nothing requested is waiting. A lookahead task already running finishes (there is
-no preemption), so a requested task can wait for the shortest running lookahead task to free its worker; that costs
-wall time only, never a result (ruling IS26, D2). Lookahead: workers that would otherwise be idle price the full-depth
-jobs each live search names as its likely next promotions (`Search.likely_next`) into the batch's price cache, at most
-as many lookahead jobs live as there are workers. A cached price answers only the identical job when the search asks
-for it, and a price nobody asks for is never fed to a search, so the search's path and decision do not depend on
-lookahead. A request for a job a lookahead job is still pricing takes that job over; one it finished meanwhile is
-answered from it. Abandoned lookahead tasks that are still running count against the worker total until they return. When the batch ends, the runner stops any still running without
+Priority is set when a task is sent: a task a job is waiting on goes before the rest, then tasks in rank order; a task already running finishes (there is no preemption). The search's path and decision do not depend on which worker is free or when. Abandoned tasks that are still running count against the worker total until they return. When the batch ends, the runner stops any still running without
 waiting for them (their workers are terminated), so the batch's cores free at once.
 With one worker, for any call other than a price, and for a core without `run_task`, the runner prices whole jobs as
 before. On this path `timing.pool.busy_s` is the seconds the tasks took in the workers.
@@ -399,10 +366,7 @@ dialog*. `tests/docs/test_inter_spectra_docs.py` keeps the names, marks and help
 | `confidence` | not in the dialog | 0.8 | 0.5 to 1 | uncalibrated | A mode count or assignment whose probability is below this is reported as ambiguous. |
 | `close_call_nats` | not in the dialog | 2 nats | 0 to 20 | uncalibrated | Alternatives within this much log evidence of the winner are kept for review. |
 | `evidence_hysteresis_nats` | not in the dialog | 0.1 nats | 0 to 5 | uncalibrated | A count or assignment change must win the evidence by this margin, or the incoming one stays. |
-| `stop_margin_nats` | not in the dialog | 5 nats | 0 to 100 | uncalibrated | The candidate search keeps stepping to a neighbouring mode count or labelling while it is no more than this many nats behind the best found, and stops at the first one further behind. |
 | `linewidth_ratio` | not in the dialog | 2 | > 1 to 100 | uncalibrated | A linewidth change is reported when a mode's damping ratio to its fast solo fit passes this. |
-| `full_search` | not in the dialog | false |  | uncalibrated | Price every mode count up to the full-search count and every labelling of each, with no pruning (slow; a check for calibration and proofs). |
-| `full_search_max_count` | not in the dialog | 4 modes | 0 to 12 | uncalibrated | With the full search on: the largest mode count it prices (every count from none up to this). The number of labellings grows factorially with it and nothing else limits the run. |
 | `link_slope_meV_per_rlu` | not in the dialog | 3 meV/r.l.u. | > 0 to 1000 | uncalibrated | Mode linking, scans with no lattice loaded: how far a mode's energy may move per reciprocal lattice unit of distance between neighbours before it counts as one full tolerance (the refit's q-slope is separate). |
 | `link_slope_meV_per_invA` | not in the dialog | 2.3 meV/Å⁻¹ | > 0 to 1000 | uncalibrated | Mode linking, scans with a lattice loaded: how far a mode's energy may move per inverse angstrom of distance between neighbours before it counts as one full tolerance (the refit's q-slope is separate). |
 | `width_tolerance_ln` | not in the dialog | 0.3 | > 0 to 5 | uncalibrated | Mode linking: how far a mode's width may differ between neighbours, as the natural log of the ratio (0.3 is about 35%), before it counts as one full tolerance. |
@@ -410,7 +374,7 @@ dialog*. `tests/docs/test_inter_spectra_docs.py` keeps the names, marks and help
 | `link_threshold` | not in the dialog | 9 | > 0 to 1000 | uncalibrated | Mode linking: two modes of neighbouring spectra are linked as one branch only when their summed mismatch in energy, width and intensity, each in squared tolerances, is at most this. |
 | `tie_margin` | not in the dialog | 2 | 0 to 100 | uncalibrated | Mode linking: two ways of linking a crossing are reported as a near tie when their summed mismatch differs by less than this. |
 
-A saved value of `q_tolerance_meV`, `q_change_scale_meV` or `composition_limit` is logged and ignored, never reported as damaged, and has no effect; the two q slopes start at their defaults, and the stopping margin does the work of the composition limit. The two q slopes are provisional until sample handling is written out. The rows marked calibrated were calibrated before the propagation of section 4 existed. That propagation also widens the temperature and curvature penalties, so for the same neighbour uncertainty those penalties, and the flag statistic they feed, are lower. Their marks stand and the calibration is not redone.
+A saved value of `q_tolerance_meV`, `q_change_scale_meV`, `composition_limit`, `stop_margin_nats`, `full_search` or `full_search_max_count` is logged and ignored, never reported as damaged, and has no effect; the two q slopes start at their defaults. The two q slopes are provisional until sample handling is written out. The rows marked calibrated were calibrated before the propagation of section 4 existed. That propagation also widens the temperature and curvature penalties, so for the same neighbour uncertainty those penalties, and the flag statistic they feed, are lower. Their marks stand and the calibration is not redone.
 
 ## 6. Storage
 
@@ -465,12 +429,12 @@ until Link modes runs again.
 |---|---|
 | `isar/analyze/coupled/settings.py` | the settings table (`SETTING_DEFS`) and the checked reader (`InterSettings`) |
 | `isar/analyze/coupled/types.py` | the core's boundary types, flag codes and severities |
-| `isar/analyze/coupled/engine.py` | the coupled engine: the mode energies, priors and penalties of one refit; the joint objective and gradient (`objective_and_gradient`, `_value_and_grad`); the split integral and its screen (`integrate_split`, `split_evidence`, `_polish`) |
-| `isar/analyze/coupled/refit.py` | one spectrum's two-stage refit, its release fit, flags and error bars; `price`, at a job's depth (full or screen) |
+| `isar/analyze/coupled/engine.py` | the coupled engine: the mode energies, priors and penalties of one refit; the joint objective and gradient (`objective_and_gradient`, `_value_and_grad`); the split integral (`integrate_split`, `split_evidence`, `_polish`) |
+| `isar/analyze/coupled/refit.py` | one spectrum's two-stage refit, its release fit, flags and error bars; `price` |
 | `isar/analyze/prior.py` | the Laplace evidence; `hessian_from_grad`, the Hessian as a central difference of a gradient; the width ceiling and its density (`width_ceiling`, `ln_width_given`) |
 | `isar/analyze/fast_pass.py` | the solo fast pass; its `objective_and_gradient` hook returns nothing, so the solo pass is unchanged; `_ZMap`, the width coordinate t the coupled engine fits in too |
 | `isar/analyze/coupled/rules.py` | the pure decision rules: acceptance order, settling, flag score, the count-first decision |
-| `isar/analyze/coupled/search.py` | one spectrum's adaptive candidate search: seeds, count steps, labelling moves, screens and promotions (`Search.feed`, `_final`, `_rank`), the search record and the shadow record |
+| `isar/analyze/coupled/search.py` | one spectrum's listed-candidate search: the incoming fit, subsets of the listed changes and the crossing alternatives (`Search.feed`, `_decide`), the search record, and `crossing_flags` |
 | `isar/analyze/coupled/identity.py` | persistent branch identity across neighbours |
 | `isar/analyze/coupled/linking.py` | mode linking: the pure core, its result and JSON form |
 | `isar/session/inter_spectra/nodes.py` | spectrum keys, series keys and temperatures |
@@ -486,9 +450,6 @@ until Link modes runs again.
 | `isar/session/inter_spectra/runner.py` | the batch runner: rings, rounds, sweeps and acceptance hand-over; `_Run.assign`, the stage-1 pool that feeds each spectrum's search as its own jobs return |
 | `isar/analyze/coupled/tasks.py` | the task port a candidate's pricing sends its inner work through, and the worker side's engine cache |
 | `tools/inter_timing.py` | times one batch headless and prints its timing report (`report.txt`, `timing.json` with `--out`) |
-| `tools/inter_ring1.py` | opens the anchored batch headless and stops at the end of ring 1's stage 1; shared by the two measurement tools below |
-| `tools/inter_gradient_compare.py` | compares the gradient path with the finite-difference path on picked real-shaped jobs, per class (`summary.txt`, `table.md`, `compare.json` with `--out`) |
-| `tools/inter_screen_calibration.py` | shadow run of ring 1's stage 1: screen errors, count-total errors and shadow decisions (`calibration.json`, `calibration.md` with `--out`) |
 | `isar/session/writer.py` | `save_inter` and `save_links`, the one writer of the machine store |
 | `isar/session/analysis_service.py` | runs an `inter` and a `link` queue item in the analysis process |
 | `isar/session/analysis_queue.py` | the queue's bookkeeping for `inter` and `link` queue items |
