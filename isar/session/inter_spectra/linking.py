@@ -103,6 +103,12 @@ def _stamp(fit: str, inputs: str | None, rec: dict) -> str:
                                         for p in _modes_of(rec)])
 
 
+def _fitted_inputs(session, unit: str) -> str | None:
+    """The inputs hash a spectrum's stored fits were made under, as ``currentness.judge`` reads it."""
+    entry = session.get(unit)
+    return ((entry.provenance or {}).get("fit_inputs") or {}).get("hash") if entry is not None else None
+
+
 def _fit_record(root, session, unit: str, fit: str, lines: Mapping, records: Mapping | None) -> dict:
     """The record of a fit: the stored fast pass, a refit's stored overlay, or one the caller holds (not yet stored)."""
     if records is not None and fit in records:
@@ -168,6 +174,11 @@ def _in_use(root, card, session, units: Sequence[str], lines: Mapping) -> tuple[
             inp = now.get(unit)
             if res.fit != FAST and lines[res.fit].inputs is not None:
                 inp = lines[res.fit].inputs
+            if res.fit == FAST and inp is not None and _fitted_inputs(session, unit) != inp:
+                from isar.session.inter_spectra.runner import NOT_CURRENT   # the runner's refusal, not a copy of it
+                rec = _fast_of(session, unit)
+                left[unit] = (NOT_CURRENT, _stamp(FAST, _fitted_inputs(session, unit), rec) if rec else None)
+                continue
             plan[unit] = (res.fit, inp, node.T)
     return plan, left
 

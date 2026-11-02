@@ -79,6 +79,21 @@ def test_a_spectrum_on_an_older_recipe_is_left_out_with_its_reason(ws):
     assert reason == linking.OLD_RECIPE and token is not None
 
 
+def test_a_fast_fit_made_under_other_inputs_is_left_out_as_not_current(ws):
+    from isar.session.inter_spectra.runner import NOT_CURRENT
+
+    unit = spectrum_keys(ws)[0]
+    ws_ = Workspace.open(ws)
+    card, session = ws_.load()
+    entry = session.scans[unit]
+    entry.provenance = {**entry.provenance, "fit_inputs": {**entry.provenance["fit_inputs"], "hash": "older-inputs"}}
+    ws_.save(card, session)
+    inputs, excluded = linking.inputs_for(ws, spectrum_keys(ws))
+    assert unit not in inputs and set(inputs) == set(spectrum_keys(ws)) - {unit}
+    reason, token = excluded[unit]
+    assert reason == NOT_CURRENT and token is not None
+
+
 def test_series_widening_gives_every_scan_of_the_temperature_series(ws):
     widened = linking.widen_to_series(ws, [scan_keys(ws)[0]])
     assert len(scan_keys(ws)) == 2
