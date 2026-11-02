@@ -16,7 +16,7 @@ from gui.inter_fakes import FakeInterState, make_link_view, make_unit_links
 from isar.workspace_api.inter_spectra import MarkerView
 from isar_gui.theme import Tone, dot_icon
 from isar_gui.viewmodels.analyzer_array import CellLinks
-from isar_gui.views.analyzer_cell import GESTURE_TIP
+from isar_gui.views.analyzer_cell import GESTURE_TIP, STALE_INK
 from scans_view_fixture import SPECTRA_A
 
 A3, A4, A5, A6, A7, A8, A9 = SPECTRA_A
@@ -60,7 +60,7 @@ def test_a_stale_record_greys_its_names_and_drops_the_dot(env_for):
     cell = env.dock.cell_at("a04")
     assert cell.cell.links.stale and cell.cell.links.caption == "B1" and cell.cell.links.severity is None
     assert cell.link_strip.isVisible() and cell.link_label.full_text() == "B1"
-    assert "color" in cell.link_label.styleSheet()                    # grey, and the dot is gone instead
+    assert STALE_INK in cell.link_label.styleSheet()                  # grey, and the dot is gone instead
     assert cell.link_dot.isHidden()
     assert "branch names from earlier links" in cell.link_label.toolTip()
     assert "links out of date" in cell.accessibleDescription()

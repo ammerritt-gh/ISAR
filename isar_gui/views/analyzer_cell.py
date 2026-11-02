@@ -29,6 +29,7 @@ RING_STILL = 0.6             # the ring's brightness with the timer stopped (the
 BATCH_TONES = {"waiting": Tone.IDLE, "fitting": Tone.ACTIVE, "done": Tone.OK, "refused": Tone.WARN,
                "failed": Tone.ERR, "not_reached": Tone.IDLE}
 LINK_TONES = {None: Tone.OK, "info": Tone.IDLE, "warn": Tone.WARN, "serious": Tone.ERR}   # the worst note's dot
+STALE_INK = "#5f6670"        # stale names: grey, dark enough to read on white (the idle tone is ~2.6:1, this ~5.8:1)
 MARKERS = {"anchor": "Anchor: a spectrum you trust. An anchored batch grows outward from it.",
            "lock": "Locked: this spectrum's fit is fixed, so no batch will refit it."}
 GESTURE_TIP = ("Click selects this spectrum in the scan list. Ctrl-click adds or removes it, and the cells you add form "
@@ -316,7 +317,7 @@ class AnalyzerCell(QFrame):
             return
         self.link_label.set_full_text(links.caption)
         self.link_label.setToolTip(links.tip)
-        self.link_label.setStyleSheet(f"color: {TONE_COLOR[Tone.IDLE]};" if links.stale else "")
+        self.link_label.setStyleSheet(f"color: {STALE_INK};" if links.stale else "")
         self.link_dot.setVisible(not links.stale)
         self.link_dot.setPixmap(dot_icon(LINK_TONES[links.severity]).pixmap(10, 10))
         self.link_dot.setToolTip(links.tip)
