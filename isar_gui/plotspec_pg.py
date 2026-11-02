@@ -606,11 +606,14 @@ def render_into(plot_item: "pg.PlotItem", spec: PlotSpec) -> RenderedSpec:
 
     if legend_entries:
         grouped = any(len(entry) == 4 and entry[2] is not None for entry in legend_entries)
-        # The box takes the plot's own background, so it reads on a black pane as on a white one.
-        brush = pg.mkBrush(_plot_background(plot_item))
+        # A grouped legend and a spec that asks (the analyzer path) get an opaque box above the data, in the
+        # plot's own background so it reads on a black pane as on a white one; other plain legends stay as they were.
+        over_data = grouped or bool(spec.meta.get("legend_over_data"))
+        brush = pg.mkBrush(_plot_background(plot_item)) if over_data else None
         legend = (_GroupedLegend(offset=None, labelTextColor=_GREY_025, brush=brush)
                   if grouped else pg.LegendItem(offset=None, brush=brush))
-        legend.setZValue(100)  # above the series, bands and markers (all z <= 9)
+        if over_data:
+            legend.setZValue(100)  # above the series, bands and markers (all z <= 9)
         legend.setParentItem(plot_item.getViewBox())
         legend.anchor(itemPos=(1, 0), parentPos=(1, 0), offset=(-8, 8))
         _populate_legend(legend, legend_entries, rs.legend_names)

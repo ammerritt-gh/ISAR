@@ -37,6 +37,7 @@ def _series(rows, **kw) -> ps.Series:
 def analyzer_path_spec(*, stops, title, xlabel, ylabel, stale_note=None, reason=None) -> ps.PlotSpec:
     """The path plot. ``reason`` makes it an empty spec with one annotation saying why the path is unavailable."""
     spec = ps.PlotSpec(title=title, xlabel=xlabel, ylabel=ylabel)
+    spec.meta["legend_over_data"] = True     # the phonon legend sits top-right on the series: an opaque box
     if not stops:                            # no data: no tick values, or pyqtgraph's default 0-1 range reads as real
         spec.meta["hide_axis_values"] = True
     if reason is not None:

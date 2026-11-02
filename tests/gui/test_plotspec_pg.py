@@ -14,7 +14,9 @@ pytest.importorskip("PySide6")
 pytest.importorskip("pyqtgraph")
 
 import pyqtgraph as pg
+from PySide6.QtCore import Qt
 
+from isar.plotspec.path_builders import analyzer_path_spec
 from isar.plotspec.spec import (
     Annotation,
     Band,
@@ -445,12 +447,25 @@ def test_scans_legend_lists_phonons_in_p_order(qtbot):
     assert elastic.pos().x() == p1.pos().x() < qe.pos().x() == p2.pos().x()
 
 
-def test_legend_box_takes_the_plot_background_above_the_series():
+def test_a_plain_legend_keeps_pyqtgraphs_default_box_unless_the_spec_asks_for_one_over_the_data():
     x = np.linspace(0.0, 4.0, 5)
     spec = PlotSpec(title='', xlabel='', ylabel='', series=[Series(x=x, y=x, label='data', role=Role.DATA)])
+    glw, plot = _new_plot()
+    glw.setBackground('k')
+    legend = render_into(plot, spec).legend
+    assert legend.brush().style() == Qt.BrushStyle.NoBrush and legend.zValue() == 0   # as on the base commit
+    spec.meta['legend_over_data'] = True
     for background in ('k', 'w'):
         glw, plot = _new_plot()
         glw.setBackground(background)
         legend = render_into(plot, spec).legend
         assert legend.brush().color() == pg.mkColor(background)     # reads on a black pane and a white one
         assert legend.zValue() > 9                                  # above every series (z <= 9)
+
+
+def test_the_analyzer_path_legend_sits_over_its_data():
+    stop = {'x': 0.0, 'beamline': 'a03', 'note': None,
+            'modes': [{'energy': 4.0, 'lo': None, 'hi': None, 'peak_E': None, 'name': 'P1'}]}
+    glw, plot = _new_plot()
+    legend = render_into(plot, analyzer_path_spec(stops=[stop], title='', xlabel='', ylabel='')).legend
+    assert legend.zValue() > 9                                      # the P1 marker is never hidden under the box
