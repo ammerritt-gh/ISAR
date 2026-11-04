@@ -1766,7 +1766,7 @@ class _Run:
             snaps = {k: _renamed_snapshot(s, rename) for k, s in snaps.items()}
             self.progress("refine")
             R = self.refits({k: s for k, s in snaps.items() if k in A}, A, ids)
-            R.update(errors)                                # a spectrum whose search failed is a failed refit line
+            R.update(errors)                                # a spectrum whose mode set failed is a failed refit line
             # seams, judged on each spectrum's latest refit energies (after the ring's continuous refits)
             self.progress("seams")
             ok = {k for k, x in R.items() if not isinstance(x, Exception) and x.status in _ELIGIBLE}
@@ -1884,7 +1884,7 @@ class _Run:
             self.stage_name, self.index = "sweep", self.sweeps
             self.progress("assign")
             A, errors = self.fixed_sets(snaps, self.rounds == 1)   # the mode set is the link's, set in round 1 only
-            for k, exc in errors.items():                # its search failed: it would fail every round, its held
+            for k, exc in errors.items():                # its mode set failed: it would fail every round, its held
                 self.latest[k] = "failed"                # value stays and conditions its neighbours as a fixed one
                 self.failed[k] = f"analysis error ({type(exc).__name__}: {exc})"
                 active.discard(k)

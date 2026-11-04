@@ -1344,10 +1344,9 @@ def _setup(snapshot, a):
 
 def _main_starts(spec, a, eng, old) -> list:
     k, slots = a.count, tuple(a.slots)
-    # starts: the incoming state, the priced posterior mode (the decision's, ``a.selected_model``) and one
-    # neighbour-placed start, all on the selected delta mask (the decision's, else the incoming fit's): a delta or a
-    # free width is chosen by the evidence comparison, never by the continuous objective, which a free width always
-    # lowers. The runner passes no prices, so the Assignment alone carries the choice.
+    # starts: the incoming state, the fixed assignment's selected model (the link's start, ``a.selected_model``) and one
+    # neighbour-placed start, all on the incoming fit's delta mask, which is frozen by design. The priced wording
+    # (a delta or free width chosen by the evidence comparison) applies only to the retained search, which no batch runs.
     starts = [] if old is None else [old]
     selected = tuple(old[0].delta) if old is not None else ()
     base = [(m.omega0, m.gamma, m.height) for m in spec.own.modes] if k == spec.n0 else spec._record_modes(k)
