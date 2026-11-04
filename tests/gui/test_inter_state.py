@@ -160,11 +160,11 @@ def test_each_writer_passes_its_arguments_through(qtbot, state, monkeypatch, tmp
     state.bind(tmp_path)
     assert state.pick_fit(KEY, "f1").ok
     assert state.set_lock(KEY, True, "f1").ok
-    assert state.save_settings({"flag_threshold": 50.0, "sweep_cap": None}).ok
+    assert state.save_settings({"flag_threshold": 50.0, "step_exponent": None}).ok
     assert calls == {
         "pick_fit": ((KEY, "f1"), {}),
         "set_lock": ((KEY,), {"locked": True, "fit_id": "f1"}),
-        "save_settings": (({"flag_threshold": 50.0, "sweep_cap": None},), {}),
+        "save_settings": (({"flag_threshold": 50.0, "step_exponent": None},), {}),
     }
 
 

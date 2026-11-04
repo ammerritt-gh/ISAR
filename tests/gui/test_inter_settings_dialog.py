@@ -53,8 +53,8 @@ def test_calibrated_rows_are_marked_and_the_rest_are_uncalibrated():
 
 def test_a_save_sends_only_the_value_that_changed():
     edited = {r.setting.name: r.value for r in _shown_rows()}
-    edited["sweep_cap"] = 40
-    assert changes(_shown_rows(), edited) == {"sweep_cap": 40}
+    edited["step_exponent"] = 1.5
+    assert changes(_shown_rows(), edited) == {"step_exponent": 1.5}
 
 
 def test_typing_the_default_back_sends_none_and_nothing_edited_sends_nothing():
@@ -89,11 +89,13 @@ def _save(dlg) -> None:
     dlg.findChild(QPushButton, "inter_settings_save").click()
 
 
-def test_the_advanced_section_holds_exactly_the_four_advanced_settings(qtbot):
+def test_the_advanced_section_holds_exactly_the_two_advanced_settings(qtbot):
     dlg, _ = _dialog(qtbot)
     section = dlg.findChild(QWidget, "inter_settings_advanced_section")
     assert [n for n in SHOWN if section.isAncestorOf(_editor(dlg, n))] == [
-        "shape_family", "step_exponent", "sweep_tol_meV", "sweep_cap"]
+        "shape_family", "step_exponent"]
+    for retired in ("sweep_tol_meV", "sweep_cap", "cost_rel_tol"):       # nothing reads them: not offered
+        assert retired not in SHOWN and dlg.findChild(QWidget, f"inter_{retired}") is None
     assert dlg.findChild(QWidget, "inter_reference_T_K") is None
 
 
@@ -132,9 +134,9 @@ def test_opening_and_closing_writes_nothing(qtbot):
 
 def test_save_sends_only_the_value_that_changed(qtbot):
     dlg, inter = _dialog(qtbot)
-    _editor(dlg, "sweep_cap").setValue(40)
+    _editor(dlg, "step_exponent").setValue(1.5)
     _save(dlg)
-    assert inter.calls == [("save_settings", ({"sweep_cap": 40},))]
+    assert inter.calls == [("save_settings", ({"step_exponent": 1.5},))]
     assert dlg.result() == ACCEPTED
 
 
@@ -190,7 +192,7 @@ def test_before_the_first_read_save_is_off_and_the_dialog_says_the_values_are_de
 
 def test_cancel_writes_nothing(qtbot):
     dlg, inter = _dialog(qtbot)
-    _editor(dlg, "sweep_cap").setValue(40)
+    _editor(dlg, "step_exponent").setValue(1.5)
     dlg.findChild(QPushButton, "inter_settings_cancel").click()
     assert inter.calls == []
     assert dlg.result() == REJECTED
@@ -199,7 +201,7 @@ def test_cancel_writes_nothing(qtbot):
 def test_a_refused_save_keeps_the_dialog_open_and_shows_the_reason(qtbot):
     dlg, inter = _dialog(qtbot)
     inter.fail_next = "The experiment is busy with an export."
-    _editor(dlg, "sweep_cap").setValue(40)
+    _editor(dlg, "step_exponent").setValue(1.5)
     _save(dlg)
     msg = dlg.findChild(QLabel, "inter_settings_message")
     assert msg.text() == "The experiment is busy with an export."
@@ -208,11 +210,12 @@ def test_a_refused_save_keeps_the_dialog_open_and_shows_the_reason(qtbot):
 
 
 def test_a_float_box_shows_a_permitted_value_exactly(qtbot):
-    # The table allows any sweep tolerance above 0 up to 1, so 0.0001 is permitted and must show as itself.
-    dlg, _ = _dialog(qtbot, sweep_tol_meV=0.0001)
-    box = _editor(dlg, "sweep_tol_meV")
-    assert box.minimum() == 0.0001
-    assert box.value() == 0.0001
+    # The table allows any T tolerance above 0 up to 50; the box shows three decimals, so 0.001 is the least
+    # permitted value and must show as itself.
+    dlg, _ = _dialog(qtbot, t_tolerance_meV=0.001)
+    box = _editor(dlg, "t_tolerance_meV")
+    assert box.minimum() == 0.001
+    assert box.value() == 0.001
 
 
 def test_an_unknown_kind_raises(qtbot):

@@ -21,8 +21,6 @@ LABELS = {
     "flag_threshold": "Flag threshold",
     "shape_family": "Penalty shape (T and curvature)",
     "step_exponent": "Temperature step exponent",
-    "sweep_tol_meV": "Sweep tolerance",
-    "sweep_cap": "Sweep cap",
 }
 
 

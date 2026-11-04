@@ -142,10 +142,9 @@ SETTING_TABLE = (
     ("q_slope_meV_per_rlu", "front", 10.6), ("q_slope_meV_per_invA", "front", 8.0),
     ("t_tolerance_meV", "front", 1.0), ("flag_threshold", "front", 54.0),
     ("shape_family", "advanced", "welsch"), ("step_exponent", "advanced", 0.25),
-    ("sweep_tol_meV", "advanced", 0.01), ("sweep_cap", "advanced", 20),
     ("q_curvature_scale_meV", "hidden", 1.0),
     ("reference_T_K", "hidden", 100.0), ("t_spacing_form", "hidden", "widen"), ("penalty_cap", "hidden", 12.0),
-    ("birth_edge", "hidden", 2.0), ("birth_mid", "hidden", 12.0), ("cost_rel_tol", "hidden", 1e-5),
+    ("birth_edge", "hidden", 2.0), ("birth_mid", "hidden", 12.0),
     ("collinearity_tol", "hidden", 0.01), ("confidence", "hidden", 0.80),
     ("close_call_nats", "hidden", 2.0), ("evidence_hysteresis_nats", "hidden", 0.1),
     ("linewidth_ratio", "hidden", 2.0),
@@ -199,7 +198,7 @@ def test_every_row_carries_the_plan_mark_and_is_described(d):
 
 def test_from_values_worked_examples():
     assert InterSettings.from_values({}) == InterSettings()
-    for bad, name in (({"sweep_cap": "x"}, "sweep_cap"), ({"bogus": 1}, "bogus"),
+    for bad, name in (({"step_exponent": "x"}, "step_exponent"), ({"bogus": 1}, "bogus"),
                       ({"confidence": 0.3}, "confidence"), ({"t_tolerance_meV": 0}, "t_tolerance_meV")):
         with pytest.raises(ValueError, match=name):
             InterSettings.from_values(bad)
@@ -238,7 +237,8 @@ def test_mode_linking_has_its_own_q_slope_and_the_refit_keeps_its_own():
 
 def test_the_retired_settings_are_gone_from_the_table():
     assert RETIRED_SETTINGS == {"q_tolerance_meV", "q_change_scale_meV", "composition_limit",
-                                "stop_margin_nats", "full_search", "full_search_max_count"}
+                                "stop_margin_nats", "full_search", "full_search_max_count",
+                                "sweep_tol_meV", "sweep_cap", "cost_rel_tol"}
     assert not RETIRED_SETTINGS & {d.name for d in SETTING_DEFS}
     with pytest.raises(ValueError, match="composition_limit"):     # the checked reader refuses it; the intake fold ignores it
         InterSettings.from_values({"composition_limit": 4})

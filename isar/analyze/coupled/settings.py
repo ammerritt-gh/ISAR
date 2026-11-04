@@ -53,11 +53,6 @@ SETTING_DEFS: tuple[SettingDef, ...] = (
          choices=("welsch", "quartic")),
     _row("step_exponent", "advanced", "float", 0.25, None, 0, 2,
          "How much the tolerated temperature change widens with the size of the temperature step.", cal=True),
-    _row("sweep_tol_meV", "advanced", "float", 0.01, "meV", 0, 1,
-         "A sweep that moves no mode energy by more than this is quiet; two quiet sweeps settle a batch.",
-         strict=True),
-    _row("sweep_cap", "advanced", "int", 20, "sweeps", 2, 1000,
-         "A simultaneous batch that has not settled after this many sweeps is kept and flagged as did not settle."),
     _row("q_curvature_scale_meV", "hidden", "float", 1.0, "meV", 0, 50,
          "Simultaneous q links: the energy scale of the curvature residual along a line of three spectra.",
          strict=True),
@@ -72,8 +67,6 @@ SETTING_DEFS: tuple[SettingDef, ...] = (
          "The entry price of a branch that no neighbour predicts, at any energy in the window."),
     _row("birth_mid", "hidden", "float", 12.0, "deviance", 0, 1000,
          "The extra entry price of such a branch when it appears in the middle of the window."),
-    _row("cost_rel_tol", "hidden", "float", 1e-5, None, 0, 1,
-         "A sweep whose total cost improves by less than this relative amount is not improving.", strict=True),
     _row("collinearity_tol", "hidden", "float", 0.01, None, 0, 1,
          "How far, relative to its length, the middle of three q points may sit off the straight line through the outer two."),
     _row("confidence", "hidden", "float", 0.80, None, 0.5, 1,
@@ -100,7 +93,8 @@ SETTING_DEFS: tuple[SettingDef, ...] = (
 
 _BY_NAME = {d.name: d for d in SETTING_DEFS}
 RETIRED_SETTINGS = frozenset({"q_tolerance_meV", "q_change_scale_meV",   # saved values are ignored (intake fold)
-                              "composition_limit", "stop_margin_nats", "full_search", "full_search_max_count"})
+                              "composition_limit", "stop_margin_nats", "full_search", "full_search_max_count",
+                              "sweep_tol_meV", "sweep_cap", "cost_rel_tol"})
 
 
 def _expect(d: SettingDef) -> str:
@@ -138,15 +132,12 @@ class InterSettings:
     flag_threshold: float = 54.0
     shape_family: str = "welsch"
     step_exponent: float = 0.25
-    sweep_tol_meV: float = 0.01
-    sweep_cap: int = 20
     q_curvature_scale_meV: float = 1.0
     reference_T_K: float = 100.0
     t_spacing_form: str = "widen"
     penalty_cap: float = 12.0
     birth_edge: float = 2.0
     birth_mid: float = 12.0
-    cost_rel_tol: float = 1e-5
     collinearity_tol: float = 0.01
     confidence: float = 0.80
     close_call_nats: float = 2.0

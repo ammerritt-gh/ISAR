@@ -85,11 +85,11 @@ def test_picks_and_locks_fold_latest_wins(root):
 
 
 def test_settings_deltas_fold_and_none_goes_back_to_default(root):
-    assert save_settings(root, {"sweep_cap": 30, "flag_threshold": 60}).ok
-    assert save_settings(root, {"sweep_cap": None}).ok
+    assert save_settings(root, {"step_exponent": 0.5, "flag_threshold": 60}).ok
+    assert save_settings(root, {"step_exponent": None}).ok
     assert read_user(root).settings == {"flag_threshold": 60.0}
     s = read_inter_settings(root)
-    assert (s.flag_threshold, s.sweep_cap) == (60.0, 20)
+    assert (s.flag_threshold, s.step_exponent) == (60.0, 0.25)
 
 
 def test_a_retired_setting_is_logged_and_ignored_not_damaged(caplog):
@@ -99,12 +99,15 @@ def test_a_retired_setting_is_logged_and_ignored_not_damaged(caplog):
         {"kind": "settings", "seq": 2, "targets": ["experiment"], "changes": {"q_change_scale_meV": None}},
         {"kind": "settings", "seq": 3, "targets": ["experiment"],
          "changes": {"full_search": True, "full_search_max_count": 6, "stop_margin_nats": 9.0}},
+        {"kind": "settings", "seq": 4, "targets": ["experiment"],      # the one-go simultaneous batch retired these
+         "changes": {"sweep_cap": 6, "sweep_tol_meV": 0.5, "cost_rel_tol": 0.01}},
     ]
     caplog.set_level(logging.INFO)
     u = inter_spectra.fold(entries)
     assert (u.settings, u.damaged) == ({"flag_threshold": 60.0}, ())
     assert "q_tolerance_meV" in caplog.text and "q_change_scale_meV" in caplog.text
     assert all(n in caplog.text for n in ("full_search", "full_search_max_count", "stop_margin_nats"))
+    assert all(n in caplog.text for n in ("sweep_cap", "sweep_tol_meV", "cost_rel_tol"))
 
 
 def test_a_saved_retired_setting_reads_as_the_default_and_a_save_of_it_is_refused(root):
@@ -135,7 +138,7 @@ def test_a_saved_retired_setting_reads_as_the_default_and_a_save_of_it_is_refuse
     (lambda r: set_lock(r, A, locked=True), "a lock needs the fit it pins (fast, or f followed by 12 hex digits)"),
     (lambda r: set_lock(r, A, locked=False), "spec1:42:a03 is not locked"),
     (lambda r: set_lock(r, A, locked=False, fit_id=F1), "fit_id is only given to lock a spectrum"),
-    (lambda r: save_settings(r, {"sweep_cap": 0}), "inter-spectra setting 'sweep_cap' is out of bounds (got 0)"),
+    (lambda r: save_settings(r, {"step_exponent": 5}), "inter-spectra setting 'step_exponent' is out of bounds (got 5)"),
     (lambda r: save_settings(r, {"bogus": 1}), "unknown inter-spectra setting 'bogus'"),
     (lambda r: save_settings(r, {"bogus": None}), "unknown inter-spectra setting 'bogus'"),
     (lambda r: save_settings(r, {"flag_threshold": True}),
@@ -169,7 +172,7 @@ def test_damaged_lines_are_skipped_and_listed_and_the_rest_still_counts(root):
     lines = [
         {"kind": "weather", "id": "e1", "seq": 2, "at": "x", "targets": [A]},                 # line 2: unknown kind
         {"kind": "pick", "id": "e2", "seq": 3, "at": "x", "targets": [A]},                    # line 3: no fit
-        {"kind": "settings", "changes": {"sweep_cap": 0}, "id": "e3", "seq": 4, "at": "x",
+        {"kind": "settings", "changes": {"step_exponent": 5}, "id": "e3", "seq": 4, "at": "x",
          "targets": ["experiment"]},                                                          # line 4: out of bounds
     ]
     with open(root / inter_spectra.FILE, "ab") as f:
