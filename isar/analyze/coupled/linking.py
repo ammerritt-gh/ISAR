@@ -709,7 +709,7 @@ def link(inputs: Mapping[str, LinkInput], links: Sequence[Link], settings: Inter
         for l, y in nbrs[x]:
             for s in S[y]:
                 b = labels[y][s.i]
-                if b is not None:
+                if b is not None and inputs[y].held.modes[s.i].status != "not_observed_here":
                     carriers.setdefault(b, []).append((y, s, l))
         out = []
         for b in sorted(carriers):
