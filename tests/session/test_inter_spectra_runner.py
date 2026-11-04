@@ -514,6 +514,16 @@ def test_a_simultaneous_round_whose_link_relabels_a_mode_runs_its_sweeps_rather_
     assert (end["state"], end["rounds"]) == ("settled", 3) and end["sweeps"] >= 4     # three quiet rounds would be 3
 
 
+def test_a_round_whose_link_adds_a_mode_settles_at_round_two_when_round_two_relabels_nothing(tmp_path):
+    """x's fixed set has two modes from round 1 (its link adds branch C). Round 2 relabels nothing, so the batch
+    settles there after round 1's two quiet sweeps: round 2 compares its labels with the ones the held fits carried
+    before its own link stage, not with labels taken before round 1's sweeps."""
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep", "slots": ["B", "C"]}, {"toy": "keep"}, {"toy": "keep"}))
+    spec = _simultaneous(ws, (x, y, z))
+    end = Bench(ws).run(spec).batches[spec.batch_id].end
+    assert (end["state"], end["rounds"], end["sweeps"]) == ("settled", 2, 2)
+
+
 def test_a_simultaneous_round_after_the_first_never_changes_a_mode_set(tmp_path):
     """Round 1 asks for the link's changes to be applied; every later round asks for none."""
     import types

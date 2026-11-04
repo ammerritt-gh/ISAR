@@ -1855,7 +1855,6 @@ class _Run:
             for u in new:
                 active.discard(u)
 
-        labels_prev: dict = {}                           # unit -> its modes' branch ids after the previous round's link
         data, unary = {}, {}
         prev_total, outcome = None, "settled"
         while True:                                      # one round
@@ -1864,6 +1863,7 @@ class _Run:
             sid = f"{self.batch}:round{self.rounds}"
             t_round = time.perf_counter()
             leave(self.take_new_locks(held))
+            before_link = {k: tuple(m.branch for m in held[k].modes) for k in held}   # the held fits, as the sweeps left them
             self.link_stage(f"round{self.rounds}", held)
             self.adopted = {}                            # the new link lists its changes afresh against the held fits
             snaps = {}
@@ -1893,8 +1893,7 @@ class _Run:
             # the sweeps ended quiet, so the batch settles when this round's link left every label as it was
             # (link_stage has already written the labels into ``held``, so ``a.changed`` cannot tell)
             labels = {k: tuple(m.branch for m in held[k].modes) for k in snaps}
-            settled = self.rounds > 1 and all(labels_prev.get(k) == v for k, v in labels.items())
-            labels_prev.update(labels)
+            settled = self.rounds > 1 and all(before_link.get(k) == v for k, v in labels.items())
             if settled:
                 break
             stage1 = {k: {"round": self.rounds, "assignment": _plain(A[k]),
