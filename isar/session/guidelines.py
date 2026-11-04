@@ -9,6 +9,7 @@ is untouched.
 """
 from __future__ import annotations
 
+import math
 import warnings
 from dataclasses import asdict, dataclass, field, fields
 
@@ -245,6 +246,11 @@ def _cast_like(value, default):
     return type(default)(value)
 
 
+# Each range check: a cap of 0 turns the penalty off; a d0 of 0 divides by zero and a negative one inverts the fade.
+_FAST_PASS_RANGES = {"pair_penalty_cap": (lambda v: math.isfinite(v) and v >= 0.0, "finite and >= 0"),
+                     "pair_penalty_d0": (lambda v: math.isfinite(v) and v > 0.0, "finite and > 0")}
+
+
 def fast_pass_settings(source) -> "FastPassSettings":
     """The fast pass's settings for this card: the mode ceiling, every valid ``[fitting.fast_pass]``
     key, and ``[fitting.prior]`` as the recipe's PriorSettings (no table: None, the recipe default, /6).
@@ -263,10 +269,16 @@ def fast_pass_settings(source) -> "FastPassSettings":
             warnings.warn(f"[fitting.fast_pass] {key}: not a fast-pass setting{hint} — ignoring")
             continue
         try:
-            settings[key] = _cast_like(value, known[key])
+            cast = _cast_like(value, known[key])
         except (TypeError, ValueError):
             warnings.warn(f"[fitting.fast_pass] {key}: {value!r} does not fit the setting's type "
                           f"— ignoring")
+            continue
+        if key in _FAST_PASS_RANGES and not _FAST_PASS_RANGES[key][0](cast):
+            warnings.warn(f"[fitting.fast_pass] {key}: {value!r} must be {_FAST_PASS_RANGES[key][1]} "
+                          f"— ignoring")
+            continue
+        settings[key] = cast
     prior = None
     card_prior = {}
     for key, value in g.prior.items():

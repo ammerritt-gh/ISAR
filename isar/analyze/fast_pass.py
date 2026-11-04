@@ -32,9 +32,10 @@ import numpy as np
 from scipy.optimize import least_squares, linear_sum_assignment, minimize
 from scipy.special import gammaln, logsumexp, xlogy
 
-from isar.analyze import backends, catalogue, loop, prior
+from isar.analyze import backends, catalogue, loop, pair_penalty, prior
 from isar.analyze.components import (QE_WEIGHT_CONVENTION, CentralQE, Elastic, PhononDHO, QuasiElastic,
                                      central_qe_columns, phonon_unit_columns)
+from isar.analyze.coupled.linking import matching_width
 from isar.analyze.estimators import FMIN
 from isar.analyze.lineshapes import KB, voigt_area_for_height
 from isar.analyze.phonon import GAMMA_FLOOR, _peak_omega0, central_qe_admissible
@@ -68,6 +69,7 @@ NEAR_ZERO_MAX_MODES = 3
 COINCIDENT_DELTA_MEV = 1e-6   # two delta modes closer than this are one mode, merged first
 QE_START_WIDTHS_FWHM = (1.0, 1.5, 3.0)   # central QE starting widths (x FWHM), inside its support; starts only
 CACHE_SIZE = 4096             # unit columns kept, keyed by (omega0, Gamma, peak selector)
+CLOSE_FADE = 0.05             # a close pair: its equal-split fade at least this (fade(12, 4) = 0.05); uncalibrated
 # The red-first switch of the delta-mode twin rule: a module flag the acceptance worker may set;
 # never a setting, never read from the environment.
 DELTA_TWIN_RULE = True
@@ -104,12 +106,15 @@ class FastPassSettings:
     trf_max_nfev: int = 160                  # per TRF call (prototype value; hitting it = that start failed)
     posterior_maxiter: int = 1000            # (new) L-BFGS-B iterations for the posterior mode (Defect D)
     audit_rounds: int = 1
+    pair_penalty_cap: float = 1.0            # PROVISIONAL, uncalibrated (operator 2026-11-04 "We can trial these"): nats; 0 turns it off
+    pair_penalty_d0: float = 4.0             # PROVISIONAL, uncalibrated: deviance units; the penalty halves at D = d0 ln 2
     prior: "PriorSettings | None" = None     # C-prior; None -> recipe v5
 
 Regime = Literal["near_elastic", "underdamped", "overdamped"]
 ParamStatus = Literal["constrained", "model_dependent", "boundary_limited", "undetermined"]
 EvidenceStatus = Literal["ok", "ok_boundary", "degenerate_twin", "no_evidence", "not_fitted"]
 CountState = Literal["resolved", "close_call", "unresolved", "search_limited"]
+PairTerm = tuple[int, int, float, float, float]   # (i, j, D, D_eq, nats): mode positions i < j of model.modes
 
 @dataclass(frozen=True)
 class PeakResult:
@@ -962,6 +967,52 @@ class _Engine:
     def cost(self, model, theta) -> float:
         r = poisson_residuals(self.y, self.mean(model, theta))
         return float(r @ r)
+
+    # ---- the tie-breaker penalty between close modes (design: the penalty section) ------------------
+    def pair_terms(self, model, theta) -> list[PairTerm]:
+        """(i, j, D, D_eq, nats) for each pair of phonon modes within three combined widths. D: the pair's
+        separability at this spectrum's counts. D_eq: the same with the pair's counts split equally, so it
+        measures how distinguishable the shapes are whatever the fit divides. Inputs are not mutated."""
+        if len(model.modes) < 2:
+            return []
+        mu = self.mean(model, theta)
+        dE = np.abs(np.gradient(self.E))
+        stokes = self.E > 0
+        units = self.units([(theta[a], theta[g]) for a, g, _c in model.modes], model.variant.peaks)
+        modes = [pair_penalty.PairMode(
+                     # shortcut: Gaussian-equivalent lines and the DHO denominator's peak for the centre
+                     # (sqrt(max(omega0^2 - 2 Gamma^2, 0)); overdamped modes sit at 0), upgrade to method B
+                     # if a real spectrum shows the fade in the wrong place
+                     centre=math.sqrt(max(float(theta[a]) ** 2 - 2.0 * float(theta[g]) ** 2, 0.0)),
+                     width=matching_width(float(theta[g]), self.fwhm),
+                     counts=max(float(theta[c]) * float(np.sum(self.expo[stokes] * col[stokes])), 0.0))
+                 for (a, g, c), (col, _up) in zip(model.modes, units)]
+        out = []
+        for i, j in itertools.combinations(range(len(modes)), 2):
+            p, q = modes[i], modes[j]
+            if not pair_penalty.in_range(p, q):
+                continue
+            half = (p.counts + q.counts) / 2.0
+            D = pair_penalty.separability(p, q, self.E, dE, mu)
+            D_eq = pair_penalty.separability(replace(p, counts=half), replace(q, counts=half), self.E, dE, mu)
+            nats = (self.s.pair_penalty_cap * pair_penalty.share_factor(p, q)
+                    * pair_penalty.fade(D, self.s.pair_penalty_d0))
+            if not (math.isfinite(D) and math.isfinite(D_eq) and math.isfinite(nats)):
+                raise ValueError(f"fast pass: the tie-breaker penalty of modes {i} and {j} is not finite")
+            out.append((i, j, D, D_eq, nats))
+        return out
+
+    def pair_penalty(self, model, theta) -> float:
+        """The pairs' penalties summed, in nats; 0.0 with cap 0."""
+        if self.s.pair_penalty_cap == 0.0:
+            return 0.0
+        return float(sum(t[4] for t in self.pair_terms(model, theta)))
+
+    def close_pairs(self, model, theta) -> list[tuple[int, int]]:
+        """The pairs the penalty acts on: the equal-split fade at least CLOSE_FADE."""
+        d0 = self.s.pair_penalty_d0
+        return [(i, j) for i, j, _D, D_eq, _nats in self.pair_terms(model, theta)
+                if pair_penalty.fade(D_eq, d0) >= CLOSE_FADE]
 
     # ---- model identities ------------------------------------------------------------------------
     def model(self, variant, delta) -> _Model | None:

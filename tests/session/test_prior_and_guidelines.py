@@ -389,7 +389,9 @@ def test_the_prior_recipe_version_is_in_the_signature_so_a_new_recipe_makes_stor
 # currency must not move except when the prior recipe does. Re-pinned at recipe /7 (the width ceiling),
 # whose version is hashed into the signature on purpose: every stored fast pass goes stale. The
 # previous value, recipe /6, was 14ba740fb67d38fef1fd46596f769ac430e9f946f861d21eb4ee0d7d589aebdb.
-S30_SIGNATURE_HASH = "b4b1288f1c6ce0b011a3cbfd17621b7a09adeabad65c1990b872fa1abab53e6f"
+# Re-pinned for the tie-breaker penalty's two fast-pass settings, which enter the signature through
+# asdict(fast_pass_settings); the value before them was b4b1288f1c6ce0b011a3cbfd17621b7a09adeabad65c1990b872fa1abab53e6f.
+S30_SIGNATURE_HASH = "f24c0b39aa65abfee849cc0b810ede1bd96a5e140351262e4146263089c8e3c7"
 
 
 def test_the_central_qe_moves_only_a_bl43lxu_signature(monkeypatch):
