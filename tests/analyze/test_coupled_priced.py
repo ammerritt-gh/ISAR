@@ -167,3 +167,15 @@ def test_an_entered_delta_mode_stays_delta_in_the_later_candidates(monkeypatch):
     a = R.evidence_assignment(replace(s, context=prep))
     assert [r["outcome"] for r in tried(a)][0] == "entered" and tried(a)[1]["count"] == 4
     assert (4, (2,)) in seen and (4, ()) not in seen
+
+
+def test_a_new_mode_railed_at_the_floor_with_no_twin_has_no_answer(monkeypatch):
+    """The delta twin of the added mode cannot be fitted, so its free width at the floor is no answer and it stays out."""
+    orig = R._Labelled.fit
+
+    def fit(self, variant, modes, family, linear=None):
+        return None if any(m[3] for m in modes) else orig(self, variant, modes, family, linear)
+    monkeypatch.setattr(R._Labelled, "fit", fit)
+    a = R.evidence_assignment(snap(TWO + [(13.0, 0.0, 60.0)], TWO, ["b1", "b2"], NEIGH, [add("b3", 13.0, w=0.1)]))
+    [row] = tried(a)
+    assert row["outcome"] == "no_answer" and a.count == 2 and a.search["applied"] == []

@@ -844,12 +844,11 @@ def stage_factors(snapshot: Snapshot) -> dict[str, Factor]:
     return {f.factor_id: f for fs in _Spec(snapshot).factors.values() for f in fs}
 
 
-def _free_width_at_floor(b, skip=()) -> bool:
+def _free_width_at_floor(b) -> bool:
     """A free width pegged at the floor is a resolution-limited mode, priced as its own delta model with its own
     weight, never as a free width. A split basin's hidden pair is exempt (its weak-mode width is likelihood-blind:
-    not read); any other free width at the floor still counts, except at the mode positions in ``skip``."""
+    not read); any other free width at the floor still counts. A delta mode's width is pinned, so it is never free."""
     hidden = set(b.hidden_pair) if getattr(b, "boundary_method", "") == "split" else set()
-    hidden |= set(skip)
     free = {int(i) for i in b.model.free}
     return any(g in free and b.theta_map[g] <= fast_pass.GAMMA_FLOOR
                + loop.DEGENERATE_LIMIT_TOL * max(fast_pass.GAMMA_FLOOR, 1.0)
@@ -1237,8 +1236,8 @@ def _fit_set(spec: _Spec, S: list, flags: tuple, sel: dict, *, incumbent: bool,
     if b.status not in _PRICED or b.ln_z is None or not math.isfinite(b.ln_z):
         out.why = f"{b.status}: {b.reason or 'no evidence'}"
         return out
-    if _free_width_at_floor(b, skip=new):
-        out.why = f"{b.status}: a free width of an incoming mode is at the floor"
+    if _free_width_at_floor(b):
+        out.why = f"{b.status}: a free width is at the floor"
         return out
     u = sum(s is None for s in slots)
     out.ln_z = float(b.ln_z + b.ln_model_prior + _entry_charge(spec.entry, b, slots)
