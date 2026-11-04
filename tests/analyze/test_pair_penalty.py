@@ -70,6 +70,7 @@ def test_engine_penalty_is_the_cap_for_a_coincident_pair_and_absent_when_far(pai
     model = eng.model(eng.variant(2, True, True), ())
     same = _theta(model, [(10.0, 0.2, 100.0), (10.0, 0.2, 100.0)])
     assert eng.pair_terms(model, same)[0][:2] == (0, 1)
+    assert eng.pair_terms(model, same)[0][3] is None     # D_eq is computed only for close_pairs
     assert eng.pair_penalty(model, same) == pytest.approx(eng.s.pair_penalty_cap, rel=1e-9)
     assert eng.close_pairs(model, same) == [(0, 1)]
     far = _theta(model, [(5.0, 0.2, 100.0), (15.0, 0.2, 100.0)])
@@ -91,8 +92,8 @@ def test_d_eq_does_not_depend_on_how_the_fit_divides_the_pair(pair_engine):
     s1, s2 = per_height(_theta(model, [(9.5, 0.3, 1.0), (10.5, 0.3, 1.0)]))
     even = _theta(model, [(9.5, 0.3, 100.0 / s1), (10.5, 0.3, 100.0 / s2)])
     lopsided = _theta(model, [(9.5, 0.3, 10.0 / s1), (10.5, 0.3, 190.0 / s2)])
-    (_i, _j, _d, d_eq_even, _n), = eng.pair_terms(model, even)
-    (_i, _j, _d, d_eq_lopsided, _n), = eng.pair_terms(model, lopsided)
+    (_i, _j, _d, d_eq_even, _n), = eng.pair_terms(model, even, eq=True)
+    (_i, _j, _d, d_eq_lopsided, _n), = eng.pair_terms(model, lopsided, eq=True)
     assert d_eq_even == pytest.approx(d_eq_lopsided, rel=1e-9)
 
 

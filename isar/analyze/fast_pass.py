@@ -114,7 +114,7 @@ Regime = Literal["near_elastic", "underdamped", "overdamped"]
 ParamStatus = Literal["constrained", "model_dependent", "boundary_limited", "undetermined"]
 EvidenceStatus = Literal["ok", "ok_boundary", "degenerate_twin", "no_evidence", "not_fitted"]
 CountState = Literal["resolved", "close_call", "unresolved", "search_limited"]
-PairTerm = tuple[int, int, float, float, float]   # (i, j, D, D_eq, nats): mode positions i < j of model.modes
+PairTerm = tuple[int, int, float, float | None, float]   # (i, j, D, D_eq or None, nats): mode positions i < j of model.modes
 
 @dataclass(frozen=True)
 class PeakResult:
@@ -790,6 +790,7 @@ class _Engine:
         self.fwhm = prior.resolution_fwhm(ctx)                  # ValueError: no resolution
         self.x, self.y = x, y
         self.E = x - float(ctx.center)
+        self.dE = np.abs(np.gradient(self.E))        # the channel widths the penalty's separability sums over
         expo = ctx.exposure_for(x)
         self.expo = np.ones_like(x) if expo is None else np.asarray(expo, dtype=float)
         self.el_col = np.asarray(Elastic().unit_columns(x, {}, ctx)["h"], dtype=float)
@@ -969,14 +970,14 @@ class _Engine:
         return float(r @ r)
 
     # ---- the tie-breaker penalty between close modes (design: the penalty section) ------------------
-    def pair_terms(self, model, theta) -> list[PairTerm]:
+    def pair_terms(self, model, theta, *, eq: bool = False) -> list[PairTerm]:
         """(i, j, D, D_eq, nats) for each pair of phonon modes within three combined widths. D: the pair's
         separability at this spectrum's counts. D_eq: the same with the pair's counts split equally, so it
-        measures how distinguishable the shapes are whatever the fit divides. Inputs are not mutated."""
+        measures how distinguishable the shapes are whatever the fit divides; None unless ``eq``, since only
+        ``close_pairs`` reads it. Inputs are not mutated."""
         if len(model.modes) < 2:
             return []
         mu = self.mean(model, theta)
-        dE = np.abs(np.gradient(self.E))
         stokes = self.E > 0
         units = self.units([(theta[a], theta[g]) for a, g, _c in model.modes], model.variant.peaks)
         cols = [col for col, _up in units]
@@ -996,15 +997,18 @@ class _Engine:
             if not pair_penalty.in_range(p, q):
                 continue
             half = (p.counts + q.counts) / 2.0
-            D = pair_penalty.separability(p, q, self.E, dE, mu)
-            mu_eq = mu        # the model with the pair's counts split equally: D_eq ignores the fit's division
-            if sums[i] > 0.0 and sums[j] > 0.0:            # a mode with no Stokes counts has no equal share
-                mu_eq = mu + self.expo * ((half / sums[i] - heights[i]) * cols[i]
-                                          + (half / sums[j] - heights[j]) * cols[j])
-            D_eq =pair_penalty.separability(replace(p, counts=half), replace(q, counts=half), self.E, dE, mu_eq)
+            D = pair_penalty.separability(p, q, self.E, self.dE, mu)
+            D_eq = None
+            if eq:
+                mu_eq = mu        # the model with the pair's counts split equally: D_eq ignores the fit's division
+                if sums[i] > 0.0 and sums[j] > 0.0:           # a mode with no Stokes counts has no equal share
+                    mu_eq = mu + self.expo * ((half / sums[i] - heights[i]) * cols[i]
+                                              + (half / sums[j] - heights[j]) * cols[j])
+                D_eq = pair_penalty.separability(replace(p, counts=half), replace(q, counts=half),
+                                                 self.E, self.dE, mu_eq)
             nats = (self.s.pair_penalty_cap * pair_penalty.share_factor(p, q)
                     * pair_penalty.fade(D, self.s.pair_penalty_d0))
-            if not (math.isfinite(D) and math.isfinite(D_eq) and math.isfinite(nats)):
+            if not (math.isfinite(D) and math.isfinite(nats) and (D_eq is None or math.isfinite(D_eq))):
                 raise ValueError(f"fast pass: the tie-breaker penalty of modes {i} and {j} is not finite")
             out.append((i, j, D, D_eq, nats))
         return out
@@ -1018,7 +1022,7 @@ class _Engine:
     def close_pairs(self, model, theta) -> list[tuple[int, int]]:
         """The pairs the penalty acts on: the equal-split fade at least CLOSE_FADE."""
         d0 = self.s.pair_penalty_d0
-        return [(i, j) for i, j, _D, D_eq, _nats in self.pair_terms(model, theta)
+        return [(i, j) for i, j, _D, D_eq, _nats in self.pair_terms(model, theta, eq=True)
                 if pair_penalty.fade(D_eq, d0) >= CLOSE_FADE]
 
     # ---- model identities ------------------------------------------------------------------------
