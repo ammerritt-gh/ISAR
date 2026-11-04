@@ -1563,13 +1563,16 @@ class _Run:
             done(k, result)
             return ()
 
+        t_pool = time.perf_counter()
         self.pool.stream("refit_step", [c for k in snaps for c in call(k, "fit", 0)], more)
+        self.timing["pool"]["map_wall_s"] += time.perf_counter() - t_pool
         R = {k: R[k] for k in snaps}                          # the order of the calls, as ``map`` returned them
         for k, r in R.items():
             if not isinstance(r, Exception):
                 t = r.timing or {}
                 for name in ("continuous_s", "restart_s", "uncertainty_s", "release_s"):
                     self.timing[name] += float(t.get(name, 0.0))
+                    self.timing["pool"]["busy_s"] += float(t.get(name, 0.0))   # refit steps never take the task path
                     self.tally(label, k).refine_s += float(t.get(name, 0.0))
                 self.timing["starts"] += int(r.starts or 0)
         return R

@@ -1067,6 +1067,7 @@ def test_the_timing_block_reports_contract_10(tmp_path, monkeypatch):
         s["wall_s"] for s in t["stages"])
     assert [m for m in seen if m[0] == "refit_step"] == [("refit_step", 6)]    # 2 fits, a's 2 restarts, 2 finishes
     assert (t["pool"]["iterations"], t["search_s"], t["likelihood_s"]) == (0, 0.0, 0.0) and t["restart_s"] >= 0.0
+    assert t["pool"]["map_wall_s"] > 0.0 and t["pool"]["busy_s"] > 0.0      # the refits' pool work, as assign reports it
     assert (t["pool"]["workers"], t["over_target"]) == (1, True) and bench.end().status == "done"
 
 
