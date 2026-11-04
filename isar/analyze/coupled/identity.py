@@ -238,7 +238,7 @@ def _slot_support(a, m: int, settings: InterSettings) -> tuple[bool, list[dict]]
     ``close_call_nats`` of the winner that name another id there are returned for review only, as in
     the installed decision rule: a close call is not ambiguity by itself. A skipped stage is inherited:
     its decision stands with its old scope, and no new weight is claimed for it."""
-    if a.discrete == "skipped":
+    if a.discrete in ("skipped", "fixed"):   # a fixed set carries the link's labelling: nothing was compared
         return True, []
     cands = [c for c in a.candidates if c.get("count") == a.count and c.get("ln_z") is not None
              and math.isfinite(c["ln_z"])]
