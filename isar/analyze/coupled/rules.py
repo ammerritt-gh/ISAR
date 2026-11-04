@@ -140,12 +140,15 @@ def eps_J(J_old: float) -> float:
 
 def acceptance(*, any_finite: bool, evidence_missing_for_change: bool, hard_violation: bool,
                topology_changed: bool, evidence_won: bool, J_old: float | None, J_new: float | None,
-               materially_moved: bool):
-    """Spec 5 order -> (status, reason). evidence_won: decide(...)['changed'] for a topology change."""
-    if not any_finite or (topology_changed and evidence_missing_for_change):
+               materially_moved: bool, linked: bool = False):
+    """Spec 5 order -> (status, reason). evidence_won: decide(...)['changed'] for a topology change. linked: the
+    topology is the link's fixed mode set, so a change is accepted as "linked", never weighed by evidence."""
+    if not any_finite or (topology_changed and evidence_missing_for_change and not linked):
         return "failed", "no_finite_candidate" if not any_finite else "evidence_unavailable"
     if hard_violation:
         return "rejected", "hard_constraint"
+    if topology_changed and linked:
+        return "accepted", "linked"
     if topology_changed:
         return ("accepted", "evidence") if evidence_won else ("rejected", "no_supported_improvement")
     if J_old is not None and J_new is not None and J_old - J_new > eps_J(J_old):

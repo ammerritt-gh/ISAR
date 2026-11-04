@@ -7,13 +7,14 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from _search_harness import links_for, snapshot_for
+from _search_harness import links_for, snapshot_for, split_of
 from test_coupled_refit import codes, spectrum
 
 from isar.analyze import prior
 from isar.analyze.context import ScanContext
 from isar.analyze.coupled import engine as cc
 from isar.analyze.coupled import refit as R
+from isar.analyze.coupled import rules
 from isar.analyze.fast_pass import FastPassSettings
 from isar.schema.steering import ParamConstraints
 
@@ -122,3 +123,29 @@ def test_a_restart_never_moves_a_pinned_energy():
     assert (ha, hb) == pytest.approx((75.0, 25.0)) and (hb2, ha2) == pytest.approx((75.0, 25.0))
     assert starts[2][a1] == pytest.approx(9.3 + 0.25 * eng.fwhm)            # wider: the free one moves alone
     assert starts[3][a1] == pytest.approx(9.15 + 0.5 * 0.15)                # narrower: its half-separation halved
+
+
+# ---- acceptance and the record of a linked change ----------------------------------------------------------------
+TWO = [(8.0, 0.4, 40.0), (10.0, 0.4, 40.0)]
+NEIGH_TWO = {"x": (TWO, ["b1", "b2"]), "z": (TWO, ["b1", "b2"])}
+
+
+def test_a_linked_split_is_accepted_as_linked_with_no_evidence_wording():
+    split = split_of(0, "b1", 8.0, "b2", 10.0)
+    s = snap(TWO, [(9.0, 1.0, 60.0)], ["b1"], NEIGH_TWO, links=links_for(1, changes=[split], labels=("b1",)))
+    r = R.refit(s, stage="continuous", assignment=fixed(s))
+    assert (r.status, r.reason, r.assignment.count) == ("accepted", "linked", 2)
+    assert r.why_changed == "The link changed the number of modes from 1 to 2."
+    assert "evidence" not in r.why_changed
+    assert not {"neighbour_supported_split", "count_changed_by_neighbours"} & set(codes(r))
+    assert r.fit["count_probabilities"] == {} and r.fit["models"][0]["probability"] is None
+    assert r.fit["state"] == "resolved" and r.fit["probabilities_conditional"] is False
+
+
+def test_the_linked_acceptance_rule_never_needs_evidence():
+    base = dict(any_finite=True, evidence_missing_for_change=True, hard_violation=False, topology_changed=True,
+                evidence_won=False, J_old=None, J_new=1.0, materially_moved=True)
+    assert rules.acceptance(**base, linked=True) == ("accepted", "linked")
+    assert rules.acceptance(**base)[0] == "failed"                            # the priced path is unchanged
+    assert rules.acceptance(**{**base, "hard_violation": True}, linked=True) == ("rejected", "hard_constraint")
+    assert rules.acceptance(**{**base, "any_finite": False}, linked=True)[0] == "failed"

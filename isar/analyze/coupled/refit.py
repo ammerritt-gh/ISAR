@@ -1489,10 +1489,11 @@ def _finish(snapshot, a, stage: FitStage, results, restart_s: float = 0.0, *, pr
     J_old = eng.J(*old) if old is not None and not topology_changed else None
     fixed_ok = all(abs(theta[p] - v) <= 1e-12 * max(1.0, abs(v)) for p, v in zip(model.fixed_pos, model.fixed_vals))
     in_window = all(spec.lo <= theta[e] <= spec.hi for e, _g, _c in model.modes)
+    linked = a.discrete == "fixed"          # the link's mode set: a count or labelling change is the link's
     status, reason = rules.acceptance(
         any_finite=True, evidence_missing_for_change=topology_changed and "incomplete_comparison" in a.reasons,
         hard_violation=not (fixed_ok and in_window), topology_changed=topology_changed, evidence_won=a.changed,
-        J_old=J_old, J_new=J_new, materially_moved=_materially_moved(eng, model, theta, old))
+        J_old=J_old, J_new=J_new, materially_moved=_materially_moved(eng, model, theta, old), linked=linked)
     if status == "failed":
         return _failed(snapshot, a, reason, f"The refit failed ({reason}); the previous fit stays.",
                        timing, priced, hits, notes)
@@ -1584,7 +1585,8 @@ def _finish(snapshot, a, stage: FitStage, results, restart_s: float = 0.0, *, pr
     fast_by = _fast_modes(fast, ids, [md.omega0 for md in modes], exact_only=snapshot.fast is None)
     delta_fast = {"count": k - len(fast.modes), "omega0": {b: energies[b] - fast_by[b].omega0 for b in ids if b in fast_by}}
 
-    flag = _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, F, R, cov, notes, dropped)
+    flag = _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, F, R, cov, notes, dropped,
+                  linked=linked)
     why = _why(status, reason, spec.n0, k, slots, spec.incoming, J_old, J, variant_changed)
     fit, overlay, cov_out = _record(eng, spec, a, model, theta, cov, sd, rel_sd, modes, ids, D, status)
     normalisers = {f"ln_z:{b}": (float(o.ln_z), "ln meV") for b, o in zip(slots, objs)
@@ -1618,16 +1620,18 @@ def _fast_modes(fast: Held, ids, energy, *, exact_only: bool) -> dict[str, HeldM
     return out
 
 
-def _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, F, R, cov, notes, dropped) -> dict:
+def _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, F, R, cov, notes, dropped, *,
+           linked=False) -> dict:
     """The flag (N2): F against the threshold, and every own reason of the design's list (they flag
-    whatever the score); the four note codes and a neighbour-supported split never set ``flagged``."""
+    whatever the score); the four note codes and a neighbour-supported split never set ``flagged``. ``linked``: the
+    link set the count, so no reason says the neighbours' evidence changed it."""
     s = snapshot.settings
     k = len(slots)
     reasons = list(notes)
     if F is not None and F > s.flag_threshold:
         reasons.append(_reason("score_over_threshold", f"flag score {F:.1f} is over the threshold {s.flag_threshold:g}",
                                [snapshot.unit], F=F, threshold=s.flag_threshold))
-    if status == "accepted" and a.changed and k != spec.n0:
+    if status == "accepted" and a.changed and k != spec.n0 and not linked:
         if k > spec.n0 and sum(b is None for b in slots) <= sum(b is None for b in spec.incoming):
             reasons.append(_reason("neighbour_supported_split",
                                    f"one mode resolved into components of the neighbours' branches ({spec.n0} to {k})",
@@ -1679,6 +1683,10 @@ def _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, 
 
 
 def _why(status, reason, n0, k, slots, incoming, J_old, J, variant_changed=False) -> str:
+    if status == "accepted" and reason == "linked" and k != n0:
+        return f"The link changed the number of modes from {n0} to {k}."
+    if status == "accepted" and reason == "linked":
+        return "The link changed which branch a mode belongs to."
     if status == "accepted" and k != n0:
         return f"The neighbours' evidence changed the number of modes from {n0} to {k}."
     if status == "accepted" and slots != incoming:
@@ -1771,7 +1779,8 @@ def _record(eng, spec, a, model, theta, cov, sd, rel_sd, modes, ids, D, status):
                       "mode_status": md.status, "branch": ids[src], "confident": md.status != "poorly_determined",
                       "at_width_cap": zm.at_cap(theta, src)})
     dec = a.coverage.get("decision") or {}
-    cp = dec.get("count_p") or spec.snap.own_record.get("count_probabilities") or {}
+    # a fixed mode set compared no count, so no solo count probability is carried into the refit
+    cp = {} if a.discrete == "fixed" else dec.get("count_p") or spec.snap.own_record.get("count_probabilities") or {}
     p_k = cp.get(str(a.count))
     label = str(cmodel.hyp.label)
     params = {n: float(v) for n, v in zip(cmodel.names, ctheta)}
