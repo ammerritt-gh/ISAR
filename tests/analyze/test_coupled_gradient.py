@@ -366,7 +366,7 @@ def test_the_one_pass_polish_reaches_the_two_pass_value_at_a_weak_strong_tie(mon
 
 
 def test_the_polish_retries_only_when_a_pass_fails(monkeypatch):
-    """A retry costs a second pass: at the tie's nodes every first pass succeeds, so none may retry."""
+    """A retry costs a second pass: a pass is retried only after it reports failure, never otherwise."""
     # seed 3: whether a first pass fails is a matter of L-BFGS-B's relative stop, which moves with any constant in
     # the objective; seed 2 had one failing node once recipe /7 renormalised the width density on [g_lo, 20]
     snap = hidden_snapshot(0.5, seed=3, asimov=False)
@@ -375,9 +375,36 @@ def test_the_polish_retries_only_when_a_pass_fails(monkeypatch):
     theta = eng._start(model, [(8.0, 0.4, 40.0, False), (8.0, 0.4, 3.0, False)], {"elastic": 100.0, "bg": 2.0})
     b = eng._place(model, theta, eng.cost(model, theta), "x", 0, "")
     anchor = eng._anchor(model, b.theta)
-    passes, polishes = [], []
+    passes, polishes, failed = [], [], []
     real_min, real_pol = cc.minimize, cc._polish
-    monkeypatch.setattr(cc, "minimize", lambda *a, **k: (passes.append(1), real_min(*a, **k))[1])
+
+    def counted_min(*a, **k):
+        r = real_min(*a, **k)
+        passes.append(1)
+        if not r.success:
+            failed.append(1)
+        return r
+    monkeypatch.setattr(cc, "minimize", counted_min)
     monkeypatch.setattr(cc, "_polish", lambda *a: (polishes.append(1), real_pol(*a))[1])
     eng.split_evidence(b, anchor, (0, 1), sets=(6, 12))
-    assert polishes and len(passes) == len(polishes)
+    # with the tie-breaker penalty (S1U5) one node's optimum sits on the width floor and its first pass ends ABNORMAL
+    # there, so the retries are exactly the failed first passes
+    assert polishes and len(passes) - len(polishes) == len(failed)
+
+
+# ---- 5. the tie-breaker penalty (S1U5): its gradient is part of the joint one ------------------------------------------
+@pytest.mark.parametrize("e", [8.0, 2.5])
+def test_the_pair_penalty_gradient_is_the_derivative_of_the_value(e):
+    # a close pair with both heights and the background free: the penalty moves with every free coordinate
+    eng = _engine(_hidden(), ("b1", "b2"))
+    model = eng.model(eng.variant(2, True, True), ())
+    theta = eng._start(model, [(e, 0.4, 40.0, False), (e + 0.2, 0.5, 3.0, False)], {"elastic": 100.0, "bg": 2.0})
+    assert model.bg in model.free and eng.pair_terms(model, theta)
+    assert eng.pair_penalty(model, theta) > 0.01                    # the penalty is live here, not a zero
+    f, lo, hi = eng.objective(model, theta)
+    fg, _lo, _hi = eng.objective_and_gradient(model, theta)
+    for seed in (0, 1):
+        z = _inside(eng.zmap(model).to_z(theta), lo, hi, seed=seed)
+        v, g = fg(z)
+        assert v == f(z)
+        _agree(g, _fd(f, z), ("pair penalty", e, seed))

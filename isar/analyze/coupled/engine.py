@@ -939,7 +939,7 @@ class CoupledEngine(fast_pass._Engine):
             lp += sp.ln_height(theta[model.qe_h])
         if model.qe_w is not None and model.qe_w not in omit:
             lp += sp.ln_qe_width(theta[model.qe_w])
-        return lp + self._ln_soft(model, theta)
+        return lp + self._ln_soft(model, theta) - self.pair_penalty(model, theta)
 
     def d_ln_prior(self, model, theta) -> np.ndarray:
         """d ln_prior / d theta over every coordinate, term by term as ``ln_prior`` (inside the support). The
@@ -992,7 +992,34 @@ class CoupledEngine(fast_pass._Engine):
                 if c < p.hi:
                     d[a] -= math.exp(p.logpdf_given(c, c)) * prior.d_width_ceiling(
                         float(theta[a]), lifted=self.lifted_of(model, m), settings=self.prior_s)
-        return d
+        return d - self._pair_penalty_grad(model, theta)
+
+    def _pair_penalty_grad(self, model, theta) -> np.ndarray:
+        """d pair_penalty / d theta over the free coordinates, by central differences (zero with no pair in range).
+        A mode's energy and width step as ``_column_steps``; any other coordinate by COLUMN_FD_REL, one-sided inward
+        at a bound. shortcut: 2 n ``mean`` calls per gradient, only where a pair is in range; upgrade to the analytic
+        form if a profile shows it."""
+        g = np.zeros(len(theta))
+        if self.s.pair_penalty_cap == 0.0 or not self.pair_terms(model, theta):
+            return g
+        owner = {x: m for m, (a, gw, _c) in enumerate(model.modes) for x in (a, gw)}
+        for pos in (int(x) for x in model.free):
+            v = float(theta[pos])
+            if pos in owner:
+                up, dn = self._column_steps(model, theta, pos, owner[pos])
+            else:
+                h = COLUMN_FD_REL * max(abs(v), 1.0)
+                up, dn = v + h, v - h
+                if up > model.hi[pos]:
+                    up = v
+                elif dn < model.lo[pos]:
+                    dn = v
+            if up == dn:
+                continue
+            up_t, dn_t = np.array(theta, dtype=float), np.array(theta, dtype=float)
+            up_t[pos], dn_t[pos] = up, dn
+            g[pos] = (self.pair_penalty(model, up_t) - self.pair_penalty(model, dn_t)) / (up - dn)
+        return g
 
     def objective_and_gradient(self, model, theta):
         """``objective``'s f with its gradient from one joint evaluation (``_value_and_grad``): (fg, lo, hi) with
@@ -1112,6 +1139,7 @@ class CoupledEngine(fast_pass._Engine):
                 out.append((f"entry:{m}", slot.B(e), 1.0))
                 ramp = slot.ep.penalty(e)
             out.append((f"ramp:{m}", 2.0 * ramp, 1.0))
+        out += [(f"pair:{i}-{j}", 2.0 * nats, 1.0) for i, j, _D, _D_eq, nats in self.pair_terms(model, theta)]
         return out
 
     def _width_floor(self, model, m: int, slot) -> float:
