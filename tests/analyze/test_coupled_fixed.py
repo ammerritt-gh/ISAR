@@ -140,6 +140,17 @@ def test_the_search_still_refuses_two_splits_of_one_mode_in_one_candidate():
     assert SE.compose_rows(spec, s.links, usable, union=True)[0][0] == "b2"
 
 
+def test_a_single_split_whose_two_branches_are_aliases_is_refused_on_the_search_path():
+    """Two aliases naming one branch: the search's composition refuses the split as naming a branch twice, as the
+    old _compose did; the union path (several splits of one mode) still collapses it to one mode."""
+    ch = [split_of(0, "b3", 8.6, "b4", 9.4)]
+    s = snapshot_for([(9.0, 0.5, 20.0)], ["b1"], {"x": NEIGH}, links=links_for(1, changes=ch), aliases={"b4": "b3"})
+    spec = R._Spec(s)
+    usable, _ = SE.usable_changes(spec, s.links)
+    assert SE.compose_changes(spec, s.links, usable) == "a branch would be named twice"
+    assert [x[0] for x in SE.compose_rows(spec, s.links, usable, union=True)] == ["b3"]
+
+
 def test_identity_reads_a_fixed_assignment_as_confident_and_keeps_the_split_s_ids():
     a = R.fixed_assignment(snap(links_for(2, changes=[split_b2_b3()])), apply_changes=True)
     a = Assignment(**{**a.__dict__, "snapshot_id": "b:ring1", "unit": "k"})

@@ -135,14 +135,16 @@ def usable_changes(spec, links):
     return ok, skipped
 
 
-def _split_rows(spec, cs, g, h):
+def _split_rows(spec, cs, g, h, union):
     """The modes that replace one parent mode (Gamma g, height h) split by the changes ``cs``: one per distinct
     branch they name, ascending in predicted energy, the height shared by the predictions' intrinsic intensities."""
-    named = {}
-    for c in cs:
-        for p, b in zip(c.predictions, c.branches):
-            named.setdefault(spec.canon(b), (p, b))
-    ordered = sorted(named.values(), key=lambda x: x[0].E)
+    pairs = [(p, b) for c in cs for p, b in zip(c.predictions, c.branches)]
+    if union:                  # several splits of one mode: a branch they name twice (aliases too) is one mode
+        first = {}
+        for p, b in pairs:
+            first.setdefault(spec.canon(b), (p, b))
+        pairs = list(first.values())
+    ordered = sorted(pairs, key=lambda x: x[0].E)
     amps = [p.A for p, _b in ordered]
     if len(ordered) == 2:      # the two-branch rule: the lower branch's share, a fixed one when either is unknown
         a, b = amps
@@ -178,7 +180,7 @@ def compose_rows(spec, links, S, *, union=False):
         splits.setdefault(c.mode, []).append(c)
     for mode, cs in splits.items():
         ((_slot, (_e, g, h), _o),) = rows[mode]
-        rows[mode] = _split_rows(spec, cs, g, h)
+        rows[mode] = _split_rows(spec, cs, g, h, union)
     both = [x for v in rows.values() if v for x in v] + adds
     both.sort(key=lambda x: (x[1][0], str(x[0])))
     named = [x[0] for x in both if x[0] is not None]
