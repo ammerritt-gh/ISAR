@@ -747,12 +747,16 @@ conditions — these are wants, not commitments.
   fit, an applied add or split keeping the lone width cap, is also given by `Assignment.unlifted`; pass the
   stage's link unchanged in sweeps and delete it. Revisit with a simultaneous-batch test where a spectrum adopts
   an add in round 1 (unverified on the sweep path, which feeds the search).
+- `isar/analyze/coupled/refit.py:1589` — `width_at_limit` also fires on a link-added mode the counts
+  contradict: its height goes to zero, so its width settles on a bound the data never sized. Raise the flag only
+  for a mode whose height is clearly above zero. Revisit when the 302 K batches show it on modes with near-zero
+  `area_stokes`.
 
 ---
 
 ## Notes
 
-routine suite 2.8 min, over its 1-min budget
+routine suite 2.5 min, over its 1-min budget
 
 **GUI test isolation.** GUI tests stub the backend health probe offline via an autouse fixture in
 `tests/gui/conftest.py`. Kept deliberately: without it, constructing any `MainWindow` in a test
