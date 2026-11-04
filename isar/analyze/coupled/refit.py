@@ -1461,7 +1461,7 @@ def _restart(snapshot, a, model_key, theta0) -> tuple[tuple[float, ...] | None, 
 def _finish(snapshot, a, stage: FitStage, results, restart_s: float = 0.0, *, priced=(), hits=0,
             timing=None) -> RefitResult:
     """Step 3: the lowest J of the main solution and the restarts (a tie keeps the earlier), then acceptance, error
-    bars, the release fit, "not observed here", the modes, the flags and the record."""
+    bars, the release fit, the modes, the flags and the record."""
     timing = {"assign_s": 0.0, "likelihood_s": 0.0, **(timing or {}),
               "continuous_s": float(stage.timing.get("continuous_s", 0.0)), "restart_s": float(restart_s)}
     timing.setdefault("uncertainty_s", 0.0)
