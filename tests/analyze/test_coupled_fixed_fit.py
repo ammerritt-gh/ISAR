@@ -214,3 +214,12 @@ def test_a_hinted_mode_the_counts_contradict_is_kept_with_its_label(seed):
     assert r.status == "accepted" and r.assignment.count == 2 and len(r.modes) == 2
     assert sorted(peaks) == ["b1", "b2"] and peaks["b2"]["area_stokes"] is not None
     assert {m.status for m in r.modes} <= TODAY_STATUSES
+
+
+def test_a_width_fitted_to_its_floor_raises_width_at_limit_through_the_refit():
+    """The hinted mode's height goes to nil, so the counts cannot size its width and it ends on the floor: the refit's
+    own reasons name the mode and the limit. Removing the call that adds the flag turns this red."""
+    r = _hinted(3)
+    assert peaks_by_branch(r)["b2"]["Gamma"] < 0.01
+    wl = [x for x in r.flag["reasons"] if x["code"] == "width_at_limit"]
+    assert [(x["ids"], x["values"]) for x in wl] == [(["b2"], {"limit": "floor"})] and r.flag["flagged"]
