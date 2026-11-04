@@ -598,3 +598,27 @@ def test_a_grid_of_28_by_4_temperatures_links():
                     links.append(Link("T", f"t{t - 1}r{r_}c{c}", u, 50.0, None, None))
     r = lk.link(ins, links, SET)
     assert len(r.branches) == 2 and r.contradictions == ()
+
+def _support_unit(name, omega0, status):
+    """One spectrum with one mode (Gamma 0.2, area 10) and the given status."""
+    rows = [(omega0, 0.2, 10.0)]
+    mode = HeldMode(branch=f"fast:{name}#0", omega0=omega0, gamma=0.2, height=1.0, guard=None,
+                    guard_source="unavailable", status=status, regime="underdamped", pinned=False)
+    held = Held(unit=name, fit="fast", inputs="h-" + name, window=(1.0, 12.0), modes=(mode,), dormant=(), T=100.0)
+    return lk.LinkInput(held=held, fwhm=0.4, areas=(10.0,), sigma_areas=(None,), sigma_gammas=(None,),
+                        at_cap=(False,), stamp=lk.fit_stamp("fast", "h-" + name, rows), scale=1.0)
+
+
+@pytest.mark.parametrize("status", ["determined_by_own_data", "poorly_determined"])
+def test_a_weak_middle_mode_still_carries_its_branch_outward(status):
+    # design amendment 3: no mode status withholds a mode from predictions; a lone mode predicts nothing only
+    # because nothing matches it
+    s = InterSettings(link_slope_meV_per_invA=8.0, width_tolerance_ln=0.7)
+    row = (0.1, 0.0, 0.0)
+    units = {"a01": _support_unit("a01", 8.0, "determined_by_own_data"), "a02": _support_unit("a02", 8.1, status),
+             "a03": _support_unit("a03", 8.2, "determined_by_own_data")}
+    r = lk.link(units, [Link("q", "a01", "a02", 0.1, row, "lattice"), Link("q", "a02", "a03", 0.1, row, "lattice")], s)
+    b = r.labels["a02"][0]
+    assert b is not None and r.labels["a01"] == (b,) and r.labels["a03"] == (b,)
+    assert [p.branch for p in r.predictions["a01"]] == [b]
+    assert [p.branch for p in r.predictions["a03"]] == [b]
