@@ -1511,11 +1511,12 @@ class _Run:
             previous=previous, energies=energies)
         return ids, refs
 
-    def refits(self, snaps: dict, A: dict) -> dict:
+    def refits(self, snaps: dict, A: dict, ids) -> dict:
         """The refit of every snapshot as streamed pool steps, ``{unit: RefitResult or the exception that failed it}``
         in the order of ``snaps``. Per spectrum: ``fit``; then its close-pair restarts as separate calls (they run in
         parallel, behind the fits already queued); once all are back, ``finish``. An exception at any step is that
-        spectrum's result and its other steps are dropped. One log line per spectrum as its finish returns."""
+        spectrum's result and its other steps are dropped. One log line per spectrum as its finish returns, its flags
+        those ``ids`` give (the identity reasons ``entry`` saves with them)."""
         label = self.stage_label()
         stage_tag = label if self.kind == "anchored" else f"{label} sweep{self.index}"
         R, stages, got = {}, {}, {}
@@ -1535,7 +1536,7 @@ class _Run:
         def done(k, r):
             R[k] = r
             self.log_fit(stage_tag, k, snaps[k], A[k], r, len(stages[k].restarts) if k in stages else 0,
-                         time.perf_counter() - self.sent.get((k, "fit", 0), t_stream))
+                         time.perf_counter() - self.sent.get((k, "fit", 0), t_stream), self.identity_flags(ids, k))
 
         def more(key, result):
             k, step, i = key
@@ -1567,7 +1568,15 @@ class _Run:
                 self.timing["starts"] += int(r.starts or 0)
         return R
 
-    def log_fit(self, stage: str, k: str, snap, a, r, restarts: int, wall_s: float) -> None:
+    def saved_flag(self, r, extra_flags=()) -> dict | None:
+        """The flag a refit is saved with: its own, plus the identity reasons (``entry`` and the log line both read it)."""
+        flag = _plain(r.flag) if r.flag else None
+        if flag is not None and extra_flags:
+            flag["reasons"] = [*flag.get("reasons", []), *extra_flags]
+            flag["flagged"] = True
+        return flag
+
+    def log_fit(self, stage: str, k: str, snap, a, r, restarts: int, wall_s: float, extra_flags=()) -> None:
         """The batch's per-spectrum line, written as the spectrum's refit returns (readable while the batch runs)."""
         n_in = len(snap.own.modes)
         applied = ",".join(str(i) for i in ((a.search or {}).get("applied") or ())) or "-"
@@ -1577,7 +1586,8 @@ class _Run:
             t = r.timing or {}
             work = sum(float(t.get(n, 0.0)) for n in ("continuous_s", "restart_s", "uncertainty_s", "release_s"))
             status = r.status
-            flags = ",".join(x.get("code", "?") for x in (_plain(r.flag) or {}).get("reasons", ())) or "-"
+            flag = self.saved_flag(r, extra_flags)
+            flags = ",".join(x.get("code", "?") for x in (flag or {}).get("reasons", ())) or "-"
         log.info("inter fit batch=%s stage=%s unit=%s modes=%d+%d applied=%s restarts=%d wall_s=%.1f work_s=%.1f "
                  "status=%s flags=%s", self.batch, stage, k, n_in, a.count - n_in, applied, restarts, wall_s, work,
                  status, flags)
@@ -1591,10 +1601,7 @@ class _Run:
         if isinstance(r, Exception):
             return {**base, "status": "failed", "reason": f"analysis error ({type(r).__name__}: {r})", "flag": None,
                     "why_changed": None, "payload": {"came_in": _came_in(snap), "came_out": None, "overlay": None}}
-        flag = _plain(r.flag) if r.flag else None
-        if flag is not None and extra_flags:
-            flag["reasons"] = [*flag.get("reasons", []), *extra_flags]
-            flag["flagged"] = True
+        flag = self.saved_flag(r, extra_flags)
         came_out = _plain(r, skip=("fit", "overlay"))         # both live in the payload's overlay
         if stage1 is not None:
             came_out["stage1"] = stage1                         # E12: the round's stage 1 rides on its first sweep
@@ -1749,7 +1756,7 @@ class _Run:
             self.merge_aliases(rename)
             snaps = {k: _renamed_snapshot(s, rename) for k, s in snaps.items()}
             self.progress("refine")
-            R = self.refits({k: s for k, s in snaps.items() if k in A}, A)
+            R = self.refits({k: s for k, s in snaps.items() if k in A}, A, ids)
             R.update(errors)                                # a spectrum whose search failed is a failed refit line
             # seams, judged on each spectrum's latest refit energies (after the ring's continuous refits)
             self.progress("seams")
@@ -1915,7 +1922,7 @@ class _Run:
                     if not ks:
                         continue
                     width = max(width, len(ks))
-                    R = self.refits(gs, A)
+                    R = self.refits(gs, A, ids)
                     for k in ks:
                         r = R[k]
                         snaps2[k], R_all[k] = gs[k], r

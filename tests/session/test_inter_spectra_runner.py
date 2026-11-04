@@ -1222,6 +1222,22 @@ def test_every_spectrum_fit_writes_one_log_line_as_it_finishes(tmp_path, caplog)
     assert next(m for m in lines if f"unit={k['a04', 150.0]} " in m).count("restarts=0") == 1
 
 
+def test_the_log_line_names_the_flags_the_saved_fit_carries(tmp_path, monkeypatch, caplog):
+    """An identity reason joins the saved flag after the refit returns; the line must name it as the record does."""
+    import logging
+    caplog.set_level(logging.INFO, logger=runner.log.name)
+    ws, k, spec = _ring1(tmp_path, {})
+    a = k["a03", 150.0]
+    orig = runner._Run.identity_flags
+    monkeypatch.setattr(runner._Run, "identity_flags", lambda self, ids, unit: [
+        {"code": "identity_ambiguous", "severity": "warn", "text": "x"}] if unit == a else orig(self, ids, unit))
+    Bench(ws).run(spec)
+    row = next(m for m in caplog.messages if m.startswith("inter fit ") and f"unit={a} " in m)
+    fields = dict(f.split("=", 1) for f in row.split()[2:])
+    (stored,) = [r for r, _p in _lines(ws, spec.batch_id) if r.unit == a]
+    assert fields["flags"] == ",".join(x["code"] for x in stored.flag.reasons) == "identity_ambiguous"
+
+
 # ---------------------------------------------------------------------------
 # the real core, end to end (not slow: 2 analyzers x 2 temperatures, tiny generated spectra, one core)
 # ---------------------------------------------------------------------------
