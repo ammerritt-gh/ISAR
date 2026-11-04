@@ -1377,7 +1377,7 @@ class _Run:
 
     def assign(self, snaps: dict, cache: dict) -> tuple[dict, dict]:
         """The old stage 1, kept for the later targeted-pass job and not called by a batch (the design: no count
-        search, evidence or split integral in the anchored and simultaneous passes). Stage 1 of every snapshot: one core ``Search`` per spectrum, all driven together through one pool stream.
+        search or split integral in the anchored and simultaneous passes; stage 1 is priced by ``evidence_assignment``). Stage 1 of every snapshot: one core ``Search`` per spectrum, all driven together through one pool stream.
         Each search waits only for its own jobs: when the last job of its pass is back it is fed that pass's prices
         in job order (cache hits included), and its next pass's uncached jobs join the stream at once, while other
         spectra's jobs still run. A pass the cache answers alone is fed inline. ``cache``: unit -> {job key:
