@@ -1264,6 +1264,26 @@ def test_the_log_line_names_the_change_it_applied_by_its_id(tmp_path, caplog):
     assert fields["modes"] == "1+1" and fields["applied"] == "add:C"
 
 
+def test_a_later_round_logs_the_solo_and_added_modes_and_the_change_round_one_applied(tmp_path, caplog):
+    """x's link adds branch C in round 1 (its fixed set is B and C). Round 2 relabels y, so round 2 sweeps run, and
+    every line of x, in round 1 and round 2 alike, says modes=<solo>+<added> with the change round 1 applied."""
+    import logging
+
+    from isar.analyze.coupled import linking
+    caplog.set_level(logging.INFO, logger=runner.log.name)
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep", "slots": ["B", "C"]}, {"toy": "keep"}, {"toy": "keep"}))
+    add = linking.Change("add", None, ("C",), ())
+
+    def label(unit, stage, held):
+        return tuple("B2" if unit == y and stage == 2 else m.branch for m in held.modes)
+    linker = fakes.ScriptedLinker(label, extra=lambda stage, labels, state: {
+        "changes": {u: (add,) if u == x and stage == 1 else () for u in state}})
+    Bench(ws).run(_simultaneous(ws, (x, y, z)), linker=linker)
+    rows = [m for m in caplog.messages if m.startswith("inter fit ") and f"unit={x} " in m]
+    assert any("stage=round2 " in m for m in rows)
+    assert all(" modes=1+1 applied=add:C " in m for m in rows)
+
+
 # ---------------------------------------------------------------------------
 # the real core, end to end (not slow: 2 analyzers x 2 temperatures, tiny generated spectra, one core)
 # ---------------------------------------------------------------------------
