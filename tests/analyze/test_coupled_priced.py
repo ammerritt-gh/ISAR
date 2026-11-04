@@ -19,13 +19,6 @@ B123 = ["b1", "b2", "b3"]
 NEIGH = {"x": (THREE, B123), "z": (THREE, B123)}
 
 
-def test_runs_from_the_worktree():
-    import isar
-    here = __file__.replace("\\", "/").rsplit("/tests/", 1)[0]
-    print("import root:", isar.__file__)
-    assert isar.__file__.replace("\\", "/").startswith(here)
-
-
 def snap(true, own, branches, neighbours, changes, *, seed=3, scale=1.0):
     """The spectrum y drawn from ``true``, its incoming fit ``own`` named ``branches`` (the link's labels too), its
     T-neighbours and the link listing ``changes``."""
