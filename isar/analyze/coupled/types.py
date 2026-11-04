@@ -109,7 +109,7 @@ class Assignment:                  # the frozen discrete decision of one spectru
     slots: tuple[str | None, ...]  # per mode, ascending start energy: matched branch id, or None = unmatched
     origins: tuple[str, ...]       # per mode: "matched" | "new_branch" | "returning" | "unresolved"
     factors: tuple[Factor, ...]    # frozen definitions of every factor incident on unit (engine.Factor); the runner replaces them with the stage's canonical set before the continuous stage (S1U6 E18)
-    discrete: str                  # "priced" | "skipped"
+    discrete: str                  # "priced" | "skipped" | "fixed" (the link's mode set, no pricing: refit.fixed_assignment)
     triggers: tuple[str, ...]      # the seed sources the search started from (C-search-record "seeds"), empty when skipped
     candidates: tuple[dict, ...]   # C-search-record rows: one per distinct labelling scored and per attempted job with no price (ln_z None, reason kept); loss: [[branch, expected_meV, deviance], ...], loss_nats = -sum(deviance)/2, 0.0 if none; ln_z the deduplicated mass the decision weighed, weights conditional on the evaluated set
     coverage: dict                 # C-search-record coverage: counts_priced, counts_unresolved, stopped (the one the runner reads), listed, decision

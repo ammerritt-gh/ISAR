@@ -94,6 +94,109 @@ def change_id(c) -> str:
     return f"drop:{c.mode}"
 
 
+def _pool_name(spec, b):
+    """The pool name of branch ``b`` (None: not carried by a conditioning neighbour in this snapshot)."""
+    return None if b is None else spec.names.get(spec.canon(b))
+
+
+def _prediction(spec, links, c, i):
+    if i < len(c.predictions):
+        return c.predictions[i]
+    canon = spec.canon
+    return next((p for p in links.predictions if canon(p.branch) == canon(c.branches[i])), None)
+
+
+def usable_changes(spec, links):
+    """([(index in links.changes, Change)] the pool can carry, in canonical order (kind add < split < drop, mode,
+    branches), [skipped records]): every other change is recorded with its reason, never silently dropped."""
+    ok, skipped = [], []
+    for i, c in sorted(enumerate(links.changes), key=lambda x: (_KIND_ORDER[x[1].kind],
+                                                                  -1 if x[1].mode is None else x[1].mode,
+                                                                  x[1].branches, x[0])):
+        why = None
+        if c.kind == "add":
+            if _pool_name(spec, c.branches[0]) is None:
+                why = "branch not carried by a conditioning neighbour"
+            elif _prediction(spec, links, c, 0) is None:
+                why = "no prediction"
+        elif c.kind == "split":
+            if c.mode is None or not 0 <= c.mode < spec.n0:
+                why = "no such mode"
+            elif len(c.branches) != 2 or any(_pool_name(spec, b) is None for b in c.branches):
+                why = "branch not carried by a conditioning neighbour"
+            elif len(c.predictions) != 2:
+                why = "no prediction"
+        elif c.mode is None or not 0 <= c.mode < spec.n0:
+            why = "no such mode"
+        if why is None:
+            ok.append((i, c))
+        else:
+            skipped.append({"change": i, "id": change_id(c), "why": why})
+    return ok, skipped
+
+
+def _split_rows(spec, cs, g, h, union):
+    """The modes that replace one parent mode (Gamma g, height h) split by the changes ``cs``: one per distinct
+    branch they name, ascending in predicted energy, the height shared by the predictions' intrinsic intensities."""
+    pairs = [(p, b) for c in cs for p, b in zip(c.predictions, c.branches)]
+    if union:                  # several splits of one mode: a branch they name twice (aliases too) is one mode
+        first = {}
+        for p, b in pairs:
+            first.setdefault(spec.canon(b), (p, b))
+        pairs = list(first.values())
+    ordered = sorted(pairs, key=lambda x: x[0].E)
+    amps = [p.A for p, _b in ordered]
+    if len(ordered) == 2:      # the two-branch rule: the lower branch's share, a fixed one when either is unknown
+        a, b = amps
+        f = a / (a + b) if a > 0 and b > 0 else DEFAULT_SPLIT_FRACTION
+        shares = [f, 1.0 - f]
+    else:                      # several splits of one mode (operator 2026-11-04): shared by intensity, else equally
+        shares = [a / sum(amps) for a in amps] if all(a > 0 for a in amps) else [1.0 / len(amps)] * len(amps)
+    return [(_pool_name(spec, b), (p.E, g, h * f), None) for (p, b), f in zip(ordered, shares)]
+
+
+def compose_rows(spec, links, S, *, union=False):
+    """[(slot, (omega0, Gamma, height), incoming position or None)] of the incoming candidate with the changes S
+    applied, ascending in energy and the easy modes at their incoming values; else the reason they cannot apply
+    together (two changes meet on one mode, or a branch would be named twice). ``union``: several splits of one
+    mode apply together, the mode becoming one mode per distinct branch they name (the fixed mode set,
+    ``refit.fixed_assignment``); the search leaves it off, where two splits of one mode are rival candidates."""
+    inc = spec.incoming
+    R_ = spec.fwhm
+    rows = {i: [(inc[i], (m.omega0, m.gamma, m.height), i)] for i, m in enumerate(spec.own.modes)}
+    adds, touched, splits = [], set(), {}
+    for _i, c in S:
+        if c.kind == "add":
+            p = _prediction(spec, links, c, 0)
+            g0 = min(max(gamma_start(p.w, R_), 0.1 * R_), prior.width_ceiling(p.E, lifted=False, settings=spec.fs.prior))
+            adds.append((_pool_name(spec, c.branches[0]), (p.E, g0, None), None))
+            continue
+        if c.mode in touched and not (union and c.kind == "split" and c.mode in splits):
+            return "two changes meet on one mode"
+        touched.add(c.mode)
+        if c.kind == "drop":
+            rows[c.mode] = []
+            continue
+        splits.setdefault(c.mode, []).append(c)
+    for mode, cs in splits.items():
+        ((_slot, (_e, g, h), _o),) = rows[mode]
+        rows[mode] = _split_rows(spec, cs, g, h, union)
+    both = [x for v in rows.values() if v for x in v] + adds
+    both.sort(key=lambda x: (x[1][0], str(x[0])))
+    named = [x[0] for x in both if x[0] is not None]
+    if len(named) != len(set(named)):
+        return "a branch would be named twice"
+    return both
+
+
+def compose_changes(spec, links, S):
+    """(count, slots, modes) of ``compose_rows`` (no union), else its reason."""
+    both = compose_rows(spec, links, S)
+    if isinstance(both, str):
+        return both
+    return len(both), tuple(x[0] for x in both), tuple(x[1] for x in both)
+
+
 class _Ledger:
     """Every price filed once, under the labelling of its fitted energies: key (count, labels in energy order) ->
     {"basins", "status", "source", "key"} where source and key name the job that found the key's best basin."""
@@ -177,72 +280,15 @@ class Search:
         return tuple(sorted({canon(b) for i in idx if self.links.changes[i].kind != "drop"
                              for b in self.links.changes[i].branches}))
 
-    def _prediction(self, c, i):
-        if i < len(c.predictions):
-            return c.predictions[i]
-        canon = self.spec.canon
-        return next((p for p in self.links.predictions if canon(p.branch) == canon(c.branches[i])), None)
-
     def _usable(self, L):
-        """The listed changes the pool can carry, in canonical order (kind add < split < drop, mode, branches);
-        every other change is recorded in ``skipped`` with its reason, never silently dropped."""
-        ok = []
-        for i, c in sorted(enumerate(L.changes), key=lambda x: (_KIND_ORDER[x[1].kind],
-                                                                   -1 if x[1].mode is None else x[1].mode,
-                                                                   x[1].branches, x[0])):
-            why = None
-            if c.kind == "add":
-                if self._name(c.branches[0]) is None:
-                    why = "branch not carried by a conditioning neighbour"
-                elif self._prediction(c, 0) is None:
-                    why = "no prediction"
-            elif c.kind == "split":
-                if c.mode is None or not 0 <= c.mode < self.n0:
-                    why = "no such mode"
-                elif len(c.branches) != 2 or any(self._name(b) is None for b in c.branches):
-                    why = "branch not carried by a conditioning neighbour"
-                elif len(c.predictions) != 2:
-                    why = "no prediction"
-            elif c.mode is None or not 0 <= c.mode < self.n0:
-                why = "no such mode"
-            if why is None:
-                ok.append((i, c))
-            else:
-                self.skipped.append({"change": i, "id": change_id(c), "why": why})
+        """The listed changes the pool can carry, in canonical order; every other change is recorded in ``skipped``."""
+        ok, skipped = usable_changes(self.spec, L)
+        self.skipped += skipped
         return ok
 
     def _compose(self, S):
-        """(count, slots, modes) of the incoming candidate with the changes S applied, modes ascending in energy and
-        the easy modes at their incoming (omega0, Gamma, height); else the reason they cannot apply together (two
-        changes meet on one mode, or a branch would be named twice)."""
-        spec = self.spec
-        R_ = spec.fwhm
-        rows = {i: [(self.inc[i], m)] for i, m in enumerate(self.own)}
-        adds, touched = [], set()
-        for _i, c in S:
-            if c.kind == "add":
-                p = self._prediction(c, 0)
-                g0 = min(max(gamma_start(p.w, R_), 0.1 * R_), prior.width_ceiling(p.E, lifted=False, settings=spec.fs.prior))
-                adds.append((self._name(c.branches[0]), (p.E, g0, None)))
-                continue
-            if c.mode in touched:
-                return "two changes meet on one mode"
-            touched.add(c.mode)
-            ((_slot, (_e, g, h)),) = rows[c.mode]
-            if c.kind == "drop":
-                rows[c.mode] = []
-                continue
-            lo, hi = sorted(zip(c.predictions, c.branches), key=lambda x: x[0].E)
-            a, b = lo[0].A, hi[0].A
-            f = a / (a + b) if a > 0 and b > 0 else DEFAULT_SPLIT_FRACTION
-            rows[c.mode] = [(self._name(lo[1]), (lo[0].E, g, h * f)), (self._name(hi[1]), (hi[0].E, g, h * (1.0 - f)))]
-        both = [x for v in rows.values() if v for x in v] + adds
-        both.sort(key=lambda x: (x[1][0], str(x[0])))
-        slots = tuple(s for s, _m in both)
-        named = [s for s in slots if s is not None]
-        if len(named) != len(set(named)):
-            return "a branch would be named twice"
-        return len(both), slots, tuple(m for _s, m in both)
+        """(count, slots, modes) of the incoming candidate with the changes S applied, else the reason they cannot."""
+        return compose_changes(self.spec, self.links, S)
 
     def _change_cand(self, S):
         made = self._compose(S)

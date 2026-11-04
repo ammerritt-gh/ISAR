@@ -1097,6 +1097,57 @@ def open_search(snapshot: Snapshot) -> Search:
     return _Search(snapshot)
 
 
+def fixed_assignment(snapshot: Snapshot, *, apply_changes: bool) -> Assignment:
+    """The frozen mode set of one spectrum for one stage, built from the link without pricing: the incoming fit's
+    modes with the link's labels and, when ``apply_changes``, the link's listed adds and splits (never its drops).
+    Several splits of one mode apply together, the mode becoming one mode per branch they name (no cap). A change that
+    meets a mode an earlier one touched, or would name a branch twice, is recorded in ``search["skipped"]``. The
+    incoming fit's variant (elastic, background, QE) and its delta modes are kept, an added or split-off mode has a
+    free width; ``selected_model`` is the start of that model. Raises ValueError("no incoming model") when the
+    incoming record's selected model has another count."""
+    from isar.analyze.coupled import search as SE
+    spec = _Spec(snapshot)
+    variant_flags = spec.inc_variant
+    sel = _selected_model(snapshot.own_record)
+    if variant_flags is None:
+        raise ValueError("no incoming model")
+    L = snapshot.links
+    usable, skipped = SE.usable_changes(spec, L) if apply_changes and L is not None else ([], [])
+    chosen = []
+    for x in usable:
+        if x[1].kind == "drop":
+            continue
+        made = SE.compose_rows(spec, L, [*chosen, x], union=True)
+        if isinstance(made, str):
+            skipped.append({"change": x[0], "id": SE.change_id(x[1]), "why": made})
+        else:
+            chosen.append(x)
+    rows = SE.compose_rows(spec, L, chosen, union=True)
+    count, slots = len(rows), tuple(r[0] for r in rows)
+    delta = tuple(j for j, r in enumerate(rows) if r[2] is not None and r[2] in spec.inc_delta)
+    unlifted = tuple(sorted({spec.canon(b) for _i, c in chosen for b in c.branches}))
+    eng = _Labelled(spec.ctx, _ceiling(spec.fs, count), spec.slot_objects(slots), structures=spec.structures,
+                    lifted=tuple(spec.slot_lifted(b, unlifted) for b in slots))
+    variant = eng.variant(count, *variant_flags)
+    model = None if variant is None else eng.model(variant, delta)
+    if model is None:
+        raise ValueError("no model for the fixed mode set")
+    p = sel.get("map_params") or sel.get("params") or {}
+    linear = {key: float(p[model.names[pos]]) for key, pos in
+              (("elastic", model.el), ("bg", model.bg), ("qe_h", model.qe_h), ("qe_width", model.qe_w))
+              if pos is not None and p.get(model.names[pos]) is not None}
+    theta = eng._start(model, [(e, g, h, False) for _s, (e, g, h), _o in rows], linear)
+    v = model.variant
+    return Assignment(
+        unit=snapshot.unit, snapshot_id=snapshot.stage_id, count=count, slots=slots, origins=spec.origins(slots),
+        factors=spec.incident(slots), discrete="fixed", triggers=(), candidates=(), coverage={},
+        search_limited=False, changed=count != spec.n0 or slots != spec.incoming, reasons=(),
+        selected_model=(v.elastic, v.background, v.qe, tuple(model.delta), tuple(float(x) for x in theta)),
+        mask_only=False, unlifted=unlifted,
+        search={"version": 1, "domain": "fixed", "link": None if L is None else L.link_id,
+                "applied": sorted(i for i, _c in chosen), "skipped": skipped})
+
+
 # ---- stage 2 ---------------------------------------------------------------------------------------------
 def _incoming_state(eng, spec: _Spec):
     """(model, theta) of the incoming fit's selected model at its stored point, or None."""
