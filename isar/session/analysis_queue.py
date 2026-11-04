@@ -11,8 +11,9 @@ Rules (design steps 4, 6, 7, 8, 10, 13, 16):
   batch over its ``members`` files: it occupies all of them, waits for waiting or running fast items
   on them, and blocks fast and deep items on them while it runs. Fast items start before deep and
   inter items; within a pass the oldest *runnable* item starts first.
-* A link item (one mode-linking run) occupies only ``LINK_LOCK``, so two never run together; it starts
-  with the deep and inter items and takes one core.
+* A link item (one mode-linking run) occupies ``LINK_LOCK``, so two never run together; it starts
+  with the deep and inter items and takes one core. A batch's recovery link also occupies that batch's files,
+  and ``ahead`` offers it before every older waiting item.
 * A file is occupied from the claim until its item settles, saving included. A deep or inter item
   also waits while a fast item for its file waits.
 * A fast item takes one core. A deep or inter item starts only while no fast item runs, claims every
@@ -126,6 +127,7 @@ class _Item:
         self.started_at: float | None = None
         self.progress: Mapping[str, object] | None = None
         self.progress_at: float | None = None
+        self.ahead = False                     # a link offered before every older waiting item
 
     @property
     def active(self) -> bool:
@@ -200,10 +202,14 @@ class AnalysisQueue:
         self._items[it.item_id] = it
         return self._view(it)
 
-    def add_link(self, link_id: str, *, automatic: bool = False) -> ItemView:
-        """One mode-linking run over the link lock; always added, like a batch."""
+    def add_link(self, link_id: str, *, automatic: bool = False, files: Iterable[str] = (),
+                 ahead: bool = False) -> ItemView:
+        """One mode-linking run over the link lock. ``files``: the spectrum keys of a batch's recovery link, which
+        hold that batch's deep and inter items while the link waits or runs; ``ahead`` offers it first. Always added."""
         self._seq += 1
-        it = _Item(f"{self._prefix}{self._seq}", f"link:{link_id}:link", "link", automatic, self._seq, (LINK_LOCK,))
+        it = _Item(f"{self._prefix}{self._seq}", f"link:{link_id}:link", "link", automatic, self._seq,
+                   (LINK_LOCK, *files))
+        it.ahead = ahead
         self._items[it.item_id] = it
         return self._view(it)
 
@@ -221,19 +227,21 @@ class AnalysisQueue:
     # -- starting ------------------------------------------------------------------------------
 
     def _blocker(self, x: _Item) -> _Item | None:
-        """The item x waits for: an active one on its files, else (deep and inter) a waiting fast one."""
+        """The item x waits for: an active one on its files, else (deep and inter) a waiting fast one or a waiting
+        link on its files. Links never wait for waiting links: they all share LINK_LOCK."""
         files = set(x.members)
         for y in self._items.values():
             if y is not x and y.occupies_file and files & set(y.members):
                 return y
         if x.pass_kind != "fast":
             for y in self._items.values():
-                if y.pass_kind == "fast" and y.state == "waiting" and files & set(y.members):
+                holds = y.pass_kind == "fast" or (y.pass_kind == "link" and x.pass_kind != "link")
+                if y.state == "waiting" and holds and files & set(y.members):
                     return y
         return None
 
     def _oldest_runnable(self, pass_kinds: tuple[str, ...]) -> _Item | None:
-        for it in self._items.values():
+        for it in sorted(self._items.values(), key=lambda it: not it.ahead):   # ahead first, then add order
             if it.state == "waiting" and it.pass_kind in pass_kinds and self._blocker(it) is None:
                 return it
         return None
