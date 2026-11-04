@@ -979,14 +979,17 @@ class _Engine:
         dE = np.abs(np.gradient(self.E))
         stokes = self.E > 0
         units = self.units([(theta[a], theta[g]) for a, g, _c in model.modes], model.variant.peaks)
+        cols = [col for col, _up in units]
+        heights = [float(theta[c]) for _a, _g, c in model.modes]
+        sums = [float(np.sum(self.expo[stokes] * col[stokes])) for col in cols]     # Stokes counts per unit height
         modes = [pair_penalty.PairMode(
                      # shortcut: Gaussian-equivalent lines and the DHO denominator's peak for the centre
                      # (sqrt(max(omega0^2 - 2 Gamma^2, 0)); overdamped modes sit at 0), upgrade to method B
                      # if a real spectrum shows the fade in the wrong place
                      centre=math.sqrt(max(float(theta[a]) ** 2 - 2.0 * float(theta[g]) ** 2, 0.0)),
                      width=matching_width(float(theta[g]), self.fwhm),
-                     counts=max(float(theta[c]) * float(np.sum(self.expo[stokes] * col[stokes])), 0.0))
-                 for (a, g, c), (col, _up) in zip(model.modes, units)]
+                     counts=max(h * s, 0.0))
+                 for (a, g, _c), h, s in zip(model.modes, heights, sums)]
         out = []
         for i, j in itertools.combinations(range(len(modes)), 2):
             p, q = modes[i], modes[j]
@@ -994,7 +997,11 @@ class _Engine:
                 continue
             half = (p.counts + q.counts) / 2.0
             D = pair_penalty.separability(p, q, self.E, dE, mu)
-            D_eq = pair_penalty.separability(replace(p, counts=half), replace(q, counts=half), self.E, dE, mu)
+            mu_eq = mu        # the model with the pair's counts split equally: D_eq ignores the fit's division
+            if sums[i] > 0.0 and sums[j] > 0.0:            # a mode with no Stokes counts has no equal share
+                mu_eq = mu + self.expo * ((half / sums[i] - heights[i]) * cols[i]
+                                          + (half / sums[j] - heights[j]) * cols[j])
+            D_eq =pair_penalty.separability(replace(p, counts=half), replace(q, counts=half), self.E, dE, mu_eq)
             nats = (self.s.pair_penalty_cap * pair_penalty.share_factor(p, q)
                     * pair_penalty.fade(D, self.s.pair_penalty_d0))
             if not (math.isfinite(D) and math.isfinite(D_eq) and math.isfinite(nats)):

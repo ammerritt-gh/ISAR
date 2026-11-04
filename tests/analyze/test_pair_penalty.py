@@ -78,6 +78,24 @@ def test_engine_penalty_is_the_cap_for_a_coincident_pair_and_absent_when_far(pai
     assert off.pair_penalty(model, same) == 0.0
 
 
+def test_d_eq_does_not_depend_on_how_the_fit_divides_the_pair(pair_engine):
+    """One pair at 200 combined counts, split 50:50 and 5:95, has one D_eq: the reference it is measured against
+    sees the pair's counts split equally, so only the rest of the model and the pair's shapes remain."""
+    eng = pair_engine
+    model = eng.model(eng.variant(2, True, True), ())
+    stokes = eng.E > 0
+
+    def per_height(theta):      # the stokes-side counts of one unit of height, as ``pair_terms`` normalises them
+        units = eng.units([(theta[a], theta[g]) for a, g, _c in model.modes], model.variant.peaks)
+        return [float(np.sum(eng.expo[stokes] * col[stokes])) for col, _up in units]
+    s1, s2 = per_height(_theta(model, [(9.5, 0.3, 1.0), (10.5, 0.3, 1.0)]))
+    even = _theta(model, [(9.5, 0.3, 100.0 / s1), (10.5, 0.3, 100.0 / s2)])
+    lopsided = _theta(model, [(9.5, 0.3, 10.0 / s1), (10.5, 0.3, 190.0 / s2)])
+    (_i, _j, _d, d_eq_even, _n), = eng.pair_terms(model, even)
+    (_i, _j, _d, d_eq_lopsided, _n), = eng.pair_terms(model, lopsided)
+    assert d_eq_even == pytest.approx(d_eq_lopsided, rel=1e-9)
+
+
 # --------------------------------------------------------------------------- the card's range check
 def _card(fast_pass_table):
     pol = card_mod.CardPolicy(
