@@ -1,8 +1,9 @@
 """A fake numerical core for the batch runner's tests and S1U13's timing tool (public name: ``_inter_fakes``).
 
 Module-level functions with the core's signatures (``isar.analyze.coupled.refit``): ``held_from_fit``,
-``fixed_assignment``, ``refit_step``, ``open_search``, ``price``, ``refit``, ``stage_factors``, plus the real
-``total_objective`` and ``seam_report``. A batch calls ``fixed_assignment`` and ``refit_step``; ``open_search`` (the
+``evidence_assignment``, ``fixed_assignment``, ``refit_step``, ``open_search``, ``price``, ``refit``,
+``stage_factors``, plus the real ``total_objective`` and ``seam_report``. A batch calls ``evidence_assignment`` and
+``refit_step`` (``fixed_assignment`` stays for the tests of the unpriced set); ``open_search`` (the
 C-search core's entry point: a ``_FakeSearch`` per spectrum, driven by the knobs below) and ``price`` are for the
 tests of the search itself and of ``_Run.assign``.
 They are picklable by name, so the runner's pool workers import this module the way they import the real core
@@ -28,7 +29,12 @@ travels into pool workers with the snapshot and onto the refit's own record:
   price is ``ln_z None``, ``no_evidence``). A job key is a hash of the unit, its own and its neighbours' energies,
   the slots and the pass and index, never a fit id: an unchanged spectrum reproduces its keys, a neighbour that
   moved changes them;
-- ``fixed_raise``: ``fixed_assignment`` raises; ``slots`` also sets the fixed mode set (default: the incoming branches);
+- ``fixed_raise``: ``evidence_assignment`` and ``fixed_assignment`` raise; ``slots`` also sets the fixed mode set
+  (default: the incoming branches);
+- ``pricing``: the scripted ``search["pricing"]`` of ``evidence_assignment`` (C-priced's form). Absent: every applied
+  change is a tried row, ``entered`` with ``delta_ln_z`` +5.0. A dict may give ``tried`` (rows with ``id``, ``kind``,
+  ``outcome``, and optionally ``delta_ln_z``, ``why``; the rest is filled in) and ``incumbent`` (a dict or None);
+  ``unresolved_splits`` follows from the rows. ``slots`` still decides the modes and ``search["applied"]``;
 - ``restarts``: restart calls the fit step asks for (default 0), ``restart_sleep`` seconds each takes,
   ``J`` the main fit's J and ``restart_J`` each restart's (default 0.0: a tie, so the main fit is kept, as the core
   breaks one), ``step_raise`` (``"fit"``, ``"restart"`` or ``"finish"``): that step raises;
@@ -50,6 +56,7 @@ import math
 import os
 import re
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from isar.analyze.coupled.engine import Factor
@@ -118,6 +125,36 @@ def _assignment(snapshot, slots, *, discrete: str, changed: bool, stopped=None) 
                       factors=_factors(snapshot, slots), discrete=discrete, triggers=("fake",) if changed else (),
                       candidates=cands, coverage={} if stopped is None else {"stopped": stopped},
                       search_limited=False, changed=changed, reasons=(), search={"applied": _applied(snapshot, slots)})
+
+
+def _pricing(snapshot, applied) -> dict:
+    """The fake's ``search["pricing"]``: the ``pricing`` knob's rows filled in, else one entered row per applied change."""
+    from isar.analyze.coupled.search import change_id
+    cfg = _cfg(snapshot).get("pricing")
+    if cfg is None:
+        rows = [{"id": change_id(snapshot.links.changes[i]), "kind": snapshot.links.changes[i].kind,
+                 "outcome": "entered", "delta_ln_z": 5.0} for i in applied]
+    else:
+        rows = [dict(r) for r in cfg.get("tried", ())]
+    tried = []
+    for n, r in enumerate(rows):
+        d = r.get("delta_ln_z")
+        outcome = r["outcome"]
+        tried.append({"change": r.get("change", n), "id": r["id"], "kind": r["kind"], "mode": r.get("mode"),
+                      "branches": list(r.get("branches", ())), "intensity": 1.0, "count": r.get("count", 0),
+                      "ln_z": None if outcome == "no_answer" else -100.0,
+                      "delta_ln_z": None if outcome == "no_answer" else d,
+                      "outcome": outcome, "why": r.get("why", "undetermined: scripted") if outcome == "no_answer" else None,
+                      "fits": 1, "seconds": 0.0})
+    inc = {"count": len(snapshot.own.modes), "ln_z": -110.0, "status": "ok", "why": None, "fits": 1, "seconds": 0.0}
+    if cfg is not None and "incumbent" in cfg:
+        inc = cfg["incumbent"]
+    elif not tried:
+        inc = None
+    return {"hysteresis_nats": 0.1, "incumbent": inc, "tried": tried,
+            "unresolved_splits": [{k: r[k] for k in ("change", "id", "mode", "branches", "why")}
+                                  for r in tried if r["kind"] == "split" and r["outcome"] == "no_answer"],
+            "final_count": 0, "final_ln_z": None}
 
 
 def _triggered(snapshot) -> bool:
@@ -227,6 +264,17 @@ def fixed_assignment(snapshot, *, apply_changes: bool) -> Assignment:
     slots = _slots(snapshot)
     return _assignment(snapshot, slots, discrete="fixed",
                        changed=slots != tuple(m.branch for m in snapshot.own.modes))
+
+
+def evidence_assignment(snapshot) -> Assignment:
+    """The fake's priced mode set: what ``fixed_assignment`` gives, with a version-2 ``search`` carrying the scripted
+    ``pricing`` (``changed`` and ``search["applied"]`` still follow ``slots``)."""
+    a = fixed_assignment(snapshot, apply_changes=True)
+    applied = a.search["applied"]
+    pricing = _pricing(snapshot, applied)
+    pricing["final_count"] = a.count
+    search = {"version": 2, "domain": "evidence", "link": None, "applied": applied, "skipped": [], "pricing": pricing}
+    return replace(a, search=search)
 
 
 def _own(snapshot, a) -> None:

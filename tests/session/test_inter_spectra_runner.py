@@ -444,27 +444,31 @@ def _chain(tmp_path, cfgs, fasts=(4.0, 6.0, 9.0)):
     return ws, x, y, z
 
 
-def test_a_simultaneous_batch_settles_gauss_seidel_on_one_frozen_stage_1(tmp_path):
-    """Stage 1 on one frozen snapshot, the sweeps in group order (each group sees the earlier groups' new values),
-    two quiet sweeps, then a reopened stage 1 that changes nothing: settled in 3 sweeps and 2 rounds."""
+
+def test_a_simultaneous_click_is_one_go_gauss_seidel_on_one_frozen_stage_1(tmp_path):
+    """One click: stage 1 on one frozen snapshot, one sweep in group order (each group sees the earlier groups' new
+    values), then the end of the batch. It does not judge whether the fits settled: the next click starts from the
+    fits then in use."""
     ws, x, y, z = _chain(tmp_path, ({"toy": "average"}, {"toy": "keep"}, {"toy": "average"}))
     bench = Bench(ws)
     spec = _simultaneous(ws, (x, y, z))
     log = bench.run(spec)
     end = log.batches[spec.batch_id].end
-    assert (end["state"], end["sweeps"], end["rounds"]) == ("settled", 3, 2)
+    assert (end["state"], end["sweeps"], end["rounds"]) == ("completed", 1, 1)
+    assert [s.index for s in log.stages if s.batch == spec.batch_id] == [1]
     lines = _lines(ws, spec.batch_id)
-    sweep1 = {r.unit: (r, p) for r, p in lines if r.index == 1}
+    sweep1 = {r.unit: (r, p) for r, p in lines}
+    assert set(sweep1) == {x, y, z}
     for r, p in sweep1.values():
+        assert r.index == 1
         assert p["came_out"]["assignment"]["snapshot_id"] == f"{spec.batch_id}:round1"
         assert p["came_in"]["stage_id"] == f"{spec.batch_id}:round1"
         assert "stage1" in p["came_out"]                 # the round's stage 1 rides on its first sweep (E12)
-    assert all("stage1" not in p["came_out"] for r, p in lines if r.index > 1)
     # Gauss-Seidel: x and z (group 2) are conditioned on y's sweep-1 refit, y (group 1) on their incoming fits
     y_fit = sweep1[y][0].fit
     assert [c.fit for c in sweep1[x][0].conditioned_on] == [y_fit]
     assert {c.fit for c in sweep1[y][0].conditioned_on} == {"fast"}
-    final = {r.unit: p["came_out"]["energies"] for r, p in lines if r.index == 3}
+    final = {r.unit: p["came_out"]["energies"] for r, p in lines}
     assert final[x] == {"B": pytest.approx(5.0)} and final[z] == {"B": pytest.approx(7.5)}
     assert bench.end().status == "done"
 
@@ -482,83 +486,50 @@ def test_a_cumulative_drift_reaches_the_drifting_spectra_flags(tmp_path):
         assert "t_drift_cumulative" in [r.code for r in o.by_key[u].flag.reasons] and o.by_key[u].flag.flagged
 
 
-def test_a_batch_that_cannot_settle_ends_at_the_cap_and_keeps_its_results(tmp_path):
-    ws, x, y, z = _chain(tmp_path, ({"toy": "oscillate"}, {"toy": "keep"}, {"toy": "keep"}))
-    assert inter_values.save_settings(ws, {"sweep_cap": 4}).ok
-    bench = Bench(ws)
-    spec = _simultaneous(ws, (x, y, z))
-    log = bench.run(spec)
-    end = log.batches[spec.batch_id].end
-    assert (end["state"], end["sweeps"]) == ("did_not_settle", 4)
-    assert bench.end().status == "done_warning" and "did not settle" in bench.end().reason
-    assert sorted(s.index for s in log.stages if s.batch == spec.batch_id) == [1, 2, 3, 4]
-    assert {r.accept.decision for r in log.refits if r.batch == spec.batch_id} == {"authoritative"}
 
 
-def test_a_member_that_fails_every_sweep_keeps_the_batch_from_settling(tmp_path):
-    ws, x, y, z = _chain(tmp_path, ({"toy": "keep", "fail": True}, {"toy": "keep"}, {"toy": "keep"}))
-    assert inter_values.save_settings(ws, {"sweep_cap": 3}).ok
-    spec = _simultaneous(ws, (x, y, z))
-    end = Bench(ws).run(spec).batches[spec.batch_id].end
-    assert (end["state"], end["sweeps"], end["failed"]) == ("did_not_settle", 3, 1)
-
-
-def test_a_simultaneous_round_whose_link_relabels_a_mode_runs_its_sweeps_rather_than_settling(tmp_path):
-    ws, x, y, z = _chain(tmp_path, ({"toy": "average"}, {"toy": "keep"}, {"toy": "average"}))
-
-    def label(unit, n, held):                    # round 2 puts x's mode on a branch of its own; round 3 keeps it
-        return ["C" if unit == x and n >= 2 else m.branch for m in held.modes]
-    bench = Bench(ws)
-    spec = _simultaneous(ws, (x, y, z))
-    end = bench.run(spec, linker=fakes.ScriptedLinker(label)).batches[spec.batch_id].end
-    assert (end["state"], end["rounds"]) == ("settled", 3) and end["sweeps"] >= 4     # three quiet rounds would be 3
-
-
-def test_a_round_whose_link_adds_a_mode_settles_at_round_two_when_round_two_relabels_nothing(tmp_path):
-    """x's fixed set has two modes from round 1 (its link adds branch C). Round 2 relabels nothing, so the batch
-    settles there after round 1's two quiet sweeps: round 2 compares its labels with the ones the held fits carried
-    before its own link stage, not with labels taken before round 1's sweeps."""
+def test_a_go_whose_link_adds_a_mode_ends_after_its_one_sweep(tmp_path):
+    """x's fixed set has two modes (its link adds branch C): the one sweep fits both and the batch ends completed."""
     ws, x, y, z = _chain(tmp_path, ({"toy": "keep", "slots": ["B", "C"]}, {"toy": "keep"}, {"toy": "keep"}))
     spec = _simultaneous(ws, (x, y, z))
-    end = Bench(ws).run(spec).batches[spec.batch_id].end
-    assert (end["state"], end["rounds"], end["sweeps"]) == ("settled", 2, 2)
+    log = Bench(ws).run(spec)
+    end = log.batches[spec.batch_id].end
+    assert (end["state"], end["rounds"], end["sweeps"]) == ("completed", 1, 1)
+    (xp,) = [p for r, p in _lines(ws, spec.batch_id) if r.unit == x]
+    assert xp["came_out"]["assignment"]["slots"] == ["B", "C"]
 
 
-def test_a_simultaneous_round_after_the_first_never_changes_a_mode_set(tmp_path):
-    """Round 1 asks for the link's changes to be applied; every later round asks for none."""
+
+def test_a_simultaneous_click_prices_each_mode_set_once(tmp_path):
+    """The one round asks the pool for each spectrum's priced mode set, once, on the round's frozen snapshot."""
     import types
     asked = []
     spy = types.ModuleType("spy_core")
     spy.__dict__.update({k: v for k, v in vars(fakes).items() if not k.startswith("__")})
 
-    def fixed_assignment(snapshot, *, apply_changes):
-        asked.append((snapshot.stage_id.rsplit(":", 1)[1], apply_changes))
-        return fakes.fixed_assignment(snapshot, apply_changes=apply_changes)
-    spy.fixed_assignment = fixed_assignment
+    def evidence_assignment(snapshot):
+        asked.append((snapshot.unit, snapshot.stage_id.rsplit(":", 1)[1]))
+        return fakes.evidence_assignment(snapshot)
+    spy.evidence_assignment = evidence_assignment
     ws, x, y, z = _chain(tmp_path, ({"toy": "average"}, {"toy": "keep"}, {"toy": "average"}))
-    end = Bench(ws).run(_simultaneous(ws, (x, y, z)), core=spy).batches
-    assert sorted(set(asked)) == [("round1", True), ("round2", False)]
+    Bench(ws).run(_simultaneous(ws, (x, y, z)), core=spy)
+    assert sorted(asked) == sorted([(x, "round1"), (y, "round1"), (z, "round1")])
 
 
-def test_refused_members_of_one_group_go_back_and_the_sweep_is_not_quiet(tmp_path):
-    """The user picks y's fast solo during sweep 1: y's own refit is refused (``picked``) and y is refitted no
-    more; x and z (one group, both conditioned on y's batch refit) are refused at save too. Their held values go
-    back and that sweep is not quiet; from sweep 2 they are conditioned on y's pick, which the writer accepts,
-    and the batch settles instead of refusing them sweep after sweep to the cap."""
+
+def test_refused_members_of_one_group_go_back_and_the_go_ends_on_the_fits_in_use(tmp_path):
+    """The user picks y's fast solo during the sweep: y's own refit is refused (``picked``), and x and z (one group,
+    both conditioned on y's batch refit) are refused at save too. Their held values go back, the pick is what the
+    end link sees for y, and the go ends: no later sweep exists to refit them."""
     ws, x, y, z = _chain(tmp_path, ({"toy": "keep"}, {"toy": "keep"}, {"toy": "keep"}))
-    assert inter_values.save_settings(ws, {"sweep_cap": 6}).ok
     bench = Bench(ws, _when("sweep", 1, "refine", lambda: inter_values.pick_fit(ws, y, "fast")))
     spec = _simultaneous(ws, (x, y, z))
     log = bench.run(spec)
     lines = _lines(ws, spec.batch_id)
-    refused = {r.unit for r, _ in lines if r.accept.decision == "declined"}
-    assert refused == {x, y, z}
-    assert {r.unit for r, _ in lines if r.index > 1} == {x, z}
-    second = [r for r, _ in lines if r.index == 2]
-    assert {(c.unit, c.fit) for r in second for c in r.conditioned_on} == {(y, "fast")}
-    assert all(r.accept.decision == "authoritative" for r in second)
+    assert {r.unit for r, _ in lines if r.accept.decision == "declined"} == {x, y, z}
+    assert {r.index for r, _ in lines} == {1}
     end = log.batches[spec.batch_id].end
-    assert end["state"] == "settled" and end["sweeps"] < 6
+    assert (end["state"], end["sweeps"]) == ("completed", 1)
 
 
 def test_a_neighbour_whose_inputs_changed_conditions_no_later_sweep(tmp_path):
@@ -576,28 +547,10 @@ def test_a_neighbour_whose_inputs_changed_conditions_no_later_sweep(tmp_path):
     assert log.batches[spec.batch_id].end["sweeps"] == 1
 
 
-def test_the_stopping_cost_is_summed_on_the_state_the_writer_accepted(tmp_path):
-    """x's fast solo is picked during sweep 1, so x's refit is refused: the shared objective of that sweep carries
-    only the accepted refits of y and z, not x's data deviance beside its reverted energies."""
-    import types
-    seen = []
-    spy = types.ModuleType("spy_core")
-    spy.__dict__.update({k: v for k, v in vars(fakes).items() if not k.startswith("__")})
-
-    def total_objective(factors, energies, data, unary):
-        seen.append(sorted(data))
-        return fakes.total_objective(factors, energies, data, unary)
-    spy.total_objective = total_objective
-    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"}, {"toy": "keep"}, {"toy": "keep"}))
-    assert inter_values.save_settings(ws, {"sweep_cap": 2}).ok
-    bench = Bench(ws, _when("sweep", 1, "refine", lambda: inter_values.pick_fit(ws, x, "fast")))
-    bench.run(_simultaneous(ws, (x, y, z)), core=spy)
-    assert seen[0] == sorted([y, z])
-
 
 def test_a_pick_made_during_the_batch_survives_and_its_member_is_refitted_no_more(tmp_path):
     """The user picks x's fast solo during sweep 1: x's refit of that sweep is declined (``picked``, kept in the
-    history), x is not refitted again, the pick stays in use, and the batch still settles. (A pick older than the
+    history), x is not refitted again, the pick stays in use, and the batch still ends. (A pick older than the
     batch start is the one the batch replaces: test_inter_authority, a batch that saw the pick replaces it.)"""
     from isar.intake.inter_spectra import read_user
     from isar.session.inter_spectra import authority
@@ -607,29 +560,13 @@ def test_a_pick_made_during_the_batch_survives_and_its_member_is_refitted_no_mor
     log = bench.run(spec)
     xs = [r for r, _ in _lines(ws, spec.batch_id) if r.unit == x]
     assert [(r.index, r.accept.decision, r.accept.reason) for r in xs] == [(1, "declined", "picked")]
-    assert log.batches[spec.batch_id].end["state"] == "settled"
+    assert log.batches[spec.batch_id].end["state"] == "completed"
     got = authority.resolve_all(log, read_user(ws), _now(ws, (x, y, z)), {x, y, z})
     assert (got[x].fit, got[x].source) == ("fast", "pick")
 
 
-def test_a_pick_in_a_later_sweep_is_what_the_neighbours_condition_on(tmp_path):
-    """y's refit of sweep 1 is accepted; the user picks y's fast solo during sweep 2. y's sweep-2 refit is refused
-    (``picked``) and y's held value becomes the pick, not the sweep-1 refit: x and z, refused for conditioning on
-    y's old refit, are accepted from sweep 3 conditioned on (y, fast), and the batch settles before the cap."""
-    ws, x, y, z = _chain(tmp_path, ({"toy": "average"}, {"toy": "average"}, {"toy": "average"}))
-    assert inter_values.save_settings(ws, {"sweep_cap": 8}).ok
-    bench = Bench(ws, _when("sweep", 2, "refine", lambda: inter_values.pick_fit(ws, y, "fast")))
-    spec = _simultaneous(ws, (x, y, z))
-    log = bench.run(spec)
-    lines = _lines(ws, spec.batch_id)
-    later = [r for r, _ in lines if r.index > 2 and r.unit in (x, z)]
-    assert later and all(r.accept.decision == "authoritative" for r in later)
-    assert {(c.unit, c.fit) for r in later for c in r.conditioned_on if c.unit == y} == {(y, "fast")}
-    end = log.batches[spec.batch_id].end
-    assert end["state"] == "settled" and end["sweeps"] < 8
 
-
-def test_a_lock_mid_sweep_is_refused_and_the_member_leaves_the_sweeps(tmp_path):
+def test_a_lock_mid_sweep_is_refused_and_the_go_ends_completed(tmp_path):
     ws, x, y, z = _chain(tmp_path, ({"toy": "average"}, {"toy": "keep"}, {"toy": "average"}))
     bench = Bench(ws, _when("sweep", 1, "refine", lambda: inter_values.set_lock(ws, x, locked=True, fit_id="fast")))
     spec = _simultaneous(ws, (x, y, z))
@@ -637,9 +574,8 @@ def test_a_lock_mid_sweep_is_refused_and_the_member_leaves_the_sweeps(tmp_path):
     lines = _lines(ws, spec.batch_id)
     (xr,) = [r for r, _ in lines if r.unit == x]
     assert (xr.index, xr.accept.reason) == (1, "locked")
-    later_y = [r for r, _ in lines if r.unit == y and r.index > 1]
-    assert later_y and all(c.fit == "fast" for r in later_y for c in r.conditioned_on if c.unit == x)
-    assert log.batches[spec.batch_id].end["state"] == "settled"
+    assert {r.index for r, _ in lines} == {1}                      # the go has no later sweep for the others
+    assert log.batches[spec.batch_id].end["state"] == "completed"
 
 
 @pytest.mark.parametrize("when", ["before", "during", "current"])
@@ -714,13 +650,13 @@ def test_only_a_units_latest_attempt_gives_a_failure_reason():
     assert r.counts()["not_reached"] == 0
 
 
-def test_a_batch_whose_members_all_leave_is_not_called_settled(tmp_path):
+def test_a_go_whose_members_all_leave_is_nothing_left(tmp_path):
     ws, x, y, z = _chain(tmp_path, ({"toy": "keep"}, {"toy": "keep"}, {"toy": "keep"}))
 
     def lock_all():
         for u in (x, y, z):
             assert inter_values.set_lock(ws, u, locked=True, fit_id="fast").ok
-    bench = Bench(ws, _when("sweep", 1, "refine", lock_all))
+    bench = Bench(ws, _when("sweep", 0, "assign", lock_all))     # after the link, before the sweep takes its locks
     spec = _simultaneous(ws, (x, y, z))
     end = bench.run(spec).batches[spec.batch_id].end
     assert (end["state"], bench.end().status) == ("nothing_left", "done_warning")
@@ -739,7 +675,7 @@ def test_assignments_that_disagree_on_a_branch_carry_no_factor_for_it(tmp_path):
     assert sweep1[x]["came_out"]["assignment"]["slots"] == ["B"]
     assert sweep1[x]["came_out"]["assignment"]["factors"] == []
     assert sweep1[y]["came_out"]["assignment"]["factors"] == []
-    assert log.batches[spec.batch_id].end["state"] == "settled"
+    assert log.batches[spec.batch_id].end["state"] == "completed"
 
 
 # ---------------------------------------------------------------------------
@@ -775,7 +711,8 @@ def test_the_pool_is_capped_by_isar_workers_and_one_job_runs_inline(tmp_path, mo
     bench.run(spec, cores=8)
     (pool,) = _SpyPool.made
     assert pool.max_workers == 2
-    assert pool.submitted == 8                                      # fit and finish of ring 1's three and ring 2's one
+    # ring 1's three priced mode sets (ring 2's one runs inline), then fit and finish of ring 1's three and ring 2's one
+    assert pool.submitted == 11
     assert [r.cores for r in bench.results if r.status == "cores"] == [2]
     overlays = [p["overlay"]["fast_pass"] for _, p in _lines(ws, spec.batch_id)]
     assert len(overlays) == 4 and {o["workers"] for o in overlays} == {1}    # the core is always told 1
@@ -1017,7 +954,7 @@ def test_a_mode_set_that_cannot_be_made_fails_only_its_own_spectrum(tmp_path, ki
     if kind == "anchored":
         assert by_unit[failed].status == "failed" and end["state"] == "completed"
     else:
-        assert failed not in by_unit and end["state"] == "settled"
+        assert failed not in by_unit and end["state"] == "completed"
     assert _spectra(log, spec.batch_id)[("ring1" if kind == "anchored" else "round1", failed)][
         "error"].startswith("ValueError")
 
@@ -1166,7 +1103,7 @@ def test_no_batch_path_reaches_the_count_search(tmp_path, monkeypatch, kind):
     ws, x, y, z = _chain(tmp_path, (cfg, cfg, cfg))
     spec = _anchored(ws, [x]) if kind == "anchored" else _simultaneous(ws, (x, y, z))
     log = Bench(ws).run(spec, core=spy)
-    assert reached == [] and log.batches[spec.batch_id].end["state"] in ("completed", "settled")
+    assert reached == [] and log.batches[spec.batch_id].end["state"] == "completed"
 
 
 def test_an_anchored_ring_fits_against_both_sides_and_carries_the_outer_energy_factor(tmp_path):
@@ -1265,24 +1202,22 @@ def test_the_log_line_names_the_change_it_applied_by_its_id(tmp_path, caplog):
     assert fields["modes"] == "1+1" and fields["applied"] == "add:C"
 
 
-def test_a_later_round_logs_the_solo_and_added_modes_and_the_change_round_one_applied(tmp_path, caplog):
-    """x's link adds branch C in round 1 (its fixed set is B and C). Round 2 relabels y, so round 2 sweeps run, and
-    every line of x, in round 1 and round 2 alike, says modes=<solo>+<added> with the change round 1 applied."""
+
+def test_a_simultaneous_line_logs_the_solo_and_added_modes_and_the_change_the_pricing_took(tmp_path, caplog):
+    """x's link adds branch C (its fixed set is B and C): the line says modes=<solo>+<added>, the change applied,
+    and the price that let it in."""
     import logging
 
     from isar.analyze.coupled import linking
     caplog.set_level(logging.INFO, logger=runner.log.name)
     ws, x, y, z = _chain(tmp_path, ({"toy": "keep", "slots": ["B", "C"]}, {"toy": "keep"}, {"toy": "keep"}))
     add = linking.Change("add", None, ("C",), ())
-
-    def label(unit, stage, held):
-        return tuple("B2" if unit == y and stage == 2 else m.branch for m in held.modes)
-    linker = fakes.ScriptedLinker(label, extra=lambda stage, labels, state: {
-        "changes": {u: (add,) if u == x and stage == 1 else () for u in state}})
+    linker = fakes.ScriptedLinker(lambda unit, stage, held: tuple(m.branch for m in held.modes),
+                                  extra=lambda stage, labels, state: {"changes": {u: (add,) if u == x else () for u in state}})
     Bench(ws).run(_simultaneous(ws, (x, y, z)), linker=linker)
     rows = [m for m in caplog.messages if m.startswith("inter fit ") and f"unit={x} " in m]
-    assert any("stage=round2 " in m for m in rows)
-    assert all(" modes=1+1 applied=add:C " in m for m in rows)
+    assert len(rows) == 1 and "stage=round1 sweep1 " in rows[0]
+    assert " modes=1+1 applied=add:C priced=add:C:+5.0:in " in rows[0]
 
 
 # ---------------------------------------------------------------------------
@@ -1308,7 +1243,6 @@ def test_the_real_core_runs_both_batch_kinds_end_to_end(tmp_path, monkeypatch):
         out = []
         fit_file(ws.root, FileItem("q", key, "fast", 1), progress=None, emit=out.append)
         assert writer.save_results(ws.root, [r.payload for r in out if r.payload is not None]) == [None, None]
-    assert inter_values.save_settings(ws.root, {"sweep_cap": 3}).ok
     k = _keys(ws.root)
     reached = []        # the count search, evidence and the split integral: no batch path may reach one
 
@@ -1330,7 +1264,7 @@ def test_the_real_core_runs_both_batch_kinds_end_to_end(tmp_path, monkeypatch):
         log = bench.run(spec, core=None)
         end = log.batches[spec.batch_id].end
         print(spec.kind, end["state"], json.dumps(end["timing"], indent=1))
-        assert end["state"] in ("completed", "settled"), end
+        assert end["state"] == "completed", end
         assert reached == []
         for r in end["timing"]["spectra"]:               # nothing was priced
             assert r["error"] is None and r["candidates"] == 0
@@ -1688,20 +1622,18 @@ def test_a_search_that_cannot_open_or_repeats_a_job_fails_only_its_own_spectrum(
     assert "repeated a job" in str(errors["y"]) and run.tallies["ring1", "x"].error.startswith("RuntimeError")
 
 
-def test_a_simultaneous_batch_links_at_every_round_and_the_sweeps_carry_their_rounds_link(tmp_path):
+
+def test_a_simultaneous_click_links_once_before_its_sweep_and_once_at_its_end(tmp_path):
     ws, x, y, z = _chain(tmp_path, ({"toy": "average"}, {"toy": "keep"}, {"toy": "average"}))
     spec = _simultaneous(ws, (x, y, z))
     log = Bench(ws).run(spec, linker=fakes.ScriptedLinker(_own(lambda u: False)))
     end = log.batches[spec.batch_id].end
     by = _links_by_stage(ws, spec.batch_id)
-    assert list(by) == [f"round{n}" for n in range(1, end["rounds"] + 1)] + ["end"] and end["rounds"] == 2
-    sweeps = [s for s in log.stages if s.batch == spec.batch_id]
-    assert len(sweeps) == end["sweeps"] >= 2
-    for s in sweeps:
-        assert s.link == by[f"round{s.round}"].link
-    assert end["link"] == by["end"].link
+    assert list(by) == ["round1", "end"] and (end["rounds"], end["sweeps"], end["state"]) == (1, 1, "completed")
+    (sweep,) = [s for s in log.stages if s.batch == spec.batch_id]
+    assert sweep.link == by["round1"].link and end["link"] == by["end"].link
     for r, p in _lines(ws, spec.batch_id):
-        assert p["came_in"]["links"]["stage"] == f"round{p['came_in']['stage_id'].rsplit('round', 1)[1]}"
+        assert p["came_in"]["links"]["stage"] == "round1"
 
 
 def test_a_linking_failure_ends_the_batch_failed_and_keeps_the_saved_rings(tmp_path):
@@ -1786,9 +1718,10 @@ def test_a_mode_on_no_branch_leaves_the_anchors_branch_and_the_lone_name_rides_t
     assert linker.calls[1][3].lone[y] == (None, "B9")                                              # ring 2 continues it
 
 
-def test_a_sweep_after_an_accepted_add_keeps_the_link_and_labels_the_added_mode(tmp_path):
-    """The round's link predicts a branch Bnew on y; y's sweep 1 accepts it (two modes). The sweep after still carries
-    the round's link: the added mode names its branch, and the applied add is no longer listed as a change."""
+
+def test_the_sweep_after_an_accepted_add_carries_the_round_link_and_labels_the_added_mode(tmp_path):
+    """The round's link predicts a branch Bnew on y; the priced set takes it (two modes). The sweep's refit still
+    carries the round's link, and its fit has both modes."""
     from isar.analyze.coupled.linking import Change, Prediction
     ws, x, y, z = _chain(tmp_path, ({"toy": "keep"},) * 3)
     _set_fast(ws, {y: (6.0, {"toy": "keep", "slots": [f"link:{y}#0", "Bnew"]})})
@@ -1804,12 +1737,10 @@ def test_a_sweep_after_an_accepted_add_keeps_the_link_and_labels_the_added_mode(
     Bench(ws).run(spec, linker=fakes.ScriptedLinker(_own(lambda u: False), extra=extra))
     by = _links_by_stage(ws, spec.batch_id)
     came_in = {(r.unit, r.index): p["came_in"] for r, p in _lines(ws, spec.batch_id)}
-    after = came_in[(y, 2)]
-    assert after["links"] is not None                                    # the count change does not discard the link
-    assert (after["links"]["link_id"], after["links"]["stage"]) == (by["round1"].link, "round1")
-    assert sorted(m["branch"] for m in after["own"]["modes"]) == sorted([f"link:{y}#0", "Bnew"])
-    assert sorted(after["links"]["labels"]) == sorted([f"link:{y}#0", "Bnew"])
-    assert after["links"]["changes"] == []                               # the applied add is not listed again
+    got = came_in[(y, 1)]
+    assert (got["links"]["link_id"], got["links"]["stage"]) == (by["round1"].link, "round1")
+    (yp,) = [p for r, p in _lines(ws, spec.batch_id) if r.unit == y]
+    assert sorted(yp["came_out"]["assignment"]["slots"]) == sorted([f"link:{y}#0", "Bnew"])
 
 
 def test_relabelled_takes_link_ids_for_linked_modes_only():
@@ -1947,3 +1878,100 @@ def test_a_remaining_drop_or_split_follows_its_mode_after_another_change_was_app
     out = runner.fitted_links(links, _modes("u2"), {}, (0, 2), ids)         # u0 and u1 both gone
     assert [(c.kind, c.mode) for c in out.changes] == [("split", 0)]
     assert runner.fitted_links(links, _modes("u0", "u1", "u2"), {}, (), ids).changes == (drop0, split2, drop_gone)
+
+
+# ---------------------------------------------------------------------------
+# the priced stage 1: the log line, the flag, one go, the retired settings
+# ---------------------------------------------------------------------------
+def _price_cfg(*tried, incumbent="default"):
+    cfg = {"toy": "keep", "slots": ["B", "C"], "pricing": {"tried": list(tried)}}
+    if incumbent != "default":
+        cfg["pricing"]["incumbent"] = incumbent
+    return cfg
+
+
+def _fit_fields(caplog, unit):
+    row = next(m for m in caplog.messages if m.startswith("inter fit ") and f"unit={unit} " in m)
+    return dict(f.split("=", 1) for f in row.split()[2:])
+
+
+def test_the_log_line_names_each_change_tried_and_an_inter_price_line_gives_the_why(tmp_path, caplog):
+    import logging
+
+    from isar.analyze.coupled import linking
+    caplog.set_level(logging.INFO, logger=runner.log.name)
+    add = {"id": "add:C", "kind": "add", "outcome": "entered", "delta_ln_z": 10.5}
+    split = {"id": "split:0:D+E", "kind": "split", "mode": 0, "branches": ["D", "E"], "outcome": "no_answer",
+             "why": "undetermined: flat along the pair"}
+    kept = {"id": "add:F", "kind": "add", "outcome": "kept_out", "delta_ln_z": -0.8}
+    nothing = {"id": "add:G", "kind": "add", "outcome": "no_answer", "why": "no_structure: no model"}
+    dead = {"count": 1, "ln_z": None, "status": "undetermined", "why": "undetermined: the Hessian is not positive definite",
+            "fits": 1, "seconds": 0.0}
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): _price_cfg(add, split, kept, nothing),
+                                    ("a04", 150.0): _price_cfg(incumbent=dead)})
+    a, b = k["a03", 150.0], k["a04", 150.0]
+    change = linking.Change("add", None, ("C",), ())
+    linker = fakes.ScriptedLinker(lambda unit, stage, held: tuple(m.branch for m in held.modes),
+                                  extra=lambda stage, labels, state: {"changes": {u: (change,) for u in state}})
+    log = Bench(ws).run(spec, linker=linker)
+    fa = _fit_fields(caplog, a)
+    assert fa["applied"] == "add:C"
+    assert fa["priced"] == "add:C:+10.5:in,split:0:D+E:na:ambiguous,add:F:-0.8:out,add:G:na:none"
+    assert _fit_fields(caplog, b)["priced"] == "incumbent:na"
+    prices = [m for m in caplog.messages if m.startswith("inter price ")]
+    stage = "ring1"
+    assert prices == [
+        f"inter price batch={spec.batch_id} stage={stage} unit={a} change=split:0:D+E no answer: "
+        "undetermined: flat along the pair",
+        f"inter price batch={spec.batch_id} stage={stage} unit={a} change=add:G no answer: no_structure: no model",
+        f"inter price batch={spec.batch_id} stage={stage} unit={b} change=incumbent no answer: "
+        "undetermined: the Hessian is not positive definite"]
+    # each price line is written just before its spectrum's fit line
+    order = [m for m in caplog.messages if m.startswith(("inter price ", "inter fit "))]
+    assert order.index(prices[0]) < order.index(next(m for m in order if m.startswith("inter fit ") and f"unit={a} " in m))
+    # the saved record keeps the pricing it decided on
+    (stored,) = [p for r, p in _lines(ws, spec.batch_id) if r.unit == a]
+    tried = stored["came_out"]["assignment"]["search"]["pricing"]["tried"]
+    assert [(r["id"], r["outcome"]) for r in tried] == [
+        ("add:C", "entered"), ("split:0:D+E", "no_answer"), ("add:F", "kept_out"), ("add:G", "no_answer")]
+    assert log.batches[spec.batch_id].end["state"] == "completed"
+
+
+def test_an_unresolved_split_flags_its_spectrum_and_an_unanswered_add_does_not(tmp_path, caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger=runner.log.name)
+    split = {"id": "split:0:D+E", "kind": "split", "mode": 0, "branches": ["D", "E"], "outcome": "no_answer",
+             "why": "undetermined: flat along the pair"}
+    add = {"id": "add:C", "kind": "add", "outcome": "no_answer", "why": "undetermined: flat"}
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): _price_cfg(split), ("a04", 150.0): _price_cfg(add)})
+    Bench(ws).run(spec)
+    refits = {r.unit: r for r, _p in _lines(ws, spec.batch_id)}
+    reasons = refits[k["a03", 150.0]].flag.reasons
+    (amb,) = [x for x in reasons if x["code"] == "connection_ambiguous"]
+    assert amb["severity"] == "warn"
+    assert amb["text"] == ("the evidence could not decide the split of mode 0 into D and E "
+                           "(undetermined: flat along the pair)")
+    assert refits[k["a04", 150.0]].flag is None or not [
+        x for x in refits[k["a04", 150.0]].flag.reasons if x["code"] == "connection_ambiguous"]
+    assert _fit_fields(caplog, k["a03", 150.0])["flags"].endswith("connection_ambiguous")
+    assert "connection_ambiguous" not in _fit_fields(caplog, k["a04", 150.0])["flags"]
+
+
+def test_a_saved_sweep_cap_is_ignored_and_the_settings_still_read(tmp_path):
+    """An experiment saved the three retired settings before this job: the fold ignores them, never rewrites them,
+    and a simultaneous click is one go whatever they said."""
+    from isar.analyze.coupled.settings import InterSettings
+    from isar.intake import inter_spectra
+    ws, x, y, z = _chain(tmp_path, ({"toy": "oscillate"}, {"toy": "keep"}, {"toy": "keep"}))
+    assert inter_values.save_settings(ws, {"flag_threshold": 60}).ok
+    path = Path(ws) / inter_spectra.FILE
+    with open(path, "ab") as f:
+        f.write(json.dumps({"kind": "settings", "id": "e9", "seq": 2, "at": "x", "targets": ["experiment"],
+                            "changes": {"sweep_cap": 2, "sweep_tol_meV": 0.0001, "cost_rel_tol": 0.5}}
+                           ).encode("utf-8") + b"\n")
+    before = path.read_bytes()
+    assert inter_spectra.read_inter_settings(ws) == InterSettings.from_values({"flag_threshold": 60})
+    spec = _simultaneous(ws, (x, y, z))
+    end = Bench(ws).run(spec).batches[spec.batch_id].end
+    assert (end["state"], end["sweeps"], end["rounds"]) == ("completed", 1, 1)
+    assert path.read_bytes() == before

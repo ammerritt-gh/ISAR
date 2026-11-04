@@ -117,7 +117,6 @@ def test_worked_example_1_anchored_two_rings(tmp_path):
 # ---------------------------------------------------------------------------
 def test_simultaneous_batch_with_a_refusal_and_a_lock(tmp_path):
     ws, x, y, z = _chain(tmp_path, ({"toy": "keep"},) * 3)
-    assert inter_values.save_settings(ws, {"sweep_cap": 6}).ok
     spec = _simultaneous(ws, (x, y, z))
     events = []
     bench = Bench(ws, _when("sweep", 1, "refine", lambda: inter_values.pick_fit(ws, y, "fast")))
@@ -128,7 +127,8 @@ def test_simultaneous_batch_with_a_refusal_and_a_lock(tmp_path):
     assert any(e["states"][y] == "fitting" for e in sweep1)                   # y is the first group, alone
     assert any(e["states"][x] == "refused" and e["reasons"][x].startswith("fitted but not saved") for e in events)
     last = events[-1]
-    assert last["states"][y] == "refused" and last["states"][x] == last["states"][z] == "done"
+    # x and z conditioned on y's batch refit, which the pick made stale: refused too, and the one go has no sweep 2
+    assert last["states"][y] == last["states"][x] == last["states"][z] == "refused"
     _agrees_with_the_books(events, bench)
 
 
@@ -183,12 +183,12 @@ def test_at_most_workers_jobs_are_in_flight_and_fitting(tmp_path, monkeypatch):
     _SlowPool.made = []
     ws = _workspace(tmp_path, (100, 150, 200), 4)
     k = _keys(ws)
-    spec = _anchored(ws, [k[d, 150.0] for d in ("a03", "a04", "a05", "a06")])      # ring 1: eight refits
+    spec = _anchored(ws, [k[d, 150.0] for d in ("a03", "a04", "a05", "a06")])      # ring 1: four priced sets, eight refit steps
     events = []
     bench = Bench(ws)
     bench.run(spec, cores=3, members=events.append)
     (pool,) = _SlowPool.made
-    assert pool.max_workers == 3 and max(pool.unfinished) == 3 and len(pool.unfinished) == 16
+    assert pool.max_workers == 3 and max(pool.unfinished) == 3 and len(pool.unfinished) == 24
     _check_events(events, spec, workers=3)
     assert max(sum(s == "fitting" for s in e["states"].values()) for e in events) == 3
     _agrees_with_the_books(events, bench)

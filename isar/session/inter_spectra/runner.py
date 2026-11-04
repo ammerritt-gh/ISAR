@@ -7,14 +7,15 @@ on the graph, and fits it with its own refit pool inside the item's cores:
 - anchored: ring by ring from the anchors; every refit of a ring conditions on the state frozen when the ring
   starts (earlier rings, anchors, valid locks), so ring-mates never see each other; seams are measured when the
   ring completes;
-- simultaneous: rounds of stage 1 (counts and branch assignments against one frozen snapshot) then stage 2
-  (continuous Gauss-Seidel sweeps over conflict-free groups) until a round changes nothing, or the sweep cap ends
-  it as "did not settle".
+- simultaneous: one click is one go, one round of one sweep: stage 1 (mode sets against one frozen snapshot), then
+  stage 2 (one continuous Gauss-Seidel sweep over conflict-free groups), then the end-of-batch link. The batch does
+  not judge whether the fits settled; the next click starts from the fits then in use.
 
-Stage 1 is the link's fixed mode set (``core.fixed_assignment``): no count, labelling or structural variant is priced,
-so a batch computes no evidence and no split integral. ``assign`` (the old search, one core ``Search`` per spectrum
-driven through one pool stream) and ``_Sched`` stay in the file for the later targeted-pass job and are not called by
-a batch. The refits stream through the pool as three steps per spectrum (``core.refit_step``: fit, the close-pair
+Stage 1 fixes each spectrum's mode set by evidence (``core.evidence_assignment``, one pool call per spectrum): the
+link's listed adds and splits enter only when the bounded Laplace ln Z of the incumbent plus that change beats the
+incumbent's by more than ``evidence_hysteresis_nats``; no count search, structural variant or split integral runs.
+``assign`` (the old search, one core ``Search`` per spectrum driven through one pool stream) and ``_Sched`` stay in
+the file for the later targeted-pass job and are not called by a batch. The refits stream through the pool as three steps per spectrum (``core.refit_step``: fit, the close-pair
 restarts as separate parallel calls, finish), so a ring takes about as long as its slowest spectrum.
 
 Every ring or sweep is handed over through ``emit`` and the runner waits on ``ack`` for the writer's verdict
@@ -50,7 +51,7 @@ from typing import Callable, Literal
 log = logging.getLogger(__name__)
 
 CORE = "isar.analyze.coupled.refit"
-CORE_VERSION = "isar.coupled-refit/2"
+CORE_VERSION = "isar.coupled-refit/3"
 TARGET_S = 1800.0          # the design's 30-minute target: recorded and reported, read by no branch
 NOT_CURRENT = "its fast pass is not current; run the fast pass first"
 CUT_OFF = "cut off by a failed neighbour"
@@ -59,7 +60,7 @@ SCOPE_CHANGED = "the scope changed since the preview"
 INPUTS_REMEDY = ("; start the batch again, and if it fails the same way, add the data again (the same files or "
                  "their folder) so ISAR reads them afresh")
 STALE_LOCK = "its locked fit is out of date, so it is neither refitted nor used"
-NOTHING_LEFT = "no spectrum was left to refit before a round settled; its results are kept"
+NOTHING_LEFT = "no spectrum was left to refit; its results are kept"
 # the members event (C-members-event): the whole map per event, at most one per MEMBERS_GAP_S from pool transitions
 # shortcut: full map per event, upgrade to deltas past ~5000 members
 MEMBERS_GAP_S = 0.25
@@ -877,6 +878,7 @@ class _Run:
         self.linker = linker or _Linker()
         self.link_prev, self.next_name = None, 1      # the result the next link continues, its next branch number
         self.link_now = None                          # (link id, stage tag, LinkResult) of the stage in progress
+        self.price_flags: dict[str, list[dict]] = {}     # unit -> connection_ambiguous reasons of its unresolved splits
         self.adopted: dict[str, tuple[int, ...]] = {}  # unit -> the listed changes its adopted fit applied, this round
         self.link_ids: dict[str, tuple[str, ...]] = {}  # unit -> the branch ids of its modes when the stage linked
         self.end_link: str | None = None              # the link saved when the batch ended
@@ -1348,25 +1350,46 @@ class _Run:
     def tally(self, label: str, k: str) -> _Tally:
         return self.tallies.setdefault((label, k), _Tally(label, k))
 
-    def fixed_sets(self, snaps: dict, apply_changes: bool) -> tuple[dict, dict]:
-        """Stage 1 of every snapshot: the link's fixed mode set (``core.fixed_assignment``), nothing priced. Returns
-        ``(A, errors)`` as ``assign`` did: the exception that failed each spectrum is its failed refit."""
+    def priced_sets(self, snaps: dict) -> tuple[dict, dict]:
+        """Stage 1 of every snapshot: each spectrum's mode set fixed by evidence (``core.evidence_assignment``, one
+        pool call per spectrum, the spectra in parallel). The snapshots hold the state frozen when the ring or round
+        started, so no price reads a ring-mate's new fit. Returns ``(A, errors)`` as ``assign`` did: the exception
+        that failed each spectrum is its failed refit. A split the evidence could not decide is kept as a flag on
+        the spectrum (``price_flags``)."""
         from isar.analyze.coupled.search import change_id
         label = self.stage_label()
         A, errors = {}, {}
         for k, s in snaps.items():
             t = self.tallies[label, k] = _Tally(label, k)
             t.branches_seen, t.dormant_seen = _seen(s)
-            try:
-                A[k] = self.core.fixed_assignment(s, apply_changes=apply_changes)
-                if k not in self.mode_sets:       # first setting only: a later snapshot no longer has the solo modes
-                    # or the changes this fit applied (its indices no longer match), so both are named here
-                    self.mode_sets[k] = (len(s.own.modes),
-                                         [change_id(s.links.changes[i]) for i in (A[k].search or {}).get("applied", ())])
-            except Exception as exc:  # noqa: BLE001 — one spectrum's failure is its result
-                log.error("the mode set of %s failed: %s", k, exc, exc_info=exc)
-                errors[k] = exc
-                t.error = f"{type(exc).__name__}: {exc}"
+            self.price_flags.pop(k, None)
+        t0 = time.perf_counter()
+        res = self.pool.map("evidence_assignment", [(k, (s,), {}) for k, s in snaps.items()])
+        self.timing["pool"]["map_wall_s"] += time.perf_counter() - t0
+        self.timing["assign_s"] += time.perf_counter() - t0
+        for k, s in snaps.items():
+            a, t = res[k], self.tallies[label, k]
+            if isinstance(a, Exception):                 # one spectrum's failure is its result
+                log.error("the mode set of %s failed: %s", k, a, exc_info=a)
+                errors[k] = a
+                t.error = f"{type(a).__name__}: {a}"
+                continue
+            A[k] = a
+            p = (a.search or {}).get("pricing") or {}
+            if k not in self.mode_sets:           # first setting only: a later snapshot no longer has the solo modes
+                # or the changes this fit applied (its indices no longer match), so both are named here
+                self.mode_sets[k] = (len(s.own.modes),
+                                     [change_id(s.links.changes[i]) for i in (a.search or {}).get("applied", ())])
+            rows = [*([p["incumbent"]] if p.get("incumbent") else []), *p.get("tried", ())]
+            t.fits += sum(int(x.get("fits", 0)) for x in rows)
+            t.evidence_s += sum(float(x.get("seconds", 0.0)) for x in rows)
+            self.timing["likelihood_s"] += sum(float(x.get("seconds", 0.0)) for x in rows)
+            self.timing["pool"]["busy_s"] += sum(float(x.get("seconds", 0.0)) for x in rows)
+            self.price_flags[k] = [
+                {"code": "connection_ambiguous", "severity": "warn",
+                 "text": f"the evidence could not decide the split of mode {u['mode']} into "
+                         f"{u['branches'][0]} and {u['branches'][1]} ({u['why']})"}
+                for u in p.get("unresolved_splits", ())]
         return A, errors
 
     def assign(self, snaps: dict, cache: dict) -> tuple[dict, dict]:
@@ -1589,6 +1612,9 @@ class _Run:
         """The batch's per-spectrum line, written as the spectrum's refit returns (readable while the batch runs)."""
         n_in, names = self.mode_sets.get(k, (len(snap.own.modes), ()))   # a unit never given a mode set logs as before
         applied = ",".join(names) or "-"
+        priced, whys = self.priced_field(a)
+        for change, why in whys:
+            log.info("inter price batch=%s stage=%s unit=%s change=%s no answer: %s", self.batch, stage, k, change, why)
         if isinstance(r, Exception):
             status, work, flags = f"failed:{type(r).__name__}", 0.0, "-"
         else:
@@ -1597,9 +1623,27 @@ class _Run:
             status = r.status
             flag = self.saved_flag(r, extra_flags)
             flags = ",".join(x.get("code", "?") for x in (flag or {}).get("reasons", ())) or "-"
-        log.info("inter fit batch=%s stage=%s unit=%s modes=%d+%d applied=%s restarts=%d wall_s=%.1f work_s=%.1f "
-                 "status=%s flags=%s", self.batch, stage, k, n_in, a.count - n_in, applied, restarts, wall_s, work,
-                 status, flags)
+        log.info("inter fit batch=%s stage=%s unit=%s modes=%d+%d applied=%s priced=%s restarts=%d wall_s=%.1f "
+                 "work_s=%.1f status=%s flags=%s", self.batch, stage, k, n_in, a.count - n_in, applied, priced,
+                 restarts, wall_s, work, status, flags)
+
+    @staticmethod
+    def priced_field(a) -> tuple[str, list[tuple[str, str]]]:
+        """The log line's ``priced=`` entries of one assignment (``<id>:<delta ln Z>:<verdict>``, ``-`` when nothing
+        was tried, ``incumbent:na`` when the incumbent had no answer) and the ``(change, why)`` of every no answer."""
+        p = (a.search or {}).get("pricing") or {}
+        inc = p.get("incumbent")
+        if inc is not None and inc.get("ln_z") is None:
+            return "incumbent:na", [("incumbent", inc.get("why") or "no answer")]
+        out, whys = [], []
+        for row in p.get("tried", ()):
+            d = row.get("delta_ln_z")
+            verdict = {"entered": "in", "kept_out": "out"}.get(row["outcome"]) or (
+                "ambiguous" if row["kind"] == "split" else "none")
+            out.append(f"{row['id']}:{'na' if d is None else f'{d:+.1f}'}:{verdict}")
+            if row["outcome"] == "no_answer":
+                whys.append((row["id"], row.get("why") or "no answer"))
+        return ",".join(out) or "-", whys
 
     def entry(self, k: str, snap, r, extra_flags=(), stage1: dict | None = None) -> dict:
         """The stage payload's refit line of one refit (or of the exception the refit raised)."""
@@ -1652,11 +1696,11 @@ class _Run:
         return False
 
     def identity_flags(self, ids, k: str) -> list[dict]:
-        """The identity reasons of one spectrum (ambiguous, loop, unresolved return) as flag reasons, each with
-        the values recorded for that spectrum only."""
+        """The flag reasons of one spectrum besides its own: the identity reasons (ambiguous, loop, unresolved return),
+        each with the values recorded for that spectrum only, then the stage-1 pricing's unresolved splits."""
         return [{"code": code, "severity": f.get("severity", "warn"),
                  "text": "; ".join(str(v) for v in list((f.get("by_unit") or {}).get(k) or ())[:3])}
-                for code, f in (ids.flags or {}).items() if k in f.get("units", ()) and code != "seam_disagreement"]
+                for code, f in (ids.flags or {}).items() if k in f.get("units", ()) and code != "seam_disagreement"] + list(self.price_flags.get(k, ()))
 
     def stage_timing(self, kind: str, index: int, t0: float, width: int, n: int) -> None:
         self.timing["stages"].append({"kind": kind, "index": index, "wall_s": time.perf_counter() - t0,
@@ -1757,7 +1801,7 @@ class _Run:
                 continue
             snaps = {k: self.snapshot(k, self.incoming[k], sid, terms) for k, terms in todo.items()}
             self.progress("assign")
-            A, errors = self.fixed_sets(snaps, True)
+            A, errors = self.priced_sets(snaps)
             # the outer neighbours' fits in use support ids and keep their energy factors, as the frozen ones do
             previous = {**outer, **held_frozen, **{k: s.own for k, s in snaps.items() if k in A}}   # amendment 11
             ids, refs = self.identity(A, snaps, previous, sid)
@@ -1817,10 +1861,13 @@ class _Run:
 
     # -- simultaneous (E15)
     def simultaneous(self) -> None:
+        """One click is one go: the link on the fits in use, the priced mode sets, one Gauss-Seidel sweep over the
+        conflict-free groups, then the end-of-batch link. The batch does not judge whether the fits settled; the
+        next click starts from the fits then in use."""
         from isar.analyze.coupled.types import TermInput
         from isar.session.inter_spectra.preview import preview_simultaneous
         from isar.session.inter_spectra.schedule import check_groups, plan_simultaneous
-        g, s = self.graph, self.settings
+        g = self.graph
         plan = plan_simultaneous(g, self.locks | self.stale_locks)
         check_groups(plan)
         self.ring_of = None
@@ -1838,12 +1885,10 @@ class _Run:
             else:
                 self.mark_unusable(u)
         self.open_pool(self.item.cores)
-        self.of = s.sweep_cap
+        self.of = 1
         self.start(anchors=(), rings={}, seams=[], preview=preview_simultaneous(g, plan).text, terms=plan.terms)
         self.stage_name, self.sweeps, self.rounds = "plan", 0, 0
         self.progress("plan")
-
-        cut: set = set()                                 # members the writer will no longer accept a condition on
 
         def terms_of(k, state):
             """Every term of ``k`` whose other members all have a held value (an unusable one conditions none)."""
@@ -1851,7 +1896,7 @@ class _Run:
             for i in plan.terms_of.get(k, ()):
                 t = plan.terms[i]
                 others = [m for m in t.members if m != k]
-                if all(m in state and m not in cut for m in others):
+                if all(m in state for m in others):
                     out.append(TermInput(t, tuple(state[m] for m in others)))
             return out
 
@@ -1859,139 +1904,97 @@ class _Run:
             for u in new:
                 active.discard(u)
 
-        data, unary = {}, {}
-        prev_total, outcome = None, "settled"
-        while True:                                      # one round
-            self.rounds += 1
-            self.round = self.rounds
-            sid = f"{self.batch}:round{self.rounds}"
-            t_round = time.perf_counter()
-            leave(self.take_new_locks(held))
-            before_link = {k: tuple(m.branch for m in held[k].modes) for k in held}   # the held fits, as the sweeps left them
-            self.link_stage(f"round{self.rounds}", held)
-            self.adopted = {}                            # the new link lists its changes afresh against the held fits
-            snaps = {}
-            for k in sorted(active):
+        self.rounds = 1
+        self.round = 1
+        sid = f"{self.batch}:round1"
+        t_round = time.perf_counter()
+        leave(self.take_new_locks(held))
+        self.link_stage("round1", held)
+        self.adopted = {}                                # the new link lists its changes afresh against the held fits
+        snaps = {}
+        for k in sorted(active):
+            terms = terms_of(k, held)
+            if terms:
+                snaps[k] = self.snapshot(k, held[k], sid, terms)
+            else:
+                active.discard(k)
+                self.not_reached.setdefault(k, CUT_OFF)
+        if not snaps:                                    # nothing is left to refit
+            self.drift = self.drift_of(held)
+            self.finish_links()
+            self.end("nothing_left", NOTHING_LEFT)
+            return
+        self.stage_name, self.index = "sweep", 0
+        self.progress("assign")
+        A, errors = self.priced_sets(snaps)
+        for k, exc in errors.items():                    # its mode set failed: its held value stays and conditions
+            self.latest[k] = "failed"                    # its neighbours as a fixed one
+            self.failed[k] = f"analysis error ({type(exc).__name__}: {exc})"
+        ids, refs = self.identity(A, snaps, dict(held), sid)
+        A, rename = canonical_factors(A, ids, refs, {u: h for u, h in held.items() if u not in A})
+        self.merge_aliases(rename)
+        A = rebuilt_factors(self.core, A, snaps, rename)     # one definition per link, both guards in it
+        held = {u: _renamed(h, rename) for u, h in held.items()}
+        self.stage_timing("round", 1, t_round, len(snaps), 0)
+        stage1 = {k: {"round": 1, "assignment": _plain(A[k]),
+                      "identity": {str(m): {"id": ids.ids.get(ref), "status": ids.status.get(ref)}
+                                   for m, ref in enumerate(refs[k])}} for k in A}
+        t_sweep = time.perf_counter()
+        leave(self.take_new_locks(held))                 # E11: a new lock leaves the sweep as a fixed neighbour
+        before, before_adopted = dict(held), dict(self.adopted)
+        self.stage_name, self.index = "sweep", 1
+        self.progress("refine")
+        width, snaps2, R_all = 0, {}, {}
+        for group in plan.groups:                        # E8: Gauss-Seidel, each group sees the earlier groups
+            gs = {}
+            for k in group:
+                if k not in active or k not in A:
+                    continue
                 terms = terms_of(k, held)
                 if terms:
-                    snaps[k] = self.snapshot(k, held[k], sid, terms)
-                else:
+                    gs[k] = self.snapshot(k, held[k], f"{self.batch}:sweep1", terms, stage_id=sid)
+                else:                            # its neighbours left during the round (a stale lock went)
                     active.discard(k)
                     self.not_reached.setdefault(k, CUT_OFF)
-            if not snaps:                                # no round can settle: nothing is left to refit
-                outcome = "nothing_left"
-                break
-            self.stage_name, self.index = "sweep", self.sweeps
-            self.progress("assign")
-            A, errors = self.fixed_sets(snaps, self.rounds == 1)   # the mode set is the link's, set in round 1 only
-            for k, exc in errors.items():                # its mode set failed: it would fail every round, its held
-                self.latest[k] = "failed"                # value stays and conditions its neighbours as a fixed one
-                self.failed[k] = f"analysis error ({type(exc).__name__}: {exc})"
-                active.discard(k)
-            ids, refs = self.identity(A, snaps, dict(held), sid)
-            A, rename = canonical_factors(A, ids, refs, {u: h for u, h in held.items() if u not in A})
-            self.merge_aliases(rename)
-            A = rebuilt_factors(self.core, A, snaps, rename)     # one definition per link, both guards in it
-            held = {u: _renamed(h, rename) for u, h in held.items()}
-            self.stage_timing("round", self.rounds, t_round, len(snaps), 0)
-            # the sweeps ended quiet, so the batch settles when this round's link left every label as it was
-            # (link_stage has already written the labels into ``held``, so ``a.changed`` cannot tell)
-            labels = {k: tuple(m.branch for m in held[k].modes) for k in snaps}
-            settled = self.rounds > 1 and all(before_link.get(k) == v for k, v in labels.items())
-            if settled:
-                break
-            stage1 = {k: {"round": self.rounds, "assignment": _plain(A[k]),
-                          "identity": {str(m): {"id": ids.ids.get(ref), "status": ids.status.get(ref)}
-                                       for m, ref in enumerate(refs[k])}} for k in A}
-            quiet = 0
-            while True:
-                if self.sweeps >= s.sweep_cap:
-                    outcome = "did_not_settle"
-                    break
-                t_sweep = time.perf_counter()
-                leave(self.take_new_locks(held))         # E11: a new lock leaves the sweeps as a fixed neighbour
-                before, before_cost, before_adopted = dict(held), (dict(data), dict(unary)), dict(self.adopted)
-                n = self.sweeps + 1
-                self.stage_name, self.index = "sweep", n
-                self.progress("refine")
-                move, width, snaps2, R_all = 0.0, 0, {}, {}
-                for group in plan.groups:                # E8: Gauss-Seidel, each group sees the earlier groups
-                    gs = {}
-                    for k in group:
-                        if k not in active or k not in A:
-                            continue
-                        terms = terms_of(k, held)
-                        if terms:
-                            gs[k] = self.snapshot(k, held[k], f"{self.batch}:sweep{n}", terms, stage_id=sid)
-                        else:                    # its neighbours left during the round (a stale lock went)
-                            active.discard(k)
-                            self.not_reached.setdefault(k, CUT_OFF)
-                    ks = list(gs)
-                    if not ks:
-                        continue
-                    width = max(width, len(ks))
-                    R = self.refits(gs, A, ids)
-                    for k in ks:
-                        r = R[k]
-                        snaps2[k], R_all[k] = gs[k], r
-                        if not isinstance(r, Exception) and r.status in _ELIGIBLE and r.fit is not None:
-                            old = {m.branch: m.omega0 for m in held[k].modes}
-                            move = max([move, *(abs(e - old[b]) for b, e in r.energies.items() if b in old)])
-                            held[k] = self.core.held_from_fit(r.fit, unit=k, fit=gs[k].fit_id,
-                                                              inputs=self.inputs.get(k), context=self.ctx[k],
-                                                              T=self.nodes[k].T,
-                                                              dormant=self.note_dormant(ids, k, gs[k].fit_id, r.energies))
-                            data[k], unary[k] = r.D, r.unary
-                            self.adopted[k] = tuple((A[k].search or {}).get("applied", ()))
-                        elif isinstance(r, Exception) or r.status == "failed":
-                            move = math.inf              # rules.settled: a failed block is never quiet
-                if not snaps2:                           # every member left during the round: nothing to save
-                    break
-                self.sweeps = n
-                entries = [self.entry(k, snaps2[k], R_all[k], self.identity_flags(ids, k), stage1.pop(k, None))
-                           for k in snaps2]
-                verdict = self.save_stage("sweep", n, entries, [])
-                for k, snap in snaps2.items():
-                    if self.judge(k, R_all[k], verdict, snap.fit_id):
-                        self.records[snap.fit_id] = R_all[k].fit
-                    elif k in verdict["refused"]:        # E9: every refused member goes back, and the sweep is not quiet
-                        held[k] = before[k]
-                        if k in before_adopted:
-                            self.adopted[k] = before_adopted[k]
-                        else:
-                            self.adopted.pop(k, None)
-                        for now, was in zip((data, unary), before_cost):
-                            if k in was:
-                                now[k] = was[k]
-                            else:
-                                now.pop(k, None)
-                        move = math.inf
-                        if verdict["refused"][k] in (self.records_mod.REFUSED["locked"],
-                                                     self.records_mod.REFUSED["picked"],
-                                                     self.records_mod.REFUSED["inputs_changed"]):
-                            active.discard(k)        # the writer refuses every later refit of it too
-                        if verdict["refused"][k] == self.records_mod.REFUSED["picked"]:
-                            self.hold_pick(k, held)
-                cut |= self.refused_neighbours(verdict, snaps2)
-                total = self.total(A, held, data, unary)     # the stopping cost of the state the writer accepted
-                self.stage_timing("sweep", n, t_sweep, width, len(snaps2))
-                self.progress("save")
-                quiet =quiet + 1 if move <= s.sweep_tol_meV else 0
-                improving = (prev_total is not None and total is not None
-                             and (prev_total - total) > s.cost_rel_tol * max(1.0, abs(prev_total)))
-                prev_total = total
-                if quiet >= 2 and not improving:         # converged; reopen counts and assignments next round
-                    break
-            if outcome == "did_not_settle":
-                break
+            ks = list(gs)
+            if not ks:
+                continue
+            width = max(width, len(ks))
+            R = self.refits(gs, A, ids)
+            for k in ks:
+                r = R[k]
+                snaps2[k], R_all[k] = gs[k], r
+                if not isinstance(r, Exception) and r.status in _ELIGIBLE and r.fit is not None:
+                    held[k] = self.core.held_from_fit(r.fit, unit=k, fit=gs[k].fit_id,
+                                                      inputs=self.inputs.get(k), context=self.ctx[k],
+                                                      T=self.nodes[k].T,
+                                                      dormant=self.note_dormant(ids, k, gs[k].fit_id, r.energies))
+                    self.adopted[k] = tuple((A[k].search or {}).get("applied", ()))
+        if not snaps2:                                   # every member left during the round: nothing to save
+            self.drift = self.drift_of(held)
+            self.finish_links()
+            self.end("nothing_left", NOTHING_LEFT)
+            return
+        self.sweeps = 1
+        entries = [self.entry(k, snaps2[k], R_all[k], self.identity_flags(ids, k), stage1.pop(k, None))
+                   for k in snaps2]
+        verdict = self.save_stage("sweep", 1, entries, [])
+        for k, snap in snaps2.items():
+            if self.judge(k, R_all[k], verdict, snap.fit_id):
+                self.records[snap.fit_id] = R_all[k].fit
+            elif k in verdict["refused"]:                # E9: every refused member goes back
+                held[k] = before[k]
+                if k in before_adopted:
+                    self.adopted[k] = before_adopted[k]
+                else:
+                    self.adopted.pop(k, None)
+                if verdict["refused"][k] == self.records_mod.REFUSED["picked"]:
+                    self.hold_pick(k, held)
+        self.stage_timing("sweep", 1, t_sweep, width, len(snaps2))
+        self.progress("save")
         self.drift = self.drift_of(held)
         self.finish_links()
-        if outcome == "did_not_settle":
-            self.end("did_not_settle", f"did not settle within {s.sweep_cap} sweeps; its results are kept")
-        elif outcome == "nothing_left":
-            self.end(outcome, NOTHING_LEFT)
-        else:
-            self.end(outcome)
+        self.end("completed")
 
     def hold_pick(self, k: str, held: dict) -> None:
         """A member refused as ``picked`` is fixed at the fit the user picked, read as a lock's fit is, so its
@@ -2009,53 +2012,6 @@ class _Run:
         except Exception as e:
             log.warning("inter-spectra: %s: the picked fit cannot condition its neighbours (%s)", k, e)
             held.pop(k, None)
-
-    def refused_neighbours(self, verdict: dict, snaps: dict) -> set:
-        """E9/E11: the neighbours a sweep's refusals name that no later sweep can condition on: one whose inputs
-        changed, or one whose fit the user picked since the start (the writer refuses every other fit of it for
-        the rest of the batch). A neighbour whose own refit went back, or a new lock (a fixed neighbour from the
-        next sweep), stays."""
-        plain = (self.records_mod.REFUSED["locked"], self.records_mod.REFUSED["picked"],
-                 self.records_mod.REFUSED["inputs_changed"])
-        fits = {s.fit_id for k, s in snaps.items() if k in verdict["refused"] and verdict["refused"][k] not in plain}
-        if not fits:
-            return set()
-        locks = self.read_user(self.root).locks
-        out = set()
-        for line in self.records_mod.read_log(self.root).refits:
-            a = line.accept
-            if line.fit not in fits or a is None or a.detail is None:
-                continue
-            n = a.detail
-            if a.reason == "neighbour_inputs_changed" or (
-                    a.reason == "neighbour_fit_changed" and n not in verdict["refused"]
-                    and not (n in locks and locks[n].locked)):
-                out.add(n)
-        return out
-
-    def total(self, A: dict, held: dict, data: dict, unary: dict) -> float | None:
-        """The one shared objective over the stage's factor set at the held energies (spec 4). A factor whose
-        member no longer carries its branch (its refit went back) is left out of this diagnostic sum."""
-        factors = [f for a in A.values() for f in a.factors]    # every copy: two definitions under one id raise
-        energies, kept = {}, []
-        for f in factors:
-            fid = f.factor_id
-            vals = {}
-            for m in f.members:
-                md = next((x for x in held[m].modes if x.branch == f.branch_id), None) if m in held else None
-                if md is None:
-                    break
-                vals[(m, fid)] = md.omega0
-            else:
-                energies.update(vals)
-                kept.append(f)
-        try:
-            total, _ = self.core.total_objective(kept, energies, {k: v for k, v in data.items() if v is not None},
-                                                 unary)
-        except ValueError:
-            log.exception("batch %s: the shared objective could not be summed", self.batch)
-            return None
-        return float(total)
 
     def drift_of(self, held: dict) -> dict | None:
         """Cumulative T drift per (series, analyzer, branch) over the final held fits (an endpoint diagnostic)."""
