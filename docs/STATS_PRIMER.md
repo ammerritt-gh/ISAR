@@ -1222,6 +1222,45 @@ proof of accuracy. Nothing here supports the 1 or 2 nat aims at four or more mod
 the constants above, the budget, the seed and `--M`). A later run under the same signature carries it; any
 change, including the budget, reruns it. A refused deep pass is retried.
 
+### 2.5 The tie-breaker penalty between close modes **[Partial; uncalibrated, settings provisional]**
+
+Two modes that the counts cannot tell apart from one mode should not earn a second mode's evidence for free. The penalty is part of the model wherever two modes sit close: in the solo fast pass's prior, so a two-mode fit whose pair is indistinguishable pays it when its count is compared with a one-mode fit (option (a) of the inter-spectra design; no normalisation cancels it), and in the coupled refit's objective, where the count is fixed and the penalty acts as a tie-breaker. The code is `isar/analyze/pair_penalty.py` (the pure core) and `fast_pass._Engine.pair_terms`, `pair_penalty` and `close_pairs`. It is a soft prior, not a cut: neighbouring spectra's priors overcome it (`docs/design/inter_spectra.md` §4), and a resolvable shoulder escapes it.
+
+For a pair *a*, *b* in one spectrum, each mode is a Gaussian-equivalent line: its centre is `sqrt(max(ω0² − 2Γ², 0))`, the peak of the DHO denominator (a shortcut recorded in the code); its width is the line and the resolution in quadrature; its counts are its expected Stokes-side counts.
+
+- **Separability D** is the expected Poisson deviance between the pair's two lines and the best single merged line (a moment-matched Gaussian), summed over the spectrum's own channels and weighted by the full model's expected counts. Resolution, exposure, background and detailed balance enter through those channels. Identical components give D = 0, and so does a pair with one amplitude at zero.
+- **The penalty**, in nats, is `cap × 4p(1−p) × exp(−D / d0)`, with *p* one mode's share of the pair's combined counts. The factor 4p(1−p) is largest for an equal pair and vanishes as either mode fades, so the penalty goes when one mode takes the intensity. The exponential halves at D = d0 ln 2 (about 2.8 for d0 = 4) and is mostly gone by about 3 d0. Pairs' penalties add. A pair further apart than three combined widths is not evaluated; that saves time and is not a cutoff.
+- **Settings** (provisional and uncalibrated; operator, 2026-11-04: "We can trial these"): `[fitting.fast_pass] pair_penalty_cap`, 1 nat, and `pair_penalty_d0`, 4. A cap of 0 turns the penalty off.
+- **Close pairs** are the pairs the coupled refit's restarts act on: those whose equal-split separability `D_eq` (the same pair with its counts split equally, so it measures how distinguishable the shapes are whatever the fit divides) still gives a fade of at least 0.05 (`CLOSE_FADE`, an algorithm setting in code).
+- **Exact symmetry.** A smooth penalty cannot separate two exactly identical modes on its own; the coupled refit's restarts do.
+
+**The closed form and its known limit.** The exact separability is a small fit against a merged line that is one peak which may take a different, still coherent linewidth (a DHO averaged over a spread of resonance energies, convolved with the resolution). That is too costly inside every optimiser step, so the code uses the closed form above. Against the exact reference, on a synthetic grid of 16 cells, the separability at which the penalty halves lies within 25% of the exact value in 8 cells. The closed form overestimates separability for broader pairs, so the penalty fades early there: in the worst cell the closed form says the penalty has halved while the exact penalty is still about 0.9 of its cap. Only an essentially exact minimisation passes every cell, at a cost the fits cannot carry. The operator chose the closed form and will judge its acceptance in practice (2026-11-04: "(b) is fine. I'll judge acceptance in practice once i can see it in action."). The 25% band is therefore not a gate. The required limits (identical components give D = 0; one amplitude at zero gives D = 0) are tested in `tests/analyze/test_pair_penalty.py`. Upgrade the form if a real spectrum shows the fade in the wrong place.
+
+The 16-cell comparison, recorded once on 2026-11-04. It was a scratch run: no script in the repository regenerates it, so it is a record of that run, not a figure this primer generates. The pass band is 2.1 to 3.5 (the exact separability within 25% of d0 ln 2, about 2.8). k is the ratio Γ₂/Γ₁ of the two dampings; Γ₁ is at the resolution floor or at 0.19 meV; N is the pair's counts.
+
+| Amplitude N₁:N₂ | k = Γ₂/Γ₁ | Γ₁ (meV) | N | Separation where the closed form halves (meV) | Exact separability there | Within band |
+|---|---|---|---|---|---|---|
+| 1:1 | 1 | floor | 10³ | 1.0 | 2.3 | yes |
+| 1:1 | 1 | floor | 10⁵ | 0.5 | 1.9 | no |
+| 1:1 | 1 | 0.19 | 10³ | 1.0 | 0.8 | no |
+| 1:1 | 1 | 0.19 | 10⁵ | 0.5 | 0.5 | no |
+| 1:1 | 2 | floor | 10³ | 1.0 | 2.2 | yes |
+| 1:1 | 2 | floor | 10⁵ | 0.5 | 1.8 | no |
+| 1:1 | 2 | 0.19 | 10³ | 1.0 | 2.0 | no |
+| 1:1 | 2 | 0.19 | 10⁵ | 0.1 | 2.5 | yes |
+| 3:1 | 1 | floor | 10³ | 0.9 | 2.5 | yes |
+| 3:1 | 1 | floor | 10⁵ | 0.4 | 2.4 | yes |
+| 3:1 | 1 | 0.19 | 10³ | 0.9 | 1.1 | no |
+| 3:1 | 1 | 0.19 | 10⁵ | 0.4 | 1.1 | no |
+| 3:1 | 2 | floor | 10³ | 0.9 | 2.5 | yes |
+| 3:1 | 2 | floor | 10⁵ | 0.4 | 2.5 | yes |
+| 3:1 | 2 | 0.19 | 10³ | 0.8 | 1.6 | no |
+| 3:1 | 2 | 0.19 | 10⁵ | 0.1 | 2.1 | yes |
+
+Eight of the sixteen cells pass. The fade is early for the broader pairs, as the paragraph above says.
+
+**Stored results.** The penalty changes fitted results in both passes. The fast pass's implementation version is 4, and its settings enter the card's guidelines signature, so a fast pass stored before this change reads as not current until it is run again (`docs/design/inter_spectra.md` §9).
+
 ## 3. Certify: the interval ladder, with its coverage measured
 
 The fast error bar every tool quotes is the Hessian ("HESSE"): invert the curvature of the cost
