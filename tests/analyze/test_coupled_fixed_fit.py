@@ -1,4 +1,4 @@
-"""One fit of the fixed mode set (S1U6): the refit's three steps, the close-pair restarts, "not observed here" and the
+"""One fit of the fixed mode set (S1U6): the refit's three steps, the close-pair restarts, the hard cases of a fixed set and the
 three new flags. Spectra are Poisson counts generated at test time (``test_coupled_refit.spectrum``) and the links are
 made up (``_search_harness``); no measured value. The real engine fits every case, so a refit takes a few seconds.
 """
@@ -172,3 +172,45 @@ def test_the_connection_reason_names_the_branches_the_tie_moves():
     assert (r["code"], r["ids"], r["values"]) == ("connection_ambiguous", ["b2", "b4"],
                                                    {"group": "g2", "kind": "competition"})
     assert R._connection_reasons(links_for(1)) == [] and R._connection_reasons(None) == []
+
+
+# ---- the fixed set's hard questions: a crossing, a hinted mode, a width at its floor -------------------------------
+TODAY_STATUSES = {"determined_by_own_data", "held_by_neighbours", "poorly_determined"}
+
+
+@pytest.mark.parametrize("seed", [3, 4])
+def test_an_unresolvable_crossing_keeps_both_modes_with_their_own_intensities(seed):
+    """The middle of a crossing: b1 runs 8 -> 10 meV and b2 10 -> 8 meV across its T-neighbours, so here one line at
+    9 meV holds both. Both modes keep the link's labels, none is dropped, each reports its own fitted intensity (and
+    its error bar where the fit has them), and no group is reported."""
+    line = [(9.0, 1.0, 60.0)]
+    nb = [(8.0, 1.0, 30.0), (10.0, 1.0, 30.0)]
+    neigh = {"x": (nb, ["b1", "b2"]), "z": (nb, ["b2", "b1"])}
+    links = links_for(2, labels=("b1", "b2"), ties=[tie("g1", "swap", ("x", "y"), ("b2", "b1"))])
+    s = snap(line, [(8.9, 1.0, 30.0), (9.1, 1.0, 30.0)], ["b1", "b2"], neigh, links=links, seed=seed)
+    r = R.refit(s, stage="continuous", assignment=fixed(s, apply_changes=False))
+    peaks = peaks_by_branch(r)
+    assert r.status in ("accepted", "unchanged") and r.assignment.slots == ("b1", "b2")
+    assert r.assignment.count == 2 and sorted(peaks) == ["b1", "b2"] and len(r.modes) == 2
+    assert r.fit["grouped_intensity"] == [] and {m.status for m in r.modes} <= TODAY_STATUSES
+    assert all(p["area_stokes"] is not None for p in peaks.values())
+    if r.fit["errors"] == "conditional":
+        assert all(p["sigma_area"] is not None for p in peaks.values())
+
+
+def _hinted(seed):
+    """The link adds b2 at 15 meV where the spectrum (one line at 8 meV) shows nothing; the neighbours hold both."""
+    one = [(8.0, 0.4, 40.0)]
+    both = one + [(15.0, 0.4, 40.0)]
+    neigh = {"x": (both, ["b1", "b2"]), "z": (both, ["b1", "b2"])}
+    s = snap(one, one, ["b1"], neigh, links=links_for(1, changes=[add("b2", 15.0)]), scale=8.0, seed=seed)
+    return R.refit(s, stage="continuous", assignment=fixed(s))
+
+
+@pytest.mark.parametrize("seed", [3, 4])
+def test_a_hinted_mode_the_counts_contradict_is_kept_with_its_label(seed):
+    r = _hinted(seed)
+    peaks = peaks_by_branch(r)
+    assert r.status == "accepted" and r.assignment.count == 2 and len(r.modes) == 2
+    assert sorted(peaks) == ["b1", "b2"] and peaks["b2"]["area_stokes"] is not None
+    assert {m.status for m in r.modes} <= TODAY_STATUSES
