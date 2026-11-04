@@ -38,6 +38,8 @@ REASON_WORDS = {
     "incomplete_comparison": "The comparison with the fast solo fit is incomplete.",
     "release_fit_failed": "The fit with the neighbours removed did not converge, so the cost of coupling is unknown.",
     "errors_unavailable": "Error bars could not be calculated for this fit.",
+    "connection_ambiguous": "The link found two near-equal ways to connect this mode to its neighbours.",
+    "width_at_limit": "A fitted width ended on its floor or its ceiling.",
 }
 
 

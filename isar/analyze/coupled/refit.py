@@ -1585,8 +1585,11 @@ def _finish(snapshot, a, stage: FitStage, results, restart_s: float = 0.0, *, pr
     fast_by = _fast_modes(fast, ids, [md.omega0 for md in modes], exact_only=snapshot.fast is None)
     delta_fast = {"count": k - len(fast.modes), "omega0": {b: energies[b] - fast_by[b].omega0 for b in ids if b in fast_by}}
 
+    more = _connection_reasons(snapshot.links)
+    more += [_reason("width_at_limit", f"the width of {ids[m]} ended on its {limit}", [ids[m]], limit=limit)
+             for m, limit in _width_limits(eng, model, theta)]
     flag = _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, F, R, cov, notes, dropped,
-                  linked=linked)
+                  linked=linked, more=more)
     why = _why(status, reason, spec.n0, k, slots, spec.incoming, J_old, J, variant_changed)
     fit, overlay, cov_out = _record(eng, spec, a, model, theta, cov, sd, rel_sd, modes, ids, D, status)
     normalisers = {f"ln_z:{b}": (float(o.ln_z), "ln meV") for b, o in zip(slots, objs)
@@ -1602,6 +1605,34 @@ def _finish(snapshot, a, stage: FitStage, results, restart_s: float = 0.0, *, pr
         overlay_unavailable=None if drawn else f"a {status} refit is not drawn",
         covariance=cov_out, errors="conditional" if cov is not None else "unavailable", normalisers=normalisers,
         starts=stage.starts + len(results) + rel.n_fits, timing=timing, priced=tuple(priced), cache_hits=hits)
+
+
+def _width_limits(eng, model, theta) -> list[tuple[int, str]]:
+    """(mode, "floor" | "ceiling") of each free, non-delta width that ends on its lower bound (the width floor, the
+    railed rule's 1e-6 of span) or on its ceiling (``at_width_cap``'s rule)."""
+    zm, free = eng.zmap(model), {int(i) for i in model.free}
+    out = []
+    for m, (_a, g, _c) in enumerate(model.modes):
+        if g not in free or m in model.delta:
+            continue
+        if theta[g] - model.lo[g] <= 1e-6 * (model.hi[g] - model.lo[g]):
+            out.append((m, "floor"))
+        elif zm.at_cap(theta, m):
+            out.append((m, "ceiling"))
+    return out
+
+
+def _connection_reasons(links) -> list[dict]:
+    """One connection_ambiguous reason per near tie the link reports for this spectrum (its tie sides): ids the
+    branches the tied labelling moves, values the tie group and its kind."""
+    if links is None:
+        return []
+    out = []
+    for t in links.ties:
+        moved = sorted({b for x, y in zip(links.labels, t.slots) if x != y for b in (x, y) if b is not None})
+        out.append(_reason("connection_ambiguous", f"the link found a near tie ({t.kind}) in connecting "
+                           f"{', '.join(moved) or 'these modes'}", moved, group=t.group, kind=t.kind))
+    return out
 
 
 def _fast_modes(fast: Held, ids, energy, *, exact_only: bool) -> dict[str, HeldMode]:
@@ -1621,10 +1652,10 @@ def _fast_modes(fast: Held, ids, energy, *, exact_only: bool) -> dict[str, HeldM
 
 
 def _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, F, R, cov, notes, dropped, *,
-           linked=False) -> dict:
+           linked=False, more=()) -> dict:
     """The flag (N2): F against the threshold, and every own reason of the design's list (they flag
     whatever the score); the four note codes and a neighbour-supported split never set ``flagged``. ``linked``: the
-    link set the count, so no reason says the neighbours' evidence changed it."""
+    link set the count, so no reason says the neighbours' evidence changed it; ``more``: reasons made by the caller."""
     s = snapshot.settings
     k = len(slots)
     reasons = list(notes)
@@ -1678,6 +1709,7 @@ def _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, 
                                [snapshot.unit]))
     if cov is None:
         reasons.append(_reason("errors_unavailable", "error bars unavailable for this fit", [snapshot.unit]))
+    reasons += list(more)
     flagged = (F is not None and F > s.flag_threshold) or any(r["code"] not in NOTE_CODES for r in reasons)
     return {"score": F, "flagged": bool(flagged), "reasons": reasons}
 

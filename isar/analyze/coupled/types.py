@@ -21,7 +21,7 @@ FLAG_CODES = ("score_over_threshold", "count_changed_by_neighbours", "neighbour_
               "unmatched_branch_mid_window", "branch_lost_mid_window", "identity_ambiguous", "loop_inconsistent",
               "unresolved_return", "did_not_settle", "seam_disagreement", "stale_locked_fit", "linewidth_change",
               "overdamped_entry", "t_drift_cumulative", "neighbour_precision_unavailable", "incomplete_comparison",
-              "release_fit_failed", "errors_unavailable")
+              "release_fit_failed", "errors_unavailable", "connection_ambiguous", "width_at_limit")
 SEVERITIES = ("info", "warn", "serious")
 SEVERITY_OF = {
     "score_over_threshold": "serious", "count_changed_by_neighbours": "warn",
@@ -30,7 +30,8 @@ SEVERITY_OF = {
     "unresolved_return": "serious", "did_not_settle": "serious", "seam_disagreement": "warn",
     "stale_locked_fit": "serious", "linewidth_change": "warn", "overdamped_entry": "warn",
     "t_drift_cumulative": "warn", "neighbour_precision_unavailable": "info", "incomplete_comparison": "warn",
-    "release_fit_failed": "warn", "errors_unavailable": "info",
+    "release_fit_failed": "warn", "errors_unavailable": "info", "connection_ambiguous": "warn",
+    "width_at_limit": "warn",
 }
 
 

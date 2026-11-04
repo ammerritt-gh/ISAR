@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from _search_harness import links_for, snapshot_for, split_of
+from _search_harness import add, links_for, snapshot_for, split_of, tie
 from test_coupled_refit import codes, spectrum
 
 from isar.analyze import prior
@@ -132,8 +132,11 @@ NEIGH_TWO = {"x": (TWO, ["b1", "b2"]), "z": (TWO, ["b1", "b2"])}
 
 def test_a_linked_split_is_accepted_as_linked_with_no_evidence_wording():
     split = split_of(0, "b1", 8.0, "b2", 10.0)
-    s = snap(TWO, [(9.0, 1.0, 60.0)], ["b1"], NEIGH_TWO, links=links_for(1, changes=[split], labels=("b1",)))
+    links = links_for(1, changes=[split], labels=("b1",), ties=[tie("g1", "competition", ("x", "y"), ("b2",))])
+    s = snap(TWO, [(9.0, 1.0, 60.0)], ["b1"], NEIGH_TWO, links=links)
     r = R.refit(s, stage="continuous", assignment=fixed(s))
+    [amb] = [x for x in r.flag["reasons"] if x["code"] == "connection_ambiguous"]     # the link's near tie
+    assert amb["ids"] == ["b1", "b2"] and amb["severity"] == "warn" and r.flag["flagged"]
     assert (r.status, r.reason, r.assignment.count) == ("accepted", "linked", 2)
     assert r.why_changed == "The link changed the number of modes from 1 to 2."
     assert "evidence" not in r.why_changed
@@ -149,3 +152,23 @@ def test_the_linked_acceptance_rule_never_needs_evidence():
     assert rules.acceptance(**base)[0] == "failed"                            # the priced path is unchanged
     assert rules.acceptance(**{**base, "hard_violation": True}, linked=True) == ("rejected", "hard_constraint")
     assert rules.acceptance(**{**base, "any_finite": False}, linked=True)[0] == "failed"
+
+
+# ---- the new flags ---------------------------------------------------------------------------------------------------
+def test_a_width_on_its_floor_or_ceiling_is_at_its_limit():
+    eng, model, theta = _pinned_engine()
+    (_a0, g0, _c0), (_a1, g1, _c1) = model.modes
+    zm = eng.zmap(model)
+    t = theta.copy()
+    t[g0] = model.lo[g0]
+    t[g1] = zm.ceiling(t, 1)
+    assert R._width_limits(eng, model, t) == [(0, "floor"), (1, "ceiling")]
+    assert R._width_limits(eng, model, theta) == []
+
+
+def test_the_connection_reason_names_the_branches_the_tie_moves():
+    links = links_for(3, labels=("b1", "b2", "b3"), ties=[tie("g2", "competition", ("x", "y"), ("b1", "b4", "b3"))])
+    [r] = R._connection_reasons(links)
+    assert (r["code"], r["ids"], r["values"]) == ("connection_ambiguous", ["b2", "b4"],
+                                                   {"group": "g2", "kind": "competition"})
+    assert R._connection_reasons(links_for(1)) == [] and R._connection_reasons(None) == []
