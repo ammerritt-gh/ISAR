@@ -913,6 +913,7 @@ class _Run:
         self.fitting: dict[str, int] = {}         # unit -> pool jobs in flight (pricing jobs of one unit may overlap)
         self.sent: dict = {}                      # refit step key -> perf_counter when it went to a worker
         self.flown: dict = {}                     # refit step key -> seconds from that send to its collection
+        self.applied_names: dict[str, list[str]] = {}   # unit -> the change ids its fixed mode set applied (the log line)
         self.refused: set[str] = set()            # units whose latest failed attempt was a writer refusal
         self.final = False                        # end() has started: a member never attempted is "not reached"
         self._members_last = None                 # the last event sent
@@ -1350,13 +1351,17 @@ class _Run:
     def fixed_sets(self, snaps: dict, apply_changes: bool) -> tuple[dict, dict]:
         """Stage 1 of every snapshot: the link's fixed mode set (``core.fixed_assignment``), nothing priced. Returns
         ``(A, errors)`` as ``assign`` did: the exception that failed each spectrum is its failed refit."""
+        from isar.analyze.coupled.search import change_id
         label = self.stage_label()
         A, errors = {}, {}
+        self.applied_names = {}
         for k, s in snaps.items():
             t = self.tallies[label, k] = _Tally(label, k)
             t.branches_seen, t.dormant_seen = _seen(s)
             try:
                 A[k] = self.core.fixed_assignment(s, apply_changes=apply_changes)
+                # named here: a sweep's snapshot has lost the changes its fit applied, so its indices no longer match
+                self.applied_names[k] = [change_id(s.links.changes[i]) for i in (A[k].search or {}).get("applied", ())]
             except Exception as exc:  # noqa: BLE001 — one spectrum's failure is its result
                 log.error("the mode set of %s failed: %s", k, exc, exc_info=exc)
                 errors[k] = exc
@@ -1579,7 +1584,7 @@ class _Run:
     def log_fit(self, stage: str, k: str, snap, a, r, restarts: int, wall_s: float, extra_flags=()) -> None:
         """The batch's per-spectrum line, written as the spectrum's refit returns (readable while the batch runs)."""
         n_in = len(snap.own.modes)
-        applied = ",".join(str(i) for i in ((a.search or {}).get("applied") or ())) or "-"
+        applied = ",".join(self.applied_names.get(k, ())) or "-"
         if isinstance(r, Exception):
             status, work, flags = f"failed:{type(r).__name__}", 0.0, "-"
         else:

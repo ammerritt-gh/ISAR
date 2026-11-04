@@ -1238,6 +1238,22 @@ def test_the_log_line_names_the_flags_the_saved_fit_carries(tmp_path, monkeypatc
     assert fields["flags"] == ",".join(x["code"] for x in stored.flag.reasons) == "identity_ambiguous"
 
 
+def test_the_log_line_names_the_change_it_applied_by_its_id(tmp_path, caplog):
+    import logging
+
+    from isar.analyze.coupled import linking
+    caplog.set_level(logging.INFO, logger=runner.log.name)
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): {"slots": ["B", "C"]}})
+    a = k["a03", 150.0]
+    add = linking.Change("add", None, ("C",), ())
+    linker = fakes.ScriptedLinker(lambda unit, stage, held: tuple(m.branch for m in held.modes),
+                                  extra=lambda stage, labels, state: {"changes": {u: (add,) if u == a else () for u in state}})
+    Bench(ws).run(spec, linker=linker)
+    row = next(m for m in caplog.messages if m.startswith("inter fit ") and f"unit={a} " in m)
+    fields = dict(f.split("=", 1) for f in row.split()[2:])
+    assert fields["modes"] == "1+1" and fields["applied"] == "add:C"
+
+
 # ---------------------------------------------------------------------------
 # the real core, end to end (not slow: 2 analyzers x 2 temperatures, tiny generated spectra, one core)
 # ---------------------------------------------------------------------------
