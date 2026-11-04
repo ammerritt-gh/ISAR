@@ -11,12 +11,11 @@ on the graph, and fits it with its own refit pool inside the item's cores:
   (continuous Gauss-Seidel sweeps over conflict-free groups) until a round changes nothing, or the sweep cap ends
   it as "did not settle".
 
-Stage 1 is search, price, resume: one core ``Search`` per spectrum of the ring or round, all driven together through
-one pool stream. Each search waits only for its own jobs: when the last job of its pass returns, it is fed that pass's
-prices in its own job order and sends its next jobs at once, so no spectrum waits for another. A pool exception
-becomes that job's failed price and is never cached; a search that raises fails only its spectrum. With more than one
-worker and a core that has ``run_task``, a job's inner work (its fits, basins and split nodes) runs as tasks on the
-same pool (``_Sched``).
+Stage 1 is the link's fixed mode set (``core.fixed_assignment``): no count, labelling or structural variant is priced,
+so a batch computes no evidence and no split integral. ``assign`` (the old search, one core ``Search`` per spectrum
+driven through one pool stream) and ``_Sched`` stay in the file for the later targeted-pass job and are not called by
+a batch. The refits stream through the pool as three steps per spectrum (``core.refit_step``: fit, the close-pair
+restarts as separate parallel calls, finish), so a ring takes about as long as its slowest spectrum.
 
 Every ring or sweep is handed over through ``emit`` and the runner waits on ``ack`` for the writer's verdict
 before the next stage: acceptance decides what the next stage conditions on, and a refused refit's held value
@@ -891,7 +890,7 @@ class _Run:
         self.t0 = time.perf_counter()
         self.timing = {"wall_s": 0.0, "prepare_s": 0.0, "ship_s": 0.0, "save_s": 0.0, "assign_s": 0.0,
                        "likelihood_s": 0.0, "continuous_s": 0.0, "uncertainty_s": 0.0, "release_s": 0.0,
-                       "starts": 0, "stages": [], "target_s": target_s, "over_target": False, "search_s": 0.0,
+                       "restart_s": 0.0, "starts": 0, "stages": [], "target_s": target_s, "over_target": False, "search_s": 0.0,
                        "link_s": 0.0,
                        "pool": {"workers": 1, "iterations": 0, "map_wall_s": 0.0, "busy_s": 0.0}}
         self.tallies: dict[tuple[str, str], _Tally] = {}      # (stage label, unit) -> its stage-1 search record
@@ -912,6 +911,8 @@ class _Run:
         self.drift = None
         self._members_cb = members
         self.fitting: dict[str, int] = {}         # unit -> pool jobs in flight (pricing jobs of one unit may overlap)
+        self.sent: dict = {}                      # refit step key -> perf_counter when it went to a worker
+        self.flown: dict = {}                     # refit step key -> seconds from that send to its collection
         self.refused: set[str] = set()            # units whose latest failed attempt was a writer refusal
         self.final = False                        # end() has started: a member never attempted is "not reached"
         self._members_last = None                 # the last event sent
@@ -921,6 +922,11 @@ class _Run:
     def fly(self, key, on: bool) -> None:
         """_Pool.watch: a job of a unit starts or is collected (bookkeeping only; price keys are (unit, job key))."""
         u = key[0] if isinstance(key, tuple) else key
+        if isinstance(key, tuple) and len(key) == 3:         # a refit step: (unit, step, index)
+            if on:
+                self.sent[key] = time.perf_counter()
+            else:
+                self.flown[key] = time.perf_counter() - self.sent.get(key, time.perf_counter())
         n = self.fitting.get(u, 0) + (1 if on else -1)
         if n > 0:
             self.fitting[u] = n
@@ -1341,8 +1347,25 @@ class _Run:
     def tally(self, label: str, k: str) -> _Tally:
         return self.tallies.setdefault((label, k), _Tally(label, k))
 
+    def fixed_sets(self, snaps: dict, apply_changes: bool) -> tuple[dict, dict]:
+        """Stage 1 of every snapshot: the link's fixed mode set (``core.fixed_assignment``), nothing priced. Returns
+        ``(A, errors)`` as ``assign`` did: the exception that failed each spectrum is its failed refit."""
+        label = self.stage_label()
+        A, errors = {}, {}
+        for k, s in snaps.items():
+            t = self.tallies[label, k] = _Tally(label, k)
+            t.branches_seen, t.dormant_seen = _seen(s)
+            try:
+                A[k] = self.core.fixed_assignment(s, apply_changes=apply_changes)
+            except Exception as exc:  # noqa: BLE001 — one spectrum's failure is its result
+                log.error("the mode set of %s failed: %s", k, exc, exc_info=exc)
+                errors[k] = exc
+                t.error = f"{type(exc).__name__}: {exc}"
+        return A, errors
+
     def assign(self, snaps: dict, cache: dict) -> tuple[dict, dict]:
-        """Stage 1 of every snapshot: one core ``Search`` per spectrum, all driven together through one pool stream.
+        """The old stage 1, kept for the later targeted-pass job and not called by a batch (the design: no count
+        search, evidence or split integral in the anchored and simultaneous passes). Stage 1 of every snapshot: one core ``Search`` per spectrum, all driven together through one pool stream.
         Each search waits only for its own jobs: when the last job of its pass is back it is fed that pass's prices
         in job order (cache hits included), and its next pass's uncached jobs join the stream at once, while other
         spectra's jobs still run. A pass the cache answers alone is fed inline. ``cache``: unit -> {job key:
@@ -1489,16 +1512,75 @@ class _Run:
         return ids, refs
 
     def refits(self, snaps: dict, A: dict) -> dict:
-        calls = [(k, (snaps[k],), {"stage": "continuous", "assignment": A[k], "workers": 1}) for k in snaps]
-        R = self.pool.map("refit", calls)
+        """The refit of every snapshot as streamed pool steps, ``{unit: RefitResult or the exception that failed it}``
+        in the order of ``snaps``. Per spectrum: ``fit``; then its close-pair restarts as separate calls (they run in
+        parallel, behind the fits already queued); once all are back, ``finish``. An exception at any step is that
+        spectrum's result and its other steps are dropped. One log line per spectrum as its finish returns."""
         label = self.stage_label()
+        stage_tag = label if self.kind == "anchored" else f"{label} sweep{self.index}"
+        R, stages, got = {}, {}, {}
+        t_stream = time.perf_counter()
+        self.sent.clear()
+        self.flown.clear()
+
+        def call(k, step, i, *args):
+            return [((k, step, i), (step, snaps[k], A[k], *args), {})]
+
+        def finish(k):
+            stage = stages[k]
+            results = [got[k][i] for i in range(len(stage.restarts))]
+            restart_s = sum(self.flown.get((k, "restart", i), 0.0) for i in range(len(stage.restarts)))
+            return call(k, "finish", 0, stage, results, restart_s)
+
+        def done(k, r):
+            R[k] = r
+            self.log_fit(stage_tag, k, snaps[k], A[k], r, len(stages[k].restarts) if k in stages else 0,
+                         time.perf_counter() - self.sent.get((k, "fit", 0), t_stream))
+
+        def more(key, result):
+            k, step, i = key
+            if k in R:
+                return ()                                     # the spectrum already failed: a late restart is dropped
+            if isinstance(result, Exception):
+                done(k, result)
+                return ()
+            if step == "fit":
+                stages[k], got[k] = result, {}
+                if not result.restarts:
+                    return finish(k)
+                return [c for n, theta in enumerate(result.restarts)
+                        for c in call(k, "restart", n, result.model_key, theta)]
+            if step == "restart":
+                got[k][i] = result
+                return finish(k) if len(got[k]) == len(stages[k].restarts) else ()
+            done(k, result)
+            return ()
+
+        self.pool.stream("refit_step", [c for k in snaps for c in call(k, "fit", 0)], more)
+        R = {k: R[k] for k in snaps}                          # the order of the calls, as ``map`` returned them
         for k, r in R.items():
             if not isinstance(r, Exception):
-                for name in ("continuous_s", "uncertainty_s", "release_s"):
-                    self.timing[name] += float((r.timing or {}).get(name, 0.0))
-                    self.tally(label, k).refine_s += float((r.timing or {}).get(name, 0.0))
+                t = r.timing or {}
+                for name in ("continuous_s", "restart_s", "uncertainty_s", "release_s"):
+                    self.timing[name] += float(t.get(name, 0.0))
+                    self.tally(label, k).refine_s += float(t.get(name, 0.0))
                 self.timing["starts"] += int(r.starts or 0)
         return R
+
+    def log_fit(self, stage: str, k: str, snap, a, r, restarts: int, wall_s: float) -> None:
+        """The batch's per-spectrum line, written as the spectrum's refit returns (readable while the batch runs)."""
+        n_in = len(snap.own.modes)
+        applied = ",".join(str(i) for i in ((a.search or {}).get("applied") or ())) or "-"
+        if isinstance(r, Exception):
+            status, work, flags = f"failed:{type(r).__name__}", 0.0, "-"
+        else:
+            t = r.timing or {}
+            work = sum(float(t.get(n, 0.0)) for n in ("continuous_s", "restart_s", "uncertainty_s", "release_s"))
+            status = r.status
+            flags = ",".join(x.get("code", "?") for x in (_plain(r.flag) or {}).get("reasons", ())) or "-"
+        log.info("inter fit batch=%s stage=%s unit=%s modes=%d+%d applied=%s restarts=%d wall_s=%.1f work_s=%.1f "
+                 "status=%s flags=%s", self.batch, stage, k, n_in, a.count - n_in, applied, restarts, wall_s, work,
+                 status, flags)
 
     def entry(self, k: str, snap, r, extra_flags=(), stage1: dict | None = None) -> dict:
         """The stage payload's refit line of one refit (or of the exception the refit raised)."""
@@ -1560,11 +1642,6 @@ class _Run:
                  "text": "; ".join(str(v) for v in list((f.get("by_unit") or {}).get(k) or ())[:3])}
                 for code, f in (ids.flags or {}).items() if k in f.get("units", ()) and code != "seam_disagreement"]
 
-    def crossing(self, snaps: dict, A: dict) -> dict[str, list[dict]]:
-        """Confident disagreement across a crossing group, per spectrum, as flag reasons (``identity_ambiguous``)."""
-        from isar.analyze.coupled.search import crossing_flags
-        return crossing_flags(snaps, A)
-
     def stage_timing(self, kind: str, index: int, t0: float, width: int, n: int) -> None:
         self.timing["stages"].append({"kind": kind, "index": index, "wall_s": time.perf_counter() - t0,
                                       "width": width, "n_refits": n})
@@ -1622,10 +1699,14 @@ class _Run:
                 self.mark_unusable(u)
         self.open_pool(self.item.cores)
         self.of = len(plan.rings)
+        adj: dict[str, list] = {}                   # member -> every link of the graph at it (the two-sided terms)
+        for l in g.links:
+            adj.setdefault(l.a, []).append(l)
+            adj.setdefault(l.b, []).append(l)
+        may_use = {l for r in plan.rings for k in r.conditioners for l in adj.get(k, ())}
         self.start(anchors=plan.anchors, rings=plan.ring_of, seams=[(s.link.a, s.link.b) for s in plan.seams],
                    preview=preview_anchored(g, plan, spec.direction).text,
-                   terms=sorted({_term(l) for r in plan.rings for ls in r.conditioners.values() for l in ls},
-                                key=lambda t: t.members))
+                   terms=sorted({_term(l) for l in may_use}, key=lambda t: t.members))
         self.stage_name, self.rings_done = "plan", 0
         self.progress("plan")
         for r, ring in enumerate(plan.rings, 1):
@@ -1636,7 +1717,7 @@ class _Run:
                 self.link_stage(f"ring{r}", held)           # the frozen state, relabelled to the link's branch ids
             held_frozen = dict(held)                        # the state every refit of this ring conditions on
             sid = f"{self.batch}:ring{r}"
-            todo = {}
+            todo, outer = {}, {}
             for k in ring.members:
                 if k in self.fixed or k in self.stale_locks or k not in self.incoming:
                     continue
@@ -1645,6 +1726,14 @@ class _Run:
                     self.not_reached[k] = CUT_OFF
                     continue
                 todo[k] = [TermInput(_term(l), (held_frozen[_other(l, k)],)) for l in links]
+                # both sides: every further link whose other end has a fit in use (held_frozen when done or fixed,
+                # else its incoming fit as this ring's link stage relabelled it); a stale lock or unusable member none
+                for l in adj.get(k, ()):
+                    o = _other(l, k)
+                    h = held_frozen.get(o) or (None if o in self.stale_locks else self.incoming.get(o))
+                    if l not in links and h is not None:
+                        todo[k].append(TermInput(_term(l), (h,)))
+                        outer[o] = h
             if not todo:
                 self.rings_done = r
                 self.stage_timing("ring", r, t_ring, 0, 0)
@@ -1652,11 +1741,11 @@ class _Run:
                 continue
             snaps = {k: self.snapshot(k, self.incoming[k], sid, terms) for k, terms in todo.items()}
             self.progress("assign")
-            A, errors = self.assign(snaps, {})
-            previous = {**held_frozen, **{k: s.own for k, s in snaps.items() if k in A}}    # amendment 11: own Held too
+            A, errors = self.fixed_sets(snaps, True)
+            # the outer neighbours' fits in use support ids and keep their energy factors, as the frozen ones do
+            previous = {**outer, **held_frozen, **{k: s.own for k, s in snaps.items() if k in A}}   # amendment 11
             ids, refs = self.identity(A, snaps, previous, sid)
-            crossing = self.crossing(snaps, A)
-            A, rename = canonical_factors(A, ids, refs, held_frozen)
+            A, rename = canonical_factors(A, ids, refs, {**outer, **held_frozen})
             self.merge_aliases(rename)
             snaps = {k: _renamed_snapshot(s, rename) for k, s in snaps.items()}
             self.progress("refine")
@@ -1671,7 +1760,7 @@ class _Run:
             for k, s in snaps.items():
                 self.note_dormant(ids_after, k, s.fit_id,
                                   () if isinstance(R[k], Exception) else [m.branch for m in R[k].modes])
-            entries = [self.entry(k, snaps[k], R[k], self.identity_flags(ids, k) + crossing.get(k, [])) for k in snaps]
+            entries = [self.entry(k, snaps[k], R[k], self.identity_flags(ids, k)) for k in snaps]
             verdict = self.save_stage("ring", r, entries, seams)
             for k, s in snaps.items():
                 if self.judge(k, R[k], verdict, s.fit_id):
@@ -1754,7 +1843,7 @@ class _Run:
             for u in new:
                 active.discard(u)
 
-        cache: dict = {}                                 # unit -> {job key: Priced}, kept across rounds
+        labels_prev: dict = {}                           # unit -> its modes' branch ids after the previous round's link
         data, unary = {}, {}
         prev_total, outcome = None, "settled"
         while True:                                      # one round
@@ -1778,20 +1867,24 @@ class _Run:
                 break
             self.stage_name, self.index = "sweep", self.sweeps
             self.progress("assign")
-            A, errors = self.assign(snaps, cache)        # one frozen state for the whole round
+            A, errors = self.fixed_sets(snaps, self.rounds == 1)   # the mode set is the link's, set in round 1 only
             for k, exc in errors.items():                # its search failed: it would fail every round, its held
                 self.latest[k] = "failed"                # value stays and conditions its neighbours as a fixed one
                 self.failed[k] = f"analysis error ({type(exc).__name__}: {exc})"
                 active.discard(k)
             ids, refs = self.identity(A, snaps, dict(held), sid)
-            crossing = self.crossing(snaps, A)
             A, rename = canonical_factors(A, ids, refs, {u: h for u, h in held.items() if u not in A})
             self.merge_aliases(rename)
             A = rebuilt_factors(self.core, A, snaps, rename)     # one definition per link, both guards in it
             held = {u: _renamed(h, rename) for u, h in held.items()}
             self.stage_timing("round", self.rounds, t_round, len(snaps), 0)
-            if self.rounds > 1 and not any(a.changed for a in A.values()):
-                break                                    # the previous round ended quiet on this very state
+            # the sweeps ended quiet, so the batch settles when this round's link left every label as it was
+            # (link_stage has already written the labels into ``held``, so ``a.changed`` cannot tell)
+            labels = {k: tuple(m.branch for m in held[k].modes) for k in snaps}
+            settled = self.rounds > 1 and all(labels_prev.get(k) == v for k, v in labels.items())
+            labels_prev.update(labels)
+            if settled:
+                break
             stage1 = {k: {"round": self.rounds, "assignment": _plain(A[k]),
                           "identity": {str(m): {"id": ids.ids.get(ref), "status": ids.status.get(ref)}
                                        for m, ref in enumerate(refs[k])}} for k in A}
@@ -1840,8 +1933,8 @@ class _Run:
                 if not snaps2:                           # every member left during the round: nothing to save
                     break
                 self.sweeps = n
-                entries = [self.entry(k, snaps2[k], R_all[k], self.identity_flags(ids, k) + crossing.get(k, []),
-                                      stage1.pop(k, None)) for k in snaps2]
+                entries = [self.entry(k, snaps2[k], R_all[k], self.identity_flags(ids, k), stage1.pop(k, None))
+                           for k in snaps2]
                 verdict = self.save_stage("sweep", n, entries, [])
                 for k, snap in snaps2.items():
                     if self.judge(k, R_all[k], verdict, snap.fit_id):

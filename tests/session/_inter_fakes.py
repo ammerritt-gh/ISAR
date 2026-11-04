@@ -1,8 +1,10 @@
 """A fake numerical core for the batch runner's tests and S1U13's timing tool (public name: ``_inter_fakes``).
 
 Module-level functions with the core's signatures (``isar.analyze.coupled.refit``): ``held_from_fit``,
-``open_search``, ``price``, ``refit``, ``stage_factors``, plus the real ``total_objective`` and ``seam_report``.
-``open_search`` is the C-search core's entry point: a ``_FakeSearch`` per spectrum, driven by the knobs below.
+``fixed_assignment``, ``refit_step``, ``open_search``, ``price``, ``refit``, ``stage_factors``, plus the real
+``total_objective`` and ``seam_report``. A batch calls ``fixed_assignment`` and ``refit_step``; ``open_search`` (the
+C-search core's entry point: a ``_FakeSearch`` per spectrum, driven by the knobs below) and ``price`` are for the
+tests of the search itself and of ``_Run.assign``.
 They are picklable by name, so the runner's pool workers import this module the way they import the real core
 (``tests/session`` must be on the path: the tests put it there, and spawned workers inherit it). Pass the module
 itself as ``run_batch(..., core=_inter_fakes)``; ``run_batch`` below is that call, for ``--inter-target``.
@@ -26,7 +28,10 @@ travels into pool workers with the snapshot and onto the refit's own record:
   price is ``ln_z None``, ``no_evidence``). A job key is a hash of the unit, its own and its neighbours' energies,
   the slots and the pass and index, never a fit id: an unchanged spectrum reproduces its keys, a neighbour that
   moved changes them;
-- ``fail``: the refit fails; ``sleep``: seconds each refit sleeps;
+- ``fixed_raise``: ``fixed_assignment`` raises; ``slots`` also sets the fixed mode set (default: the incoming branches);
+- ``restarts``: restart calls the fit step asks for (default 0), ``restart_sleep`` seconds each takes,
+  ``step_raise`` (``"fit"``, ``"restart"`` or ``"finish"``): that step raises;
+- ``fail``: the refit fails; ``sleep``: seconds the fit step (a refit) sleeps;
 - ``pid_dir``: each refit writes ``pid-<pid>`` there; ``hang``: then it sleeps until killed.
 
 A stored record's peaks may carry ``omega0`` and ``branch``; a missing omega0 reads 5.0 meV and a missing branch
@@ -46,7 +51,7 @@ import time
 from pathlib import Path
 
 from isar.analyze.coupled.engine import Factor
-from isar.analyze.coupled.refit import seam_report, total_objective  # noqa: F401  (the core's own, re-exported)
+from isar.analyze.coupled.refit import FitStage, seam_report, total_objective  # noqa: F401  (the core's own, re-exported)
 from isar.analyze.coupled.types import Assignment, Held, HeldMode, Priced, PricingJob, RefitResult, Start
 from isar.session.inter_spectra.runner import BatchItem  # noqa: F401  (the service builds the item from the target's module)
 
@@ -213,18 +218,63 @@ def open_search(snapshot) -> _FakeSearch:
     return _FakeSearch(snapshot)
 
 
-def refit(snapshot, *, stage, assignment=None, cached={}, workers: int = 1) -> RefitResult:
-    t0 = time.perf_counter()
-    cfg = _cfg(snapshot)
-    if cfg.get("pid_dir"):
-        Path(cfg["pid_dir"], f"pid-{os.getpid()}").write_text("", encoding="utf-8")
-        while cfg.get("hang"):                       # a pool worker that keeps its core until killed
-            time.sleep(0.05)
-    if cfg.get("sleep"):
-        time.sleep(float(cfg["sleep"]))
-    a = assignment
-    if stage != "continuous" or a is None or a.unit != snapshot.unit or a.snapshot_id != snapshot.stage_id:
+def fixed_assignment(snapshot, *, apply_changes: bool) -> Assignment:
+    """The fake's frozen mode set: the ``slots`` knob or the incoming branches, whichever the round."""
+    if _cfg(snapshot).get("fixed_raise"):
+        raise ValueError("no incoming model")
+    slots = _slots(snapshot)
+    return _assignment(snapshot, slots, discrete="fixed",
+                       changed=slots != tuple(m.branch for m in snapshot.own.modes))
+
+
+def _own(snapshot, a) -> None:
+    if a is None or a.unit != snapshot.unit or a.snapshot_id != snapshot.stage_id:
         raise ValueError("the fake core needs the stage's own assignment")
+
+
+def _step_raise(snapshot, step: str) -> None:
+    if _cfg(snapshot).get("step_raise") == step:
+        raise RuntimeError(f"the fake {step} step failed")
+
+
+def refit_step(step: str, *args):
+    """The core's three pool steps (C-refit-steps): ``fit`` asks ``restarts`` restart calls, each ``restart``
+    returns its start unchanged, ``finish`` builds the result."""
+    snapshot, a = args[0], args[1]
+    _own(snapshot, a)
+    _step_raise(snapshot, step)
+    cfg = _cfg(snapshot)
+    if step == "fit":
+        t0 = time.perf_counter()
+        if cfg.get("pid_dir"):
+            Path(cfg["pid_dir"], f"pid-{os.getpid()}").write_text("", encoding="utf-8")
+            while cfg.get("hang"):                   # a pool worker that keeps its core until killed
+                time.sleep(0.05)
+        if cfg.get("sleep"):
+            time.sleep(float(cfg["sleep"]))
+        return FitStage(snapshot.unit, snapshot.stage_id, (), (), 0.0,
+                        tuple((float(i),) for i in range(int(cfg.get("restarts", 0)))), None,
+                        {"continuous_s": time.perf_counter() - t0})
+    if step == "restart":
+        if cfg.get("restart_sleep"):
+            time.sleep(float(cfg["restart_sleep"]))
+        return args[3], 0.0
+    if step == "finish":
+        return _result(snapshot, a, 1, float(args[2].timing["continuous_s"]), float(args[4]) if len(args) > 4 else 0.0)
+    raise ValueError(f"unknown refit step {step!r}")
+
+
+def refit(snapshot, *, stage, assignment=None, cached={}, workers: int = 1) -> RefitResult:
+    """The steps run inline, as the core's ``refit`` does."""
+    if stage != "continuous":
+        raise ValueError("the fake core needs the stage's own assignment")
+    st = refit_step("fit", snapshot, assignment)
+    got = [refit_step("restart", snapshot, assignment, st.model_key, t) for t in st.restarts]
+    return refit_step("finish", snapshot, assignment, st, got, 0.0)
+
+
+def _result(snapshot, a, workers: int, continuous_s: float, restart_s: float) -> RefitResult:
+    cfg = _cfg(snapshot)
     fast = snapshot.fast or snapshot.own
     seen = {h.unit: [m.omega0 for m in h.modes] for ti in snapshot.terms for h in ti.held}
     modes, energies, peaks = [], {}, []
@@ -258,7 +308,7 @@ def refit(snapshot, *, stage, assignment=None, cached={}, workers: int = 1) -> R
         why_changed="the toy moved it", overlay=None if failed else {"fast_pass": fit, "n_modes": len(modes)},
         overlay_unavailable="the refit failed" if failed else None, covariance=None, errors="unavailable",
         normalisers={}, starts=1,
-        timing={"assign_s": 0.0, "likelihood_s": 0.0, "continuous_s": time.perf_counter() - t0,
+        timing={"assign_s": 0.0, "likelihood_s": 0.0, "continuous_s": continuous_s, "restart_s": restart_s,
                 "uncertainty_s": 0.0, "release_s": 0.0}, priced=(), cache_hits=0)
 
 
