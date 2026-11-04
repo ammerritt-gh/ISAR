@@ -1186,19 +1186,22 @@ class _SetFit:                              # one fitted mode set of evidence_as
     mode: tuple | None = None               # the posterior mode as Assignment.selected_model
     fits: int = 0
     seconds: float = 0.0
+    delta_slots: frozenset = frozenset()    # the slots priced as resolution-limited (delta) modes, kept by later candidates
 
 
-def _fit_set(spec: _Spec, S: list, flags: tuple, sel: dict, *, incumbent: bool) -> _SetFit:
+def _fit_set(spec: _Spec, S: list, flags: tuple, sel: dict, *, incumbent: bool,
+             carried: frozenset = frozenset()) -> _SetFit:
     """The incoming modes with the changes ``S`` applied (``compose_rows``, union), fitted once from the link's start in
     the incoming variant and width mask, its one basin priced by bounded Laplace (``_Labelled.laplace_only``). An added
     or split-off mode starts with a free width; when the twin screens rail it to the floor, the engine's own delta twin
-    is priced instead (D2). Any other twin, a failed fit or a free incoming width at the floor is no answer."""
+    is priced instead (D2). Any other twin, a failed fit or a free width at the floor is no answer. ``carried``: the
+    slots the incumbent prices as delta, which this candidate keeps as delta, so only the change priced differs."""
     from isar.analyze.coupled import search as SE
     t0 = time.perf_counter()
     rows = SE.compose_rows(spec, spec.snap.links, S, union=True)
     count, slots = len(rows), tuple(r[0] for r in rows)
     new = {j for j, r in enumerate(rows) if r[2] is None}
-    delta = tuple(j for j, r in enumerate(rows) if r[2] is not None and r[2] in spec.inc_delta)
+    delta = tuple(j for j, r in enumerate(rows) if (r[2] is not None and r[2] in spec.inc_delta) or r[0] in carried)
     out = _SetFit(count, slots, tuple(sorted({spec.canon(b) for _i, c in S for b in c.branches})))
     objs = spec.slot_objects(slots)
     eng = _Labelled(spec.ctx, _ceiling(spec.fs, count), objs, structures=spec.structures,
@@ -1242,6 +1245,7 @@ def _fit_set(spec: _Spec, S: list, flags: tuple, sel: dict, *, incumbent: bool) 
                      + rules.ln_w_label(count, count - u, len(spec.pool)))
     v = b.model.variant
     out.mode = (v.elastic, v.background, v.qe, tuple(b.model.delta), tuple(float(x) for x in b.theta_map))
+    out.delta_slots = frozenset(slots[j] for j in b.model.delta if slots[j] is not None)
     return out
 
 
@@ -1295,7 +1299,7 @@ def evidence_assignment(snapshot: Snapshot) -> Assignment:
         if isinstance(made, str):
             skipped.append({"change": i, "id": SE.change_id(c), "why": made})
             continue
-        cand = _fit_set(spec, [*chosen, x], flags, sel, incumbent=False)
+        cand = _fit_set(spec, [*chosen, x], flags, sel, incumbent=False, carried=inc.delta_slots)
         d = None if cand.ln_z is None else cand.ln_z - inc.ln_z
         outcome = "no_answer" if d is None else "entered" if d > eps else "kept_out"
         row = {"change": i, "id": SE.change_id(c), "kind": c.kind, "mode": c.mode, "branches": list(c.branches),

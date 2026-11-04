@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import pytest
 from _search_harness import add, drop, links_for, snapshot_for, split_of
-from test_coupled_refit import FWHM, spectrum
+from test_coupled_refit import FWHM, STRUCT, spectrum
 
 from isar.analyze import fast_pass
 from isar.analyze.coupled import engine as cc
@@ -143,3 +143,27 @@ def test_changes_are_tried_strongest_predicted_intensity_first():
     assert [r["outcome"] for r in tried(a)] == ["entered", "entered"] and a.count == 3
     assert a.search["applied"] == [0, 1] and a.unlifted == ("b2", "b3")
     assert tried(a)[1]["delta_ln_z"] == pytest.approx(tried(a)[1]["ln_z"] - tried(a)[0]["ln_z"])
+
+
+B1234 = ["b1", "b2", "b3", "b4"]
+FOUR = THREE + [(17.0, 0.5, 30.0)]
+
+
+def test_an_entered_delta_mode_stays_delta_in_the_later_candidates(monkeypatch):
+    """The add at 13 meV enters on its delta twin; the candidate priced after it (b4 at 17) must keep b3 at its floor
+    width as a delta mode, so the incumbent and the candidate differ only by the change priced."""
+    seen = []
+    orig = R._Labelled.model
+
+    def model(self, variant, delta):
+        seen.append((variant.k, tuple(delta)))
+        return orig(self, variant, delta)
+    monkeypatch.setattr(R._Labelled, "model", model)
+    neigh = {"x": (FOUR, B1234), "z": (FOUR, B1234)}
+    true = TWO + [(13.0, 0.0, 60.0)]
+    s = snap(true, TWO, ["b1", "b2"], neigh, [add("b3", 13.0, w=0.1), add("b4", 17.0)])
+    prep = spectrum(true, seed=3, ceiling=4)
+    prep.structures = STRUCT + ("elastic+stokes4+bg",)                                    # the card's four-mode structure
+    a = R.evidence_assignment(replace(s, context=prep))
+    assert [r["outcome"] for r in tried(a)][0] == "entered" and tried(a)[1]["count"] == 4
+    assert (4, (2,)) in seen and (4, ()) not in seen
