@@ -25,7 +25,7 @@ from scipy.optimize import minimize
 from scipy.special import logsumexp
 
 from isar.analyze import fast_pass, prior
-from isar.analyze.coupled.linking import unit_stokes_area
+from isar.analyze.coupled.linking import _GL_W, _GL_X, KB_MEV_PER_K, stokes_area_edges
 
 # The split integral of a mode hidden under another (S1U1); algorithm settings, not operator settings.
 SPLIT_NODE_SETS = (6, 12, 24, 48)   # Gauss-Legendre node counts over the split f, tried in order
@@ -144,6 +144,35 @@ def intensity_gf(tau: float, C: float, X: float) -> tuple[float, float]:
     g = ((2 * s3 - 3 * s2 + 1) * G[i] + (s3 - 2 * s2 + s) * step * D[i]
          + (-2 * s3 + 3 * s2) * G[i + 1] + (s3 - s2) * step * D[i + 1])
     return float(g), d
+
+
+_STOKES_X, _STOKES_W = np.array(_GL_X), np.array(_GL_W)
+
+
+@lru_cache(maxsize=4096)
+def _stokes_area_and_partials(omega0: float, gamma: float, T: float | None) -> tuple[float, float, float]:
+    """(U, dU/domega0, dU/dGamma), U = ``linking.unit_stokes_area`` by the same quadrature (its edges, nodes, weights
+    and tail substitution) in one numpy pass. The partials integrate the integrand's own partials on the same nodes:
+    U runs over E in (0, inf), so no limit moves with omega0 or Gamma and the edges only place nodes."""
+    edges, upper = stokes_area_edges(omega0, gamma, T)
+    lo, hi = np.array(edges[:-1]), np.array(edges[1:])
+    half = 0.5 * (hi - lo)
+    u = np.concatenate([0.25 + 0.25 * _STOKES_X, 0.75 + 0.25 * _STOKES_X])      # the tail E = upper/u on (0, 1)
+    E = np.concatenate([((0.5 * (lo + hi))[:, None] + half[:, None] * _STOKES_X).ravel(), upper / u])
+    w = np.concatenate([(half[:, None] * _STOKES_W).ravel(), np.tile(0.25 * _STOKES_W, 2) * upper / (u * u)])
+    if T is None or not math.isfinite(T) or T <= 0:
+        y = E                                                                    # every node has E > 0
+    else:
+        y = E / -np.expm1(-E / (KB_MEV_PER_K * T))
+    q = E * E - omega0 * omega0
+    D = q * q + 4.0 * gamma * gamma * E * E
+    s = (omega0 / math.pi * 4.0 * gamma) * y / D
+    U = float(w @ s)
+    if not (math.isfinite(U) and U > 0):
+        raise ValueError(f"no finite Stokes area for omega0={omega0!r}, Gamma={gamma!r}, T={T!r}")
+    dU_de = float(w @ (s * (1.0 / omega0 + 4.0 * omega0 * q / D)))
+    dU_dG = float(w @ (s * (1.0 / gamma - 8.0 * gamma * E * E / D)))
+    return U, dU_de, dU_dG
 
 
 @dataclass(frozen=True)
@@ -846,15 +875,13 @@ class CoupledEngine(fast_pass._Engine):
         """b = a / U of mode ``m``: a = up.area_stokes / up.height (the fast pass's area per unit height, no exposure),
         U = ``unit_stokes_area(omega0, Gamma, T)``, so h b is the intrinsic intensity ``matching_intensity`` gives
         for the stored area h a. ``grad``: (b, {coordinate: db/dcoordinate}) for the mode's energy and width, da from
-        the same column steps ``_value_and_grad`` takes (cache hits there), dU by central differences."""
+        the same column steps ``_value_and_grad`` takes (cache hits there), dU from ``_stokes_area_and_partials``."""
         a_, g, _c = model.modes[m]
         T = self.slots[m].coupling.T
         peak = model.variant.peaks[m]
         e, G = float(theta[a_]), float(theta[g])
         up = self.units([(e, G)], [peak])[0][1]
-        # shortcut: U is the core's pure-Python quadrature, lru-cached, five calls per slot per gradient; tabulate U on
-        #   (omega0, Gamma) per T if a refit's profile shows it
-        U = unit_stokes_area(e, G, T)
+        U, dU_de, dU_dG = _stokes_area_and_partials(e, G, T)
         b = up.area_stokes / up.height / U
         if not grad:
             return b
@@ -865,11 +892,7 @@ class CoupledEngine(fast_pass._Engine):
             u, d = self._column_steps(model, theta, pos, m)
             ups = self.units([(u, G), (d, G)] if pos == a_ else [(e, u), (e, d)], [peak, peak])
             da = (ups[0][1].area_stokes / ups[0][1].height - ups[1][1].area_stokes / ups[1][1].height) / (u - d)
-            x = e if pos == a_ else G
-            h = min(1e-4 * max(1.0, abs(x)), 0.5 * x)
-            pair = ((e + h, G), (e - h, G)) if pos == a_ else ((e, G + h), (e, G - h))
-            dU = (unit_stokes_area(*pair[0], T) - unit_stokes_area(*pair[1], T)) / (2.0 * h)
-            db[pos] = (da - b * dU) / U
+            db[pos] = (da - b * (dU_de if pos == a_ else dU_dG)) / U
         return b, db
 
     def _column_steps(self, model, t, pos: int, m: int):

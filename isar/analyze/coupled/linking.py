@@ -124,6 +124,25 @@ def _integrate(f, a: float, b: float) -> float:
     return half * sum(w * f(mid + half * x) for x, w in zip(_GL_X, _GL_W))
 
 
+def stokes_area_edges(omega0: float, gamma: float, T: float | None) -> tuple[list[float], float]:
+    """(edges, upper) of ``unit_stokes_area``'s quadrature: the sorted sub-interval edges on [0, upper], geometric in
+    the distance from the two peak positions plus the kT scale, and the energy where the tail to infinity starts.
+    The engine's vectorised pass (``engine._stokes_area_and_partials``) reads the same edges."""
+    _check_mode(omega0, gamma)
+    upper = 2.0 * (omega0 + 20.0 * gamma)
+    ec = math.sqrt(max(omega0 * omega0 - 2.0 * gamma * gamma, 0.0))
+    cuts = {0.0, upper}
+    for c in (ec, omega0):
+        off = gamma / 8.0
+        while off < upper:
+            cuts.update(p for p in (c - off, c + off) if 0.0 < p < upper)
+            off *= 2.0
+    if T is not None and math.isfinite(T) and T > 0:
+        kT = KB_MEV_PER_K * T
+        cuts.update(kT * 2.0 ** k for k in range(-1, 5) if kT * 2.0 ** k < upper)
+    return sorted(cuts), upper
+
+
 @lru_cache(maxsize=4096)
 def unit_stokes_area(omega0: float, gamma: float, T: float | None) -> float:
     """The E > 0 area of the unconvolved Stokes DHO at amplitude 1: ``∫ (omega0/π)·4Γ·y(E) / ((E²-omega0²)² + 4Γ²E²) dE``.
@@ -134,25 +153,13 @@ def unit_stokes_area(omega0: float, gamma: float, T: float | None) -> float:
     shortcut: the convolved E > 0 area divided by this equals the DHO amplitude only while resolution moves no
     area across E = 0; exact A would need the fit context (height / up.height), upgrade if a mode near zero
     energy links wrongly."""
-    _check_mode(omega0, gamma)
+    edges, upper = stokes_area_edges(omega0, gamma, T)
     o2, g2 = omega0 * omega0, gamma * gamma
     pref = omega0 / math.pi * 4.0 * gamma
 
     def s(E: float) -> float:
         return pref * _y(E, T) / ((E * E - o2) ** 2 + 4.0 * g2 * E * E)
 
-    upper = 2.0 * (omega0 + 20.0 * gamma)
-    ec = math.sqrt(max(o2 - 2.0 * g2, 0.0))
-    cuts = {0.0, upper}
-    for c in (ec, omega0):
-        off = gamma / 8.0
-        while off < upper:
-            cuts.update(p for p in (c - off, c + off) if 0.0 < p < upper)
-            off *= 2.0
-    if T is not None and math.isfinite(T) and T > 0:
-        kT = KB_MEV_PER_K * T
-        cuts.update(kT * 2.0 ** k for k in range(-1, 5) if kT * 2.0 ** k < upper)
-    edges = sorted(cuts)
     total = sum(_integrate(s, a, b) for a, b in zip(edges, edges[1:]))
     tail = lambda u: s(upper / u) * upper / (u * u)           # noqa: E731
     total += _integrate(tail, 0.0, 0.5) + _integrate(tail, 0.5, 1.0)

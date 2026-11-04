@@ -242,6 +242,17 @@ def test_the_continuous_stage_pulls_a_weakly_determined_intensity_toward_the_pre
 
 
 # (g) the engine and linking price one quantity ---------------------------------------------------------------------------
+@pytest.mark.parametrize("o, G", [(12.0, 0.05), (5.0, 0.6), (9.7, 9.6), (0.8, 0.3), (25.0, 4.0)])
+@pytest.mark.parametrize("T", [302.0, 10.0, None])
+def test_the_engines_vectorised_stokes_area_is_linkings_with_its_partials(o, G, T):
+    U, dU_de, dU_dG = cc._stokes_area_and_partials(o, G, T)
+    assert U == pytest.approx(unit_stokes_area(o, G, T), rel=1e-12)
+    ref = unit_stokes_area.__wrapped__                                      # uncached: the steps are new points
+    for x, d, f in ((o, dU_de, lambda v: ref(v, G, T)), (G, dU_dG, lambda v: ref(o, v, T))):
+        assert d == pytest.approx(_cd(f, x, 1e-5 * x), rel=1e-6, abs=1e-9 * U / x)
+
+
+
 def test_the_engines_intensity_is_the_stored_area_over_the_unit_stokes_area():
     true = [(4.0, 0.5, 30.0)]
     snap = _intensity_snap(500.0, modes=tuple(true))
