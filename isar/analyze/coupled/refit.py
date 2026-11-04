@@ -86,6 +86,8 @@ class _Labelled(cc.CoupledEngine):
 
     port = None                             # the job's task port (replay side); None: compute in place
     record = None                           # {key: outcome} of the primitives a worker task met; None: not recording
+    # evidence_assignment's switch: every basin by the base bounded Laplace (no split integral), no extra delta fits
+    laplace_only = False
 
     def fit(self, variant, modes, family, linear=None):
         if variant is None:
@@ -363,15 +365,30 @@ class _Labelled(cc.CoupledEngine):
         returns None for that call, so the base engine passes its ``posterior_jac`` (a split integral keeps its
         gradient, so a not-converged split reruns to the same nodes). Both are engine attributes, never module
         state: job threads price concurrently."""
-        super().price(b)
+        base = self._laplace_price if self.laplace_only else super().price
+        base(b)
         if b.status != "no_evidence" or "ABNORMAL" not in b.reason:
             return
         b.status, b.reason = "pending", ""
         self.fd_posterior, self.posterior_jac = True, "3-point"
         try:
-            super().price(b)
+            base(b)
         finally:
             self.fd_posterior, self.posterior_jac = False, None
+
+    def _laplace_price(self, b):
+        """The coupled price's own path for a basin without a hidden pair, taken for every basin: where the counts
+        leave a close pair's intensity trade flat the posterior optimiser or the Hessian fails (no answer)."""
+        fast_pass._Engine.price(self, b)
+        self._relabel(b)
+
+    def _near_zero(self, b):
+        if not self.laplace_only:
+            super()._near_zero(b)
+
+    def _delta_proposal(self, model, point):
+        if not self.laplace_only:
+            super()._delta_proposal(model, point)
 
     def _ln_exch(self, model) -> float:
         """ln of the k! of each group of exchangeable unmatched modes (spec 3): the base engine's groups
@@ -827,11 +844,12 @@ def stage_factors(snapshot: Snapshot) -> dict[str, Factor]:
     return {f.factor_id: f for fs in _Spec(snapshot).factors.values() for f in fs}
 
 
-def _free_width_at_floor(b) -> bool:
+def _free_width_at_floor(b, skip=()) -> bool:
     """A free width pegged at the floor is a resolution-limited mode, priced as its own delta model with its own
     weight, never as a free width. A split basin's hidden pair is exempt (its weak-mode width is likelihood-blind:
-    not read); any other free width at the floor still counts."""
+    not read); any other free width at the floor still counts, except at the mode positions in ``skip``."""
     hidden = set(b.hidden_pair) if getattr(b, "boundary_method", "") == "split" else set()
+    hidden |= set(skip)
     free = {int(i) for i in b.model.free}
     return any(g in free and b.theta_map[g] <= fast_pass.GAMMA_FLOOR
                + loop.DEGENERATE_LIMIT_TOL * max(fast_pass.GAMMA_FLOOR, 1.0)
@@ -991,9 +1009,7 @@ def price(snapshot: Snapshot, job: PricingJob, *, gradients: bool = True,
                       loss=loss)
 
     def charge(b):
-        fixed = set(b.model.fixed_pos)
-        return sum(rules.pinned_entry_charge(spec.entry, float(b.theta_map[a]))
-                   for (a, _g, _c), sl in zip(b.model.modes, slots) if sl is None and a in fixed)
+        return _entry_charge(spec.entry, b, slots)
     # the loss price is one constant of the job, inside every basin term: logsumexp carries it exactly once, outside
     # every normalised density, and before any later comparison of this candidate with another count
     loss_nats = -0.5 * sum(L for _b, _e, L in loss)
@@ -1007,6 +1023,13 @@ def price(snapshot: Snapshot, job: PricingJob, *, gradients: bool = True,
     peak = _residual_peak(eng, best, [m[1] for m in records[int(np.argmax(terms))][2]])
     return Priced(job.key, k, slots, ln_z, best.status, mode, None, eng.n_fits, time.perf_counter() - t0,
                   records, loss, peak)
+
+
+def _entry_charge(entry, b, slots) -> float:
+    """The entry charge of each unmatched slot whose energy is pinned, outside the integral (spec 2)."""
+    fixed = set(b.model.fixed_pos)
+    return sum(rules.pinned_entry_charge(entry, float(b.theta_map[a]))
+               for (a, _g, _c), sl in zip(b.model.modes, slots) if sl is None and a in fixed)
 
 
 def _residual_peak(eng, b, energies) -> tuple[float, float]:
@@ -1132,11 +1155,7 @@ def fixed_assignment(snapshot: Snapshot, *, apply_changes: bool) -> Assignment:
     model = None if variant is None else eng.model(variant, delta)
     if model is None:
         raise ValueError("no model for the fixed mode set")
-    p = sel.get("map_params") or sel.get("params") or {}
-    linear = {key: float(p[model.names[pos]]) for key, pos in
-              (("elastic", model.el), ("bg", model.bg), ("qe_h", model.qe_h), ("qe_width", model.qe_w))
-              if pos is not None and p.get(model.names[pos]) is not None}
-    theta = eng._start(model, [(e, g, h, False) for _s, (e, g, h), _o in rows], linear)
+    theta = eng._start(model, [(e, g, h, False) for _s, (e, g, h), _o in rows], _record_linear(sel, model))
     v = model.variant
     return Assignment(
         unit=snapshot.unit, snapshot_id=snapshot.stage_id, count=count, slots=slots, origins=spec.origins(slots),
@@ -1146,6 +1165,156 @@ def fixed_assignment(snapshot: Snapshot, *, apply_changes: bool) -> Assignment:
         mask_only=False, unlifted=unlifted,
         search={"version": 1, "domain": "fixed", "link": None if L is None else L.link_id,
                 "applied": sorted(i for i, _c in chosen), "skipped": skipped})
+
+
+def _record_linear(sel: dict, model) -> dict:
+    """The incoming record's elastic, background and QE values for ``model``'s start (the keys ``_start`` reads)."""
+    p = sel.get("map_params") or sel.get("params") or {}
+    return {key: float(p[model.names[pos]]) for key, pos in
+            (("elastic", model.el), ("bg", model.bg), ("qe_h", model.qe_h), ("qe_width", model.qe_w))
+            if pos is not None and p.get(model.names[pos]) is not None}
+
+
+@dataclass
+class _SetFit:                              # one fitted mode set of evidence_assignment
+    count: int
+    slots: tuple
+    unlifted: tuple
+    ln_z: float | None = None               # the set's total (D1); None: no answer
+    status: str = "no_evidence"
+    why: str | None = None                  # "<status>: <reason>" when there is no answer
+    mode: tuple | None = None               # the posterior mode as Assignment.selected_model
+    fits: int = 0
+    seconds: float = 0.0
+
+
+def _fit_set(spec: _Spec, S: list, flags: tuple, sel: dict, *, incumbent: bool) -> _SetFit:
+    """The incoming modes with the changes ``S`` applied (``compose_rows``, union), fitted once from the link's start in
+    the incoming variant and width mask, its one basin priced by bounded Laplace (``_Labelled.laplace_only``). An added
+    or split-off mode starts with a free width; when the twin screens rail it to the floor, the engine's own delta twin
+    is priced instead (D2). Any other twin, a failed fit or a free incoming width at the floor is no answer."""
+    from isar.analyze.coupled import search as SE
+    t0 = time.perf_counter()
+    rows = SE.compose_rows(spec, spec.snap.links, S, union=True)
+    count, slots = len(rows), tuple(r[0] for r in rows)
+    new = {j for j, r in enumerate(rows) if r[2] is None}
+    delta = tuple(j for j, r in enumerate(rows) if r[2] is not None and r[2] in spec.inc_delta)
+    out = _SetFit(count, slots, tuple(sorted({spec.canon(b) for _i, c in S for b in c.branches})))
+    objs = spec.slot_objects(slots)
+    eng = _Labelled(spec.ctx, _ceiling(spec.fs, count), objs, structures=spec.structures,
+                    lifted=tuple(spec.slot_lifted(b, out.unlifted) for b in slots))
+    eng.laplace_only = True
+    variant = eng.variant(count, *flags)
+    model = None if variant is None else eng.model(variant, delta)
+    if model is None:
+        if incumbent:
+            raise ValueError("no model for the fixed mode set")
+        out.status = "no_structure"
+        out.why = f"no_structure: the card holds no model with {count} modes in the incoming variant"
+        return out
+    bad = [b for b, o in zip(slots, objs) if isinstance(o, cc.MatchedDensity) and o.status != "ok"]
+    got = None if bad else eng.fit(variant, [(e, g, h, j in delta) for j, (_s, (e, g, h), _o) in enumerate(rows)],
+                                   "fixed", _record_linear(sel, model))
+    b = None if got is None else got[0]
+    while b is not None:
+        if b.status == "pending":
+            eng.price(b)
+        if b.status != "degenerate_twin" or b.twin is None or not b.reason.startswith("width railed"):
+            break
+        railed = next((j for j, (_a, g, _c) in enumerate(b.model.modes) if b.model.names[g] == b.limit), None)
+        if railed not in new:
+            break                           # a railed incoming width would change the mask the design keeps
+        b = b.twin                          # the engine's own resolution-limited reading of a new mode (D2)
+    out.fits, out.seconds = eng.n_fits, time.perf_counter() - t0
+    if b is None:
+        out.why = (f"no_evidence: the neighbour density of {bad[0]} has no verified normaliser" if bad
+                   else "no_evidence: no start converged")
+        return out
+    out.status = b.status
+    if b.status not in _PRICED or b.ln_z is None or not math.isfinite(b.ln_z):
+        out.why = f"{b.status}: {b.reason or 'no evidence'}"
+        return out
+    if _free_width_at_floor(b, skip=new):
+        out.why = f"{b.status}: a free width of an incoming mode is at the floor"
+        return out
+    u = sum(s is None for s in slots)
+    out.ln_z = float(b.ln_z + b.ln_model_prior + _entry_charge(spec.entry, b, slots)
+                     + rules.ln_w_label(count, count - u, len(spec.pool)))
+    v = b.model.variant
+    out.mode = (v.elastic, v.background, v.qe, tuple(b.model.delta), tuple(float(x) for x in b.theta_map))
+    return out
+
+
+def evidence_assignment(snapshot: Snapshot) -> Assignment:
+    """The frozen mode set of one spectrum for one stage, each listed add and split entered by evidence (C-priced).
+
+    The incoming fit's modes with the link's labels (the incumbent) are fitted once against the frozen neighbours;
+    then each listed add and split, strongest predicted intensity first, is fitted as the incumbent plus that change,
+    every continuous parameter reoptimised, and enters when its ln Z beats the incumbent's by more than
+    ``evidence_hysteresis_nats``; an entered change is the new incumbent. ln Z is the bounded Laplace evidence of the
+    one basin with the priors the pass already has, the model weights (``ln_model_prior``, ``rules.ln_w_label``) and the
+    pinned entry charge, each once; no loss price, no split integral, no structural variant (the incoming variant and
+    width mask are kept). A change with no answer stays out; an unresolved split is listed in
+    ``search["pricing"]["unresolved_splits"]``. An incumbent with no answer keeps the incoming set and nothing is
+    tried. Drops are never tried. Raises as ``fixed_assignment`` does."""
+    from isar.analyze.coupled import search as SE
+    spec = _Spec(snapshot)
+    flags = spec.inc_variant
+    if flags is None:
+        raise ValueError("no incoming model")
+    sel = _selected_model(snapshot.own_record)
+    L = snapshot.links
+    eps = float(snapshot.settings.evidence_hysteresis_nats)
+    usable, skipped = SE.usable_changes(spec, L) if L is not None else ([], [])
+
+    def intensity(x):
+        ps = (SE._prediction(spec, L, x[1], n) for n in range(len(x[1].branches)))
+        return float(sum(p.A for p in ps if p is not None and math.isfinite(p.A) and p.A > 0))
+
+    todo = sorted((x for x in usable if x[1].kind != "drop"), key=lambda x: -intensity(x))
+    pricing = {"hysteresis_nats": eps, "incumbent": None, "tried": [], "unresolved_splits": [],
+               "final_count": spec.n0, "final_ln_z": None}
+    search = {"version": 2, "domain": "evidence", "link": None if L is None else L.link_id, "applied": [],
+              "skipped": skipped, "pricing": pricing}
+    if not todo:
+        return replace(fixed_assignment(snapshot, apply_changes=False), search=search)
+    inc = _fit_set(spec, [], flags, sel, incumbent=True)
+    pricing["incumbent"] = {"count": inc.count, "ln_z": inc.ln_z, "status": inc.status, "why": inc.why,
+                            "fits": inc.fits, "seconds": inc.seconds}
+    if inc.ln_z is None:
+        skipped += [{"change": i, "id": SE.change_id(c), "why": "incumbent has no answer"} for i, c in todo]
+        return replace(fixed_assignment(snapshot, apply_changes=False), search=search)
+    chosen = []
+    for x in todo:
+        i, c = x
+        carried = {spec.canon(s) for s in inc.slots if s is not None}
+        if all(spec.canon(b) in carried for b in c.branches):
+            skipped.append({"change": i, "id": SE.change_id(c), "why": "branch already carried"})
+            continue
+        made = SE.compose_rows(spec, L, [*chosen, x], union=True)
+        if isinstance(made, str):
+            skipped.append({"change": i, "id": SE.change_id(c), "why": made})
+            continue
+        cand = _fit_set(spec, [*chosen, x], flags, sel, incumbent=False)
+        d = None if cand.ln_z is None else cand.ln_z - inc.ln_z
+        outcome = "no_answer" if d is None else "entered" if d > eps else "kept_out"
+        row = {"change": i, "id": SE.change_id(c), "kind": c.kind, "mode": c.mode, "branches": list(c.branches),
+               "intensity": intensity(x), "count": cand.count, "ln_z": cand.ln_z, "delta_ln_z": d,
+               "outcome": outcome, "why": cand.why if d is None else None, "fits": cand.fits, "seconds": cand.seconds}
+        pricing["tried"].append(row)
+        if outcome == "entered":
+            chosen.append(x)
+            inc = cand
+        elif outcome == "no_answer" and c.kind == "split":
+            pricing["unresolved_splits"].append({k: row[k] for k in ("change", "id", "mode", "branches", "why")})
+    pricing["final_count"], pricing["final_ln_z"] = inc.count, inc.ln_z
+    search["applied"] = sorted(i for i, _c in chosen)
+    return Assignment(
+        unit=snapshot.unit, snapshot_id=snapshot.stage_id, count=inc.count, slots=inc.slots,
+        origins=spec.origins(inc.slots), factors=spec.incident(inc.slots), discrete="fixed", triggers=(),
+        candidates=(), coverage={}, search_limited=False,
+        changed=inc.count != spec.n0 or inc.slots != spec.incoming, reasons=(), selected_model=inc.mode,
+        mask_only=False, unlifted=inc.unlifted, search=search)
 
 
 # ---- stage 2 ---------------------------------------------------------------------------------------------
@@ -1715,7 +1884,7 @@ def _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, 
 
 def _why(status, reason, n0, k, slots, incoming, J_old, J, variant_changed=False) -> str:
     if status == "accepted" and reason == "linked" and k != n0:
-        return f"The link changed the number of modes from {n0} to {k}."
+        return f"The evidence accepted the link's listed changes: the number of modes went from {n0} to {k}."
     if status == "accepted" and reason == "linked":
         return "The link changed which branch a mode belongs to."
     if status == "accepted" and k != n0:
