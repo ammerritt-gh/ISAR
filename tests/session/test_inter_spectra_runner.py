@@ -1187,7 +1187,8 @@ def test_restarts_are_separate_pool_calls_and_the_result_equals_the_inline_refit
             return more(key, result)
         return orig(self, fn, calls, counted)
     monkeypatch.setattr(runner._Pool, "stream", stream)
-    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): {"restarts": 3, "toy": "keep"}, ("a04", 150.0): {"toy": "keep"}})
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): {"restarts": 3, "toy": "keep", "J": 2.0, "restart_J": [3.0, 1.0, 2.5]},
+                                    ("a04", 150.0): {"toy": "keep"}})
     a = k["a03", 150.0]
     log = Bench(ws).run(spec, cores=2)
     steps = [key[1] for key in keys if key[0] == a]
@@ -1195,6 +1196,7 @@ def test_restarts_are_separate_pool_calls_and_the_result_equals_the_inline_refit
     assert sorted(key[2] for key in keys if key[0] == a and key[1] == "restart") == [0, 1, 2]
     assert [key[1] for key in keys if key[0] == k["a04", 150.0]] == ["fit", "finish"]
     (stored,) = [p for r, p in _lines(ws, spec.batch_id) if r.unit == a]
+    assert stored["overlay"]["fast_pass"]["kept"] == "restart1"     # the lowest J of 2.0 (main) and 3.0, 1.0, 2.5
     assert log.batches[spec.batch_id].end["done"] == 2
     # the same ring without restarts saves the same energies
     other = tmp_path / "again"

@@ -30,7 +30,8 @@ travels into pool workers with the snapshot and onto the refit's own record:
   moved changes them;
 - ``fixed_raise``: ``fixed_assignment`` raises; ``slots`` also sets the fixed mode set (default: the incoming branches);
 - ``restarts``: restart calls the fit step asks for (default 0), ``restart_sleep`` seconds each takes,
-  ``step_raise`` (``"fit"``, ``"restart"`` or ``"finish"``): that step raises;
+  ``J`` the main fit's J and ``restart_J`` each restart's (default 0.0: a tie, so the main fit is kept, as the core
+  breaks one), ``step_raise`` (``"fit"``, ``"restart"`` or ``"finish"``): that step raises;
 - ``fail``: the refit fails; ``sleep``: seconds the fit step (a refit) sleeps;
 - ``pid_dir``: each refit writes ``pid-<pid>`` there; ``hang``: then it sleeps until killed.
 
@@ -45,6 +46,7 @@ link records.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import re
 import time
@@ -239,7 +241,7 @@ def _step_raise(snapshot, step: str) -> None:
 
 def refit_step(step: str, *args):
     """The core's three pool steps (C-refit-steps): ``fit`` asks ``restarts`` restart calls, each ``restart``
-    returns its start unchanged, ``finish`` builds the result."""
+    returns its start and its J, ``finish`` keeps the lowest J (``_kept``) and builds the result."""
     snapshot, a = args[0], args[1]
     _own(snapshot, a)
     _step_raise(snapshot, step)
@@ -252,15 +254,17 @@ def refit_step(step: str, *args):
                 time.sleep(0.05)
         if cfg.get("sleep"):
             time.sleep(float(cfg["sleep"]))
-        return FitStage(snapshot.unit, snapshot.stage_id, (), (), 0.0,
+        return FitStage(snapshot.unit, snapshot.stage_id, (), (), float(cfg.get("J", 0.0)),
                         tuple((float(i),) for i in range(int(cfg.get("restarts", 0)))), None,
                         {"continuous_s": time.perf_counter() - t0})
     if step == "restart":
         if cfg.get("restart_sleep"):
             time.sleep(float(cfg["restart_sleep"]))
-        return args[3], 0.0
+        n, Js = int(args[3][0]), list(cfg.get("restart_J", ()))     # the fit step numbers its starts 0, 1, ...
+        return args[3], float(Js[n]) if n < len(Js) else 0.0
     if step == "finish":
-        return _result(snapshot, a, 1, float(args[2].timing["continuous_s"]), float(args[4]) if len(args) > 4 else 0.0)
+        return _result(snapshot, a, 1, float(args[2].timing["continuous_s"]), float(args[4]) if len(args) > 4 else 0.0,
+                       _kept(args[2], args[3]))
     raise ValueError(f"unknown refit step {step!r}")
 
 
@@ -273,7 +277,16 @@ def refit(snapshot, *, stage, assignment=None, cached={}, workers: int = 1) -> R
     return refit_step("finish", snapshot, assignment, st, got, 0.0)
 
 
-def _result(snapshot, a, workers: int, continuous_s: float, restart_s: float) -> RefitResult:
+def _kept(stage, results) -> str:
+    """The fit the core keeps (``refit._finish``): the lowest J of the main fit and the restarts, a tie keeping the earlier."""
+    kept, best = "main", stage.J
+    for n, (theta, J) in enumerate(results):
+        if theta is not None and math.isfinite(J) and J < best:
+            kept, best = f"restart{n}", J
+    return kept
+
+
+def _result(snapshot, a, workers: int, continuous_s: float, restart_s: float, kept: str) -> RefitResult:
     cfg = _cfg(snapshot)
     fast = snapshot.fast or snapshot.own
     seen = {h.unit: [m.omega0 for m in h.modes] for ti in snapshot.terms for h in ti.held}
@@ -296,7 +309,7 @@ def _result(snapshot, a, workers: int, continuous_s: float, restart_s: float) ->
         peaks.append({"omega0": e, "Gamma": 0.5, "height": 1.0, "branch": branch})
     failed = bool(cfg.get("fail"))
     fit = None if failed else {"schema": "isar.fast-pass/1", "source": "fake", "peaks": peaks, "fake": cfg,
-                               "workers": workers, "seen": seen, "energy_support_meV": list(WINDOW)}
+                               "workers": workers, "seen": seen, "energy_support_meV": list(WINDOW), "kept": kept}
     D = sum((e - v) ** 2 for b, e in energies.items()
             for ti in snapshot.terms for h in ti.held for m in h.modes if m.branch == b for v in [m.omega0])
     return RefitResult(
