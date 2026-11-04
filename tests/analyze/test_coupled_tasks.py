@@ -190,6 +190,8 @@ def test_a_hidden_pair_job_through_the_port_keeps_its_decision_and_its_ln_z_with
     # D1: every node starts from the nearest node solved when it is sent, so the split basin's ln Z may shift; the
     # bound is the integral's own agreement tolerance, and the decision (status, count, labelling, best model) holds
     snap, job = _hidden()
+    # the penalty is off: this test is serial-versus-port agreement, and the split objective is off the live path
+    snap.context.settings = replace(snap.context.settings, pair_penalty_cap=0.0)
     serial = R.price(snap, job)
     tasked = R.price(snap, job, tasks=port)
     assert (tasked.status, tasked.count, tasked.slots) == (serial.status, serial.count, serial.slots)
