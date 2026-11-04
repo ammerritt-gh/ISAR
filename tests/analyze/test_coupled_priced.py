@@ -179,3 +179,16 @@ def test_a_new_mode_railed_at_the_floor_with_no_twin_has_no_answer(monkeypatch):
     a = R.evidence_assignment(snap(TWO + [(13.0, 0.0, 60.0)], TWO, ["b1", "b2"], NEIGH, [add("b3", 13.0, w=0.1)]))
     [row] = tried(a)
     assert row["outcome"] == "no_answer" and a.count == 2 and a.search["applied"] == []
+
+
+def test_the_linked_count_wording_says_evidence_only_when_evidence_priced():
+    args = ("accepted", "linked", 1, 2, ("b1", "b2"), ("b1",), None, 0.0)
+    assert R._why(*args) == "The link's listed changes changed the number of modes from 1 to 2."
+    assert R._why(*args, priced=True) == "The evidence accepted the link's listed changes: the number of modes went from 1 to 2."
+
+
+def test_a_priced_linked_add_is_reported_as_evidence_backed():
+    s = snap(THREE, TWO, ["b1", "b2"], NEIGH, [add("b3", 13.0)])
+    r = R.refit(s, stage="continuous", assignment=R.evidence_assignment(s))
+    assert (r.status, r.reason) == ("accepted", "linked")
+    assert r.why_changed == "The evidence accepted the link's listed changes: the number of modes went from 2 to 3."

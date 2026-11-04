@@ -130,7 +130,7 @@ TWO = [(8.0, 0.4, 40.0), (10.0, 0.4, 40.0)]
 NEIGH_TWO = {"x": (TWO, ["b1", "b2"]), "z": (TWO, ["b1", "b2"])}
 
 
-def test_a_linked_split_is_accepted_as_linked_with_the_evidence_wording():
+def test_a_linked_split_is_accepted_as_linked_with_the_fixed_set_wording():
     split = split_of(0, "b1", 8.0, "b2", 10.0)
     links = links_for(1, changes=[split], labels=("b1",), ties=[tie("g1", "competition", ("x", "y"), ("b2",))])
     s = snap(TWO, [(9.0, 1.0, 60.0)], ["b1"], NEIGH_TWO, links=links)
@@ -138,7 +138,7 @@ def test_a_linked_split_is_accepted_as_linked_with_the_evidence_wording():
     [amb] = [x for x in r.flag["reasons"] if x["code"] == "connection_ambiguous"]     # the link's near tie
     assert amb["ids"] == ["b1", "b2"] and amb["severity"] == "warn" and r.flag["flagged"]
     assert (r.status, r.reason, r.assignment.count) == ("accepted", "linked", 2)
-    assert r.why_changed == "The evidence accepted the link's listed changes: the number of modes went from 1 to 2."
+    assert r.why_changed == "The link's listed changes changed the number of modes from 1 to 2."
     assert not {"neighbour_supported_split", "count_changed_by_neighbours"} & set(codes(r))
     assert r.fit["count_probabilities"] == {} and r.fit["models"][0]["probability"] is None
     assert r.fit["state"] == "resolved" and r.fit["probabilities_conditional"] is False

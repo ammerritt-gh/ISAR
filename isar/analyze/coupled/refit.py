@@ -1761,7 +1761,8 @@ def _finish(snapshot, a, stage: FitStage, results, restart_s: float = 0.0, *, pr
              for m, limit in _width_limits(eng, model, theta)]
     flag = _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, F, R, cov, notes, dropped,
                   linked=linked, more=more)
-    why = _why(status, reason, spec.n0, k, slots, spec.incoming, J_old, J, variant_changed)
+    why = _why(status, reason, spec.n0, k, slots, spec.incoming, J_old, J, variant_changed,
+               priced=a.search.get("domain") == "evidence")
     fit, overlay, cov_out = _record(eng, spec, a, model, theta, cov, sd, rel_sd, modes, ids, D, status)
     normalisers = {f"ln_z:{b}": (float(o.ln_z), "ln meV") for b, o in zip(slots, objs)
                    if isinstance(o, cc.MatchedDensity)}
@@ -1885,9 +1886,11 @@ def _flags(snapshot, spec, a, status, slots, ids, model, theta, modes, fast_by, 
     return {"score": F, "flagged": bool(flagged), "reasons": reasons}
 
 
-def _why(status, reason, n0, k, slots, incoming, J_old, J, variant_changed=False) -> str:
-    if status == "accepted" and reason == "linked" and k != n0:
+def _why(status, reason, n0, k, slots, incoming, J_old, J, variant_changed=False, priced=False) -> str:
+    if status == "accepted" and reason == "linked" and k != n0 and priced:
         return f"The evidence accepted the link's listed changes: the number of modes went from {n0} to {k}."
+    if status == "accepted" and reason == "linked" and k != n0:
+        return f"The link's listed changes changed the number of modes from {n0} to {k}."
     if status == "accepted" and reason == "linked":
         return "The link changed which branch a mode belongs to."
     if status == "accepted" and k != n0:
