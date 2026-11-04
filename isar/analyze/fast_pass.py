@@ -75,7 +75,7 @@ CLOSE_FADE = 0.05             # a close pair: its equal-split fade at least this
 DELTA_TWIN_RULE = True
 
 # Increment for result-changing repairs; saved fit signatures must not carry older answers.
-IMPLEMENTATION_VERSION = 3
+IMPLEMENTATION_VERSION = 4
 
 STAGES = ("seed", "ladder", "audits", "twins", "evidence", "classify")
 _PRICED = ("ok", "ok_boundary")
@@ -1522,7 +1522,8 @@ class _Engine:
         """The configured recipe's log prior (C-prior) at a full vector, one factor per coordinate: a
         pinned coordinate (a delta mode's width included) carries none and a soft-constrained one
         its truncated Gaussian instead; one ordered-energy factor per group of exchangeable modes
-        (``model.groups``; a group of one is the single penalised energy factor g(E))."""
+        (``model.groups``; a group of one is the single penalised energy factor g(E)). The tie-breaker
+        penalty between close modes is part of the model: subtracted here, so the objective carries it."""
         sp, omit = self.sp, model.omit
         lp = sum(sp.ln_energies([theta[a] for a in grp]) for grp in model.groups)
         for m, (a, g, c) in enumerate(model.modes):
@@ -1538,7 +1539,7 @@ class _Engine:
             lp += sp.ln_height(theta[model.qe_h])
         if model.qe_w is not None and model.qe_w not in omit:
             lp += sp.ln_qe_width(theta[model.qe_w])
-        return lp + self._ln_soft(model, theta)
+        return lp + self._ln_soft(model, theta) - self.pair_penalty(model, theta)
 
     def objective(self, model, theta):
         """f(z) = cost/2 - sat - ln prior - ln_jac on the free coordinates in the z coordinate (the
