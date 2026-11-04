@@ -40,7 +40,7 @@ import pickle
 import threading
 import time
 from collections import Counter, deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field, replace
@@ -810,28 +810,15 @@ def snapshot_links(link_now, u: str):
                          tuple(TieSide(g.id, g.kind, tuple(sorted(g.units)), g.alternatives[u]) for g in ties))
 
 
-def fitted_links(links, modes, aliases: Mapping[str, str], applied: Sequence[int] = (),
-                 link_ids: Sequence[str] | None = None):
-    """The stage's link (``snapshot_links``) read against a spectrum's current modes, so a sweep after a count change
-    keeps it: a mode carries its own branch id only when the link's labels name that branch for this spectrum or
-    an applied change made it (through the batch's aliases); a prediction alone never labels a mode. Settled follows
-    the link's flag for that branch, except a mode an applied change produced is never settled. ``applied``: the
-    indices into ``links.changes`` of the changes the spectrum's adopted candidate applied (the search records
-    them); exactly those are applied, and no longer listed. ``link_ids``: the branch ids of the link-time modes,
-    by which a remaining drop or split (named by a link-time mode index) follows its mode once an applied change has
-    moved the indices; one whose mode is gone is dropped until the next link."""
+def fitted_links(links, modes, aliases: Mapping[str, str]):
+    """The stage's link (``snapshot_links``) read against a spectrum's current modes: a mode carries its branch id only
+    when the link's labels name that branch for this spectrum (through the batch's aliases); a prediction alone never
+    labels a mode. Settled follows the link's flag for that branch. Every listed change is kept."""
     canon = lambda b: aliases.get(b, b)     # noqa: E731
     settled = {canon(b): s for b, s in zip(links.labels, links.settled) if b is not None}
-    applied = [c for i, c in enumerate(links.changes) if i in set(applied)]
-    made = {canon(b) for c in applied for b in c.branches}
-    labels = tuple(m.branch if canon(m.branch) in settled or canon(m.branch) in made else None for m in modes)
-    flags = tuple(b is not None and settled.get(canon(b), False) and canon(b) not in made for b in labels)
-    changes = tuple(c for c in links.changes if c not in applied)
-    if applied and link_ids is not None:
-        now = {canon(m.branch): i for i, m in enumerate(modes)}
-        changes = tuple(c if c.mode is None else replace(c, mode=now[canon(link_ids[c.mode])])
-                        for c in changes if c.mode is None or canon(link_ids[c.mode]) in now)
-    return replace(links, labels=labels, settled=flags, changes=changes,
+    labels = tuple(m.branch if canon(m.branch) in settled else None for m in modes)
+    flags = tuple(b is not None and settled.get(canon(b), False) for b in labels)
+    return replace(links, labels=labels, settled=flags,
                    settled_branches=frozenset(b for b, s in zip(labels, flags) if b is not None and s))
 
 
@@ -879,8 +866,6 @@ class _Run:
         self.link_prev, self.next_name = None, 1      # the result the next link continues, its next branch number
         self.link_now = None                          # (link id, stage tag, LinkResult) of the stage in progress
         self.price_flags: dict[str, list[dict]] = {}     # unit -> connection_ambiguous reasons of its unresolved splits
-        self.adopted: dict[str, tuple[int, ...]] = {}  # unit -> the listed changes its adopted fit applied, this round
-        self.link_ids: dict[str, tuple[str, ...]] = {}  # unit -> the branch ids of its modes when the stage linked
         self.end_link: str | None = None              # the link saved when the batch ended
         self.end_link_error: str | None = None
         self.core, self.target_s = core, target_s
@@ -1252,8 +1237,7 @@ class _Run:
         from isar.analyze.coupled.types import Snapshot
         links = snapshot_links(self.link_now, u)
         if links is not None:
-            links = fitted_links(links, own.modes, self.aliases, self.adopted.get(u, ()),
-                                 self.link_ids.get(u))   # read against its own modes
+            links = fitted_links(links, own.modes, self.aliases)   # read against its own modes
         return Snapshot(snapshot_id=sid, stage_id=stage_id or sid, unit=u, fit_id=self.records_mod.new_fit_id(),
                         context=self.ctx[u], own=own, own_record=self.record_of(u, own.fit), terms=tuple(terms),
                         settings=self.settings, batch_kind=self.kind, fast=self.fast.get(u),
@@ -1297,7 +1281,6 @@ class _Run:
             raise _Ended("failed", f"linking failed at {tag} ({type(exc).__name__}: {exc}); saved rings are kept")
         self.link_prev, self.next_name = stored, stored.next_name
         self.link_now = (verdict["link"], tag, stored)
-        self.link_ids = {u: tuple(m.branch for m in h.modes) for u, h in relabel.items()}
         for u, h in relabel.items():
             if u in held:
                 held[u] = h
@@ -1910,7 +1893,6 @@ class _Run:
         t_round = time.perf_counter()
         leave(self.take_new_locks(held))
         self.link_stage("round1", held)
-        self.adopted = {}                                # the new link lists its changes afresh against the held fits
         snaps = {}
         for k in sorted(active):
             terms = terms_of(k, held)
@@ -1941,7 +1923,7 @@ class _Run:
                                    for m, ref in enumerate(refs[k])}} for k in A}
         t_sweep = time.perf_counter()
         leave(self.take_new_locks(held))                 # E11: a new lock leaves the sweep as a fixed neighbour
-        before, before_adopted = dict(held), dict(self.adopted)
+        before = dict(held)
         self.stage_name, self.index = "sweep", 1
         self.progress("refine")
         width, snaps2, R_all = 0, {}, {}
@@ -1969,7 +1951,6 @@ class _Run:
                                                       inputs=self.inputs.get(k), context=self.ctx[k],
                                                       T=self.nodes[k].T,
                                                       dormant=self.note_dormant(ids, k, gs[k].fit_id, r.energies))
-                    self.adopted[k] = tuple((A[k].search or {}).get("applied", ()))
         if not snaps2:                                   # every member left during the round: nothing to save
             self.drift = self.drift_of(held)
             self.finish_links()
@@ -1984,10 +1965,6 @@ class _Run:
                 self.records[snap.fit_id] = R_all[k].fit
             elif k in verdict["refused"]:                # E9: every refused member goes back
                 held[k] = before[k]
-                if k in before_adopted:
-                    self.adopted[k] = before_adopted[k]
-                else:
-                    self.adopted.pop(k, None)
                 if verdict["refused"][k] == self.records_mod.REFUSED["picked"]:
                     self.hold_pick(k, held)
         self.stage_timing("sweep", 1, t_sweep, width, len(snaps2))

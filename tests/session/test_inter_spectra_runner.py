@@ -1836,48 +1836,17 @@ def test_a_prediction_alone_never_labels_a_mode():
     assert out.labels == (None,) and out.settled == (False,) and out.changes == (add,)
 
 
-def test_a_mode_an_applied_change_made_is_labelled_but_not_settled():
-    from isar.analyze.coupled.linking import Change
-    add = Change("add", None, ("n",), (_pred("n"),))
-    split = Change("split", 1, ("a", "c"), (_pred("a"), _pred("c")))
-    out = runner.fitted_links(_links_for(("a", "k"), (True, True), (), (add,)), _modes("a", "k", "n"), {}, (0,))
-    assert out.labels == ("a", "k", "n") and out.settled == (True, True, False) and out.changes == ()
-    # a split's child keeping the original (settled) branch id is unsettled too
-    out = runner.fitted_links(_links_for(("a", "k"), (True, True), (), (split,)), _modes("a", "c", "k"), {}, (0,))
-    assert out.labels == ("a", "c", "k") and out.settled == (False, False, True) and out.changes == ()
-    assert out.settled_branches == {"k"}
-
-
-def test_an_add_and_a_drop_that_net_to_zero_modes_are_both_applied():
+def test_fitted_links_keeps_every_listed_change():
     from isar.analyze.coupled.linking import Change
     add = Change("add", None, ("n",), (_pred("n"),))
     drop = Change("drop", 1, ("k",), ())
     links = _links_for(("a", "k"), (True, True), (), (add, drop))
-    out = runner.fitted_links(links, _modes("a", "n"), {}, (0, 1))     # the mode count did not grow
-    assert out.labels == ("a", "n") and out.settled == (True, False) and out.changes == ()
-    assert runner.fitted_links(links, _modes("a", "k"), {}).changes == (add, drop)    # nothing adopted: both listed
-
-
-def test_an_old_id_equal_to_a_predicted_branch_is_not_an_applied_add():
-    from isar.analyze.coupled.linking import Change
-    old_id, new = Change("add", None, ("b",), (_pred("b"),)), Change("add", None, ("c",), (_pred("c"),))
-    links = _links_for((None,), (False,), (), (old_id, new))
-    out = runner.fitted_links(links, _modes("b", "c"), {}, (1,))      # only the add of c was adopted
-    assert out.labels == (None, "c") and out.settled == (False, False) and out.changes == (old_id,)
-
-
-def test_a_remaining_drop_or_split_follows_its_mode_after_another_change_was_applied():
-    from isar.analyze.coupled.linking import Change
+    assert runner.fitted_links(links, _modes("a", "k"), {}).changes == (add, drop)
     drop0 = Change("drop", 0, (), ())
     split2 = Change("split", 2, ("c", "d"), (_pred("c"), _pred("d")))
     drop_gone = Change("drop", 1, (), ())
     links = _links_for((None, None, None), (False,) * 3, (), (drop0, split2, drop_gone))
-    ids = ("u0", "u1", "u2")                                  # the link-time modes' persistent ids
-    out = runner.fitted_links(links, _modes("u1", "u2"), {}, (0,), ids)     # drop0 applied: u1, u2 are modes 0, 1
-    assert [(c.kind, c.mode) for c in out.changes] == [("split", 1), ("drop", 0)]
-    out = runner.fitted_links(links, _modes("u2"), {}, (0, 2), ids)         # u0 and u1 both gone
-    assert [(c.kind, c.mode) for c in out.changes] == [("split", 0)]
-    assert runner.fitted_links(links, _modes("u0", "u1", "u2"), {}, (), ids).changes == (drop0, split2, drop_gone)
+    assert runner.fitted_links(links, _modes("u0", "u1", "u2"), {}).changes == (drop0, split2, drop_gone)
 
 
 # ---------------------------------------------------------------------------
