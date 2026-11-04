@@ -493,6 +493,37 @@ def test_link_c1_add_link_is_a_pass_on_the_link_lock():
     assert [w.item_id for w in q.snapshot().link] == [v.item_id]
 
 
+def test_link_c5_an_ahead_link_is_offered_before_an_older_waiting_batch_on_other_files():
+    q = AnalysisQueue(1)
+    q.pause()
+    q.add_inter("b1", ["A"])                                        # q1: the older batch
+    q.add_link("l1", files=["B"], ahead=True)                       # q2: a link on other files, offered first
+    q.resume()
+    assert ids(q.next_starts()) == [("q2", "link", 1)]
+    fin(q, "q2", "link")
+    q.on_saved("q2", "link")
+    assert ids(q.next_starts()) == [("q1", "inter", 1)]
+
+
+def test_link_c6_a_waiting_recovery_link_holds_the_batch_and_deep_items_on_its_files_but_not_fast_ones():
+    q = AnalysisQueue(2)
+    q.add_link("l0")                                                # q1 takes the link lock
+    assert ids(q.next_starts()) == [("q1", "link", 1)]
+    q.add_link("l1", files=["A"], ahead=True)                       # q2 waits for the link lock
+    q.add(["A"], "deep", automatic=False, current=NONE)             # q3
+    q.add_inter("b1", ["A"])                                        # q4
+    assert q.next_starts() == []                                    # q3 and q4 wait on the recovery link
+    assert (state(q, "q3").waiting_on, state(q, "q4").waiting_on) == ("q2", "q2")
+    q.add(["A"], "fast", automatic=True, current=NONE)              # q5: a fast item is not held by it
+    assert ids(q.next_starts()) == [("q5", "fast", 1)]
+    fin(q, "q1", "link")
+    q.on_saved("q1", "link")                                        # the lock is free; q2 waits for q5 on A
+    assert q.next_starts() == [] and state(q, "q2").waiting_on == "q5"
+    fin(q, "q5", "fast")
+    q.on_saved("q5", "fast")
+    assert ids(q.next_starts()) == [("q2", "link", 1)]              # the recovery link goes before q3 and q4
+
+
 def test_link_c2_fast_items_start_first_and_a_link_takes_one_core():
     q = AnalysisQueue(4)
     q.add_link("l1")                                               # q1 waits

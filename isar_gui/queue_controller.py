@@ -18,7 +18,8 @@ here when an event arrives, never the service's clock. Returned views are frozen
 A batch (:meth:`start_inter_batch`) is one ``inter`` item: it appears in :attr:`QueueView.batches`, never in
 the per-file marks. A mode-linking run (:meth:`add_link`) is one ``link`` item: it appears in
 :attr:`QueueView.links` and :meth:`link_status`, also never in the marks. With the automatic switch on, the settle
-of a scan's last fast item queues one series link item for that scan.
+of a scan's last fast item queues one series link item for that scan. A batch the operator stops queues one link
+item for its scans once its saves are answered, whatever the switch.
 
 A batch's member map (:meth:`batch_members`) is the live view of its spectra: the service's ``members`` events give
 each member's state, the newest started batch's map is kept here (settled when the batch ends abnormally), and
@@ -703,10 +704,16 @@ class QueueController(QObject):
                and self._recs[v.item_id].spec["series"] == series
                for v in self._queue.snapshot().link if v.state == "waiting"):
             return False, "Link modes for these scans is already queued."
+        return self._add_link_item(scans, reason=reason, series=series)
+
+    def _add_link_item(self, scans: tuple[str, ...], *, reason: str, series: bool, files: Sequence[str] = (),
+                       ahead: bool = False) -> tuple[bool, str]:
+        """Queue one link item with no duplicate check: a recovery link is always its own item (``files`` and
+        ``ahead`` go to the scheduler's add_link)."""
         spec = {"link_id": "l" + secrets.token_hex(6), "scans": list(scans), "series": series, "reason": reason}
         n = len(scans)
         label = f"Link modes for {n} {_plural(n, 'scan', 'scans')}"
-        view = self._queue.add_link(spec["link_id"], automatic=reason == "auto")
+        view = self._queue.add_link(spec["link_id"], automatic=reason == "auto", files=files, ahead=ahead)
         self._recs[view.item_id] = _Rec(view, spec=spec, label=label)
         message = f"Queued: {label.lower()}" + (" (added automatically)" if reason == "auto" else "")
         self.log_line.emit(message)
@@ -979,6 +986,7 @@ class QueueController(QObject):
             if rec.pass_kind == "deep" and pass_kind == "fast" and ev.get("status") in ("done", "done_warning"):
                 self._stages.append((rec, ev["status"], ev.get("reason"), self._clock()))
             QTimer.singleShot(0, self._flush_saved)
+        self._sync()                    # a batch this answer settled gets its recovery link before the pump
         self._pump()                    # the answer may free the file for a waiting item
 
     def _ev_save_failed(self, ev: dict) -> None:
@@ -986,6 +994,7 @@ class QueueController(QObject):
         error = str(ev.get("error"))
         if self._queue.on_save_failed(iid, pass_kind, error):
             self._recs[iid].answer(pass_kind, False, error)
+        self._sync()
         self._pump()
 
     def _ev_finished(self, ev: dict) -> None:
@@ -994,6 +1003,7 @@ class QueueController(QObject):
         rec = self._recs.get(iid)
         if rec is not None and rec.members is not None and rec.members.ended is None:
             self._end_members(iid, ev["end"], ev.get("reason"))
+        self._sync()
         self._pump()
 
     def _ev_members(self, ev: dict) -> None:
@@ -1074,10 +1084,12 @@ class QueueController(QObject):
             self.results_saved.emit(keys)
 
     def _sync(self) -> None:
-        """Note items that settled since the last look: their times, and the Log line step 22 wants."""
+        """Note items that settled since the last look: their times, and the Log line step 22 wants. The handlers that
+        can settle an item call this before their pump, so a stopped batch's link is offered ahead of waiting work."""
         snap = self._queue.snapshot()
         now = self._clock()
         settled_scans: list[str] = []       # scans whose fast item just settled with a result of its own
+        stopped: list[_SchedItem] = []      # batches the operator stopped, settled once their saves are answered
         for v in snap.finished[self._seen_finished:]:
             rec = self._recs.get(v.item_id)
             if rec is None or rec.final is not None:
@@ -1086,7 +1098,13 @@ class QueueController(QObject):
             self._log_settled(v, rec)
             if v.pass_kind == "fast" and v.state in ("done", "done_warning", "held", "failed") and rec.override is None:
                 settled_scans.append(rec.set_key)
+            elif v.pass_kind == "inter" and v.state == "stopped":
+                stopped.append(v)
         self._seen_finished = len(snap.finished)
+        if self._service == "ready":        # a dying service must not restart itself
+            for v in stopped:               # its end link, on the fits it saved; the switch does not decide it
+                scans = tuple(dict.fromkeys(scan_prefix(k) for k in v.members))
+                self._add_link_item(scans, reason="auto", series=False, files=v.members, ahead=True)
         if settled_scans and self._auto_link and self._service == "ready":     # a dying service must not restart itself
             self._relink(dict.fromkeys(settled_scans), snap)
 
