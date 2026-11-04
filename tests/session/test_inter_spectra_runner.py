@@ -195,8 +195,9 @@ def test_a_start_records_the_q_slope_each_anchored_scan_used_and_a_q_link_needs_
 # check 1: anchored
 # ---------------------------------------------------------------------------
 def test_an_anchored_batch_grows_ring_by_ring_on_frozen_state(tmp_path):
-    """Rings from the plan; every refit of a ring sees only the state frozen at its start; a seam pair never sees
-    each other and is reported with its ring; a failed ring-1 member cuts off the ring-2 member that had only
+    """Rings from the plan; every refit of a ring sees only the state frozen at its start (an inner neighbour's new
+    fit, an outer or ring-mate neighbour's fit in use); a seam pair never sees each other's new value and is
+    reported with its ring; a failed ring-1 member cuts off the ring-2 member that had only
     it and leaves another fitted against its other neighbour only; a lock set mid-ring is refused at save and
     is a fixed neighbour from the next ring on."""
     ws = _workspace(tmp_path, (100, 150, 200, 250, 300), 4)
@@ -227,18 +228,20 @@ def test_an_anchored_batch_grows_ring_by_ring_on_frozen_state(tmp_path):
         for c in r.conditioned_on:
             assert c.fit == "fast" or fit_ring[c.fit] < r.index, (r.unit, c)
         mates = {u for u, ring in ring_of.items() if ring == r.index}
-        held = [h["unit"] for t in p["came_in"]["terms"] for h in t["held"]]
-        assert not mates & set(held)                    # a ring-mate's new value never enters its ring
-    # the seam pair a03@150 / a03@200 sees only its own front, and the disagreement is reported with ring 1
+        for t in p["came_in"]["terms"]:
+            for h in t["held"]:                         # a ring-mate's new value never enters its ring
+                assert h["unit"] not in mates or h["fit"] == "fast" or fit_ring[h["fit"]] < r.index, (r.unit, h)
+    # the seam pair a03@150 / a03@200 sees its own front's new fit and the other side only as the fit in use, and the
+    # disagreement is reported with ring 1
     left, right = k["a03", 150.0], k["a03", 200.0]
-    assert [c.unit for c in by_unit[left][0][0].conditioned_on] == [k["a03", 100.0]]
-    assert [c.unit for c in by_unit[right][0][0].conditioned_on] == [k["a03", 250.0]]
+    assert {(c.unit, c.fit) for c in by_unit[left][0][0].conditioned_on} == {(k["a03", 100.0], "fast"), (right, "fast")}
+    assert {(c.unit, c.fit) for c in by_unit[right][0][0].conditioned_on} == {(k["a03", 250.0], "fast"), (left, "fast")}
     (ring1,) = [s for s in log.stages if s.batch == spec.batch_id and s.stage == "ring" and s.index == 1]
     assert {(s["a"], s["b"]) for s in ring1.seams} == {(left, right)}
     assert ring1.seams[0]["flag"]["code"] == "seam_disagreement"
-    # a failed neighbour: a05@200 is fitted against a05@250 only; a06@200 and beyond are cut off
+    # a failed neighbour: a05@200 is fitted against a05@250 and the failed one's fit in use; a06@200 and beyond are cut off
     (r200, _), = by_unit[k["a05", 200.0]]
-    assert [c.unit for c in r200.conditioned_on] == [k["a05", 250.0]]
+    assert {c.unit for c in r200.conditioned_on} == {k["a05", 250.0], k["a05", 150.0]}
     assert by_unit[k["a05", 150.0]][0][0].status == "failed"
     end = info.end
     missed = {d["unit"]: d["reason"] for d in end["not_reached"]}
@@ -247,8 +250,8 @@ def test_an_anchored_batch_grows_ring_by_ring_on_frozen_state(tmp_path):
     (lr, _), = by_unit[locked]
     assert (lr.accept.decision, lr.accept.reason) == ("declined", "locked")
     (n200, p200), = by_unit[k["a04", 200.0]]
-    assert [(c.unit, c.fit) for c in n200.conditioned_on] == [(locked, "fast")]
-    assert [m["omega0"] for t in p200["came_in"]["terms"] for h in t["held"] for m in h["modes"]] == [5.0]
+    assert {(c.unit, c.fit) for c in n200.conditioned_on} == {(locked, "fast"), (k["a04", 250.0], "fast")}
+    assert [m["omega0"] for t in p200["came_in"]["terms"] for h in t["held"] for m in h["modes"]] == [5.0, 5.0]
     # counts: done, failed, not reached and fixed are separate and add up to the members
     assert (end["state"], end["done"], end["failed"], len(end["not_reached"])) == ("completed", 8, 2, 3)
     assert bench.end().status == "done_warning"
@@ -276,16 +279,17 @@ def test_a_branch_missing_in_the_middle_of_an_anchored_chain_is_carried_to_where
     Bench(ws).run(spec)
     lines = {r.unit: (r, p) for r, p in _lines(ws, spec.batch_id)}
     gone = {"branch": "p", "last_seen_fit": "fast", "last_seen_unit": x}
-    assert lines[y][1]["came_out"]["dormant"] == [gone]                            # saved with y's refit
+    assert gone in lines[y][1]["came_out"]["dormant"]                              # saved with y's refit
+    # (y is also fitted against z's solo now, so z's own modes are branches y does not observe)
     held_y = [h for t in lines[z][1]["came_in"]["terms"] for h in t["held"] if h["unit"] == y]
-    assert held_y and held_y[0]["dormant"] == [gone]                               # carried to z's ring
+    assert held_y and gone in held_y[0]["dormant"]                                 # carried to z's ring
     assert lines[z][0].accept.decision == "authoritative"
     # a later batch reads y's stored refit back with its record
     again = _anchored(ws, [z])
     run = runner._Run(Path(ws), runner.BatchItem("q2", f"inter:{again.batch_id}:batch", "inter", 1, again.to_json()),
                       lambda p: None, lambda r: None, lambda t: {}, fakes, runner.TARGET_S)
     run.records_mod, run.ctx, run.inputs, run.nodes = records, {y: None}, {}, read_nodes(ws).nodes
-    assert run.held_of(y, lines[y][0].fit).dormant == (Dormant("p", "fast", x),)
+    assert Dormant("p", "fast", x) in run.held_of(y, lines[y][0].fit).dormant
 
 
 def _merging(orig, extra):
@@ -379,13 +383,14 @@ def test_the_fingerprint_the_runner_stamps_is_the_one_the_writer_checks(tmp_path
     """Joint worked example (S1 lead), parts 1 and 2, through the runner: an unchanged spectrum's stamped inputs
     equal what save_inter recomputes and the stored fast solo's, and it is accepted; a spectrum whose scan is
     recalibrated during the ring is declined as inputs_changed."""
-    ws = _workspace(tmp_path, (100, 150, 200, 250), 2)
+    ws = _workspace(tmp_path, (100, 150, 200, 250, 300), 1)
     k = _keys(ws)
-    stay, moved = k["a04", 200.0], k["a03", 150.0]
+    stay, moved = k["a03", 250.0], k["a03", 150.0]
     stored = Workspace.open(ws).load()[1].scans[stay].provenance["fit_inputs"]["hash"]
     scan, det = moved.rsplit(":", 1)
-    # ring 1: a03@150 (against a03@100) and a04@200 (against a04@250); only the 150 K scan is recalibrated
-    spec = _anchored(ws, [k["a03", 100.0], k["a04", 250.0]])
+    # ring 1: 150 K and 250 K against the 200 K anchor (250 K's other neighbour, 300 K, is untouched);
+    # only the 150 K scan is recalibrated
+    spec = _anchored(ws, [k["a03", 200.0]])
     bench = Bench(ws, _when("ring", 1, "refine", lambda: _calibrate(ws, scan, det, 0.5)))
     bench.run(spec)
     lines = {r.unit: r for r, _ in _lines(ws, spec.batch_id)}
@@ -498,12 +503,31 @@ def test_a_member_that_fails_every_sweep_keeps_the_batch_from_settling(tmp_path)
     assert (end["state"], end["sweeps"], end["failed"]) == ("did_not_settle", 3, 1)
 
 
-def test_a_count_change_in_a_later_round_reopens_the_sweeps(tmp_path):
-    ws, x, y, z = _chain(tmp_path, ({"toy": "average", "change_rounds": [2]}, {"toy": "keep"}, {"toy": "average"}))
+def test_a_simultaneous_round_whose_link_relabels_a_mode_runs_its_sweeps_rather_than_settling(tmp_path):
+    ws, x, y, z = _chain(tmp_path, ({"toy": "average"}, {"toy": "keep"}, {"toy": "average"}))
+
+    def label(unit, n, held):                    # round 2 puts x's mode on a branch of its own; round 3 keeps it
+        return ["C" if unit == x and n >= 2 else m.branch for m in held.modes]
     bench = Bench(ws)
     spec = _simultaneous(ws, (x, y, z))
-    end = bench.run(spec).batches[spec.batch_id].end
-    assert (end["state"], end["sweeps"], end["rounds"]) == ("settled", 5, 3)
+    end = bench.run(spec, linker=fakes.ScriptedLinker(label)).batches[spec.batch_id].end
+    assert (end["state"], end["rounds"]) == ("settled", 3) and end["sweeps"] >= 4     # three quiet rounds would be 3
+
+
+def test_a_simultaneous_round_after_the_first_never_changes_a_mode_set(tmp_path):
+    """Round 1 asks for the link's changes to be applied; every later round asks for none."""
+    import types
+    asked = []
+    spy = types.ModuleType("spy_core")
+    spy.__dict__.update({k: v for k, v in vars(fakes).items() if not k.startswith("__")})
+
+    def fixed_assignment(snapshot, *, apply_changes):
+        asked.append((snapshot.stage_id.rsplit(":", 1)[1], apply_changes))
+        return fakes.fixed_assignment(snapshot, apply_changes=apply_changes)
+    spy.fixed_assignment = fixed_assignment
+    ws, x, y, z = _chain(tmp_path, ({"toy": "average"}, {"toy": "keep"}, {"toy": "average"}))
+    end = Bench(ws).run(_simultaneous(ws, (x, y, z)), core=spy).batches
+    assert sorted(set(asked)) == [("round1", True), ("round2", False)]
 
 
 def test_refused_members_of_one_group_go_back_and_the_sweep_is_not_quiet(tmp_path):
@@ -741,7 +765,7 @@ def test_the_pool_is_capped_by_isar_workers_and_one_job_runs_inline(tmp_path, mo
     bench.run(spec, cores=8)
     (pool,) = _SpyPool.made
     assert pool.max_workers == 2
-    assert pool.submitted == 3                                      # ring 2's single refit ran inline
+    assert pool.submitted == 8                                      # fit and finish of ring 1's three and ring 2's one
     assert [r.cores for r in bench.results if r.status == "cores"] == [2]
     overlays = [p["overlay"]["fast_pass"] for _, p in _lines(ws, spec.batch_id)]
     assert len(overlays) == 4 and {o["workers"] for o in overlays} == {1}    # the core is always told 1
@@ -868,33 +892,6 @@ def _spectra(log, batch) -> dict:
     return {(r["stage"], r["unit"]): r for r in log.batches[batch].end["timing"]["spectra"]}
 
 
-def test_a_spectrum_sends_its_next_pass_while_another_spectrums_job_still_runs(tmp_path, monkeypatch):
-    """No barrier: a03's one job is slow; a04's three passes all go to the pool before a03's job is back."""
-    from concurrent.futures import ThreadPoolExecutor
-    monkeypatch.setenv("ISAR_WORKERS", "2")
-    monkeypatch.setattr(runner, "ProcessPoolExecutor", ThreadPoolExecutor)    # in process: the fake core is importable
-    events, orig = [], runner._Run.fly
-
-    def fly(self, key, on):
-        events.append((key, on))
-        return orig(self, key, on)
-    monkeypatch.setattr(runner._Run, "fly", fly)
-    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): {"triggered": True, "price_sleep": 1.0},
-                                    ("a04", 150.0): {"triggered": True, "iterations": 3}})
-    slow, quick = k["a03", 150.0], k["a04", 150.0]
-    log = Bench(ws).run(spec, cores=2)
-    price = [(key, on) for key, on in events if isinstance(key, tuple)]
-    slow_back = price.index(next((key, False) for key, on in price if key[0] == slow))
-    quick_sent = [i for i, (key, on) in enumerate(price) if key[0] == quick and on]
-    assert len(quick_sent) == 3 and quick_sent[-1] < slow_back      # a04's third pass flew before a03's job was back
-    rows = _spectra(log, spec.batch_id)
-    assert (rows["ring1", quick]["iterations"], rows["ring1", quick]["candidates"]) == (3, 3)
-    assert (rows["ring1", slow]["iterations"], rows["ring1", slow]["candidates"]) == (1, 1)
-    t = log.batches[spec.batch_id].end["timing"]
-    assert t["pool"]["iterations"] == 4 and t["pool"]["workers"] == 2 and t["search_s"] >= 0.0
-    assert t["pool"]["busy_s"] <= t["pool"]["map_wall_s"] * 2           # utilisation stays a fraction
-
-
 class _ScriptSearch:
     """A search that asks scripted passes and records every price it is fed, in order."""
 
@@ -989,56 +986,10 @@ def test_each_search_sees_the_same_prices_in_job_order_whatever_order_the_pool_r
     assert run.timing["pool"]["iterations"] == 6
 
 
-def test_a_simultaneous_round_with_unchanged_inputs_prices_nothing(tmp_path, monkeypatch):
-    """x moves in round 1 and y keeps; round 2 re-prices x (its own value changed) and y (a neighbour's did) and
-    serves z (nobody it reads moved) from the cache, with no pool work for it. The fake's keys are values, never
-    fit ids; the real core's carry the ids (so an accepted sweep renews them), which the runner does not look at."""
-    cfg = {"triggered": True}
-    ws, x, y, z = _chain(tmp_path, ({**cfg, "toy": "average"}, {**cfg, "toy": "keep"}, {**cfg, "toy": "keep"}))
-    seen = _spy_maps(monkeypatch)
-    spec = _simultaneous(ws, (x, y, z))
-    log = Bench(ws).run(spec)
-    assert log.batches[spec.batch_id].end["rounds"] == 2
-    rows = _spectra(log, spec.batch_id)
-    assert [(rows["round1", u]["candidates"], rows["round1", u]["cached"]) for u in (x, y, z)] == [(1, 0)] * 3
-    assert [(rows["round2", u]["candidates"], rows["round2", u]["cached"]) for u in (x, y, z)] == [(1, 0), (1, 0), (0, 1)]
-    assert rows["round2", z]["iterations"] == 0
-    assert [m for m in seen if m[0] == "price"] == [("price", 3), ("price", 2)]
-
-
-def test_a_pool_exception_becomes_a_recorded_failure_reason_and_is_priced_again(tmp_path):
-    cfg = {"triggered": True, "toy": "keep"}
-    ws, x, y, z = _chain(tmp_path, ({**cfg, "price_raise": [0]}, cfg, cfg))
-    spec = _simultaneous(ws, (x, y, z))
-    bench = Bench(ws)
-    log = bench.run(spec)
-    assert log.batches[spec.batch_id].end["state"] == "settled" and bench.end().status == "done"
-    rows = _spectra(log, spec.batch_id)
-    reason = [["pricing failed (RuntimeError: boom)", 1]]
-    assert (rows["round1", x]["failures"], rows["round1", x]["failure_reasons"]) == (1, reason)
-    # never cached: round 2 asks again (and fails again); the others are served from the cache
-    assert (rows["round2", x]["candidates"], rows["round2", x]["cached"], rows["round2", x]["failures"]) == (1, 0, 1)
-    assert [rows["round2", u]["candidates"] for u in (y, z)] == [0, 0]
-
-
-def test_a_pool_exception_in_a_live_worker_fails_only_that_candidate(tmp_path, monkeypatch):
-    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, [str(HERE), os.environ.get("PYTHONPATH")])))
-    monkeypatch.setenv("ISAR_WORKERS", "2")
-    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): {"triggered": True, "price_raise": [0]},
-                                    ("a04", 150.0): {"triggered": True}})
-    bench = Bench(ws)
-    log = bench.run(spec, cores=2)                                  # a real two-worker process pool
-    rows = _spectra(log, spec.batch_id)
-    assert rows["ring1", k["a03", 150.0]]["failure_reasons"] == [["pricing failed (RuntimeError: boom)", 1]]
-    assert rows["ring1", k["a04", 150.0]]["failures"] == 0
-    assert log.batches[spec.batch_id].end["done"] == 2 and bench.end().status == "done"
-
-
 @pytest.mark.parametrize("kind", ["anchored", "simultaneous"])
-@pytest.mark.parametrize("where", ["open", "next", "feed", "result"])
-def test_a_search_that_raises_fails_only_its_own_spectrum(tmp_path, kind, where):
-    bad = {"triggered": True, "search_raise": where, "toy": "keep"}
-    good = {"triggered": True, "toy": "keep"}
+def test_a_mode_set_that_cannot_be_made_fails_only_its_own_spectrum(tmp_path, kind):
+    bad = {"fixed_raise": True, "toy": "keep"}
+    good = {"toy": "keep"}
     if kind == "anchored":
         ws, k, spec = _ring1(tmp_path, {("a03", 150.0): bad, ("a04", 150.0): good})
         failed, other = k["a03", 150.0], k["a04", 150.0]
@@ -1050,19 +1001,19 @@ def test_a_search_that_raises_fails_only_its_own_spectrum(tmp_path, kind, where)
     end = log.batches[spec.batch_id].end
     assert bench.end().status == "done_warning"
     assert [f["unit"] for f in end["failed_units"]] == [failed]
-    assert "the fake search failed" in end["failed_units"][0]["reason"] and "RuntimeError" in end["failed_units"][0]["reason"]
+    assert "no incoming model" in end["failed_units"][0]["reason"] and "ValueError" in end["failed_units"][0]["reason"]
     by_unit = {r.unit: r for r in log.refits if r.batch == spec.batch_id}
     assert other in by_unit and by_unit[other].status in records.ELIGIBLE
     if kind == "anchored":
         assert by_unit[failed].status == "failed" and end["state"] == "completed"
     else:
         assert failed not in by_unit and end["state"] == "settled"
-    assert end["timing"] and _spectra(log, spec.batch_id)[(f"ring1" if kind == "anchored" else "round1", failed)][
-        "error"].startswith("RuntimeError")
+    assert _spectra(log, spec.batch_id)[("ring1" if kind == "anchored" else "round1", failed)][
+        "error"].startswith("ValueError")
 
 
-def test_a_ring_whose_every_search_fails_ends_without_error(tmp_path):
-    bad = {"triggered": True, "search_raise": "open"}
+def test_a_ring_whose_every_mode_set_fails_ends_without_error(tmp_path):
+    bad = {"fixed_raise": True}
     ws, k, spec = _ring1(tmp_path, {("a03", 150.0): bad, ("a04", 150.0): bad})
     bench = Bench(ws)
     end = bench.run(spec).batches[spec.batch_id].end
@@ -1071,7 +1022,7 @@ def test_a_ring_whose_every_search_fails_ends_without_error(tmp_path):
 
 
 def test_a_failed_ringmate_is_no_identity_neighbour_of_its_survivor(tmp_path, monkeypatch):
-    """A ring member whose search raised is not in the ring's stage, so its own fast fit must not reach the
+    """A ring member whose mode set failed is not in the ring's stage, so its own fast fit must not reach the
     identity reconciliation as an earlier neighbour: it would hand its branches to the survivor."""
     from isar.analyze.coupled import identity
     seen, orig = [], identity.propagate_ids
@@ -1080,45 +1031,32 @@ def test_a_failed_ringmate_is_no_identity_neighbour_of_its_survivor(tmp_path, mo
         seen.append((tuple(order), set(kw["previous"])))
         return orig(order, links, modes, settings, **kw)
     monkeypatch.setattr(identity, "propagate_ids", spy)
-    bad = {"triggered": True, "search_raise": "open"}
-    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): bad, ("a04", 150.0): {"triggered": True}})
+    bad = {"fixed_raise": True}
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): bad})
     failed, other = k["a03", 150.0], k["a04", 150.0]
     Bench(ws).run(spec)
     ring_calls = [prev for order, prev in seen if order == (other,)]
     assert ring_calls and all(failed not in prev for prev in ring_calls)
 
 
-@pytest.mark.timeout(20)
-def test_a_search_that_repeats_a_job_is_failed_not_looped(tmp_path):
-    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): {"triggered": True, "iterations": 2, "search_repeat": True},
-                                    ("a04", 150.0): {"triggered": True}})
-    log = Bench(ws).run(spec)
-    row = _spectra(log, spec.batch_id)["ring1", k["a03", 150.0]]
-    assert "repeated a job" in row["error"] and row["candidates"] == 1
-
-
 def test_the_timing_block_reports_contract_10(tmp_path, monkeypatch):
-    slow = {"triggered": True, "iterations": 2, "jobs_per_iteration": 2, "starts": 3, "fits": 5, "price_sleep": 0.03,
-            "stopped": {"down": "behind_margin:1", "up": "behind_margin:3"}}
-    quick = {"triggered": True, "iterations": 2, "jobs_per_iteration": 2, "starts": 3, "fits": 5}
-    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): slow, ("a04", 150.0): quick})
+    slow = {"sleep": 0.03, "restarts": 2}
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): slow, ("a04", 150.0): {}})
     seen = _spy_maps(monkeypatch)
     bench = Bench(ws)
     t = bench.run(spec, target_s=0.0).batches[spec.batch_id].end["timing"]
     a, b = (next(r for r in t["spectra"] if r["unit"] == k[d, 150.0]) for d in ("a03", "a04"))
-    assert a["stage"] == "ring1" and len(t["spectra"]) == 2          # ring 1 only: nothing else was searched
-    for r in (a, b):
-        assert (r["iterations"], r["candidates"], r["cached"], r["starts"], r["fits"], r["failures"]) == (2, 4, 0, 12, 20, 0)
-        assert r["starts_per_candidate"] == 3.0 and r["failure_reasons"] == [] and r["error"] is None
-        assert r["refine_s"] >= 0.0 and r["branches_seen"] == 1 and r["dormant_seen"] == 0
-    assert a["stopped"] == {"down": "behind_margin:1", "up": "behind_margin:3"} and a["evidence_s"] >= 0.1
-    assert b["stopped"] == {"down": "fake", "up": "fake"} and b["evidence_s"] < a["evidence_s"]
+    assert a["stage"] == "ring1" and len(t["spectra"]) == 2          # ring 1 only: nothing else was fitted
+    for r in (a, b):                                                 # no candidate was priced: the search fields read 0
+        assert (r["iterations"], r["candidates"], r["cached"], r["starts"], r["fits"], r["failures"]) == (0,) * 6
+        assert r["failure_reasons"] == [] and r["error"] is None and r["stopped"] is None
+        assert r["evidence_s"] == 0.0 and r["refine_s"] >= 0.0 and r["branches_seen"] == 1 and r["dormant_seen"] == 0
+    assert a["refine_s"] >= 0.03 > b["refine_s"]
     assert t["slowest"]["spectrum"]["unit"] == a["unit"] and t["slowest"]["spectrum"]["stage"] == "ring1"
     assert t["slowest"]["stage"]["kind"] == "ring" and t["slowest"]["stage"]["wall_s"] == max(
         s["wall_s"] for s in t["stages"])
-    assert [m for m in seen if m[0] == "price"] == [("price", 8)]               # one stream for the ring, its 8 jobs
-    assert t["pool"]["iterations"] == 4                                         # two passes of each spectrum
-    assert t["pool"]["busy_s"] == pytest.approx(a["evidence_s"] + b["evidence_s"])
+    assert [m for m in seen if m[0] == "refit_step"] == [("refit_step", 6)]    # 2 fits, a's 2 restarts, 2 finishes
+    assert (t["pool"]["iterations"], t["search_s"], t["likelihood_s"]) == (0, 0.0, 0.0) and t["restart_s"] >= 0.0
     assert (t["pool"]["workers"], t["over_target"]) == (1, True) and bench.end().status == "done"
 
 
@@ -1155,19 +1093,13 @@ def test_a_dead_worker_fails_its_jobs_and_ends_the_batch_at_the_next_pool_call(t
     monkeypatch.setenv("ISAR_WORKERS", "2")
     monkeypatch.setattr(runner, "ProcessPoolExecutor", _DeadPool)
     _DeadPool.made = []
-    cfg = {"triggered": True, "iterations": 2}
-    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): cfg, ("a04", 150.0): cfg})
+    ws, k, spec = _ring1(tmp_path, {})
     bench = Bench(ws)
     log = bench.run(spec, cores=2)
     end = bench.end()
-    assert end.status == "failed" and "BrokenProcessPool" in end.reason       # the second pass reached the dead pool
+    assert end.status == "failed" and "BrokenProcessPool" in end.reason       # the finish reached the dead pool
     assert len(_DeadPool.made) == 1                                           # and no replacement was opened
     assert [r for r in log.refits if r.batch == spec.batch_id] == []          # nothing of the stage was saved
-    rows = [r for r in end.payload["end"]["timing"]["spectra"]]
-    failed = [r for r in rows if r["failures"]]
-    assert len(failed) == 1 and failed[0]["candidates"] == 1
-    assert "BrokenProcessPool" in failed[0]["failure_reasons"][0][0]
-    assert sum(r["candidates"] for r in rows) == 2 and sum(r["failures"] for r in rows) == 1   # one price survived
 
 
 # ---------------------------------------------------------------------------
@@ -1196,9 +1128,104 @@ def test_a_batch_far_over_its_target_still_completes_and_records_its_timing(tmp_
 
 
 # ---------------------------------------------------------------------------
+# the fixed-set batch: no search, two-sided terms, parallel restarts, the log line
+# ---------------------------------------------------------------------------
+class _Hold:
+    """A stand-in for a function the batch must not call: it records the call and raises."""
+
+    def __init__(self, where, reached):
+        self.where, self.reached = where, reached
+
+    def __call__(self, *a, **kw):
+        self.reached.append(self.where)
+        raise AssertionError(f"a batch reached {self.where}")
+
+
+@pytest.mark.parametrize("kind", ["anchored", "simultaneous"])
+def test_no_batch_path_reaches_the_count_search(tmp_path, monkeypatch, kind):
+    """The fake core's search and price, the runner's ``assign`` and its scheduler all raise if called."""
+    import types
+    reached = []
+    spy = types.ModuleType("spy_core")
+    spy.__dict__.update({k: v for k, v in vars(fakes).items() if not k.startswith("__")})
+    spy.open_search, spy.price = _Hold("open_search", reached), _Hold("price", reached)
+    monkeypatch.setattr(runner._Run, "assign", _Hold("_Run.assign", reached))
+    monkeypatch.setattr(runner, "_Sched", _Hold("_Sched", reached))
+    cfg = {"triggered": True, "iterations": 3, "toy": "average", "change_rounds": [1, 2]}   # every search knob on
+    ws, x, y, z = _chain(tmp_path, (cfg, cfg, cfg))
+    spec = _anchored(ws, [x]) if kind == "anchored" else _simultaneous(ws, (x, y, z))
+    log = Bench(ws).run(spec, core=spy)
+    assert reached == [] and log.batches[spec.batch_id].end["state"] in ("completed", "settled")
+
+
+def test_an_anchored_ring_fits_against_both_sides_and_carries_the_outer_energy_factor(tmp_path):
+    """x - y - z with x the anchor: ring 1 is y, whose terms hold x's fit and z's fit in use (the solo), so the
+    mean toy gives (4 + 9) / 2 + 0.1, and the refit keeps the energy factor to z beside the one to x."""
+    ws, x, y, z = _chain(tmp_path, ({"toy": "keep"}, {"toy": "mean"}, {"toy": "keep"}))
+    spec = _anchored(ws, [x])
+    Bench(ws).run(spec)
+    lines = {r.unit: (r, p) for r, p in _lines(ws, spec.batch_id)}
+    r, p = lines[y]
+    assert {(c.unit, c.fit) for c in r.conditioned_on} == {(x, "fast"), (z, "fast")}
+    assert p["came_out"]["energies"]["B"] == pytest.approx(6.6)
+    assert sorted(tuple(f["members"]) for f in p["came_out"]["assignment"]["factors"]) == sorted(
+        [tuple(sorted((x, y))), tuple(sorted((y, z)))])
+    assert r.accept.decision == "authoritative"
+    # z, fitted in ring 2, then conditions on y's new fit (its inner side) as before
+    assert {(c.unit, c.fit) for c in lines[z][0].conditioned_on} == {(y, r.fit)}
+
+
+def test_restarts_are_separate_pool_calls_and_the_result_equals_the_inline_refit(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    monkeypatch.setenv("ISAR_WORKERS", "2")
+    monkeypatch.setattr(runner, "ProcessPoolExecutor", ThreadPoolExecutor)    # in process: the fake core is importable
+    keys, orig = [], runner._Pool.stream
+
+    def stream(self, fn, calls, more):
+        def counted(key, result):
+            keys.append(key)
+            return more(key, result)
+        return orig(self, fn, calls, counted)
+    monkeypatch.setattr(runner._Pool, "stream", stream)
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): {"restarts": 3, "toy": "keep"}, ("a04", 150.0): {"toy": "keep"}})
+    a = k["a03", 150.0]
+    log = Bench(ws).run(spec, cores=2)
+    steps = [key[1] for key in keys if key[0] == a]
+    assert sorted(steps) == ["finish", "fit", "restart", "restart", "restart"] and steps[0] == "fit" and steps[-1] == "finish"
+    assert sorted(key[2] for key in keys if key[0] == a and key[1] == "restart") == [0, 1, 2]
+    assert [key[1] for key in keys if key[0] == k["a04", 150.0]] == ["fit", "finish"]
+    (stored,) = [p for r, p in _lines(ws, spec.batch_id) if r.unit == a]
+    assert log.batches[spec.batch_id].end["done"] == 2
+    # the same ring without restarts saves the same energies
+    other = tmp_path / "again"
+    other.mkdir()
+    ws2, k2, spec2 = _ring1(other, {("a03", 150.0): {"toy": "keep"}, ("a04", 150.0): {"toy": "keep"}})
+    Bench(ws2).run(spec2, cores=2)
+    (again,) = [p for r, p in _lines(ws2, spec2.batch_id) if r.unit == k2["a03", 150.0]]
+    assert stored["came_out"]["energies"] == again["came_out"]["energies"] == {"B": pytest.approx(5.0)}
+
+
+def test_every_spectrum_fit_writes_one_log_line_as_it_finishes(tmp_path, caplog):
+    import logging
+    caplog.set_level(logging.INFO, logger=runner.log.name)
+    ws, k, spec = _ring1(tmp_path, {("a03", 150.0): {"restarts": 2}})
+    Bench(ws).run(spec)
+    lines = [m for m in caplog.messages if m.startswith("inter fit ")]
+    assert len(lines) == 2
+    row = next(m for m in lines if f"unit={k['a03', 150.0]} " in m)
+    fields = dict(f.split("=", 1) for f in row.split()[2:])
+    assert fields["batch"] == spec.batch_id and fields["stage"] == "ring1" and fields["modes"] == "1+0"
+    assert fields["applied"] == "-" and fields["restarts"] == "2" and fields["status"] == "accepted"
+    assert float(fields["wall_s"]) >= 0.0 and float(fields["work_s"]) >= 0.0 and fields["flags"] == "-"
+    assert next(m for m in lines if f"unit={k['a04', 150.0]} " in m).count("restarts=0") == 1
+
+
+# ---------------------------------------------------------------------------
 # the real core, end to end (not slow: 2 analyzers x 2 temperatures, tiny generated spectra, one core)
 # ---------------------------------------------------------------------------
-def test_the_real_core_runs_both_batch_kinds_end_to_end(tmp_path):
+def test_the_real_core_runs_both_batch_kinds_end_to_end(tmp_path, monkeypatch):
+    from isar.analyze import evidence
+    from isar.analyze.coupled import engine, refit as core, search
     from isar.session.file_fit import FileItem, fit_file
     from isar.session import ingest
     ws = fx.workspace(tmp_path, sample="Smp")
@@ -1218,6 +1245,19 @@ def test_the_real_core_runs_both_batch_kinds_end_to_end(tmp_path):
         assert writer.save_results(ws.root, [r.payload for r in out if r.payload is not None]) == [None, None]
     assert inter_values.save_settings(ws.root, {"sweep_cap": 3}).ok
     k = _keys(ws.root)
+    reached = []        # the count search, evidence and the split integral: no batch path may reach one
+
+    def never(where):
+        def call(*a, **kw):
+            reached.append(where)
+            raise AssertionError(f"a batch reached {where}")
+        return call
+    for mod, name in ((core, "assign"), (core, "price"), (core, "open_search"), (search, "Search"),
+                      (engine, "integrate_split"), (engine.CoupledEngine, "split_evidence"),
+                      (core._Labelled, "split_evidence"), (evidence, "laplace_ln_z"),
+                      (evidence, "structure_evidence"), (evidence, "candidate_set_evidence"),
+                      (runner._Run, "assign"), (runner, "_Sched")):
+        monkeypatch.setattr(mod, name, never(f"{mod.__name__}.{name}"))
     # simultaneous first, straight from the fast solos (no anchored batch before it), then anchored
     for spec in (_simultaneous(ws.root, list(k.values())),
                  _anchored(ws.root, [k["a03", 100.0], k["a04", 100.0]])):
@@ -1226,9 +1266,9 @@ def test_the_real_core_runs_both_batch_kinds_end_to_end(tmp_path):
         end = log.batches[spec.batch_id].end
         print(spec.kind, end["state"], json.dumps(end["timing"], indent=1))
         assert end["state"] in ("completed", "settled"), end
-        for r in end["timing"]["spectra"]:               # the search ran on every spectrum and told why it stopped
-            assert r["stopped"] is not None and r["error"] is None
-            assert r["failures"] == sum(n for _, n in r["failure_reasons"])
+        assert reached == []
+        for r in end["timing"]["spectra"]:               # nothing was priced
+            assert r["error"] is None and r["candidates"] == 0
         lines = [r for r in log.refits if r.batch == spec.batch_id]
         # a later sweep may decline a move at equal J (a flat direction): a reasoned verdict, not a failure
         assert lines and all(r.status in records.ELIGIBLE or (r.status, r.reason, r.index > 1)
@@ -1523,8 +1563,64 @@ def test_an_anchored_batch_links_at_every_ring_and_once_at_the_end(tmp_path):
         assert [m["branch"] for m in p["own"]["modes"]] == [f"link:{unit}#0"]
         assert (p["links"]["link_id"], p["links"]["stage"]) == (by[stage].link, stage)
         assert p["links"]["labels"] == [f"link:{unit}#0"]
-    held_x = [h for t in lines[y][1]["came_in"]["terms"] for h in t["held"]]
+    held_x = [h for t in lines[y][1]["came_in"]["terms"] for h in t["held"] if h["unit"] == x]
     assert [m["branch"] for h in held_x for m in h["modes"]] == ["B"]        # the anchor's ids are never relabelled
+
+
+class _HoldPool:
+    """Stands in for the run's ``_Pool``: whichever unit is not ``slow`` comes back first."""
+
+    def __init__(self, slow, workers=3) -> None:
+        self.slow, self.workers, self.ship_s, self.log = slow, workers, 0.0, []
+
+    def stream(self, fn, calls, more) -> None:
+        queue, flying = list(calls), []
+        while queue or flying:
+            while queue and len(flying) < self.workers:
+                flying.append(queue.pop(0))
+                self.log.append(("sent", flying[-1][0]))
+            call = next((c for c in flying if c[0][0] != self.slow), flying[0])
+            flying.remove(call)
+            key, (snap, job), _kw = call
+            self.log.append(("back", key))
+            queue.extend(more(key, _scripted_price(job)))
+
+
+def test_a_search_sends_its_next_pass_while_another_searchs_job_still_runs():
+    """No barrier: x's one job is slow; y's three passes all go to the pool before it is back."""
+    searches = {"x": _ScriptSearch([[_job("x", "x-1")]]),
+                "y": _ScriptSearch([[_job("y", "y-1")], [_job("y", "y-2")], [_job("y", "y-3")]])}
+    pool = _HoldPool("x")
+    run, (A, errors) = _scripted_run(pool, searches, {})
+    assert errors == {} and sorted(A) == ["x", "y"]
+    assert pool.log.index(("sent", ("y", "y-3"))) < pool.log.index(("back", ("x", "x-1")))
+    assert run.timing["pool"]["iterations"] == 4
+
+
+def test_a_failed_price_is_a_recorded_reason_and_never_cached():
+    searches = {"y": _ScriptSearch(_scripts()["y"])}
+    cache = {}
+    run, (A, errors) = _scripted_run(_OrderPool("fifo", raises={"y-22"}), searches, cache)
+    row = run.tallies["ring1", "y"]
+    assert errors == {} and (row.failures, dict(row.reasons)) == (1, {"pricing failed (RuntimeError: boom)": 1})
+    assert "y-22" not in cache["y"] and "y-1" in cache["y"]
+
+
+def test_a_search_that_cannot_open_or_repeats_a_job_fails_only_its_own_spectrum():
+    from types import SimpleNamespace as NS
+    again = _job("y", "y-1")
+    searches = {"y": _ScriptSearch([[again], [again]]), "z": _ScriptSearch(_scripts()["z"])}
+
+    def open_search(s):
+        if s.unit == "x":
+            raise RuntimeError("the search failed to open")
+        return searches[s.unit]
+    run = runner._Run(Path("."), NS(spec={"batch_id": "b", "kind": "anchored"}), None, None, None,
+                      NS(open_search=open_search), 30.0)
+    run.pool, run.index = _OrderPool("fifo"), 1
+    A, errors = run.assign({u: NS(unit=u, terms=(), aliases={}) for u in ("x", "y", "z")}, {})
+    assert sorted(A) == ["z"] and sorted(errors) == ["x", "y"]
+    assert "repeated a job" in str(errors["y"]) and run.tallies["ring1", "x"].error.startswith("RuntimeError")
 
 
 def test_a_simultaneous_batch_links_at_every_round_and_the_sweeps_carry_their_rounds_link(tmp_path):

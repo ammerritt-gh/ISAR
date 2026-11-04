@@ -88,10 +88,14 @@ def test_worked_example_1_anchored_two_rings(tmp_path):
     assert (events[1]["stage"], events[1]["index"]) == ("ring", 1)            # progress("assign"): a new stage is sent
 
     assert _history(events, t200) == ["held"]
-    assert _history(events, t150) == ["waiting", "fitting", "waiting", "refused"]
-    assert _history(events, t250) == ["waiting", "fitting", "waiting", "done"]
+    # a spectrum's refit is a few pool steps (fit, finish): it reads "fitting" while one flies, "waiting" between
+    def run_of(u, verdict):
+        h = _history(events, u)
+        assert h[:2] == ["waiting", "fitting"] and h[-1] == verdict and set(h) <= {"waiting", "fitting", verdict}, h
+    run_of(t150, "refused")
+    run_of(t250, "done")
     assert _history(events, t100) == ["waiting", "not_reached"]
-    assert _history(events, t300) == ["waiting", "fitting", "waiting", "failed"]
+    run_of(t300, "failed")
     # the verdict lands with the ring's save: 250 done, 150 refused, 1/1/2/1/5 before ring 2 starts
     verdict = next(e for e in events if e["states"][t150] == "refused" and e["stage"] == "ring" and e["index"] == 1)
     assert verdict["states"][t250] == "done" and verdict["counts"] == {"done": 1, "failed": 1, "not_reached": 2,
@@ -184,7 +188,7 @@ def test_at_most_workers_jobs_are_in_flight_and_fitting(tmp_path, monkeypatch):
     bench = Bench(ws)
     bench.run(spec, cores=3, members=events.append)
     (pool,) = _SlowPool.made
-    assert pool.max_workers == 3 and max(pool.unfinished) == 3 and len(pool.unfinished) == 8
+    assert pool.max_workers == 3 and max(pool.unfinished) == 3 and len(pool.unfinished) == 16
     _check_events(events, spec, workers=3)
     assert max(sum(s == "fitting" for s in e["states"].values()) for e in events) == 3
     _agrees_with_the_books(events, bench)

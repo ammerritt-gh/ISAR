@@ -82,11 +82,11 @@ def test_the_tool_runs_a_batch_and_prints_every_key_of_its_report(tmp_path, caps
     lines = out.splitlines()
     for key in REPORT_KEYS:
         assert any(line.startswith(key) for line in lines), f"no {key} line in:\n{out}"
-    assert "searched_fraction round1: 0.50 (2 of 4)" in lines       # two of the four spectra are triggered
-    for k in triggered:
+    assert "searched_fraction round1: 0.00 (0 of 4)" in lines       # no spectrum is searched: one fit of a fixed set
+    for k in nodes:
         assert any(line.startswith(f"spectrum round1 {k}:") for line in lines), out
     data = json.loads((out_dir / "timing.json").read_text(encoding="utf-8"))
-    assert data["stage1"]["round1"]["searched"] == 2
+    assert data["stage1"]["round1"]["searched"] == 0
     assert data["end"]["timing"]["spectra"], "timing.json carries the batch's spectra records"
     (batch,) = records.read_log(ws).batches.values()
     assert batch.end is not None and batch.metric.get("note") is None  # a plain run carries no synthetic label
