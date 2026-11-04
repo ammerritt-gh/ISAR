@@ -77,6 +77,7 @@ def test_engine_penalty_is_the_cap_for_a_coincident_pair_and_absent_when_far(pai
     assert eng.pair_terms(model, far) == [] and eng.pair_penalty(model, far) == 0.0
     off = fast_pass._Engine(eng.ctx, FastPassSettings(mode_ceiling=2, pair_penalty_cap=0.0))
     assert off.pair_penalty(model, same) == 0.0
+    assert off.close_pairs(model, same) == []          # cap 0: no pair the penalty acts on, so no restarts
 
 
 def test_d_eq_does_not_depend_on_how_the_fit_divides_the_pair(pair_engine):

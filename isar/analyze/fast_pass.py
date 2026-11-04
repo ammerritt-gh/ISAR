@@ -1020,7 +1020,9 @@ class _Engine:
         return float(sum(t[4] for t in self.pair_terms(model, theta)))
 
     def close_pairs(self, model, theta) -> list[tuple[int, int]]:
-        """The pairs the penalty acts on: the equal-split fade at least CLOSE_FADE."""
+        """The pairs the penalty acts on: the equal-split fade at least CLOSE_FADE; none with the penalty off."""
+        if self.s.pair_penalty_cap == 0.0:
+            return []
         d0 = self.s.pair_penalty_d0
         return [(i, j) for i, j, _D, D_eq, _nats in self.pair_terms(model, theta, eq=True)
                 if pair_penalty.fade(D_eq, d0) >= CLOSE_FADE]
