@@ -920,7 +920,8 @@ def test_a_stopped_batch_counts_its_saved_rings_and_not_its_start_payload(rig, m
     r.wait_commands("stop", 1)
     r.emit(_finished(iid, end="stopped"))
     r.wait(lambda: r.ctrl.view().batches[0].status == "stopped")
-    assert r.lines[-1] == f"Stopped: {r.ctrl.view().batches[0].label} (anchored): kept 3 rings"
+    assert r.lines[-2:] == [f"Stopped: {r.ctrl.view().batches[0].label} (anchored): kept 3 rings",
+                            "Queued: link modes for 1 scan (added automatically)"]
 
 
 def test_a_stopped_batch_keeps_its_saved_rings_says_what_it_kept_and_never_settles_done(rig, monkeypatch):
@@ -934,7 +935,8 @@ def test_a_stopped_batch_keeps_its_saved_rings_says_what_it_kept_and_never_settl
     r.wait_commands("stop", 1)
     r.emit(_finished(iid, end="stopped"))
     r.wait(lambda: r.ctrl.view().batches[0].status == "stopped")
-    assert r.lines[-1] == f"Stopped: {r.ctrl.view().batches[0].label} (anchored): kept 1 ring"
+    assert r.lines[-2:] == [f"Stopped: {r.ctrl.view().batches[0].label} (anchored): kept 1 ring",
+                            "Queued: link modes for 1 scan (added automatically)"]
     assert r.saved == [(A06, A07)]
 
 
@@ -1148,3 +1150,74 @@ def test_a_crash_or_a_shutdown_does_not_queue_a_link_item_for_the_items_it_fails
     r.ctrl.shutdown(lambda: done.append(True))                     # stops a07: failed with no override of its own
     r.wait(lambda: done)
     assert not any("link modes" in line.lower() for line in r.lines)
+
+
+# ---- a stopped batch's end link (S1U3): one recovery link after its saves, whatever the automatic switch ---------
+def test_a_stopped_batch_queues_one_link_for_its_scans_once_its_saves_are_answered(rig, monkeypatch):
+    r = rig(cores=2)
+    assert not r.ctrl.auto_link()                                   # the switch is off: the link comes anyway
+    _start_batch(r, monkeypatch, members=(A06, A07, unit(SET2, "a06")))
+    (start,) = r.wait_commands("start", 1)
+    iid, key = start["item_id"], start["unit_key"]
+    r.emit(_result(iid, key, "inter", event="stage"), _result(iid, key, "inter", event="stage"),
+           _finished(iid, end="stopped"))
+    r.wait(lambda: r.ctrl.view().batches[0].status == "saving")
+    r.emit(_batch_saved(iid, key, (A06, A07)))                      # one of the two saves answered
+    r.wait(lambda: r.saved)
+    assert r.ctrl.view().batches[0].status == "saving" and r.ctrl.view().links == ()
+    assert len(r.commands("start")) == 1
+    r.emit(_batch_saved(iid, key, (unit(SET2, "a06"),)))            # the last save answered: it settles now
+    _, link = r.wait_commands("start", 2)
+    assert (link["pass"], link["cores"]) == ("link", 1)
+    assert link["link"] == {"link_id": link["link"]["link_id"], "scans": [SET, SET2], "series": False,
+                            "reason": "auto"}
+    assert [v.item_id for v in r.ctrl.view().links] == [link["item_id"]]
+    assert r.lines[-2:] == [f"Stopped: {r.ctrl.view().batches[0].label} (anchored): kept 2 rings",
+                            "Queued: link modes for 2 scans (added automatically)"]
+
+
+def test_a_completed_batch_queues_no_link_item_since_its_runner_linked_at_its_end(rig, monkeypatch):
+    r = rig(cores=2)
+    _start_batch(r, monkeypatch)
+    (start,) = r.wait_commands("start", 1)
+    iid, key = start["item_id"], start["unit_key"]
+    r.emit(_result(iid, key, "inter", event="end"), _batch_saved(iid, key, ()), _finished(iid))
+    r.wait(lambda: r.ctrl.view().batches[0].status == "done")
+    assert r.ctrl.view().links == () and len(r.commands("start")) == 1
+
+
+def test_the_recovery_link_runs_before_a_second_batch_on_the_same_files_and_that_batch_waits_for_it(rig, monkeypatch):
+    r = rig(cores=2)
+    _start_batch(r, monkeypatch, members=(A06, A07))
+    (first,) = r.wait_commands("start", 1)
+    _start_batch(r, monkeypatch, members=(A06, A07))                # waits for the first batch
+    iid, key = first["item_id"], first["unit_key"]
+    r.emit(_result(iid, key, "inter", event="stage"), _finished(iid, end="stopped"))
+    r.wait(lambda: r.ctrl.view().batches[1].status == "saving")       # the stopped batch waits for its save
+    r.emit(_batch_saved(iid, key, (A06, A07)))                        # the answer settles it: the link goes first
+    _, link = r.wait_commands("start", 2)
+    assert link["pass"] == "link" and len(r.commands("start")) == 2       # the second batch waits behind the link
+    assert r.ctrl.view().batches[0].status == "waiting"
+    r.emit(_result(link["item_id"], link["unit_key"], "link"), _finished(link["item_id"]))
+    r.wait(lambda: r.ctrl.view().links[0].status == "saving")
+    assert len(r.commands("start")) == 2                                  # its save is still pending
+    r.emit(_link_saved(link["item_id"], link["unit_key"], link["link"]["link_id"]))
+    second = r.wait_commands("start", 3)[2]
+    assert second["pass"] == "inter" and second["batch"]["members"] == [A06, A07]
+
+
+def test_a_recovery_link_is_its_own_item_and_runs_before_an_identical_user_link_already_waiting(rig, monkeypatch):
+    r = rig(cores=2)
+    _start_batch(r, monkeypatch, members=(A06, A07))
+    (start,) = r.wait_commands("start", 1)
+    iid, key = start["item_id"], start["unit_key"]
+    r.ctrl.pause()
+    assert r.ctrl.add_link([SET], reason="user") == (True, "Queued: link modes for 1 scan")   # waits: paused
+    r.emit(_result(iid, key, "inter", event="stage"), _batch_saved(iid, key, (A06, A07)),
+           _finished(iid, end="stopped"))
+    r.wait(lambda: r.ctrl.view().batches[0].status == "stopped")
+    assert [(i.status, i.automatic) for i in r.ctrl.view().links] == [("waiting", False), ("waiting", True)]
+    r.ctrl.resume()
+    _, link = r.wait_commands("start", 2)
+    assert link["link"]["reason"] == "auto" and link["link"]["scans"] == [SET]
+    assert [(i.status, i.automatic) for i in r.ctrl.view().links] == [("waiting", False), ("running", True)]
