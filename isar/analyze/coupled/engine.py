@@ -15,6 +15,7 @@ intensity split of an overlapping pair (price, split_evidence) and reports an un
 """
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass, field, replace
 from functools import cached_property, lru_cache
@@ -1139,7 +1140,10 @@ class CoupledEngine(fast_pass._Engine):
                 out.append((f"entry:{m}", slot.B(e), 1.0))
                 ramp = slot.ep.penalty(e)
             out.append((f"ramp:{m}", 2.0 * ramp, 1.0))
-        out += [(f"pair:{i}-{j}", 2.0 * nats, 1.0) for i, j, _D, _D_eq, nats in self.pair_terms(model, theta)]
+        # every pair is listed, zero outside the range: the TRF residual count must not change inside a fit
+        inside = {(i, j): nats for i, j, _D, _D_eq, nats in self.pair_terms(model, theta)}
+        out += [(f"pair:{i}-{j}", 2.0 * inside.get((i, j), 0.0), 1.0)
+                for i, j in itertools.combinations(range(len(model.modes)), 2)]
         return out
 
     def _width_floor(self, model, m: int, slot) -> float:

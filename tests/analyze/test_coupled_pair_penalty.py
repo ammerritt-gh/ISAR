@@ -13,6 +13,7 @@ from isar.analyze.fast_pass import FastPassSettings
 
 X = np.linspace(-6.0, 24.0, 241)
 COINCIDENT = [(8.0, 0.5, 50.0), (8.0, 0.5, 50.0)]     # two identical modes: D = 0, share 1, so the penalty is the cap
+FAR = [(5.0, 0.5, 50.0), (20.0, 0.5, 50.0)]           # 15 meV apart: beyond three combined widths (about 11 meV)
 
 
 def _engine(cap, release=False):
@@ -64,11 +65,10 @@ def test_the_prior_and_the_release_fit_carry_the_same_penalty():
 
 def test_a_pair_beyond_three_combined_widths_is_not_evaluated():
     on, off = _engine(1.0), _engine(0.0)
-    far = [(5.0, 0.5, 50.0), (20.0, 0.5, 50.0)]
-    model, theta = _at(on, far)
+    model, theta = _at(on, FAR)
     assert on.pair_terms(model, theta) == []
-    assert not any(t.startswith("pair:") for t, _p, _s in on.penalty_terms(model, theta))
-    off_model, _ = _at(off, far)
+    assert dict((t, p) for t, p, _s in on.penalty_terms(model, theta))["pair:0-1"] == 0.0   # listed at zero
+    off_model, _ = _at(off, FAR)
     assert on.J(model, theta) == pytest.approx(off.J(off_model, theta), abs=1e-12)
 
 
@@ -83,3 +83,15 @@ def test_the_fit_residuals_square_to_j_with_the_pair_term(monkeypatch):
     r = seen["residual"](zm.to_z(theta))
     assert float(r @ r) == pytest.approx(eng.J(model, theta), rel=1e-9)
     assert any(t.startswith("pair:") for t, _p, _s in eng.penalty_terms(model, theta))
+
+
+def test_the_residual_count_holds_while_a_pair_leaves_the_range(monkeypatch):
+    # SciPy's least_squares needs one residual count for a whole fit: a pair leaving the range keeps its zero term
+    eng = _engine(1.0)
+    model, theta_in = _at(eng, COINCIDENT)
+    _, theta_far = _at(eng, FAR)
+    seen = {}
+    monkeypatch.setattr(eng, "_least_squares", lambda residual, z0, lo, hi, family: seen.update(residual=residual))
+    eng._trf(model, theta_in, "coupled")
+    zm = eng.zmap(model)
+    assert seen["residual"](zm.to_z(theta_far)).size == seen["residual"](zm.to_z(theta_in)).size
