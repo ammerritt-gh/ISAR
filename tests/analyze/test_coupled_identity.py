@@ -7,6 +7,7 @@ from __future__ import annotations
 import itertools
 import math
 import random
+import types
 from dataclasses import replace
 from pathlib import Path
 
@@ -470,7 +471,8 @@ def test_each_spectrum_reads_only_its_own_identity_flag_values():
     r = run(["k1", "k2"], [link("A", "k1"), link("A", "k2")], {"k1": tie("k1", "p"), "k2": tie("k2", "q")},
             {"A": A}, rings={"k1": 1, "k2": 1})
     assert set(r.flags["identity_ambiguous"]["units"]) == {"k1", "k2"}
-    (f1,), (f2,) = (runner._Run.identity_flags(None, r, k) for k in ("k1", "k2"))
+    (f1,), (f2,) = (runner._Run.identity_flags(types.SimpleNamespace(price_flags={}), r, k)
+                    for k in ("k1", "k2"))
     assert "\x27p\x27" in f1["text"] and "\x27q\x27" not in f1["text"]
     assert "\x27q\x27" in f2["text"] and "\x27p\x27" not in f2["text"]
 
