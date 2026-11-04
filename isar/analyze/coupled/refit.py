@@ -4,7 +4,7 @@ Stage 1 (``open_search``, ``price``; ``assign`` drives the search inline, ``sear
 and branch associations by evidence under one normalised neighbour density per matched mode (the
 hand-over ``engine``), with the unmatched entry price kept inside the odds and the loss price of each neighbour branch a candidate
 does not name (the entry price's mirror, charged once per spectrum outside the normalised densities). Stage 2 (``refit(stage=
-"continuous")``) refines the continuous parameters under the one shared objective J with the stage's
+"continuous")``, or its three pool steps ``refit_step``: fit, close-pair restarts, finish) refines the continuous parameters under the one shared objective J with the stage's
 frozen factor definitions, then reports the acceptance status (spec 5), conditional error bars, a
 release fit, the flag score F = R + max U, every flag reason, one sentence why and a drawable overlay.
 The decision rules are ``rules`` (installed verbatim); thresholds always come from ``InterSettings``. The
@@ -1270,14 +1270,56 @@ def refit(snapshot: Snapshot, *, stage: Literal["continuous", "both"], assignmen
         raise ValueError(f"unknown refit stage {stage!r}")
     if assignment is None:
         raise ValueError("the continuous stage needs the stage's Assignment")
-    if assignment.unit != snapshot.unit or assignment.snapshot_id != snapshot.stage_id:
-        raise ValueError(f"the assignment of {assignment.unit} on {assignment.snapshot_id} does not govern "
-                         f"{snapshot.unit} on {snapshot.stage_id}")
-    return _continuous(snapshot, assignment, priced, hits, timing)
-
-
-def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
+    fs = _fit_stage(snapshot, assignment)
     t0 = time.perf_counter()
+    results = [_restart(snapshot, assignment, fs.model_key, x) for x in fs.restarts]
+    return _finish(snapshot, assignment, fs, results, time.perf_counter() - t0, priced=priced, hits=hits,
+                   timing=timing)
+
+
+# ---- the continuous stage as three steps (C-refit-steps) -----------------------------------------------------
+# the close-pair restarts (C-restarts); algorithm settings, uncalibrated
+RESTART_SHARE = 0.5          # (a), (b): h_i += 0.5 h_j and h_j *= 0.5, then the reverse
+RESTART_STEP_FWHM = 0.25     # (c): each free energy of the pair moves outward from its mid-energy by 0.25 resolution FWHM
+RESTART_NARROW = 0.5         # (d): the half-separation halved
+
+
+@dataclass(frozen=True)
+class FitStage:
+    """Step 1 of a refit, handed to its restarts and its finish (picklable). ``theta`` is the best main start's
+    solution in the model's layout; ``restarts`` the C-restarts start vectors, in order."""
+    unit: str
+    snapshot_id: str
+    model_key: tuple                        # (elastic, background, qe, delta mask)
+    theta: tuple[float, ...]
+    J: float
+    restarts: tuple[tuple[float, ...], ...]
+    failure: str | None                     # "no_finite_candidate" when no main start reached a finite fit
+    timing: Mapping[str, float]             # continuous_s
+    starts: int = 0                         # the main starts' TRF runs (RefitResult.starts adds restarts and release)
+
+
+def refit_step(step: str, *args) -> object:
+    """``refit(stage="continuous")`` as the runner's pool steps; inline, ``refit`` composes the same three:
+    ``("fit", snapshot, assignment)`` -> FitStage; ``("restart", snapshot, assignment, model_key, theta0)`` ->
+    (theta, J), (None, inf) on failure; ``("finish", snapshot, assignment, stage, results[, restart_s])`` ->
+    RefitResult, ``results`` the restarts' (theta, J) in restart order and ``restart_s`` their summed seconds."""
+    steps = {"fit": _fit_stage, "restart": _restart, "finish": _finish}
+    if step not in steps:
+        raise ValueError(f"unknown refit step {step!r}")
+    return steps[step](*args)
+
+
+def _governs(snapshot, a):
+    if a.unit != snapshot.unit or a.snapshot_id != snapshot.stage_id:
+        raise ValueError(f"the assignment of {a.unit} on {a.snapshot_id} does not govern "
+                         f"{snapshot.unit} on {snapshot.stage_id}")
+
+
+def _setup(snapshot, a):
+    """What every step rebuilds alike from the snapshot and the assignment: (spec, factors by branch, dropped
+    factors, notes, slot objects, the labelled continuous engine, the incoming state or None)."""
+    _governs(snapshot, a)
     spec = _Spec(snapshot)
     k, slots = a.count, tuple(a.slots)
     by_branch: dict[str, list] = {}
@@ -1297,7 +1339,11 @@ def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
     eng = _Labelled(spec.ctx, _ceiling(spec.fs, k), objs, continuous=True, structures=spec.structures,
                     lifted=tuple(spec.slot_lifted(b, a.unlifted) for b in slots))
     old = _incoming_state(eng, spec) if k == spec.n0 else None
+    return spec, by_branch, dropped, notes, objs, eng, old
 
+
+def _main_starts(spec, a, eng, old) -> list:
+    k, slots = a.count, tuple(a.slots)
     # starts: the incoming state, the priced posterior mode (the decision's, ``a.selected_model``) and one
     # neighbour-placed start, all on the selected delta mask (the decision's, else the incoming fit's): a delta or a
     # free width is chosen by the evidence comparison, never by the continuous objective, which a free width always
@@ -1327,8 +1373,22 @@ def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
             model = eng.model(v, selected)
             if model is not None:
                 starts.append((model, eng._start(model, placed, None)))
+    return starts
+
+
+def _model_of(eng, k: int, key: tuple):
+    """The model of a FitStage's ``model_key`` on this engine (the engine caches it: the same object each time)."""
+    variant = eng.variant(k, *key[:3])
+    return None if variant is None else eng.model(variant, tuple(key[3]))
+
+
+def _fit_stage(snapshot, a) -> FitStage:
+    """Step 1: every main start by TRF on the continuous objective (``_trf``, never ``fit``: no twin screen can merge
+    or drop a mode), the lowest J kept, and the restarts of its close pairs."""
+    t0 = time.perf_counter()
+    spec, _by_branch, _dropped, _notes, _objs, eng, old = _setup(snapshot, a)
     best = None
-    for model, theta0 in starts:
+    for model, theta0 in _main_starts(spec, a, eng, old):
         res = eng._trf(model, theta0, "coupled")
         if res is None:
             continue
@@ -1336,13 +1396,90 @@ def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
         J = eng.J(model, theta)
         if math.isfinite(J) and (best is None or J < best[2]):
             best = (model, theta, J)
-    timing["continuous_s"] = time.perf_counter() - t0
     if best is None:
-        return _failed(snapshot, a, "no_finite_candidate",
+        return FitStage(snapshot.unit, snapshot.snapshot_id, (), (), math.inf, (), "no_finite_candidate",
+                        {"continuous_s": time.perf_counter() - t0}, eng.n_fits)
+    model, theta, J = best
+    v = model.variant
+    restarts = tuple(tuple(float(x) for x in t) for t in _restart_starts(eng, model, theta))
+    return FitStage(snapshot.unit, snapshot.snapshot_id, (v.elastic, v.background, v.qe, tuple(model.delta)),
+                    tuple(float(x) for x in theta), float(J), restarts, None,
+                    {"continuous_s": time.perf_counter() - t0}, eng.n_fits)
+
+
+def _restart_starts(eng, model, theta) -> list[np.ndarray]:
+    """C-restarts: per close pair (both heights free), in order: (a) intensity moved from j toward i, (b) the
+    reverse, (c) the separation wider, (d) narrower. A pinned coordinate (``model.fixed_pos``) is never moved: with
+    one energy pinned (c) and (d) move the free one alone, with both pinned they are not made. Each start is clipped
+    into the box, its pins reset to the solution; a start equal to the solution is not made."""
+    fixed, free = set(model.fixed_pos), {int(i) for i in model.free}
+    zm = eng.zmap(model)
+    out = []
+    for i, j in eng.close_pairs(model, theta):
+        (ai, _gi, ci), (aj, _gj, cj) = model.modes[i], model.modes[j]
+        if ci not in free or cj not in free:
+            continue
+        made = []
+        for to, frm in ((ci, cj), (cj, ci)):
+            x = theta.copy()
+            x[to] += RESTART_SHARE * theta[frm]
+            x[frm] *= 1.0 - RESTART_SHARE
+            made.append(x)
+        moving = [p for p in (ai, aj) if p not in fixed]
+        if moving:
+            mid = 0.5 * (theta[ai] + theta[aj])
+            lower = ai if (theta[ai], i) <= (theta[aj], j) else aj     # coincident: the earlier slot goes down
+            wide, narrow = theta.copy(), theta.copy()
+            for p in moving:
+                wide[p] += (-1.0 if p == lower else 1.0) * RESTART_STEP_FWHM * eng.fwhm
+                narrow[p] = mid + RESTART_NARROW * (theta[p] - mid)
+            made += [wide, narrow]
+        for x in made:
+            x = np.clip(x, model.lo, model.hi)
+            zm.clip(x)
+            x[model.fixed_pos] = theta[model.fixed_pos]
+            if not np.array_equal(x, theta):
+                out.append(x)
+    return out
+
+
+def _restart(snapshot, a, model_key, theta0) -> tuple[tuple[float, ...] | None, float]:
+    """Step 2: one TRF from a restart start on the engine and model step 1 used; (None, inf) on failure."""
+    _spec, _by_branch, _dropped, _notes, _objs, eng, _old = _setup(snapshot, a)
+    model = _model_of(eng, a.count, model_key)
+    if model is None:
+        return None, math.inf
+    theta0 = np.array(theta0, dtype=float)
+    res = eng._trf(model, theta0, "restart")
+    if res is None:
+        return None, math.inf
+    theta = eng.zmap(model).to_theta(res.x, theta0)
+    J = eng.J(model, theta)
+    return (tuple(float(x) for x in theta), float(J)) if math.isfinite(J) else (None, math.inf)
+
+
+def _finish(snapshot, a, stage: FitStage, results, restart_s: float = 0.0, *, priced=(), hits=0,
+            timing=None) -> RefitResult:
+    """Step 3: the lowest J of the main solution and the restarts (a tie keeps the earlier), then acceptance, error
+    bars, the release fit, "not observed here", the modes, the flags and the record."""
+    timing = {"assign_s": 0.0, "likelihood_s": 0.0, **(timing or {}),
+              "continuous_s": float(stage.timing.get("continuous_s", 0.0)), "restart_s": float(restart_s)}
+    timing.setdefault("uncertainty_s", 0.0)
+    timing.setdefault("release_s", 0.0)
+    spec, by_branch, dropped, notes, objs, eng, old = _setup(snapshot, a)
+    k, slots = a.count, tuple(a.slots)
+    if stage.failure is not None:
+        return _failed(snapshot, a, stage.failure,
                        "The refit failed: no start reached a finite fit, so the previous fit stays.",
                        timing, priced, hits, notes)
+    model = _model_of(eng, k, stage.model_key)
+    if model is None:
+        raise ValueError(f"{snapshot.unit}: the fit stage's model {stage.model_key} is not this assignment's")
+    theta, J_new = np.array(stage.theta, dtype=float), stage.J
+    for t, Jr in results:
+        if t is not None and math.isfinite(Jr) and Jr < J_new:
+            theta, J_new = np.array(t, dtype=float), Jr
 
-    model, theta, J_new = best
     # a width mask is part of the topology: positions are slot positions, and at the incoming count the slot order
     # is the incoming's ascending order, so the comparison is positional and valid for relabelled slots too.
     # So is a variant (elastic, background, QE) change: the incoming's J is then not comparable
@@ -1367,7 +1504,7 @@ def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
     P, U = {}, {}
     unary = sum(((theta[i] - mu) / sd) ** 2 for i, mu, sd in model.soft)   # J counts the soft squares once
     for tid, p, _sign in eng.penalty_terms(model, theta):
-        if tid.startswith(("entry:", "ramp:", "width:", "area:")):
+        if tid.startswith(("entry:", "ramp:", "width:", "area:", "pair:")):
             unary += p
         else:
             P[tid] = p
@@ -1462,7 +1599,7 @@ def _continuous(snapshot, a, priced, hits, timing) -> RefitResult:
         F=F, delta_fast=delta_fast, flag=flag, why_changed=why, overlay=overlay if drawn else None,
         overlay_unavailable=None if drawn else f"a {status} refit is not drawn",
         covariance=cov_out, errors="conditional" if cov is not None else "unavailable", normalisers=normalisers,
-        starts=eng.n_fits + rel.n_fits, timing=timing, priced=tuple(priced), cache_hits=hits)
+        starts=stage.starts + len(results) + rel.n_fits, timing=timing, priced=tuple(priced), cache_hits=hits)
 
 
 def _fast_modes(fast: Held, ids, energy, *, exact_only: bool) -> dict[str, HeldMode]:
